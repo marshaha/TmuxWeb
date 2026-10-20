@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Local runtime configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.ppk
+.remote_hosts.key
+
+# Runtime databases and local state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+tmux-panes.json
+cookies.txt
+*.cookies
+
+# Logs, captures, transcripts and temporary files
+*.log
+*.out
+*.pid
+*.tmp
+*.swp
+*.bak
+captures/
+transcripts/
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

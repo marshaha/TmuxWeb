@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Tmux Console 登录</title>
+  <style>
+    :root{color-scheme:dark;--bg:#151513;--panel:#1e1e1b;--border:#44423d;--text:#faf9f6;--muted:#aaa69f;--input:#272722;--danger:#f0a4a4}
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 50% 0,#292821 0,var(--bg) 43%);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+    main{width:min(420px,calc(100vw - 32px));padding:32px;border:1px solid var(--border);border-radius:16px;background:rgba(30,30,27,.95)}
+    .eyebrow{color:var(--muted);font:11px ui-monospace,monospace;letter-spacing:.18em;text-transform:uppercase} h1{font-size:28px;font-weight:500;margin:8px 0 6px} p{color:var(--muted);margin:0 0 24px}
+    label{display:block;margin-bottom:8px;color:var(--muted)} input{width:100%;padding:13px 14px;border:1px solid var(--border);border-radius:9px;background:var(--input);color:var(--text);outline:none;font:inherit} input:focus{border-color:#8c8980}
+    button{width:100%;margin-top:14px;padding:13px;border:1px solid #555249;border-radius:999px;background:#353534;color:var(--text);font:500 15px inherit;cursor:pointer} button:hover{background:#41413e}.error{color:var(--danger);margin:0 0 14px}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Local access</div>
+    <h1>Tmux Console</h1>
+    <p>输入访问密码以控制本机 tmux pane。</p>
+    <!--ERROR-->
+    <form method="post" action="/login">
+      <label for="password">访问密码</label>
+      <input id="password" name="password" type="password" required autofocus autocomplete="current-password">
+      <button type="submit">进入控制台</button>
+    </form>
+  </main>
+</body>
+</html>
