@@ -10,7 +10,7 @@ TmuxWeb 是一个自托管的 tmux 与 AI CLI 会话管理中心。它把本机�
 
 - **多主机管理**：一个本地服务管理 localhost 和 SSH 远程主机；远端只需 SSH 与 tmux，不需安装守护进程。
 - **tmux 树导航**：按主机、session、window、pane 展示；展开状态保存在浏览器本地。
-- **AI 聊天视图**：Claude Code、Codex、Hermes 优先读取结构化 transcript；无法解析时回退 ANSI `capture-pane`。
+- **AI 聊天视图**：Claude Code、Codex、Hermes、Kimi Code 优先读取结构化 transcript；无法解析时回退 ANSI `capture-pane`。
 - **真实终端**：xterm.js + PTY attach，支持输入、resize、ANSI 和移动端快捷键。
 - **安全发送**：文字经 tmux buffer 原样粘贴，不拼接 shell 命令；提交时处理旧草稿和 bracketed paste。
 - **远程连接**：支持密码和私钥；固定 SSH host key 指纹；凭据使用独立 Fernet 主密钥加密保存。
@@ -32,7 +32,7 @@ TmuxWeb 是一个自托管的 tmux 与 AI CLI 会话管理中心。它把本机�
 - Python 3.11+
 - tmux
 - OpenSSH 客户端（使用远程主机时还需要 `ssh-keyscan`）
-- 可选：Claude Code、Codex、Hermes CLI
+- 可选：Claude Code、Codex、Hermes、Kimi Code CLI
 
 ## 安装
 

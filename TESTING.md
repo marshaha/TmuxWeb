@@ -63,11 +63,12 @@ tmux kill-session -t tmuxweb-smoke
 
 ## 4. 结构化 transcript 验收
 
-分别选择正在运行的 Claude Code、Codex 和 Hermes pane：
+分别选择正在运行的 Claude Code、Codex、Hermes 和 Kimi Code pane：
 
 - Claude：确认 user/assistant 消息顺序、Markdown 表格和代码块正确；compact summary 不显示为普通用户消息。
 - Codex：确认 pane title/thread 能定位对应 rollout。
 - Hermes：确认按 pane cwd 选择最近活跃 CLI session。
+- Kimi Code：确认按 pane cwd + title 绑定 `state.json`/`wire.jsonl`，并过滤 thinking、tool output 和内部 notification。
 - 未识别 provider：确认自动回退到 ANSI capture，而不是猜测 transcript。
 
 对大 JSONL 文件进行并发测试时，监控服务 RSS，确保内存随响应上限而不是 transcript 文件大小增长。

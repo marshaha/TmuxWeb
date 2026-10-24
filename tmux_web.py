@@ -378,6 +378,74 @@ class TmuxBackend:
         ]
         return {"pane": pane_id, "provider": "hermes", "session_id": session_id, "messages": messages, "mtime": db_path.stat().st_mtime_ns}
 
+    def _kimi_session_file(self, pane: dict) -> tuple[str, Path]:
+        sessions_root = Path.home() / ".kimi-code" / "sessions"
+        cwd = pane.get("path")
+        title = pane.get("title", "").strip()
+        candidates = []
+        for state_path in sessions_root.glob("wd_*/session_*/state.json"):
+            try:
+                state = json.loads(state_path.read_text(errors="replace"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if state.get("archived") or state.get("cwd") != cwd:
+                continue
+            wire_path = state_path.parent / "agents" / "main" / "wire.jsonl"
+            if not wire_path.is_file():
+                continue
+            candidates.append((state, wire_path))
+        title_matches = [item for item in candidates if item[0].get("title", "").strip() == title]
+        if len(title_matches) == 1:
+            state, path = title_matches[0]
+            return str(state.get("id") or path.parents[1].name), path
+        if len(candidates) == 1:
+            state, path = candidates[0]
+            return str(state.get("id") or path.parents[1].name), path
+        raise TmuxError("could not determine Kimi session id")
+
+    def _kimi_transcript(self, pane_id: str, limit: int) -> dict:
+        pane = self.validate_pane(pane_id)
+        session_id, path = self._kimi_session_file(pane)
+        max_records = max(1, min(limit, 1000))
+        records = []
+        seen = set()
+        for line in self._reverse_lines(path):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") != "agent.message.appended":
+                continue
+            envelope = event.get("message") or {}
+            message = envelope.get("message") or {}
+            meta = envelope.get("meta") or {}
+            role = message.get("role")
+            source = meta.get("source")
+            if role == "user" and source != "input":
+                continue
+            if role == "assistant" and source != "llm":
+                continue
+            if role not in {"user", "assistant"}:
+                continue
+            text = self._content_text(message.get("content"), {"text"})
+            if not text:
+                continue
+            message_id = meta.get("userMessageId") or meta.get("messageId") or hashlib.sha256(
+                f"{event.get('time')}:{role}:{text}".encode()
+            ).hexdigest()
+            if message_id in seen:
+                continue
+            seen.add(message_id)
+            timestamp = event.get("time")
+            if isinstance(timestamp, (int, float)):
+                timestamp = timestamp / 1000
+            records.append({"id": str(message_id), "role": role, "text": text, "timestamp": timestamp})
+            if len(records) >= max_records:
+                break
+        records.reverse()
+        return {"pane": pane_id, "provider": "kimi", "session_id": session_id,
+                "messages": records, "mtime": path.stat().st_mtime_ns}
+
     def transcript(self, pane_id: str, limit: int = 200) -> dict:
         pane = self.validate_pane(pane_id)
         command = pane.get("command")
@@ -387,6 +455,8 @@ class TmuxBackend:
             return self._codex_transcript(pane_id, limit)
         if command == "python3":
             return self._hermes_transcript(pane_id, limit)
+        if command == "kimi":
+            return self._kimi_transcript(pane_id, limit)
         raise TmuxError("structured transcript is not supported for this pane")
 
     def send(self, pane_id: str, text: str, submit: bool = True) -> None:

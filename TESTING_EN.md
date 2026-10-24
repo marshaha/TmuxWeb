@@ -63,11 +63,12 @@ Never perform input smoke tests in a user's active AI pane.
 
 ## 4. Structured transcript acceptance
 
-Select active Claude Code, Codex, and Hermes panes:
+Select active Claude Code, Codex, Hermes, and Kimi Code panes:
 
 - Claude: verify user/assistant order, Markdown tables/code, and omission of compact-summary internals.
 - Codex: verify pane title/thread resolution to the expected rollout.
 - Hermes: verify pane cwd resolution to the latest active CLI session.
+- Kimi Code: verify pane cwd + title resolution to `state.json`/`wire.jsonl`, with thinking, tool output, and internal notifications filtered out.
 - Unknown providers: verify ANSI capture fallback instead of guessed transcript data.
 
 For large JSONL transcripts, run concurrent requests while monitoring RSS. Memory must scale with the response limit, not the source file size.

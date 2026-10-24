@@ -10,7 +10,7 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 
 - **Multi-host control plane**: one local service manages localhost and SSH hosts; remote machines only need SSH and tmux.
 - **Tmux tree**: host/session/window/pane navigation with persisted expansion state.
-- **AI chat view**: structured transcripts for Claude Code, Codex, and Hermes, with ANSI `capture-pane` fallback.
+- **AI chat view**: structured transcripts for Claude Code, Codex, Hermes, and Kimi Code, with ANSI `capture-pane` fallback.
 - **Real terminal**: xterm.js over a PTY with input, resize, ANSI, and mobile shortcut controls.
 - **Literal input delivery**: messages use tmux buffers instead of shell interpolation and account for stale drafts and bracketed paste.
 - **Remote SSH**: password or private-key authentication, pinned host-key fingerprints, and Fernet-encrypted credentials at rest.
@@ -32,7 +32,7 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - Python 3.11+
 - tmux
 - OpenSSH client and `ssh-keyscan` for remote hosts
-- Optional: Claude Code, Codex, and/or Hermes CLI
+- Optional: Claude Code, Codex, Hermes, and/or Kimi Code CLI
 
 ## Install
 

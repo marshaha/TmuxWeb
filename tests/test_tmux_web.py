@@ -226,6 +226,43 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["messages"][1]["role"], "assistant")
 
+    def test_reads_kimi_transcript_without_thinking_tools_or_notifications(self):
+        self.tmux.panes[0].update({"command": "kimi", "title": "Kimi test", "path": "/work/kimi"})
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            session = home / ".kimi-code" / "sessions" / "wd_test" / "session_test"
+            wire = session / "agents" / "main" / "wire.jsonl"
+            wire.parent.mkdir(parents=True)
+            (session / "state.json").write_text(json.dumps({
+                "id": "session_test", "cwd": "/work/kimi", "title": "Kimi test",
+                "archived": False, "updatedAt": 123,
+            }))
+            events = [
+                {"type": "agent.message.appended", "time": 1000, "message": {"message": {
+                    "role": "user", "content": [{"type": "text", "text": "用户问题"}]},
+                    "meta": {"source": "input", "userMessageId": "user-1"}}},
+                {"type": "agent.message.appended", "time": 1100, "message": {"message": {
+                    "role": "assistant", "content": [{"type": "think", "think": "hidden reasoning"},
+                    {"type": "text", "text": "可见回答"}], "toolCalls": [{"name": "Read"}]},
+                    "meta": {"source": "llm", "messageId": "assistant-1"}}},
+                {"type": "agent.message.appended", "time": 1200, "message": {"message": {
+                    "role": "tool", "content": [{"type": "text", "text": "secret tool output"}]},
+                    "meta": {"source": "tool"}}},
+                {"type": "agent.message.appended", "time": 1300, "message": {"message": {
+                    "role": "user", "content": [{"type": "text", "text": "internal notification"}]},
+                    "meta": {"source": "notify"}}},
+            ]
+            wire.write_text("".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events))
+            backend = TmuxBackend()
+            backend.validate_pane = lambda pane_id: self.tmux.panes[0]
+            with patch("tmux_web.Path.home", return_value=home):
+                result = backend.transcript("%4", 20)
+        self.assertEqual(result["provider"], "kimi")
+        self.assertEqual(result["session_id"], "session_test")
+        self.assertEqual([(item["role"], item["text"]) for item in result["messages"]], [
+            ("user", "用户问题"), ("assistant", "可见回答")
+        ])
+
     def test_creates_password_protected_share_and_allows_chat(self):
         self.tmux.panes[0]["command"] = "claude"
         self.login()
