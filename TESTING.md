@@ -39,6 +39,8 @@
 
 - 会话切换缓存：打开两个不同的 pane（一个有 transcript、一个纯终端），来回切换——返回看过的 pane 应立即显示消息（状态先是「更新中…」再变回 `xxx transcript`），滚动位置与输入框草稿各自保留（纯终端 pane 不应串到文本 pane 的草稿）；`tests/test_tmux_web.py` 断言页面包含 `paintCachedTranscript` / `rememberTranscript` / `state.drafts`。
 
+- 主机编辑：`/hosts` 上点「编辑」改名称/用户名后保存 → 列表立即更新，密码留空则原凭据仍可用；改主机名会重新扫描指纹；↑/↓ 调整顺序后刷新页面顺序保持，`/api/hosts` 的远端主机顺序一致；把认证方式改成密码但不填密码应报 422；保存一个连不上的配置应返回 424 且库里字段回到原值。`python -m unittest test_tmux_web -k remote_host` 覆盖这些路径。
+
 ## 1. 安装测试依赖
 
 ```bash

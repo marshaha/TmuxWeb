@@ -578,9 +578,15 @@ class RemoteHostStore:
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, hostname TEXT NOT NULL,
                     port INTEGER NOT NULL, username TEXT NOT NULL, auth_type TEXT NOT NULL,
                     credential BLOB NOT NULL, host_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
-                    created_at REAL NOT NULL, enabled INTEGER NOT NULL DEFAULT 1
+                    created_at REAL NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+                    position INTEGER NOT NULL DEFAULT 0
                 )
             """)
+            columns = {row[1] for row in self.connection.execute("PRAGMA table_info(remote_hosts)")}
+            if "position" not in columns:  # databases from before manual ordering
+                self.connection.execute(
+                    "ALTER TABLE remote_hosts ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _load_key(self) -> bytes:
         if self.key_path.exists():
@@ -606,11 +612,15 @@ class RemoteHostStore:
             validate_private_key_text(credential)
         host_id = secrets.token_hex(8)
         encrypted = self.fernet.encrypt(credential.encode())
+        position = self.connection.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM remote_hosts"
+        ).fetchone()[0]
         with self.connection:
             self.connection.execute(
-                "INSERT INTO remote_hosts VALUES (?,?,?,?,?,?,?,?,?,?,1)",
+                "INSERT INTO remote_hosts (id, name, hostname, port, username, auth_type, credential,"
+                " host_key, fingerprint, created_at, enabled, position) VALUES (?,?,?,?,?,?,?,?,?,?,1,?)",
                 (host_id, name, hostname, int(port), username, auth_type, encrypted,
-                 host_key, fingerprint, time.time()),
+                 host_key, fingerprint, time.time(), position),
             )
         return self.get_host(host_id)
 
@@ -627,8 +637,58 @@ class RemoteHostStore:
 
     def list_hosts(self) -> list[dict]:
         return [self.get_host(row["id"]) for row in self.connection.execute(
-            "SELECT id FROM remote_hosts ORDER BY created_at, name"
+            "SELECT id FROM remote_hosts ORDER BY position, created_at, name"
         )]
+
+    def update_host(self, host_id: str, *, name: str | None = None, hostname: str | None = None,
+                    port: int | None = None, username: str | None = None, auth_type: str | None = None,
+                    credential: str | None = None, host_key: str | None = None,
+                    fingerprint: str | None = None) -> dict:
+        """Edit a stored host. ``credential=None`` keeps the saved secret."""
+        current = self.get_host(host_id, include_credential=True)
+        auth = auth_type or current["auth_type"]
+        if auth not in AUTH_TYPES:
+            raise ValueError("invalid auth type")
+        secret = current["credential"] if credential is None else credential
+        if auth == "agent":
+            secret = ""
+        if auth in {"password", "key"} and not secret:
+            raise ValueError("password or private key is required")
+        if auth == "key":
+            validate_private_key_text(secret)
+        fields = {
+            "name": (name or current["name"]).strip(),
+            "hostname": (hostname or current["hostname"]).strip(),
+            "port": int(port or current["port"]),
+            "username": (username or current["username"]).strip(),
+            "auth_type": auth,
+            "credential": self.fernet.encrypt(secret.encode()),
+            "host_key": (host_key or current["host_key"]),
+            "fingerprint": (fingerprint or current["fingerprint"]),
+        }
+        if not fields["name"] or not fields["hostname"] or not fields["username"]:
+            raise ValueError("name, hostname and username are required")
+        with self.connection:
+            self.connection.execute(
+                "UPDATE remote_hosts SET name=?, hostname=?, port=?, username=?, auth_type=?,"
+                " credential=?, host_key=?, fingerprint=? WHERE id=?",
+                (fields["name"], fields["hostname"], fields["port"], fields["username"],
+                 fields["auth_type"], fields["credential"], fields["host_key"], fields["fingerprint"],
+                 host_id),
+            )
+        return self.get_host(host_id)
+
+    def reorder_hosts(self, ordered_ids: list[str]) -> list[dict]:
+        """Persist the sidebar order: the first id becomes position 0."""
+        known = {row["id"] for row in self.connection.execute("SELECT id FROM remote_hosts")}
+        if sorted(ordered_ids) != sorted(known):
+            raise ValueError("the reorder list must contain every host exactly once")
+        with self.connection:
+            for position, host_id in enumerate(ordered_ids):
+                self.connection.execute(
+                    "UPDATE remote_hosts SET position=? WHERE id=?", (position, host_id)
+                )
+        return self.list_hosts()
 
     def delete_host(self, host_id: str) -> bool:
         with self.connection:

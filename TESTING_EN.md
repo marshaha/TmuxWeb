@@ -32,6 +32,11 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   per pane (a shell pane must not inherit the other pane's draft). `tests/test_tmux_web.py` asserts the page contains
   `paintCachedTranscript`, `rememberTranscript` and `state.drafts`.
 
+- Host editing: on `/hosts`, rename/host-edit a saved host and save - the list updates and the stored password still works when the
+  credential field is left empty; changing the hostname rescans the fingerprint; up/down reordering survives a reload and
+  matches `/api/hosts`; switching to password auth without a password returns 422; saving an unreachable configuration returns
+  424 and the stored fields roll back. Covered by `python -m unittest test_tmux_web -k remote_host`.
+
 ## 1. Install test dependencies
 
 ```bash

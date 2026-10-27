@@ -90,9 +90,14 @@ class FakeTmux(TmuxBackend):
 
 
 class FakeRemoteStore:
-    def __init__(self): self.hosts = {}
+    def __init__(self):
+        self.hosts = {}
+        self._sequence = 0
+
     def add_host(self, **data):
-        host = {"id": "0123456789abcdef", "enabled": True, "created_at": 0.0, **data}
+        self._sequence += 1
+        host = {"id": "0123456789abc%03d" % self._sequence, "enabled": True, "created_at": 0.0,
+                "position": len(self.hosts), **data}
         credential = host.pop("credential")
         self.hosts[host["id"]] = (host, credential)
         return host
@@ -101,6 +106,31 @@ class FakeRemoteStore:
         host, credential = self.hosts[host_id]
         return {**host, **({"credential": credential} if include_credential else {})}
     def delete_host(self, host_id): return self.hosts.pop(host_id, None) is not None
+
+    def update_host(self, host_id, **changes):
+        host, credential = self.hosts[host_id]
+        updated = dict(host)
+        for key in ("name", "hostname", "port", "username", "auth_type", "host_key", "fingerprint"):
+            if changes.get(key) is not None:
+                updated[key] = changes[key]
+        if changes.get("credential") is not None:
+            credential = changes["credential"]
+        if updated["auth_type"] == "agent":
+            credential = ""
+        # validate before storing, so a rejected edit changes nothing
+        if updated["auth_type"] in {"password", "key"} and not credential:
+            raise ValueError("password or private key is required")
+        self.hosts[host_id] = (updated, credential)
+        return dict(updated)
+
+    def reorder_hosts(self, ordered_ids):
+        known = list(self.hosts)
+        if sorted(ordered_ids) != sorted(known):
+            raise ValueError("the reorder list must contain every host exactly once")
+        self.hosts = {host_id: self.hosts[host_id] for host_id in ordered_ids}
+        for position, host_id in enumerate(ordered_ids):
+            self.hosts[host_id][0]["position"] = position
+        return self.list_hosts()
 
 
 class FakeSSHRunner:
@@ -213,6 +243,87 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(host["status"], "online")
         self.assertEqual(host["panes"][0]["session"], "codex")
         self.assertEqual(host["panes"][0]["window_name"], "editor")
+
+    def test_edits_a_remote_host_without_touching_the_secret(self):
+        self.login()
+        host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        fingerprint = host_key_fingerprint(host_key)
+        created = self.client.post("/api/remote-hosts", json={
+            "name": "build-box", "hostname": "10.0.0.8", "port": 22, "username": "ubuntu",
+            "auth_type": "password", "credential": "secret", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        }).json()
+        host_id = created["id"]
+
+        renamed = self.client.put(f"/api/remote-hosts/{host_id}", json={"name": "builder", "username": "deploy"})
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(renamed.json()["name"], "builder")
+        self.assertEqual(renamed.json()["username"], "deploy")
+        stored, credential = self.remote_store.hosts[host_id]
+        self.assertEqual(credential, "secret")  # untouched when credential is omitted
+
+        rotated = self.client.put(f"/api/remote-hosts/{host_id}", json={"credential": "new-secret"})
+        self.assertEqual(rotated.status_code, 200)
+        self.assertEqual(self.remote_store.hosts[host_id][1], "new-secret")
+
+        switched = self.client.put(f"/api/remote-hosts/{host_id}", json={"auth_type": "agent"})
+        self.assertEqual(switched.status_code, 200)
+        self.assertEqual(self.remote_store.hosts[host_id][1], "")
+
+        missing = self.client.put("/api/remote-hosts/nope", json={"name": "x"})
+        self.assertEqual(missing.status_code, 404)
+
+    def test_rejects_an_edit_that_would_break_the_host(self):
+        self.login()
+        host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        fingerprint = host_key_fingerprint(host_key)
+        created = self.client.post("/api/remote-hosts", json={
+            "name": "build-box", "hostname": "10.0.0.8", "port": 22, "username": "ubuntu",
+            "auth_type": "password", "credential": "secret", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        }).json()
+        host_id = created["id"]
+
+        # a mismatched fingerprint is refused and nothing changes
+        bad = self.client.put(f"/api/remote-hosts/{host_id}", json={
+            "host_key": host_key, "fingerprint": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"})
+        self.assertEqual(bad.status_code, 409)
+        self.assertEqual(self.remote_store.hosts[host_id][0]["hostname"], "10.0.0.8")
+
+        # password auth without a credential is impossible
+        self.client.put(f"/api/remote-hosts/{host_id}", json={"auth_type": "agent"})
+        blocked = self.client.put(f"/api/remote-hosts/{host_id}", json={"auth_type": "password"})
+        self.assertEqual(blocked.status_code, 422)
+
+        # an unreachable host rolls the edit back
+        original = dict(self.remote_store.hosts[host_id][0])
+        with patch.object(FakeSSHRunner, "check", side_effect=RuntimeError("Permission denied")):
+            failing = self.client.put(f"/api/remote-hosts/{host_id}", json={"username": "nobody"})
+        self.assertEqual(failing.status_code, 424)
+        self.assertIn("Permission denied", failing.json()["detail"])
+        self.assertEqual(self.remote_store.hosts[host_id][0]["username"], original["username"])
+
+    def test_reorders_remote_hosts(self):
+        self.login()
+        host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        fingerprint = host_key_fingerprint(host_key)
+        ids = []
+        for name in ("alpha", "beta", "gamma"):
+            created = self.client.post("/api/remote-hosts", json={
+                "name": name, "hostname": f"10.0.0.{len(ids) + 8}", "port": 22, "username": "ubuntu",
+                "auth_type": "agent", "credential": "", "host_key": host_key,
+                "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+            }).json()
+            ids.append(created["id"])
+        self.assertEqual(list(self.remote_store.hosts), ids)
+
+        reordered = self.client.post("/api/remote-hosts/reorder", json={"ids": ids[::-1]})
+        self.assertEqual(reordered.status_code, 200)
+        self.assertEqual([host["id"] for host in reordered.json()["hosts"]], ids[::-1])
+        self.assertEqual([host["id"] for host in self.client.get("/api/remote-hosts").json()["hosts"]], ids[::-1])
+
+        partial = self.client.post("/api/remote-hosts/reorder", json={"ids": ids[:2]})
+        self.assertEqual(partial.status_code, 422)
 
     def test_a_hanging_remote_host_does_not_break_the_tree(self):
         self.login()

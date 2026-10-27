@@ -321,6 +321,23 @@ class RemoteHostCreateRequest(BaseModel):
     confirm_fingerprint: str = Field(min_length=8, max_length=256)
 
 
+class RemoteHostUpdateRequest(BaseModel):
+    """Partial edit: omitted fields keep their stored value."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    hostname: str | None = Field(default=None, min_length=1, max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = Field(default=None, min_length=1, max_length=64)
+    auth_type: str | None = None
+    credential: str | None = Field(default=None, max_length=100_000)
+    host_key: str | None = Field(default=None, min_length=20, max_length=20_000)
+    fingerprint: str | None = Field(default=None, min_length=8, max_length=256)
+
+
+class RemoteHostReorderRequest(BaseModel):
+    ids: list[str] = Field(min_length=0, max_length=500)
+
+
 class RelayTimeoutError(Exception):
     """A relay question timed out; ``tail`` carries the pane's last lines."""
 
@@ -1291,11 +1308,65 @@ def create_app(
         return {"ssh_ok": "TMUX_REMOTE_OK" in banner, "tmux_ok": True,
                 "pane_count": len(panes), "sessions": sorted({pane["session"] for pane in panes})}
 
+    @app.put("/api/remote-hosts/{host_id}")
+    async def update_remote_host(request: Request, host_id: str, payload: RemoteHostUpdateRequest):
+        require_auth(request)
+        try:
+            previous = remote_hosts.get_host(host_id, include_credential=True)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="remote host not found") from None
+        if payload.auth_type is not None and payload.auth_type not in AUTH_TYPES:
+            raise HTTPException(status_code=422, detail="auth_type must be password, key or agent")
+        host_key = payload.host_key
+        fingerprint = payload.fingerprint
+        if host_key or fingerprint:
+            if not host_key or not fingerprint:
+                raise HTTPException(status_code=422, detail="host_key and fingerprint must be provided together")
+            try:
+                computed = host_key_fingerprint(host_key)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if not hmac.compare_digest(computed, fingerprint):
+                raise HTTPException(status_code=409, detail="SSH host key fingerprint does not match the key")
+        try:
+            host = remote_hosts.update_host(
+                host_id,
+                name=payload.name, hostname=payload.hostname, port=payload.port,
+                username=payload.username, auth_type=payload.auth_type,
+                credential=payload.credential, host_key=host_key, fingerprint=fingerprint,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        try:
+            credentialed = remote_hosts.get_host(host_id, include_credential=True)
+            await asyncio.to_thread(make_remote_runner(credentialed).check)
+        except (RuntimeError, OSError) as exc:
+            # keep what was working: an edit should never silently break a host
+            remote_hosts.update_host(
+                host_id, name=previous["name"], hostname=previous["hostname"], port=previous["port"],
+                username=previous["username"], auth_type=previous["auth_type"],
+                credential=previous["credential"], host_key=previous["host_key"],
+                fingerprint=previous["fingerprint"],
+            )
+            raise HTTPException(status_code=424, detail=str(exc)) from exc
+        return host
+
+    @app.post("/api/remote-hosts/reorder")
+    async def reorder_remote_hosts(request: Request, payload: RemoteHostReorderRequest):
+        require_auth(request)
+        try:
+            hosts = remote_hosts.reorder_hosts(payload.ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"hosts": hosts}
+
     @app.get("/api/remote-hosts")
     async def list_remote_hosts(request: Request):
         require_auth(request)
         return {"hosts": [{key: host[key] for key in (
-            "id", "name", "hostname", "port", "username", "auth_type", "fingerprint", "created_at", "enabled"
+            "id", "name", "hostname", "port", "username", "auth_type", "fingerprint", "created_at",
+            "enabled", "position",
         )} for host in remote_hosts.list_hosts()]}
 
     @app.delete("/api/remote-hosts/{host_id}")
