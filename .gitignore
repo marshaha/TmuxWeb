@@ -40,3 +40,23 @@ transcripts/
 # IDE
 .vscode/
 .idea/
+
+# relay MCP writes its token into agent configs, never into the repo
+
+# Flutter client: build output, local tooling and signing material
+client/.dart_tool/
+client/.flutter-plugins
+client/.flutter-plugins-dependencies
+client/build/
+client/android/.gradle/
+client/android/local.properties
+client/android/key.properties
+*.jks
+*.keystore
+client/ios/Pods/
+client/ios/.symlinks/
+client/ios/Flutter/Generated.xcconfig
+client/ios/Flutter/flutter_export_environment.sh
+
+# Test instance data
+.testdata/
