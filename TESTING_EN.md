@@ -27,6 +27,11 @@ This document covers automated tests that do not require real AI CLIs, plus manu
 
 - Incremental remote transcripts: `python -m unittest test_remote_hosts -k incremental` (a second poll sends only the byte offset, a rewritten file refetches the window, a vanished file falls back to discovery) and `-k gzip` (gzip payloads decode, broken payloads raise). Measured against a host with a 300 MB transcript: first transcript call ~8s, later polls 1-2s, bodies <=60KB.
 
+- Pane-switch cache: open a pane with a transcript and a plain shell pane, then switch back and forth - the visited pane must
+  repaint immediately (status flips from 更新中… back to `xxx transcript`), and scroll offset plus the composer draft are kept
+  per pane (a shell pane must not inherit the other pane's draft). `tests/test_tmux_web.py` asserts the page contains
+  `paintCachedTranscript`, `rememberTranscript` and `state.drafts`.
+
 ## 1. Install test dependencies
 
 ```bash

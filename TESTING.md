@@ -37,6 +37,8 @@
 
 - 远端 transcript 增量传输：`cd tests && python -m unittest test_remote_hosts -k incremental` 应通过（第二次轮询只带字节偏移、文件被重写时整窗重取、文件消失时回退定位）；`python -m unittest test_remote_hosts -k gzip` 验证 gzip 负载解码与损坏负载报错。实测一台 300MB 会话的远端主机：首次 `/api/panes/<pane>/transcript` 约 8s，之后 1-2s，响应体 ≤60KB。
 
+- 会话切换缓存：打开两个不同的 pane（一个有 transcript、一个纯终端），来回切换——返回看过的 pane 应立即显示消息（状态先是「更新中…」再变回 `xxx transcript`），滚动位置与输入框草稿各自保留（纯终端 pane 不应串到文本 pane 的草稿）；`tests/test_tmux_web.py` 断言页面包含 `paintCachedTranscript` / `rememberTranscript` / `state.drafts`。
+
 ## 1. 安装测试依赖
 
 ```bash

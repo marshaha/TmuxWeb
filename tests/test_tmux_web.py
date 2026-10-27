@@ -573,7 +573,8 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("-webkit-text-size-adjust:100%", response.text)
         self.assertIn(".chat-message.assistant{justify-content:flex-start}", response.text)
         self.assertIn("background:#fff;color:var(--ink);font-size:15px", response.text)
-        self.assertIn("if(state.selected!==id||state.mode!=='chat')return;showError('')", response.text)
+        self.assertIn("async function refreshTranscript(id,{force=false}={})", response.text)
+        self.assertIn("state.selected!==id||state.mode!=='chat'", response.text)
         self.assertIn("api('/api/hosts')", response.text)
         self.assertIn("treeDetails", response.text)
         self.assertIn("treeOpen:new Set()", response.text)
@@ -640,6 +641,14 @@ class TmuxWebTests(unittest.TestCase):
 
         # per-message copy + per-block controls (code / mermaid / table)
         self.assertIn('data-msg-copy=', response.text)
+
+        # switching panes must reuse the cached transcript instead of reloading
+        self.assertIn("function paintCachedTranscript(", response.text)
+        self.assertIn("function rememberTranscript(", response.text)
+        self.assertIn("function savePaneUi(", response.text)
+        self.assertIn("transcripts:new Map()", response.text)
+        self.assertIn("drafts:new Map()", response.text)
+        self.assertIn("更新中…", response.text)
         self.assertIn('复制全部', response.text)
         self.assertIn("async function copyText(", response.text)
         self.assertIn("function enhanceBlocks(", response.text)
