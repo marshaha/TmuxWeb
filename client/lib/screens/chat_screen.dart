@@ -89,9 +89,9 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  Future<void> _refresh({bool initial = false}) async {
+  Future<void> _refresh({bool initial = false, bool force = false}) async {
     try {
-      final transcript = await widget.source.fetch();
+      final transcript = await widget.source.fetch(refresh: force);
       if (!mounted) return;
       _cache.write(_key, transcript);
       final previous = _data;
@@ -174,8 +174,8 @@ class _ChatScreenState extends State<ChatScreen> {
           else if (data?.provider != null)
             Padding(padding: const EdgeInsets.only(right: 8), child: Center(child: _Badge(label: data!.provider!))),
           IconButton(
-            tooltip: '刷新',
-            onPressed: () => _refresh(initial: true),
+            tooltip: '重新读取（忽略缓存）',
+            onPressed: () => _refresh(initial: true, force: true),
             icon: const Icon(Icons.refresh, size: 20),
           ),
         ],

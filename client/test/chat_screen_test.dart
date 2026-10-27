@@ -36,7 +36,7 @@ class FakeSource implements ChatSource {
   String get subtitle => 'codex · 本地';
 
   @override
-  Future<Transcript> fetch() async => _transcript;
+  Future<Transcript> fetch({bool refresh = false}) async => _transcript;
 
   @override
   Future<void> send(String text, {bool submit = true}) async {
@@ -233,7 +233,7 @@ class _SlowSource extends FakeSource {
   void complete(Transcript transcript) => _completer.complete(transcript);
 
   @override
-  Future<Transcript> fetch() {
+  Future<Transcript> fetch({bool refresh = false}) {
     calls += 1;
     return _completer.future;
   }

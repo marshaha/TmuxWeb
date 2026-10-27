@@ -27,7 +27,7 @@ abstract class Api {
 
   Future<List<Host>> hosts();
 
-  Future<Transcript> transcript(String paneRef, {int limit = 200});
+  Future<Transcript> transcript(String paneRef, {int limit = 200, bool refresh = false});
 
   Future<void> sendInput(String paneRef, String text, {bool submit = true});
 
@@ -157,9 +157,10 @@ class ApiClient implements Api {
   }
 
   @override
-  Future<Transcript> transcript(String paneRef, {int limit = 200}) async {
+  Future<Transcript> transcript(String paneRef, {int limit = 200, bool refresh = false}) async {
     final response = await _http.get(
-      _uri('/api/panes/${encodePaneRef(paneRef)}/transcript', {'limit': '$limit'}),
+      _uri('/api/panes/${encodePaneRef(paneRef)}/transcript',
+          {'limit': '$limit', if (refresh) 'refresh': '1'}),
       headers: _headers(),
     );
     return Transcript.fromJson(_decode(response));

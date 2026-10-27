@@ -145,6 +145,16 @@ void main() {
       expect(seen.single.url.queryParameters['limit'], '50');
     });
 
+    test('a forced refresh asks the server to re-locate the session file', () async {
+      final client = ApiClient(
+        httpClient: server({'GET /api/panes/%257/transcript': '{"mode":"transcript","messages":[],"mtime":1}'}),
+      );
+      await client.transcript('%7', refresh: true);
+      expect(seen.single.url.queryParameters['refresh'], '1');
+      await client.transcript('%7');
+      expect(seen.last.url.queryParameters.containsKey('refresh'), isFalse);
+    });
+
     test('screen-mode transcripts keep the raw terminal text', () async {
       final client = ApiClient(
         httpClient: server({

@@ -14,7 +14,7 @@ abstract class ChatSource {
 
   bool get readOnly;
 
-  Future<Transcript> fetch();
+  Future<Transcript> fetch({bool refresh = false});
 
   Future<void> send(String text, {bool submit = true});
 }
@@ -42,7 +42,7 @@ class PaneChatSource implements ChatSource {
   bool get readOnly => false;
 
   @override
-  Future<Transcript> fetch() => api.transcript(pane.ref);
+  Future<Transcript> fetch({bool refresh = false}) => api.transcript(pane.ref, refresh: refresh);
 
   @override
   Future<void> send(String text, {bool submit = true}) => api.sendInput(pane.ref, text, submit: submit);
@@ -67,7 +67,7 @@ class ShareChatSource implements ChatSource {
   bool get readOnly => !meta.allowInput;
 
   @override
-  Future<Transcript> fetch() => api.shareTranscript(meta.slug);
+  Future<Transcript> fetch({bool refresh = false}) => api.shareTranscript(meta.slug);
 
   @override
   Future<void> send(String text, {bool submit = true}) => api.shareInput(meta.slug, text, submit: submit);

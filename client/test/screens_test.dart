@@ -35,7 +35,7 @@ class FakeApi implements Api {
   }
 
   @override
-  Future<Transcript> transcript(String paneRef, {int limit = 200}) async =>
+  Future<Transcript> transcript(String paneRef, {int limit = 200, bool refresh = false}) async =>
       Transcript(mode: 'transcript', provider: 'codex', mtime: 1, messages: [
         ChatMessage(id: 'm1', role: 'assistant', text: '来自 $paneRef 的回复'),
       ]);
