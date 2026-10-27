@@ -49,6 +49,16 @@ def provider_for_command(command):
     return None
 
 
+def limit_cap(limit, ceiling=None):
+    """Clamp a requested message count to the configured maximum."""
+    if ceiling is None:
+        try:
+            ceiling = int(os.environ.get("TMUX_WEB_TRANSCRIPT_LIMIT_MAX", "3000"))
+        except ValueError:
+            ceiling = 3000
+    return max(1, min(int(limit), max(1, ceiling)))
+
+
 def reverse_lines(path, chunk_size=64 * 1024, max_line=8 * 1024 * 1024):
     """Yield non-empty lines from the end of a file without reading all of it."""
     with Path(path).open("rb") as handle:
@@ -199,9 +209,10 @@ def _claude_session_path(home, cwd, title, screen, hint):
 
 def parse_claude(lines, limit, session_id="", mtime=0):
     """Parse Claude Code JSONL. ``lines`` must be newest-first."""
-    max_records = max(1, min(int(limit), 1000))
+    max_records = limit_cap(limit)
     records = []
     seen = set()
+    has_more = False
     for line in lines:
         try:
             event = json.loads(line)
@@ -219,9 +230,11 @@ def parse_claude(lines, limit, session_id="", mtime=0):
         seen.add(uuid)
         records.append({"id": uuid, "role": role, "text": text, "timestamp": event.get("timestamp")})
         if len(records) >= max_records:
+            has_more = True
             break
     records.reverse()
-    return {"provider": "claude", "session_id": session_id, "messages": records, "mtime": mtime}
+    return {"provider": "claude", "session_id": session_id, "messages": records,
+            "mtime": mtime, "has_more": has_more}
 
 
 def read_claude(home, cwd, title, limit, hint=None, screen=None):
@@ -284,8 +297,9 @@ def parse_codex(lines, limit, session_id="", mtime=0):
         seen.add(message_id)
         records.append({"id": message_id, "role": payload["role"], "text": text,
                         "timestamp": event.get("timestamp")})
+    cap = limit_cap(limit)
     return {"provider": "codex", "session_id": session_id,
-            "messages": records[-max(1, min(int(limit), 1000)):], "mtime": mtime}
+            "messages": records[-cap:], "mtime": mtime, "has_more": len(records) > cap}
 
 
 def read_codex(home, cwd, title, limit):
@@ -319,9 +333,10 @@ def _kimi_session_path(home, cwd, title):
 
 def parse_kimi(lines, limit, session_id="", mtime=0):
     """Parse Kimi wire.jsonl. ``lines`` must be newest-first."""
-    max_records = max(1, min(int(limit), 1000))
+    max_records = limit_cap(limit)
     records = []
     seen = set()
+    has_more = False
     for line in lines:
         try:
             event = json.loads(line)
@@ -355,9 +370,11 @@ def parse_kimi(lines, limit, session_id="", mtime=0):
             timestamp = timestamp / 1000
         records.append({"id": str(message_id), "role": role, "text": text, "timestamp": timestamp})
         if len(records) >= max_records:
+            has_more = True
             break
     records.reverse()
-    return {"provider": "kimi", "session_id": session_id, "messages": records, "mtime": mtime}
+    return {"provider": "kimi", "session_id": session_id, "messages": records,
+            "mtime": mtime, "has_more": has_more}
 
 
 def read_kimi(home, cwd, title, limit):
@@ -421,8 +438,9 @@ def parse_hermes_rows(rows, limit, session_id="", mtime=0):
         for row in reversed(rows)
         if (row.get("content") or "").strip()
     ]
+    cap = limit_cap(limit)
     return {"provider": "hermes", "session_id": session_id,
-            "messages": messages[-max(1, min(int(limit), 1000)):], "mtime": mtime}
+            "messages": messages[-cap:], "mtime": mtime, "has_more": len(messages) > cap}
 
 
 def parse_hermes_session(lines, limit, session_id="", mtime=0):
@@ -443,8 +461,9 @@ def parse_hermes_session(lines, limit, session_id="", mtime=0):
             continue
         messages.append({"id": "%s-%d" % (session_id, len(messages)), "role": role,
                          "text": text.strip(), "timestamp": event.get("timestamp")})
+    cap = limit_cap(limit)
     return {"provider": "hermes", "session_id": session_id,
-            "messages": messages[-max(1, min(int(limit), 1000)):], "mtime": mtime}
+            "messages": messages[-cap:], "mtime": mtime, "has_more": len(messages) > cap}
 
 
 def parse_remote_payload(provider, payload_format, payload, limit, session_id="", mtime=0):

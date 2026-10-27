@@ -57,6 +57,10 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   a single real message remains. If the agent replies before the echo (or the echo was rewritten), the bubble must keep its
   send-time position instead of drifting to the bottom. Covered by `node --test tests/js/reconcile.test.mjs`.
 
+- Back-paging: open a session with several hundred messages - 300 are shown, 加载更早的消息 appears at the top, scrolling up loads the
+  next page (300→600→1200) without moving the reading position, and the control disappears at the session start. `has_more` is true
+  at `limit=300` and false once everything is loaded (`tests/test_transcript_reader.py::PagingTests`).
+
 ## 1. Install test dependencies
 
 ```bash

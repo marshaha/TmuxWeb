@@ -197,6 +197,9 @@ evolving on its own.
 - sends are shown optimistically (发送中/已发送) and reconciled when the transcript echoes them: text is compared whitespace- and
   wrapping-insensitively, and a rewritten/expanded echo is paired by order, so a placeholder never lingers after later replies;
   the placeholder sits right after the last message that existed when send was pressed, not at the very end
+- Long conversations page backwards: the first read takes 300 messages, scrolling to the top doubles it (300→600→1200…, capped by
+  `TMUX_WEB_TRANSCRIPT_LIMIT_MAX`, default 3000) and the top bar also offers 加载更早的消息; the reading position is preserved and the
+  control disappears once the session start is reached. The share action in the top bar is an icon only (arrow to the upper right).
 - conversation polling every two seconds with an optimistic bubble while sending; transcripts, scroll offsets and drafts are
   cached per pane, so switching back paints instantly and revalidates in the background
 - **per-message "copy all"** plus **per-block controls**: copy code, copy tables as TSV, copy mermaid source, and flip tables

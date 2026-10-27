@@ -48,6 +48,8 @@
 
 - 发送占位：发一条消息后立刻在对话末尾出现带「发送中/已发送 ✓」的占位气泡；等 agent 回显后占位消失、只剩一条真实消息。若 agent 先回复再回显（或回显被改写），占位气泡必须留在你发送时的位置、不能漂到最新回复之后。单测：`node --test tests/js/reconcile.test.mjs`（8+ 个用例，覆盖空白差异、改写配对、按序配对、失败保留、跨 pane 隔离、锚点位置），Python 侧由 `test_optimistic_message_reconciliation_is_covered_by_node` 调用。
 
+- 长会话回翻：选一个有几百条消息的会话，首屏 300 条，顶部出现「加载更早的消息」；滚到顶部会自动加一页（300→600→1200），加载后阅读位置不跳、加载完显示最早的消息后按钮消失。API 侧 `has_more` 在 `limit=300` 时为 true、取全后为 false。单测：`tests/test_transcript_reader.py::PagingTests`（claude/codex/hermes 的 has_more 与 limit 上限）。
+
 ## 1. 安装测试依赖
 
 ```bash

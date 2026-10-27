@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import transcript_reader
@@ -192,6 +193,45 @@ class FixtureTests(unittest.TestCase):
     def test_unknown_provider_is_rejected(self):
         with self.assertRaises(transcript_reader.TranscriptError):
             transcript_reader.read_transcript(None, "/work", "", 10, home=self.home)
+
+
+class PagingTests(unittest.TestCase):
+    def test_limit_cap_uses_the_configured_ceiling(self):
+        self.assertEqual(transcript_reader.limit_cap(50), 50)
+        self.assertEqual(transcript_reader.limit_cap(99999), 3000)
+        self.assertEqual(transcript_reader.limit_cap(99999, 500), 500)
+        self.assertEqual(transcript_reader.limit_cap(0), 1)
+        with unittest.mock.patch.dict("os.environ", {"TMUX_WEB_TRANSCRIPT_LIMIT_MAX": "800"}):
+            self.assertEqual(transcript_reader.limit_cap(5000), 800)
+
+    def test_claude_reports_when_older_messages_exist(self):
+        lines = [json.dumps({"type": "user", "uuid": "u%d" % i,
+                             "message": {"content": [{"type": "text", "text": "m%d" % i}]}})
+                 for i in range(10, 0, -1)]  # newest first, as the reader expects
+        page = transcript_reader.parse_claude(lines, 4)
+        self.assertEqual([message["text"] for message in page["messages"]], ["m7", "m8", "m9", "m10"])
+        self.assertTrue(page["has_more"])
+        everything = transcript_reader.parse_claude(lines, 40)
+        self.assertEqual(len(everything["messages"]), 10)
+        self.assertFalse(everything["has_more"])
+
+    def test_codex_reports_when_older_messages_exist(self):
+        lines = [json.dumps({"type": "response_item", "timestamp": "t%d" % i,
+                             "payload": {"type": "message", "id": "m%d" % i, "role": "user",
+                                         "content": [{"type": "input_text", "text": "m%d" % i}]}})
+                 for i in range(1, 11)]
+        page = transcript_reader.parse_codex(lines, 3)
+        self.assertEqual([message["text"] for message in page["messages"]], ["m8", "m9", "m10"])
+        self.assertTrue(page["has_more"])
+        self.assertFalse(transcript_reader.parse_codex(lines, 10)["has_more"])
+
+    def test_hermes_rows_report_when_older_messages_exist(self):
+        rows = [{"id": i, "role": "user" if i % 2 else "assistant", "content": "m%d" % i,
+                 "timestamp": "t"} for i in range(8, 0, -1)]  # newest row first
+        page = transcript_reader.parse_hermes_rows(rows, 3)
+        self.assertEqual([message["text"] for message in page["messages"]], ["m6", "m7", "m8"])
+        self.assertTrue(page["has_more"])
+        self.assertFalse(transcript_reader.parse_hermes_rows(rows, 50)["has_more"])
 
 
 class ReaderCliTests(unittest.TestCase):

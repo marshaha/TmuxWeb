@@ -1273,6 +1273,18 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout[-2000:] + completed.stderr[-2000:])
         self.assertIn("# fail 0", completed.stdout)
 
+    def test_transcript_paging_controls_are_present(self):
+        self.login()
+        response = self.client.get("/")
+        page = response.text
+        for marker in ('id="load-earlier"', 'function loadEarlier(', 'TRANSCRIPT_PAGE_MAX',
+                       'id="earlier-bar"', 'state.transcriptLimit'):
+            self.assertIn(marker, page)
+        # the share action is an icon only (arrow to the upper right)
+        self.assertIn('<button class="share-btn icon-only" id="share-button"', page)
+        self.assertIn('href="#i-external"', page)
+        self.assertNotIn("</svg>分享", page)
+
     def test_markdown_links_open_an_in_console_preview(self):
         self.login()
         response = self.client.get("/")
