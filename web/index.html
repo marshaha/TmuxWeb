@@ -214,7 +214,11 @@ import {marked} from '/assets/marked.esm.js';
     if(/^(?:https?:|mailto:|tel:|data:|blob:|javascript:|#)/i.test(value))return value;
     if(value.startsWith('//'))return value;
     let path=value;
-    if(/^file:\/\//i.test(path))path=decodeURIComponent(path.slice(7).replace(/^localhost/i,''));
+    if(/^file:\/\//i.test(path))path=path.slice(7).replace(/^localhost/i,'');
+    // marked percent-encodes hrefs, so undo that before touching the filesystem
+    try{if(/%[0-9A-Fa-f]{2}/.test(path))path=decodeURIComponent(path);}catch(_error){}
+    // editors link to "file.md:3685": keep the file, drop the line/column suffix
+    if(!/^[A-Za-z]:[\\/]/.test(path))path=path.replace(/^(.*?):\d+(?::\d+)?$/,(match,file)=>file||match);
     const cwd=paneCwd();
     if(/^~\//.test(path)&&cwd)path=cwd.replace(/[^/]*$/,'')+path.slice(2);
     const absolute=path.startsWith('/')||/^[A-Za-z]:[\\/]/.test(path);

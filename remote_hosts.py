@@ -1051,7 +1051,10 @@ class SSHRunner:
         """Read a remote file; the size limit is enforced before the transfer."""
         if "\x00" in path or "\n" in path:
             raise ValueError("invalid path")
-        command = f"head -c {int(max_bytes) + 1} -- {shlex.quote(path)} 2>/dev/null"
+        quoted = shlex.quote(path)
+        # distingish "missing" from "unreadable" so a stale link is a 404
+        command = (f"if [ ! -f {quoted} ]; then echo 'no such file: {path}' >&2; exit 44; fi; "
+                   f"head -c {int(max_bytes) + 1} -- {quoted}")
         completed = self.run(command, timeout=120)
         if completed.returncode != 0:
             detail = completed.stderr.decode(errors="replace").strip()

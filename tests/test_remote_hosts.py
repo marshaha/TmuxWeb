@@ -539,6 +539,33 @@ class RemoteHostTests(unittest.TestCase):
             runner.download_file("/srv/work/big.bin", 10)
         self.assertEqual(runner.download_file("/srv/work/small.bin", 100), b"x" * 11)
 
+    def test_remote_download_reports_a_missing_file(self):
+        runner = self.make_runner()
+
+        class Result:
+            def __init__(self):
+                self.stdout = b""
+                self.stderr = "no such file: /srv/work/gone.md".encode()
+                self.returncode = 44
+
+        runner.run = lambda command, **kwargs: Result()
+        with self.assertRaisesRegex(RuntimeError, "no such file"):
+            runner.download_file("/srv/work/gone.md", 1024)
+
+    def test_remote_download_probes_then_quotes_odd_paths(self):
+        runner = self.make_runner()
+        seen = []
+
+        class Result:
+            def __init__(self):
+                self.stdout, self.stderr, self.returncode = b"data", b"", 0
+
+        runner.run = lambda command, **kwargs: (seen.append(command), Result())[1]
+        self.assertEqual(runner.download_file("/srv/work/ITER5H_结论.md", 16), b"data")
+        self.assertIn("[ ! -f ", seen[-1])
+        self.assertIn("ITER5H_结论.md", seen[-1])
+        self.assertIn("head -c 17", seen[-1])
+
     def test_remote_upload_streams_bytes_and_creates_parent(self):
         runner = self.make_runner()
         captured = {}
