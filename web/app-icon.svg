@@ -1,7 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#292825"/>
-  <rect x="74" y="92" width="364" height="328" rx="42" fill="#f7f7f5"/>
-  <path d="M132 177l74 65-74 65" fill="none" stroke="#c96442" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M244 316h130" fill="none" stroke="#292825" stroke-width="30" stroke-linecap="round"/>
-  <circle cx="373" cy="155" r="18" fill="#4f9a65"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Tmux Chat">
+  <title>Tmux Chat</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.55" y2="1">
+      <stop offset="0" stop-color="#35332C"/>
+      <stop offset="0.55" stop-color="#262520"/>
+      <stop offset="1" stop-color="#181713"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#tile)"/>
+  <path d="M148 146L286 256L148 366" fill="none" stroke="#F7F4EA" stroke-width="60"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="318" y="332" width="80" height="64" rx="18" fill="#C96442"/>
 </svg>

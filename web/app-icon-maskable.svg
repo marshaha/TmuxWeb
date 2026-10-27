@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Tmux Chat">
+  <title>Tmux Chat (maskable)</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.55" y2="1">
+      <stop offset="0" stop-color="#35332C"/>
+      <stop offset="0.55" stop-color="#262520"/>
+      <stop offset="1" stop-color="#181713"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#tile)"/>
+  <g transform="translate(256 256) scale(0.72) translate(-256 -256)">
+    <path d="M148 146L286 256L148 366" fill="none" stroke="#F7F4EA" stroke-width="60"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="318" y="332" width="80" height="64" rx="18" fill="#C96442"/>
+  </g>
+</svg>
