@@ -27,11 +27,32 @@ class RemoteHostTests(unittest.TestCase):
                             "auth_type": "agent", "credential": "", "host_key": "host ssh-ed25519 AAAA"})
         command, environment = runner.command("true", known_hosts="/dev/null", multiplex=False)
         self.assertIn("BatchMode=yes", command)
+        # ssh honours only the first value of an option; a leading BatchMode=no
+        # made agent mode hang on a password prompt instead of failing fast.
+        self.assertNotIn("BatchMode=no", command)
         self.assertIn("PreferredAuthentications=publickey", command)
         self.assertIn("PasswordAuthentication=no", command)
         self.assertNotIn("-i", command)
         self.assertNotIn("IdentitiesOnly=yes", command)
         self.assertEqual(environment, {})
+
+    def test_password_auth_keeps_an_interactive_prompt(self):
+        runner = SSHRunner({"id": "0123456789abcdef", "hostname": "host", "port": 22, "username": "user",
+                            "auth_type": "password", "credential": "secret", "host_key": "host ssh-ed25519 AAAA"})
+        command, environment = runner.command("true", known_hosts="/dev/null", multiplex=False)
+        self.assertIn("BatchMode=no", command)
+        self.assertNotIn("BatchMode=yes", command)
+        self.assertIn("PreferredAuthentications=password", command)
+        self.assertIn("NumberOfPasswordPrompts=1", command)
+        self.assertEqual(environment.get("SSH_ASKPASS_REQUIRE"), "force")
+
+    def test_key_auth_disables_prompts(self):
+        runner = SSHRunner({"id": "0123456789abcdef", "hostname": "host", "port": 22, "username": "user",
+                            "auth_type": "key", "credential": "PRIVATE", "host_key": "host ssh-ed25519 AAAA"})
+        command, _ = runner.command("true", known_hosts="/dev/null", identity_file="/tmp/key", multiplex=False)
+        self.assertIn("BatchMode=yes", command)
+        self.assertNotIn("BatchMode=no", command)
+        self.assertIn("IdentitiesOnly=yes", command)
 
     def test_database_file_is_owner_only(self):
         with tempfile.TemporaryDirectory() as directory:

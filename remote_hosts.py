@@ -568,9 +568,12 @@ class SSHRunner:
 
     def command(self, remote_command: str, *, tty: bool = False, known_hosts: str = "/dev/null",
                 identity_file: str | None = None, multiplex: bool | None = None) -> tuple[list[str], dict[str, str]]:
+        # NOTE: ssh takes the *first* value it sees for an option, so BatchMode
+        # must be decided per auth mode below - emitting "BatchMode=no" here made
+        # agent mode wait on a password prompt instead of failing fast.
         command = [
             "ssh", "-T" if not tty else "-tt", "-p", str(self.host["port"]),
-            "-o", "BatchMode=no", "-o", "ConnectTimeout=8",
+            "-o", "ConnectTimeout=8",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
             "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
             "-o", "LogLevel=ERROR",
@@ -582,11 +585,12 @@ class SSHRunner:
                 "-o", "ControlPersist=60",
             ]
         if identity_file:
-            command += ["-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no",
-                        "-o", "IdentitiesOnly=yes", "-i", identity_file]
+            command += ["-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey",
+                        "-o", "PasswordAuthentication=no", "-o", "IdentitiesOnly=yes", "-i", identity_file]
         elif self.host.get("auth_type") == "password":
-            command += ["-o", "PreferredAuthentications=password", "-o", "PubkeyAuthentication=no",
-                        "-o", "KbdInteractiveAuthentication=no", "-o", "NumberOfPasswordPrompts=1"]
+            command += ["-o", "BatchMode=no", "-o", "PreferredAuthentications=password",
+                        "-o", "PubkeyAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
+                        "-o", "NumberOfPasswordPrompts=1"]
         else:
             # agent mode: offer the local agent/default keys, never fall back to a prompt
             command += ["-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey",
