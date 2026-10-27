@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import importlib.util
 import json
+import logging
+import mimetypes
 import os
 import fcntl
 import re
@@ -15,14 +18,23 @@ import sqlite3
 import time
 import threading
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
-from remote_hosts import RemoteHostStore, SSHRunner, RemoteTerminalSession, split_pane_ref, scan_host_key, host_key_fingerprint, validate_private_key_text
+import file_browser
+import mcp_relay
+import relay
+import transcript_reader
+from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, RemoteHostStore, RemoteTerminalSession, SSHRunner,
+                          host_key_fingerprint, normalize_session_name, pane_ref, scan_host_key, split_pane_ref,
+                          validate_private_key_text)
+
+LOGGER = logging.getLogger("tmux_web")
 
 PANE_RE = re.compile(r"^%[0-9]+$")
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
@@ -94,39 +106,7 @@ class SnapshotHistory:
 class TmuxBackend:
     @staticmethod
     def _reverse_lines(path: Path, chunk_size: int = 64 * 1024, max_line: int = 8 * 1024 * 1024):
-        with path.open("rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            position = handle.tell()
-            remainder = b""
-            while position > 0:
-                size = min(chunk_size, position)
-                position -= size
-                handle.seek(position)
-                block = handle.read(size) + remainder
-                parts = block.split(b"\n")
-                remainder = parts[0]
-                if len(remainder) > max_line:
-                    remainder = b""
-                for raw in reversed(parts[1:]):
-                    if raw and len(raw) <= max_line:
-                        yield raw.decode(errors="replace")
-            if remainder and len(remainder) <= max_line:
-                yield remainder.decode(errors="replace")
-
-    @staticmethod
-    def _file_contains(path: Path, needle: str) -> bool:
-        target = needle.encode()
-        overlap = max(0, len(target) - 1)
-        previous = b""
-        with path.open("rb") as handle:
-            while True:
-                block = handle.read(64 * 1024)
-                if not block:
-                    return False
-                data = previous + block
-                if target in data:
-                    return True
-                previous = data[-overlap:] if overlap else b""
+        return transcript_reader.reverse_lines(path, chunk_size, max_line)
 
     @staticmethod
     def _run(*args: str, input_bytes: bytes | None = None) -> str:
@@ -138,8 +118,29 @@ class TmuxBackend:
             raise TmuxError(detail or "tmux command failed")
         return completed.stdout.decode(errors="replace")
 
+    def create_session(self, name: str, path: str = "") -> dict:
+        try:
+            name = normalize_session_name(name)
+        except ValueError as exc:
+            raise TmuxError(str(exc)) from exc
+        directory = str(path or "").strip()
+        args = ["new-session", "-d", "-s", name]
+        if directory:
+            resolved = Path(directory).expanduser()
+            if not resolved.is_dir():
+                raise TmuxError("no such directory: %s" % directory)
+            directory = str(resolved)
+            args += ["-c", directory]
+        try:
+            self._run(*args)
+        except TmuxError as exc:
+            if "duplicate session" in str(exc):
+                raise TmuxError("session already exists: %s" % name) from exc
+            raise
+        return {"session": name, "path": directory}
+
     def list_panes(self) -> list[dict]:
-        format_string = "\t".join([
+        format_string = FIELD_SEPARATOR.join([
             "#{pane_id}", "#{session_name}:#{window_index}.#{pane_index}",
             "#{session_name}", "#{window_index}", "#{window_name}", "#{pane_index}",
             "#{pane_current_command}", "#{pane_title}", "#{pane_current_path}",
@@ -148,7 +149,7 @@ class TmuxBackend:
         raw = self._run("list-panes", "-a", "-F", format_string)
         panes = []
         for line in raw.splitlines():
-            fields = line.split("\t")
+            fields = line.split(FIELD_SEPARATOR)
             if len(fields) != 12:
                 continue
             pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields
@@ -188,276 +189,72 @@ class TmuxBackend:
         history = max(20, min(history, 5000))
         return self._run("capture-pane", "-p", "-J", "-e", "-t", pane_id, "-S", f"-{history}")
 
-    def _pane_session_id(self, pane_id: str) -> str:
-        pane = self.validate_pane(pane_id)
-        if pane.get("command") != "claude":
-            raise TmuxError("pane is not running Claude Code")
-        root_pid = int(self._run("display-message", "-p", "-t", pane_id, "#{pane_pid}").strip())
-        queue = [root_pid]
-        seen = set()
-        while queue:
-            pid = queue.pop(0)
-            if pid in seen:
-                continue
-            seen.add(pid)
-            try:
-                command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-            except OSError:
-                command = ""
-            match = re.search(r"(?:--resume|-r)\s+([0-9a-f-]{36})", command)
-            if match:
-                return match.group(1)
-            children = subprocess.run(
-                ["pgrep", "-P", str(pid)], capture_output=True, text=True, check=False
-            ).stdout.split()
-            queue.extend(int(child) for child in children)
-
-        project_dir = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", pane.get("path", ""))
-        candidates = list(project_dir.glob("*.jsonl")) if project_dir.is_dir() else []
-        title = re.sub(r"^[^A-Za-z0-9\u4e00-\u9fff]+", "", pane.get("title", "")).strip()
-        if title:
-            title_matches = []
-            for path in candidates:
-                try:
-                    if self._file_contains(path, title):
-                        title_matches.append(path)
-                except OSError:
-                    continue
-            if len(title_matches) == 1:
-                return title_matches[0].stem
-        try:
-            screen = ANSI_RE.sub("", self.capture_ansi(pane_id, 80))
-        except TmuxError:
-            screen = ""
-        probes = [line.strip() for line in screen.splitlines() if len(line.strip()) >= 24]
-        for probe in reversed(probes):
-            matches = []
-            for path in candidates:
-                try:
-                    if self._file_contains(path, probe):
-                        matches.append(path)
-                except OSError:
-                    continue
-            if len(matches) == 1:
-                return matches[0].stem
-        raise TmuxError("could not determine Claude session id")
-
-    @staticmethod
-    def _content_text(content: object, allowed_types: set[str]) -> str:
-        if isinstance(content, str):
-            return content.strip()
-        if not isinstance(content, list):
-            return ""
-        parts = []
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") not in allowed_types:
-                continue
-            text = block.get("text")
-            if isinstance(text, str) and text:
-                parts.append(text)
-        return "\n".join(parts).strip()
-
-    def _claude_transcript(self, pane_id: str, limit: int) -> dict:
-        session_id = self._pane_session_id(pane_id)
-        matches = list((Path.home() / ".claude" / "projects").glob(f"*/{session_id}.jsonl"))
-        if not matches:
-            raise TmuxError("Claude transcript not found")
-        max_records = max(1, min(limit, 1000))
-        records: list[dict] = []
-        seen: set[str] = set()
-        for line in self._reverse_lines(matches[0]):
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            role = event.get("type")
-            uuid = event.get("uuid")
-            if event.get("isCompactSummary"):
-                continue
-            if role not in {"user", "assistant"} or not uuid or uuid in seen:
-                continue
-            message = event.get("message") or {}
-            text = self._content_text(message.get("content"), {"text"})
-            if not text or text.startswith("<task-notification>") or text.startswith("<local-command-"):
-                continue
-            seen.add(uuid)
-            records.append({"id": uuid, "role": role, "text": text, "timestamp": event.get("timestamp")})
-            if len(records) >= max_records:
-                break
-        records.reverse()
-        return {
-            "pane": pane_id,
-            "session_id": session_id,
-            "messages": records,
-            "mtime": matches[0].stat().st_mtime_ns,
-            "provider": "claude",
-        }
-
-    def _codex_session_file(self, pane: dict) -> tuple[str, Path]:
-        codex_home = Path.home() / ".codex"
-        title = pane.get("title", "").split(" | ", 1)[0].strip()
-        session_id = None
-        index_path = codex_home / "session_index.jsonl"
-        if index_path.exists() and title:
-            for line in index_path.read_text(errors="replace").splitlines():
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if entry.get("thread_name") == title:
-                    session_id = entry.get("id")
-        files = list((codex_home / "sessions").rglob("*.jsonl"))
-        if session_id:
-            candidates = [path for path in files if session_id in path.name]
-            if candidates:
-                return session_id, max(candidates, key=lambda path: path.stat().st_mtime_ns)
-        cwd = pane.get("path")
-        candidates = []
-        for path in files:
-            try:
-                first = json.loads(path.open(errors="replace").readline())
-            except (OSError, json.JSONDecodeError):
-                continue
-            payload = first.get("payload") or {}
-            if first.get("type") == "session_meta" and payload.get("cwd") == cwd:
-                candidates.append((path, payload.get("id") or payload.get("session_id")))
-        if candidates:
-            path, found_id = max(candidates, key=lambda item: item[0].stat().st_mtime_ns)
-            return str(found_id), path
-        raise TmuxError("Codex transcript not found")
-
-    def _codex_transcript(self, pane_id: str, limit: int) -> dict:
-        pane = self.validate_pane(pane_id)
-        session_id, path = self._codex_session_file(pane)
-        records = []
-        seen = set()
-        with path.open(errors="replace") as handle:
-            for line in handle:
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if event.get("type") != "response_item":
-                    continue
-                payload = event.get("payload") or {}
-                if payload.get("type") != "message" or payload.get("role") not in {"user", "assistant"}:
-                    continue
-                message_id = payload.get("id")
-                if not message_id or message_id in seen:
-                    continue
-                role = payload["role"]
-                text = self._content_text(payload.get("content"), {"input_text", "output_text", "text"})
-                if not text or text.startswith(("<environment_context>", "<skills_instructions>", "<permissions instructions>", "<model_switch>", "<collaboration_mode>")):
-                    continue
-                seen.add(message_id)
-                records.append({"id": message_id, "role": role, "text": text, "timestamp": event.get("timestamp")})
-        return {"pane": pane_id, "provider": "codex", "session_id": session_id, "messages": records[-max(1, min(limit, 1000)):], "mtime": path.stat().st_mtime_ns}
-
-    def _hermes_transcript(self, pane_id: str, limit: int) -> dict:
-        pane = self.validate_pane(pane_id)
-        db_path = Path.home() / ".hermes" / "state.db"
-        if not db_path.exists():
-            raise TmuxError("Hermes state database not found")
-        uri = f"file:{db_path}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=5) as connection:
-            connection.row_factory = sqlite3.Row
-            session = connection.execute(
-                "SELECT id FROM sessions WHERE source = 'cli' AND cwd = ? ORDER BY COALESCE(last_activity_at, started_at) DESC LIMIT 1",
-                (pane.get("path"),),
-            ).fetchone()
-            if session is None:
-                raise TmuxError("Hermes CLI session not found")
-            session_id = session["id"]
-            rows = connection.execute(
-                "SELECT id, role, content, timestamp FROM messages WHERE session_id = ? AND active = 1 AND role IN ('user','assistant') AND COALESCE(content,'') <> '' ORDER BY id DESC LIMIT ?",
-                (session_id, max(1, min(limit, 1000))),
-            ).fetchall()
-        messages = [
-            {"id": str(row["id"]), "role": row["role"], "text": row["content"], "timestamp": row["timestamp"]}
-            for row in reversed(rows)
-        ]
-        return {"pane": pane_id, "provider": "hermes", "session_id": session_id, "messages": messages, "mtime": db_path.stat().st_mtime_ns}
-
-    def _kimi_session_file(self, pane: dict) -> tuple[str, Path]:
-        sessions_root = Path.home() / ".kimi-code" / "sessions"
-        cwd = pane.get("path")
-        title = pane.get("title", "").strip()
-        candidates = []
-        for state_path in sessions_root.glob("wd_*/session_*/state.json"):
-            try:
-                state = json.loads(state_path.read_text(errors="replace"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if state.get("archived") or state.get("cwd") != cwd:
-                continue
-            wire_path = state_path.parent / "agents" / "main" / "wire.jsonl"
-            if not wire_path.is_file():
-                continue
-            candidates.append((state, wire_path))
-        title_matches = [item for item in candidates if item[0].get("title", "").strip() == title]
-        if len(title_matches) == 1:
-            state, path = title_matches[0]
-            return str(state.get("id") or path.parents[1].name), path
-        if len(candidates) == 1:
-            state, path = candidates[0]
-            return str(state.get("id") or path.parents[1].name), path
-        raise TmuxError("could not determine Kimi session id")
-
-    def _kimi_transcript(self, pane_id: str, limit: int) -> dict:
-        pane = self.validate_pane(pane_id)
-        session_id, path = self._kimi_session_file(pane)
-        max_records = max(1, min(limit, 1000))
-        records = []
-        seen = set()
-        for line in self._reverse_lines(path):
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") != "agent.message.appended":
-                continue
-            envelope = event.get("message") or {}
-            message = envelope.get("message") or {}
-            meta = envelope.get("meta") or {}
-            role = message.get("role")
-            source = meta.get("source")
-            if role == "user" and source != "input":
-                continue
-            if role == "assistant" and source != "llm":
-                continue
-            if role not in {"user", "assistant"}:
-                continue
-            text = self._content_text(message.get("content"), {"text"})
-            if not text:
-                continue
-            message_id = meta.get("userMessageId") or meta.get("messageId") or hashlib.sha256(
-                f"{event.get('time')}:{role}:{text}".encode()
-            ).hexdigest()
-            if message_id in seen:
-                continue
-            seen.add(message_id)
-            timestamp = event.get("time")
-            if isinstance(timestamp, (int, float)):
-                timestamp = timestamp / 1000
-            records.append({"id": str(message_id), "role": role, "text": text, "timestamp": timestamp})
-            if len(records) >= max_records:
-                break
-        records.reverse()
-        return {"pane": pane_id, "provider": "kimi", "session_id": session_id,
-                "messages": records, "mtime": path.stat().st_mtime_ns}
+    def pane_pid(self, pane_id: str) -> str:
+        return self._run("display-message", "-p", "-t", pane_id, "#{pane_pid}").strip()
 
     def transcript(self, pane_id: str, limit: int = 200) -> dict:
+        # Discovery and parsing live in transcript_reader so the exact same code
+        # produces transcripts here and on SSH remote hosts.
         pane = self.validate_pane(pane_id)
-        command = pane.get("command")
-        if command == "claude":
-            return self._claude_transcript(pane_id, limit)
-        if command == "codex":
-            return self._codex_transcript(pane_id, limit)
-        if command == "python3":
-            return self._hermes_transcript(pane_id, limit)
-        if command == "kimi":
-            return self._kimi_transcript(pane_id, limit)
-        raise TmuxError("structured transcript is not supported for this pane")
+        provider = transcript_reader.provider_for_command(pane.get("command"))
+        if provider is None:
+            raise TmuxError("structured transcript is not supported for this pane")
+        # A resumed CLI session tells us exactly which transcript to read; the
+        # local/web gateway does not, so the reader falls back to cwd probing.
+        hint = transcript_reader.resume_session_hint(self.pane_pid(pane_id))
+        try:
+            data = transcript_reader.read_transcript(
+                provider, pane.get("path", ""), pane.get("title", ""), limit,
+                home=Path.home(), hint=hint, screen=lambda: self.capture(pane_id, 80),
+            )
+        except transcript_reader.TranscriptError as exc:
+            raise TmuxError(str(exc)) from exc
+        data["pane"] = pane_id
+        return data
+
+    def snapshot_ansi(self, pane_id: str, history: int = 5000,
+                      known_digest: str | None = None) -> tuple[str, str | None]:
+        """Return (digest, content); content is None when nothing changed."""
+        content = self.capture_ansi(pane_id, history)
+        digest = hashlib.sha1(content.encode()).hexdigest()
+        if known_digest is not None and digest == known_digest:
+            return digest, None
+        return digest, content
+
+    def list_files(self, directory: str, show_hidden: bool = False, limit: int = 2000) -> dict:
+        try:
+            return file_browser.list_directory(directory, show_hidden=show_hidden, limit=limit)
+        except (file_browser.FileBrowserError, OSError, ValueError) as exc:
+            raise TmuxError(str(exc)) from exc
+
+    def download_file(self, path: str, max_bytes: int) -> bytes:
+        resolved = file_browser.resolve_path(path)
+        if not resolved.is_file():
+            raise TmuxError("not a file: %s" % resolved)
+        if resolved.stat().st_size > max_bytes:
+            raise TmuxError("file is larger than the download limit")
+        with resolved.open("rb") as handle:
+            return handle.read(max_bytes + 1)
+
+    def zip_files(self, paths: list[str], base: str, max_bytes: int, max_files: int) -> bytes:
+        try:
+            return file_browser.zip_paths(paths, base, max_bytes=max_bytes, max_files=max_files)
+        except (file_browser.FileBrowserError, OSError, ValueError) as exc:
+            raise TmuxError(str(exc)) from exc
+
+    def upload_file(self, path: str, data: bytes) -> None:
+        resolved = file_browser.resolve_path(path)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        # Write beside the target and rename, so a dropped file never truncates
+        # an existing one until the bytes are complete.
+        temporary = resolved.with_name(f".{resolved.name}.upload-{secrets.token_hex(4)}")
+        try:
+            with temporary.open("wb") as handle:
+                handle.write(data)
+            os.replace(temporary, resolved)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     def send(self, pane_id: str, text: str, submit: bool = True) -> None:
         pane = self.validate_pane(pane_id)
@@ -489,6 +286,8 @@ class ShareCreateRequest(BaseModel):
     slug: str = Field(min_length=3, max_length=48)
     password: str = Field(default="", max_length=256)
     expires_in: int = Field(ge=300, le=60 * 60 * 24 * 90)
+    # read-only by default? no: existing behaviour keeps input enabled unless asked
+    allow_input: bool = True
 
 
 class ShareExtendRequest(BaseModel):
@@ -499,16 +298,75 @@ class SharePasswordRequest(BaseModel):
     password: str = Field(default="", max_length=256)
 
 
+class SessionCreateRequest(BaseModel):
+    host: str = Field(default="localhost", max_length=64)
+    name: str = Field(min_length=1, max_length=64)
+    path: str = Field(default="", max_length=4096)
+
+
+class ZipRequest(BaseModel):
+    paths: list[str] = Field(default_factory=list, max_length=1000)
+    base: str = Field(default="", max_length=4096)
+
+
 class RemoteHostCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     hostname: str = Field(min_length=1, max_length=255)
     port: int = Field(default=22, ge=1, le=65535)
     username: str = Field(min_length=1, max_length=64)
     auth_type: str
-    credential: str = Field(min_length=1, max_length=100_000)
+    credential: str = Field(default="", max_length=100_000)
     host_key: str = Field(min_length=20, max_length=20_000)
     fingerprint: str = Field(min_length=8, max_length=256)
     confirm_fingerprint: str = Field(min_length=8, max_length=256)
+
+
+class RelayTimeoutError(Exception):
+    """A relay question timed out; ``tail`` carries the pane's last lines."""
+
+    def __init__(self, message: str, tail: str = ""):
+        super().__init__(message)
+        self.tail = tail
+
+
+class McpToolError(Exception):
+    def __init__(self, message: str, tail: str = ""):
+        super().__init__(message)
+        self.tail = tail
+
+
+MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
+class RelayAskRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=1, max_length=100_000)
+    timeout: int = Field(default=180, ge=5, le=600)
+    force: bool = False
+    source: str = Field(default="", max_length=120)
+
+
+class RelayMessageRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=100_000)
+
+
+def pane_metadata(pane: dict) -> dict:
+    """Annotate a pane with its provider and what TmuxWeb can do with it.
+
+    Clients can then hide actions that would only fail, instead of discovering
+    support by triggering a 409.
+    """
+    provider = transcript_reader.provider_for_command(pane.get("command"))
+    pane["provider"] = provider
+    pane["capabilities"] = {
+        "transcript": bool(provider),
+        "terminal": True,
+        "relay": bool(provider),
+        # any pane can be shared; ones without a transcript fall back to screen text
+        "share": True,
+    }
+    return pane
 
 
 class TerminalSession:
@@ -586,6 +444,35 @@ def verify_share_password(password: str, encoded: str) -> bool:
         return False
 
 
+logger = logging.getLogger("tmux_web")
+
+
+SHARE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS shares (
+        id TEXT PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE,
+        pane_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        password_hash TEXT,
+        created_at REAL NOT NULL,
+        expires_at REAL NOT NULL,
+        revoked_at REAL,
+        allow_input INTEGER NOT NULL DEFAULT 1
+    )
+"""
+
+
+def ensure_share_schema(connection) -> None:
+    """Create the shares table and add columns that newer versions need."""
+    with connection:
+        connection.execute(SHARE_SCHEMA)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(shares)")}
+        if "allow_input" not in columns:  # databases from before read-only shares
+            connection.execute("ALTER TABLE shares ADD COLUMN allow_input INTEGER NOT NULL DEFAULT 1")
+
+
 def create_app(
     backend: TmuxBackend | None = None,
     *,
@@ -602,6 +489,17 @@ def create_app(
         raise RuntimeError("TMUX_WEB_PASSWORD must be set")
     secret = session_secret or os.environ.get("TMUX_WEB_SESSION_SECRET") or secrets.token_hex(32)
     expected_token = session_token(configured_password, secret)
+    api_token = (os.environ.get("TMUX_WEB_API_TOKEN") or "").strip()
+    # File transfers are buffered in memory, so both directions are capped.
+    download_limit = int(os.environ.get("TMUX_WEB_FILE_DOWNLOAD_MAX", str(64 * 1024 * 1024)))
+    zip_limit = int(os.environ.get("TMUX_WEB_ZIP_MAX", str(file_browser.DEFAULT_ZIP_BYTES)))
+    zip_max_files = int(os.environ.get("TMUX_WEB_ZIP_MAX_FILES", str(file_browser.DEFAULT_ZIP_FILES)))
+    upload_limit = int(os.environ.get("TMUX_WEB_FILE_UPLOAD_MAX", str(256 * 1024 * 1024)))
+    if importlib.util.find_spec("websockets") is None and importlib.util.find_spec("wsproto") is None:
+        LOGGER.warning(
+            "No WebSocket implementation installed: uvicorn rejects /ws/* with 404. "
+            "Install the 'websockets' package (see requirements.txt)."
+        )
     make_terminal = terminal_factory or TerminalSession
     remote_hosts = remote_store or RemoteHostStore(
         os.environ.get("TMUX_WEB_HOST_DB", str(BASE_DIR / "remote_hosts.db")),
@@ -613,27 +511,42 @@ def create_app(
     share_connection.row_factory = sqlite3.Row
     share_lock = threading.Lock()
     login_limiter = LoginRateLimiter()
-    with share_connection:
-        share_connection.execute("""
-            CREATE TABLE IF NOT EXISTS shares (
-                id TEXT PRIMARY KEY,
-                slug TEXT NOT NULL UNIQUE,
-                pane_id TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                password_hash TEXT,
-                created_at REAL NOT NULL,
-                expires_at REAL NOT NULL,
-                revoked_at REAL
-            )
-        """)
+    ensure_share_schema(share_connection)
+
+    mcp_auth_required = os.environ.get("TMUX_WEB_MCP_AUTH", "on").strip().lower() not in {
+        "0", "off", "no", "false", "none",
+    }
+    if not mcp_auth_required:
+        logger.warning("MCP endpoint /mcp is unauthenticated (TMUX_WEB_MCP_AUTH=off): "
+                       "anyone who can reach this port can drive agent panes")
 
     app = FastAPI(title="Tmux Web Console", docs_url=None, redoc_url=None, openapi_url=None)
 
+    allowed_hosts = {item.strip().lower() for item in
+                     os.environ.get("TMUX_WEB_ALLOWED_HOSTS", "").split(",") if item.strip()}
+    if allowed_hosts:
+        @app.middleware("http")
+        async def enforce_allowed_hosts(request: Request, call_next):
+            host = (request.headers.get("host") or "").split(":")[0].lower()
+            if host and host not in allowed_hosts and not host.startswith(("127.0.0.1", "localhost")):
+                return JSONResponse({"detail": "host not allowed"}, status_code=421)
+            return await call_next(request)
+
+    trust_proxy = os.environ.get("TMUX_WEB_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def client_address(request: Request) -> str:
+        """Real client IP; behind Cloudflare/nginx the socket peer is the proxy."""
+        if trust_proxy:
+            forwarded = request.headers.get("cf-connecting-ip") or ""
+            if not forwarded:
+                forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+            if forwarded:
+                return forwarded
+        return request.client.host if request.client else "unknown"
+
     def login_key(request: Request, scope: str) -> str:
-        client = request.client.host if request.client else "unknown"
-        return f"{scope}:{client}"
+        # rate limit per real client, not per proxy address
+        return f"{scope}:{client_address(request)}"
 
     def secure_cookie(request: Request) -> bool:
         setting = os.environ.get("TMUX_WEB_SECURE_COOKIES", "auto").strip().lower()
@@ -641,11 +554,24 @@ def create_app(
             return True
         if setting in {"0", "false", "no", "off"}:
             return False
+        if trust_proxy and (request.headers.get("x-forwarded-proto") or "").lower() == "https":
+            return True
         return request.url.scheme == "https"
 
     def authenticated(request: Request) -> bool:
         token = request.cookies.get(COOKIE_NAME, "")
-        return hmac.compare_digest(token, expected_token)
+        if token and hmac.compare_digest(token, expected_token):
+            return True
+        if not api_token:
+            return False
+        # Programmatic access (relay CLI, other agents on other servers) uses a
+        # long-lived token instead of the interactive login cookie.
+        supplied = request.headers.get("x-tmuxweb-token", "").strip()
+        if not supplied:
+            header = request.headers.get("authorization", "")
+            if header.lower().startswith("bearer "):
+                supplied = header[7:].strip()
+        return bool(supplied) and hmac.compare_digest(supplied, api_token)
 
     def require_auth(request: Request) -> None:
         if not authenticated(request):
@@ -684,6 +610,74 @@ def create_app(
             raise HTTPException(status_code=404, detail="remote host not found") from exc
         return make_remote_runner(host), pane_id
 
+    def relay_target(target: str):
+        """Resolve a relay target to (transport, pane_id, pane, host_name)."""
+        try:
+            host_id, pane_id = split_pane_ref(target)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="invalid pane reference") from exc
+        if host_id == "localhost":
+            try:
+                return tmux, pane_id, tmux.validate_pane(pane_id), "localhost"
+            except TmuxError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+        try:
+            host = remote_hosts.get_host(host_id, include_credential=True)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="remote host not found") from exc
+        runner = make_remote_runner(host)
+        try:
+            panes = runner.list_panes()
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        for pane in panes:
+            if pane.get("pane_id") == pane_id:
+                return runner, pane_id, pane, host.get("name") or host_id
+        raise HTTPException(status_code=404, detail="remote pane not found")
+
+    def relay_hosts() -> list[tuple[str, str, object, list[dict]]]:
+        """Every reachable transport plus its panes, for relay/status discovery."""
+        found: list[tuple[str, str, object, list[dict]]] = []
+        try:
+            found.append(("localhost", "localhost", tmux, tmux.list_panes()))
+        except TmuxError:
+            pass
+        for remote in remote_hosts.list_hosts():
+            try:
+                credentialed = remote_hosts.get_host(remote["id"], include_credential=True)
+                runner = make_remote_runner(credentialed)
+                found.append((remote["id"], remote.get("name") or remote["id"], runner, runner.list_panes()))
+            except (KeyError, RuntimeError, OSError):
+                continue
+        return found
+
+    def collect_pane_states() -> list[dict]:
+        jobs = []
+        for host_id, host_name, transport, panes in relay_hosts():
+            for pane in panes:
+                jobs.append((host_id, host_name, transport, pane))
+        if not jobs:
+            return []
+
+        def describe(job):
+            host_id, host_name, transport, pane = job
+            provider = transcript_reader.provider_for_command(pane.get("command"))
+            actual_pane_id = pane.get("pane_id") or pane["id"]
+            try:
+                state = relay.inspect(transport, actual_pane_id, provider, lines=40)
+                status = state["status"]
+            except (RuntimeError, OSError, ValueError):
+                status = "unknown"
+            return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
+                    "host_name": host_name, "target": pane["target"], "provider": provider,
+                    "status": status, "title": pane.get("title", ""), "path": pane.get("path", "")}
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            return list(pool.map(describe, jobs))
+
+    relay_log: deque[dict] = deque(maxlen=100)
+    relay_locks: dict[str, asyncio.Lock] = {}
+
     def get_share(slug: str):
         with share_lock:
             row = share_connection.execute("SELECT * FROM shares WHERE slug = ?", (slug,)).fetchone()
@@ -708,10 +702,14 @@ def create_app(
             raise HTTPException(status_code=401, detail="share password required")
 
     def validate_shared_session(row) -> dict:
+        if not row["session_id"]:
+            # screen shares follow the pane itself, not a provider session
+            return pane_or_404(row["pane_id"])
         try:
-            pane = tmux.validate_pane(row["pane_id"])
-            data = tmux.transcript(row["pane_id"], 1)
-        except (TmuxError, RuntimeError) as exc:
+            transport, actual_pane_id = pane_transport(row["pane_id"])
+            pane = pane_or_404(row["pane_id"])
+            data = transport.transcript(actual_pane_id, 1)
+        except (HTTPException, TmuxError, RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail="shared session is unavailable") from exc
         if str(data.get("session_id")) != row["session_id"]:
             raise HTTPException(status_code=409, detail="shared pane no longer points to the original session")
@@ -778,34 +776,37 @@ def create_app(
         if not SHARE_SLUG_RE.fullmatch(payload.slug):
             raise HTTPException(status_code=422, detail="slug must use lowercase letters, numbers, and hyphens")
         pane = pane_or_404(payload.pane_id)
-        if pane.get("command") != "claude":
-            raise HTTPException(status_code=422, detail="only Claude transcript sessions can be shared")
+        transport, actual_pane_id = pane_transport(payload.pane_id)
         try:
-            transcript_data = await asyncio.to_thread(tmux.transcript, payload.pane_id, 1)
-        except TmuxError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            transcript_data = await asyncio.to_thread(transport.transcript, actual_pane_id, 1)
+        except (TmuxError, RuntimeError, ValueError):
+            # a plain shell pane has no transcript: the share shows the screen instead
+            transcript_data = {}
         now = time.time()
         share_id = secrets.token_hex(16)
         password_hash = hash_share_password(payload.password) if payload.password else None
         try:
             with share_lock, share_connection:
                 share_connection.execute(
-                    "INSERT INTO shares VALUES (?,?,?,?,?,?,?,?,?,NULL)",
-                    (share_id, payload.slug, payload.pane_id, transcript_data.get("provider", "claude"),
-                     str(transcript_data["session_id"]), pane.get("title") or pane.get("target") or "Claude",
-                     password_hash, now, now + payload.expires_in),
+                    "INSERT INTO shares(id, slug, pane_id, provider, session_id, title, password_hash,"
+                    " created_at, expires_at, revoked_at, allow_input) VALUES (?,?,?,?,?,?,?,?,?,NULL,?)",
+                    (share_id, payload.slug, payload.pane_id, transcript_data.get("provider") or "",
+                     str(transcript_data.get("session_id") or ""), pane.get("title") or pane.get("target") or "tmux",
+                     password_hash, now, now + payload.expires_in, 1 if payload.allow_input else 0),
                 )
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="share slug already exists") from exc
         return {"id": share_id, "slug": payload.slug, "url": f"/share/{payload.slug}",
-                "expires_at": now + payload.expires_in, "password_protected": bool(password_hash)}
+                "expires_at": now + payload.expires_in, "password_protected": bool(password_hash),
+                "allow_input": bool(payload.allow_input)}
 
     @app.get("/api/shares")
     async def list_shares(request: Request):
         require_auth(request)
         with share_lock:
             rows = share_connection.execute(
-                "SELECT id,slug,pane_id,provider,session_id,title,created_at,expires_at,revoked_at,password_hash FROM shares ORDER BY created_at DESC"
+                "SELECT id,slug,pane_id,provider,session_id,title,created_at,expires_at,revoked_at,"
+                "password_hash,allow_input FROM shares ORDER BY created_at DESC"
             ).fetchall()
         now = time.time()
         return {"shares": [{
@@ -813,6 +814,7 @@ def create_app(
             "pane_id": row["pane_id"], "provider": row["provider"], "session_id": row["session_id"],
             "title": row["title"], "created_at": row["created_at"], "expires_at": row["expires_at"],
             "revoked": row["revoked_at"] is not None, "password_protected": bool(row["password_hash"]),
+            "allow_input": bool(row["allow_input"]),
             "status": "stopped" if row["revoked_at"] is not None else ("expired" if row["expires_at"] <= now else "active"),
         } for row in rows]}
 
@@ -867,7 +869,8 @@ def create_app(
         )
         html = (WEB_DIR / "share.html").read_text().replace("__SHARE_SLUG__", json.dumps(slug)).replace(
             "__SHARE_TITLE__", str(row["title"]).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        ).replace("__SHARE_UNLOCKED__", "true" if unlocked else "false")
+        ).replace("__SHARE_UNLOCKED__", "true" if unlocked else "false").replace(
+            "__SHARE_ALLOW_INPUT__", "true" if row["allow_input"] else "false")
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     @app.get("/share-assets/marked.esm.js")
@@ -897,19 +900,45 @@ def create_app(
                             path=f"/share/{slug}")
         return response
 
+    @app.get("/share/{slug}/api/meta")
+    async def share_meta(request: Request, slug: str):
+        """What a native client needs before opening a share."""
+        row = get_share(slug)
+        require_share_access(request, row)
+        return {
+            "slug": row["slug"],
+            "title": row["title"],
+            "provider": row["provider"] or None,
+            "mode": "transcript" if row["session_id"] else "screen",
+            "allow_input": bool(row["allow_input"]),
+            "password_protected": bool(row["password_hash"]),
+            "expires_at": row["expires_at"],
+        }
+
     @app.get("/share/{slug}/api/transcript")
     async def share_transcript(request: Request, slug: str, limit: int = 300):
         row = get_share(slug)
         require_share_access(request, row)
         validate_shared_session(row)
-        return await asyncio.to_thread(tmux.transcript, row["pane_id"], limit)
+        transport, actual_pane_id = pane_transport(row["pane_id"])
+        if not row["session_id"]:
+            content = await asyncio.to_thread(transport.capture, actual_pane_id, 2000)
+            digest = hashlib.sha1(content.encode()).hexdigest()
+            return {"mode": "screen", "provider": row["provider"] or None, "session_id": None,
+                    "mtime": digest, "messages": [], "content": content}
+        data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit)
+        data["mode"] = "transcript"
+        return data
 
     @app.post("/share/{slug}/api/input")
     async def share_input(request: Request, slug: str, payload: InputRequest):
         row = get_share(slug)
         require_share_access(request, row)
+        if not row["allow_input"]:
+            raise HTTPException(status_code=403, detail="this share is read-only")
         validate_shared_session(row)
-        await asyncio.to_thread(tmux.send, row["pane_id"], payload.text, payload.submit)
+        transport, actual_pane_id = pane_transport(row["pane_id"])
+        await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit)
         return {"status": "sent", "submit": payload.submit}
 
     @app.get("/manifest.webmanifest")
@@ -931,10 +960,17 @@ def create_app(
         require_auth(request)
         return FileResponse(WEB_DIR / "app-icon.svg", media_type="image/svg+xml")
 
+    @app.get("/assets/app-icon-maskable-{size}.png")
+    async def app_icon_maskable_png(request: Request, size: int):
+        require_auth(request)
+        if size not in {192, 512}:
+            raise HTTPException(status_code=404, detail="icon not found")
+        return FileResponse(WEB_DIR / f"app-icon-maskable-{size}.png", media_type="image/png")
+
     @app.get("/assets/app-icon-{size}.png")
     async def app_icon_png(request: Request, size: int):
         require_auth(request)
-        if size not in {180, 192, 512}:
+        if size not in {32, 180, 192, 512}:
             raise HTTPException(status_code=404, detail="icon not found")
         return FileResponse(WEB_DIR / f"app-icon-{size}.png", media_type="image/png")
 
@@ -944,6 +980,15 @@ def create_app(
         if filename not in {"xterm.css", "xterm.js", "addon-fit.js"}:
             raise HTTPException(status_code=404, detail="asset not found")
         return FileResponse(WEB_DIR / "vendor" / "xterm" / filename)
+
+    @app.get("/assets/mermaid/{filename}")
+    async def mermaid_asset(request: Request, filename: str):
+        require_auth(request)
+        if filename != "mermaid.min.js":
+            raise HTTPException(status_code=404, detail="asset not found")
+        return FileResponse(WEB_DIR / "vendor" / "mermaid" / filename,
+                            media_type="application/javascript",
+                            headers={"Cache-Control": "public, max-age=604800"})
 
     @app.get("/assets/ansi_up.js")
     async def ansi_up_asset(request: Request):
@@ -959,7 +1004,7 @@ def create_app(
     async def list_panes(request: Request):
         require_auth(request)
         try:
-            return {"panes": tmux.list_panes()}
+            return {"panes": [pane_metadata(pane) for pane in tmux.list_panes()]}
         except TmuxError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -968,7 +1013,7 @@ def create_app(
         require_auth(request)
         hosts = []
         try:
-            panes = tmux.list_panes()
+            panes = [pane_metadata(pane) for pane in tmux.list_panes()]
             for pane in panes:
                 pane.setdefault("host_id", "localhost")
                 pane.setdefault("window_name", "")
@@ -979,7 +1024,7 @@ def create_app(
                 "status": "online",
                 "panes": panes,
             })
-        except TmuxError as exc:
+        except (TmuxError, OSError) as exc:
             hosts.append({"id": "localhost", "name": "localhost", "kind": "local",
                           "status": "offline", "error": str(exc), "panes": []})
         for remote in remote_hosts.list_hosts():
@@ -987,12 +1032,172 @@ def create_app(
             public.update({"kind": "ssh", "status": "offline", "panes": []})
             try:
                 credentialed = remote_hosts.get_host(remote["id"], include_credential=True)
-                public["panes"] = await asyncio.to_thread(make_remote_runner(credentialed).list_panes)
+                public["panes"] = [pane_metadata(pane) for pane in
+                                   await asyncio.to_thread(make_remote_runner(credentialed).list_panes)]
                 public["status"] = "online"
-            except (RuntimeError, OSError, KeyError) as exc:
+            except Exception as exc:  # noqa: BLE001 - one dead host must not break the tree
+                # SSH failures surface as RuntimeError/OSError, but a hung host
+                # raises subprocess.TimeoutExpired and httpx raises its own types.
                 public["error"] = str(exc)
             hosts.append(public)
         return {"hosts": hosts}
+
+    async def perform_mcp_tool(name: str, arguments: dict) -> dict:
+        """Same semantics as mcp_relay.py, but executed in-process (no python3 on the client)."""
+        arguments = arguments or {}
+        if name == "list_agents":
+            peers = await asyncio.to_thread(collect_pane_states)
+            if not arguments.get("include_non_agents", False):
+                peers = [peer for peer in peers if peer.get("provider")]
+            return {"agents": [
+                {
+                    "target": peer["id"],
+                    "host": peer.get("host_name") or peer.get("host_id"),
+                    "session": (peer.get("target") or "").split(":")[0],
+                    "window": peer.get("target"),
+                    "provider": peer.get("provider"),
+                    "status": peer.get("status"),
+                    "path": peer.get("path"),
+                    "title": peer.get("title"),
+                }
+                for peer in peers
+            ]}
+        if name == "ask_agent":
+            target = str(arguments.get("target") or "").strip()
+            question = str(arguments.get("question") or "").strip()
+            if not target or not question:
+                raise McpToolError("target and question are required")
+            timeout = max(5, min(int(arguments.get("timeout") or 240), 600))
+            try:
+                result = await perform_relay_ask(RelayAskRequest(
+                    target=target, question=question[:20000], timeout=timeout,
+                    force=bool(arguments.get("force", False)),
+                    source=str(arguments.get("source") or "mcp"),
+                ))
+            except RelayTimeoutError as exc:
+                raise McpToolError(str(exc), exc.tail) from exc
+            except HTTPException as exc:
+                raise McpToolError(str(exc.detail)) from exc
+            return {"target": target, "reply": result.get("reply", ""), "pane": result.get("pane")}
+        if name == "send_agent":
+            target = str(arguments.get("target") or "").strip()
+            text = str(arguments.get("text") or "").strip()
+            if not target or not text:
+                raise McpToolError("target and text are required")
+            transport, pane_id = await asyncio.to_thread(pane_transport, target)
+            try:
+                await asyncio.to_thread(transport.send, pane_id, text[:20000], bool(arguments.get("submit", True)))
+            except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+                raise McpToolError(str(exc)) from exc
+            return {"target": target, "sent": True}
+        if name == "read_agent":
+            target = str(arguments.get("target") or "").strip()
+            if not target:
+                raise McpToolError("target is required")
+            transport, pane_id = await asyncio.to_thread(pane_transport, target)
+            try:
+                if arguments.get("transcript"):
+                    limit = max(1, min(int(arguments.get("limit") or 50), 300))
+                    data = await asyncio.to_thread(transport.transcript, pane_id, limit)
+                    return {"target": target, "provider": data.get("provider"),
+                            "session": data.get("session_id"), "messages": data.get("messages", [])}
+                history = max(10, min(int(arguments.get("lines") or 80), 5000))
+                content = await asyncio.to_thread(transport.capture, pane_id, history)
+                return {"target": target, "content": content}
+            except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+                raise McpToolError(str(exc)) from exc
+        raise McpToolError("unknown tool: %s" % name)
+
+    def require_mcp_auth(request: Request) -> None:
+        # LAN-only deployments can skip the bearer header: TMUX_WEB_MCP_AUTH=off
+        if mcp_auth_required:
+            require_auth(request)
+
+    @app.post("/mcp")
+    async def mcp_endpoint(request: Request):
+        """Streamable-HTTP MCP endpoint: agents point a URL here instead of spawning python3."""
+        require_mcp_auth(request)
+        try:
+            payload = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32700, "message": "invalid JSON"}}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32600, "message": "batch requests are not supported"}},
+                                status_code=400)
+        request_id = payload.get("id")
+        method = payload.get("method")
+        if request_id is None:
+            # notifications (initialized, cancelled, ...) need no body
+            return Response(status_code=202)
+
+        def reply(result: dict) -> JSONResponse:
+            return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+        def tool_text(value: object, *, is_error: bool = False) -> dict:
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            return {"content": [{"type": "text", "text": text}], "isError": is_error}
+
+        if method == "initialize":
+            return reply({"protocolVersion": MCP_PROTOCOL_VERSION,
+                          "capabilities": {"tools": {"listChanged": False}},
+                          "serverInfo": {"name": "tmuxweb-relay", "version": "1.0.0"}})
+        if method == "ping":
+            return reply({})
+        if method == "tools/list":
+            return reply({"tools": mcp_relay.tool_schemas()})
+        if method == "tools/call":
+            params = payload.get("params") or {}
+            try:
+                result = await perform_mcp_tool(str(params.get("name") or ""), params.get("arguments") or {})
+            except McpToolError as exc:
+                detail: dict = {"error": str(exc)}
+                if exc.tail:
+                    detail["pane_tail"] = exc.tail
+                return reply(tool_text(detail, is_error=True))
+            return reply(tool_text(result))
+        return JSONResponse({"jsonrpc": "2.0", "id": request_id,
+                             "error": {"code": -32601, "message": "Method not found"}}, status_code=404)
+
+    @app.get("/mcp")
+    async def mcp_get(request: Request):
+        require_mcp_auth(request)
+        raise HTTPException(status_code=405, detail="this MCP endpoint only accepts POST",
+                            headers={"Allow": "POST"})
+
+    @app.post("/api/sessions", status_code=201)
+    async def create_session(request: Request, payload: SessionCreateRequest):
+        """Create a detached tmux session on the local host or a remote one."""
+        require_auth(request)
+        if payload.host in ("", "localhost"):
+            transport, host_id = tmux, "localhost"
+        else:
+            try:
+                host = remote_hosts.get_host(payload.host, include_credential=True)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="remote host not found") from exc
+            transport, host_id = make_remote_runner(host), payload.host
+        try:
+            created = await asyncio.to_thread(transport.create_session, payload.name, payload.path)
+            panes = await asyncio.to_thread(transport.list_panes)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            message = str(exc)
+            status = 409 if ("already exists" in message or "duplicate" in message) else 422
+            if status == 422 and "no such directory" not in message and "session name" not in message:
+                status = 503
+            raise HTTPException(status_code=status, detail=message) from exc
+        session = created["session"]
+        fresh = []
+        for pane in panes:
+            if pane.get("session") != session:
+                continue
+            metadata = pane_metadata(pane)
+            if host_id != "localhost":
+                metadata["id"] = pane_ref(host_id, metadata.get("pane_id") or metadata["id"])
+            metadata.setdefault("host_id", host_id)
+            fresh.append(metadata)
+        return {"session": created, "host": host_id, "panes": fresh}
 
     @app.post("/api/remote-hosts/scan-key")
     async def scan_remote_key(request: Request):
@@ -1010,13 +1215,15 @@ def create_app(
     @app.post("/api/remote-hosts", status_code=201)
     async def create_remote_host(request: Request, payload: RemoteHostCreateRequest):
         require_auth(request)
-        if payload.auth_type not in {"password", "key"}:
-            raise HTTPException(status_code=422, detail="auth_type must be password or key")
+        if payload.auth_type not in AUTH_TYPES:
+            raise HTTPException(status_code=422, detail="auth_type must be password, key or agent")
         if payload.auth_type == "key":
             try:
                 validate_private_key_text(payload.credential)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if payload.auth_type in {"password", "key"} and not payload.credential:
+            raise HTTPException(status_code=422, detail="password or private key is required")
         try:
             computed = host_key_fingerprint(payload.host_key)
         except ValueError as exc:
@@ -1041,13 +1248,15 @@ def create_app(
     @app.post("/api/remote-hosts/test")
     async def test_remote_host(request: Request, payload: RemoteHostCreateRequest):
         require_auth(request)
-        if payload.auth_type not in {"password", "key"}:
-            raise HTTPException(status_code=422, detail="auth_type must be password or key")
+        if payload.auth_type not in AUTH_TYPES:
+            raise HTTPException(status_code=422, detail="auth_type must be password, key or agent")
         if payload.auth_type == "key":
             try:
                 validate_private_key_text(payload.credential)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if payload.auth_type in {"password", "key"} and not payload.credential:
+            raise HTTPException(status_code=422, detail="password or private key is required")
         try:
             computed = host_key_fingerprint(payload.host_key)
         except ValueError as exc:
@@ -1099,12 +1308,13 @@ def create_app(
     @app.get("/api/panes/{pane_id}/transcript")
     async def transcript(request: Request, pane_id: str, limit: int = 200):
         require_auth(request)
-        pane = pane_or_404(pane_id)
-        if pane.get("host_id", "localhost") != "localhost":
-            raise HTTPException(status_code=409, detail="structured transcript is not available for remote hosts yet")
+        pane_or_404(pane_id)
         try:
-            return await asyncio.to_thread(tmux.transcript, pane_id, limit)
-        except TmuxError as exc:
+            transport, actual_pane_id = pane_transport(pane_id)
+            return await asyncio.to_thread(transport.transcript, actual_pane_id, limit)
+        except HTTPException:
+            raise
+        except (TmuxError, RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/panes/{pane_id}/input")
@@ -1118,6 +1328,164 @@ def create_app(
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    def file_target(pane_ref: str) -> tuple[object, str, dict]:
+        pane = pane_or_404(pane_ref)
+        transport, actual_pane_id = pane_transport(pane_ref)
+        return transport, actual_pane_id, pane
+
+    @app.get("/api/panes/{pane_id}/files")
+    async def list_pane_files(request: Request, pane_id: str, path: str = "", hidden: int = 0,
+                              limit: int = 2000):
+        require_auth(request)
+        try:
+            transport, _actual, pane = file_target(pane_id)
+            directory = path or pane.get("path") or "."
+            data = await asyncio.to_thread(transport.list_files, directory, bool(hidden),
+                                           max(1, min(limit, 5000)))
+        except HTTPException:
+            raise
+        except (TmuxError, RuntimeError, OSError, ValueError, file_browser.FileBrowserError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        data["pane"] = pane_id
+        return data
+
+    @app.get("/api/panes/{pane_id}/files/download")
+    async def download_pane_file(request: Request, pane_id: str, path: str):
+        require_auth(request)
+        if not path:
+            raise HTTPException(status_code=422, detail="path is required")
+        try:
+            transport, _actual, _pane = file_target(pane_id)
+            payload = await asyncio.to_thread(transport.download_file, path, download_limit)
+        except HTTPException:
+            raise
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        name = os.path.basename(path.rstrip("/")) or "download"
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return Response(
+            content=payload,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": "attachment; filename*=UTF-8''" + quote(name, safe=""),
+                "Content-Length": str(len(payload)),
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @app.post("/api/panes/{pane_id}/files/zip")
+    async def zip_pane_files(request: Request, pane_id: str, payload: ZipRequest):
+        require_auth(request)
+        wanted = [item for item in (payload.paths or []) if item.strip()]
+        if not wanted:
+            raise HTTPException(status_code=422, detail="select at least one file")
+        if len(wanted) > 1000:
+            raise HTTPException(status_code=422, detail="too many paths selected")
+        try:
+            transport, _actual, pane = file_target(pane_id)
+            base = payload.base or pane.get("path") or "."
+            blob = await asyncio.to_thread(transport.zip_files, wanted, base, zip_limit, zip_max_files)
+        except HTTPException:
+            raise
+        except (TmuxError, RuntimeError, OSError, ValueError, file_browser.FileBrowserError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        name = (os.path.basename(str(base).rstrip("/")) or "files") + ".zip"
+        return Response(
+            content=blob,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": "attachment; filename*=UTF-8''" + quote(name, safe=""),
+                "Content-Length": str(len(blob)),
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @app.put("/api/panes/{pane_id}/files/upload")
+    async def upload_pane_file(request: Request, pane_id: str, name: str, dir: str = ""):
+        require_auth(request)
+        if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+            raise HTTPException(status_code=422, detail="invalid file name")
+        try:
+            transport, _actual, pane = file_target(pane_id)
+            directory = dir or pane.get("path") or "."
+            body = await request.body()
+            if len(body) > upload_limit:
+                raise HTTPException(status_code=413,
+                                    detail=f"file exceeds the upload limit of {upload_limit} bytes")
+            target = os.path.join(directory, name)
+            await asyncio.to_thread(transport.upload_file, target, body)
+        except HTTPException:
+            raise
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"status": "uploaded", "path": target, "size": len(body)}
+
+    @app.get("/api/relay/peers")
+    async def relay_peers(request: Request):
+        require_auth(request)
+        return {"peers": await asyncio.to_thread(collect_pane_states)}
+
+    @app.get("/api/panes/status")
+    async def pane_states(request: Request):
+        require_auth(request)
+        states = await asyncio.to_thread(collect_pane_states)
+        return {"panes": [{key: item[key] for key in ("id", "provider", "status")} for item in states]}
+
+    async def perform_relay_ask(payload: RelayAskRequest) -> dict:
+        """Ask a pane and wait for the answer: used by the HTTP route and the MCP endpoint."""
+        transport, pane_id, pane, host_name = await asyncio.to_thread(relay_target, payload.target)
+        provider = transcript_reader.provider_for_command(pane.get("command"))
+        lock = relay_locks.setdefault(payload.target, asyncio.Lock())
+        if lock.locked():
+            raise HTTPException(status_code=409, detail="another relay request is already waiting on this pane")
+        started = time.monotonic()
+        async with lock:
+            try:
+                result = await asyncio.to_thread(
+                    relay.ask, transport, pane_id, payload.question,
+                    source=payload.source, provider=provider,
+                    timeout=payload.timeout, force=payload.force,
+                )
+            except relay.RelayBusy as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except relay.RelayTimeout as exc:
+                relay_log.appendleft({"at": time.time(), "target": payload.target, "source": payload.source,
+                                      "status": "timeout", "question": payload.question[:400],
+                                      "elapsed": round(time.monotonic() - started, 2)})
+                raise RelayTimeoutError(str(exc), exc.tail) from exc
+            except (relay.RelayError, TmuxError, RuntimeError, OSError, ValueError) as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+        result.update({"target": payload.target, "host": host_name, "provider": provider})
+        relay_log.appendleft({"at": time.time(), "target": payload.target, "source": payload.source,
+                              "status": "ok", "question": payload.question[:400],
+                              "reply": str(result["reply"])[:400], "elapsed": result["elapsed"]})
+        return result
+
+    @app.post("/api/relay/ask")
+    async def relay_ask(request: Request, payload: RelayAskRequest):
+        require_auth(request)
+        try:
+            return await perform_relay_ask(payload)
+        except RelayTimeoutError as exc:
+            return JSONResponse({"detail": str(exc), "tail": exc.tail, "target": payload.target},
+                                status_code=504)
+
+    @app.post("/api/relay/message")
+    async def relay_message(request: Request, payload: RelayMessageRequest):
+        require_auth(request)
+        transport, pane_id, pane, host_name = await asyncio.to_thread(relay_target, payload.target)
+        try:
+            await asyncio.to_thread(transport.send, pane_id, payload.text, True)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        relay_log.appendleft({"at": time.time(), "target": payload.target, "source": "message",
+                              "status": "sent", "question": payload.text[:400], "elapsed": 0})
+        return {"status": "sent", "target": payload.target, "host": host_name}
+
+    @app.get("/api/relay/log")
+    async def relay_history(request: Request):
+        require_auth(request)
+        return {"events": list(relay_log)}
 
     @app.websocket("/ws/panes/{pane_id}")
     async def stream_pane(websocket: WebSocket, pane_id: str):
@@ -1132,15 +1500,28 @@ def create_app(
             await websocket.close(code=4404)
             return
         await websocket.accept()
-        previous: str | None = None
+        # Poll the cheap digest first and only transfer the pane text when it
+        # actually changed; idle panes then cost a few bytes per tick, and the
+        # interval backs off so an idle tab stops hammering the host.
+        digest: str | None = None
+        interval = 0.4
         try:
             while True:
-                capture_ansi = getattr(transport, "capture_ansi", transport.capture)
-                content = await asyncio.to_thread(capture_ansi, actual_pane_id, 5000)
-                if content != previous:
-                    await websocket.send_json({"type": "capture", "pane": pane_id, "content": content})
-                    previous = content
-                await asyncio.sleep(0.5)
+                snapshot = getattr(transport, "snapshot_ansi", None)
+                if snapshot is None:
+                    capture_ansi = getattr(transport, "capture_ansi", transport.capture)
+                    content = await asyncio.to_thread(capture_ansi, actual_pane_id, 5000)
+                    new_digest = hashlib.sha1(content.encode()).hexdigest()
+                    payload = None if digest == new_digest else content
+                    digest = new_digest
+                else:
+                    digest, payload = await asyncio.to_thread(snapshot, actual_pane_id, 5000, digest)
+                if payload is not None:
+                    await websocket.send_json({"type": "capture", "pane": pane_id, "content": payload})
+                    interval = 0.4
+                else:
+                    interval = min(2.0, interval * 1.4)
+                await asyncio.sleep(interval)
         except (WebSocketDisconnect, TmuxError, RuntimeError, OSError, ValueError):
             return
 

@@ -1,3 +1,6 @@
 fastapi>=0.115,<1
 uvicorn>=0.30,<1
+# uvicorn needs one WebSocket implementation; without it the live chat stream
+# and the terminal are rejected with 404.
+websockets>=12,<17
 cryptography>=42,<47
