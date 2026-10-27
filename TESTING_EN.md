@@ -25,6 +25,8 @@ This document covers automated tests that do not require real AI CLIs, plus manu
 
 - Native mobile client: `cd client && flutter test` passes (block splitting order and escaping, table parsing/TSV, URL normalization, cookie login, pane-ref encoding, read-only share 403, chat rendering and copy, block source toggle, composer hidden when read-only, send success/failure, login validation and remembered URL, token login). `flutter analyze` is clean. Device smoke test: `http://<lan-ip>:8899` + password → host tree → open `%7` → copy a message, toggle a table to source, and open a read-only share link and confirm there is no composer. Build check: `flutter build apk --release --split-per-abi` and `appbundle` succeed and `apksigner verify --print-certs` reports `CN=TmuxWeb`.
 
+- Incremental remote transcripts: `python -m unittest test_remote_hosts -k incremental` (a second poll sends only the byte offset, a rewritten file refetches the window, a vanished file falls back to discovery) and `-k gzip` (gzip payloads decode, broken payloads raise). Measured against a host with a 300 MB transcript: first transcript call ~8s, later polls 1-2s, bodies <=60KB.
+
 ## 1. Install test dependencies
 
 ```bash

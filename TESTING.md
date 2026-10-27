@@ -35,6 +35,8 @@
 
 - 移动客户端（原生 Flutter）：`cd client && flutter test` 全绿（切块顺序与转义、表格解析/TSV、URL 规范化、cookie 登录、pane 引用编码、只读分享 403、聊天渲染与复制、块源码切换、只读隐藏输入框、发送成功/失败、登录校验与记住地址、Token 登录）。`flutter analyze` 无 error。真机冒烟：填 `http://<内网IP>:8899` + 密码 → 主机树 → 打开 `%7` → 消息可复制、表格可切源码、分享链接打开只读分享时没有输入框。构建验收：`flutter build apk --release --split-per-abi` 与 `appbundle` 成功，`apksigner verify --print-certs` 显示 `CN=TmuxWeb`。
 
+- 远端 transcript 增量传输：`cd tests && python -m unittest test_remote_hosts -k incremental` 应通过（第二次轮询只带字节偏移、文件被重写时整窗重取、文件消失时回退定位）；`python -m unittest test_remote_hosts -k gzip` 验证 gzip 负载解码与损坏负载报错。实测一台 300MB 会话的远端主机：首次 `/api/panes/<pane>/transcript` 约 8s，之后 1-2s，响应体 ≤60KB。
+
 ## 1. 安装测试依赖
 
 ```bash

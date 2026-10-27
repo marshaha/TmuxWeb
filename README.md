@@ -31,6 +31,7 @@ TmuxWeb 是一个自托管的 tmux 与 AI CLI 会话管理中心。它把本机�
 - 聊天模式不创建长期 `tmux attach`，避免多个客户端参与 tmux 尺寸协商。
 - 只有终端模式使用 PTY attach；WebSocket 断开后释放。
 - 远端结构化 transcript 也不依赖远端 python3：远端只跑一段 POSIX sh 定位会话文件（Claude 项目目录 + 标题/屏幕探测、Codex session_index、Kimi state.json、Hermes `--resume` 的 session jsonl 或 `sqlite3`），把文件尾部字节拉回本地，用**本地同一套解析器**解析——等同 `scp` 拉回来再解析。定位不到时回退远端 `capture-pane`。远端会话由前端按 1 秒节奏轮询：服务端按 (主机, pane, limit) 缓存解析结果，2 秒内重复请求不打远端，之后只用一次 `stat` 判断文件是否变化，变了才重新拉取——所以远程对话跟着远端文件实时更新，空闲时几乎无开销。
+- 远端 transcript 的传输是增量且压缩的：首次定位只扫最新 3 个会话文件的尾部 256KB（不再 grep 整个几百 MB 的文件），之后每次只按字节偏移拉取**新增部分**（`tail -c +offset`），并用 `gzip` 压缩上线——实测一台 300MB 会话、0.7s RTT 的主机：首次 53s → 8.6s，后续轮询 1.5s 左右，单次传输从 4MB 降到几十字节到几百 KB。窗口大小可用 `TMUXWEB_PAYLOAD_BYTES` 调整。
 - 远端 pane ID 带主机作用域，避免不同 tmux server 的 `%0` 冲突。
 - 远端 tmux 调用统一带 `LC_ALL=C.UTF-8`，字段分隔符使用可打印字符串，因为 tmux 在非 UTF-8 locale 下会把控制字符和非 ASCII 字段改写成 `_`。
 - 实时视图先取远端 `cksum` 摘要，内容未变就不传输正文；空闲后轮询间隔退避到 2 秒。

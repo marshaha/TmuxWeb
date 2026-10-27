@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import gzip
 import hashlib
 import json
 import os
@@ -55,8 +56,8 @@ pane=$1
 limit=${2:-200}
 sep='<::>'
 header() {
-  printf 'TMUXWEB_PROVIDER%s%s\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%s%s\n' \
-    "$sep" "$provider" "$sep" "$1" "$sep" "$2"
+  printf 'TMUXWEB_PROVIDER%s%s\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%s%s\nTMUXWEB_ENCODING%s%s\n' \
+    "$sep" "$provider" "$sep" "$1" "$sep" "$2" "$sep" "$encoding"
   if [ -n "$3" ] && [ -e "$3" ]; then
     printf 'TMUXWEB_PRIMARY%s%s\n' "$sep" "$3"
     stamps=$(stat -c '%Y %s' -- "$3" 2>/dev/null || stat -f '%m %z' -- "$3" 2>/dev/null)
@@ -65,7 +66,10 @@ header() {
   printf 'TMUXWEB_PAYLOAD\n'
 }
 error() { printf 'TMUXWEB_ERROR%s%s\n' "$sep" "$1"; exit "${2:-20}"; }
-payload_bytes=4194304
+payload_bytes=${TMUXWEB_PAYLOAD_BYTES:-4194304}
+encoding=none
+if command -v gzip >/dev/null 2>&1; then encoding=gzip; fi
+emit() { if [ "$encoding" = gzip ]; then gzip -c; else cat; fi; }
 
 info=$(tmux display-message -p -t "$pane" \
   "#{pane_current_path}${sep}#{pane_title}${sep}#{pane_current_command}" 2>/dev/null) \
@@ -87,27 +91,35 @@ if [ "$provider" = claude ]; then
   proj=$HOME/.claude/projects/$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')
   [ -d "$proj" ] || error "no Claude project directory for $cwd" 23
   file=""
+  # Only the newest few files can belong to a live pane, and only their tail is
+  # scanned: grepping whole 300 MB transcripts once per probe line took 50s+.
+  candidates=$(ls -t "$proj"/*.jsonl 2>/dev/null | head -3)
   if [ -n "$title" ]; then
-    matches=$(grep -lF -- "$title" "$proj"/*.jsonl 2>/dev/null | head -2)
-    [ -n "$matches" ] && [ "$(printf '%s\n' "$matches" | grep -c .)" -eq 1 ] && file=$matches
-  fi
-  if [ -z "$file" ]; then
-    probes=$(tmux capture-pane -p -J -t "$pane" -S -80 2>/dev/null | awk 'length($0) >= 24' | tail -40)
-    while IFS= read -r probe; do
-      [ -n "$probe" ] || continue
-      matches=$(grep -lF -e "$probe" "$proj"/*.jsonl 2>/dev/null | head -2)
-      if [ -n "$matches" ] && [ "$(printf '%s\n' "$matches" | grep -c .)" -eq 1 ]; then
-        file=$matches
+    for candidate in $candidates; do
+      if tail -c 262144 -- "$candidate" 2>/dev/null | grep -qF -- "$title"; then
+        file=$candidate
         break
       fi
+    done
+  fi
+  if [ -z "$file" ]; then
+    probes=$(tmux capture-pane -p -J -t "$pane" -S -80 2>/dev/null | awk 'length($0) >= 24' | tail -20)
+    while IFS= read -r probe; do
+      [ -n "$probe" ] || continue
+      for candidate in $candidates; do
+        if tail -c 262144 -- "$candidate" 2>/dev/null | grep -qF -e "$probe"; then
+          file=$candidate
+          break 2
+        fi
+      done
     done <<PROBES
 $probes
 PROBES
   fi
-  [ -n "$file" ] || file=$(ls -t "$proj"/*.jsonl 2>/dev/null | head -1)
+  [ -n "$file" ] || file=$(printf '%s\n' "$candidates" | head -1)
   [ -n "$file" ] || error "no Claude transcript for $cwd" 23
   header "$(basename "$file" .jsonl)" jsonl "$file"
-  tail -c "$payload_bytes" -- "$file" 2>/dev/null
+  tail -c "$payload_bytes" -- "$file" 2>/dev/null | emit
   exit 0
 fi
 
@@ -133,7 +145,7 @@ if [ "$provider" = codex ]; then
   [ -n "$file" ] || error "no Codex transcript for $cwd" 23
   [ -n "$id" ] || id=$(basename "$file" .jsonl | sed 's/^rollout-[0-9T:.-]*-//')
   header "$id" jsonl "$file"
-  tail -c "$payload_bytes" -- "$file" 2>/dev/null
+  tail -c "$payload_bytes" -- "$file" 2>/dev/null | emit
   exit 0
 fi
 
@@ -162,7 +174,7 @@ if [ "$provider" = kimi ]; then
   [ -n "$file" ] || error "no Kimi transcript for $cwd" 23
   [ -n "$id" ] || id=$fallback_id
   header "$id" jsonl "$file"
-  tail -c "$payload_bytes" -- "$file" 2>/dev/null
+  tail -c "$payload_bytes" -- "$file" 2>/dev/null | emit
   exit 0
 fi
 
@@ -177,7 +189,7 @@ for candidate in $pane_pid $(pgrep -P "$pane_pid" 2>/dev/null) \
 done
 if [ -n "$sid" ] && [ -f "$HOME/.hermes/sessions/$sid.jsonl" ]; then
   header "$sid" hermes-jsonl "$HOME/.hermes/sessions/$sid.jsonl"
-  tail -c "$payload_bytes" -- "$HOME/.hermes/sessions/$sid.jsonl" 2>/dev/null
+  tail -c "$payload_bytes" -- "$HOME/.hermes/sessions/$sid.jsonl" 2>/dev/null | emit
   exit 0
 fi
 sqlite_bin=""
@@ -264,12 +276,69 @@ error "no Hermes transcript source on this host (no session jsonl, no sqlite3, n
 """
 
 
+# Follow-up script for a pane whose transcript file is already known: it only
+# stats the file and streams the bytes written since the last poll, so a busy
+# agent costs "new bytes" instead of the whole 4 MB window every second.
+REMOTE_TRANSCRIPT_TAIL_SCRIPT = r"""
+file=$1
+offset=${2:-0}
+cap=${3:-4194304}
+[ -f "$file" ] || exit 25
+size=$(stat -c '%s' -- "$file" 2>/dev/null || stat -f '%z' -- "$file" 2>/dev/null) || exit 26
+stamp=$(stat -c '%Y' -- "$file" 2>/dev/null || stat -f '%m' -- "$file" 2>/dev/null) || exit 26
+mode=full
+start=1
+if [ "$size" -gt "$cap" ]; then start=$((size - cap + 1)); fi
+if [ "$offset" -gt 0 ] && [ "$offset" -le "$size" ] && [ $((size - offset)) -le "$cap" ]; then
+  mode=append
+  start=$((offset + 1))
+fi
+encoding=none
+if command -v gzip >/dev/null 2>&1; then encoding=gzip; fi
+truncated=0
+if [ "$start" -gt 1 ]; then truncated=1; fi
+printf 'TMUXWEB_MODE<::>%s\nTMUXWEB_TRUNCATED<::>%s\nTMUXWEB_ENCODING<::>%s\nTMUXWEB_STAMP<::>%s %s\nTMUXWEB_PAYLOAD\n' \
+  "$mode" "$truncated" "$encoding" "$stamp" "$size"
+if [ "$encoding" = gzip ]; then
+  tail -c +"$start" -- "$file" 2>/dev/null | gzip -c
+else
+  tail -c +"$start" -- "$file" 2>/dev/null
+fi
+"""
+
 # Parsed remote transcripts are cached per (host, pane, limit) so a 1s UI poll
 # only costs a tiny stat when nothing changed.
 TRANSCRIPT_CACHE_LOCK = threading.Lock()
 TRANSCRIPT_CACHE: dict[tuple, dict] = {}
 TRANSCRIPT_CACHE_TTL = 2.0
 TRANSCRIPT_CACHE_SIZE = 64
+
+
+# Per (host, pane) incremental state: where we stopped reading and the bytes we
+# have accumulated, so later polls only carry the new tail.
+TRANSCRIPT_STATE_LOCK = threading.Lock()
+TRANSCRIPT_STATE: dict[tuple, dict] = {}
+TRANSCRIPT_STATE_SIZE = 64
+TRANSCRIPT_BUFFER_BYTES = 4 * 1024 * 1024
+
+
+def transcript_state(host_id: str, pane_id: str) -> dict | None:
+    with TRANSCRIPT_STATE_LOCK:
+        return TRANSCRIPT_STATE.get((host_id, pane_id))
+
+
+def store_transcript_state(host_id: str, pane_id: str, state: dict) -> None:
+    with TRANSCRIPT_STATE_LOCK:
+        TRANSCRIPT_STATE[(host_id, pane_id)] = state
+        if len(TRANSCRIPT_STATE) > TRANSCRIPT_STATE_SIZE:
+            oldest = sorted(TRANSCRIPT_STATE.items(), key=lambda item: item[1].get("at", 0))
+            for old_key, _value in oldest[:len(TRANSCRIPT_STATE) - TRANSCRIPT_STATE_SIZE]:
+                TRANSCRIPT_STATE.pop(old_key, None)
+
+
+def drop_transcript_state(host_id: str, pane_id: str) -> None:
+    with TRANSCRIPT_STATE_LOCK:
+        TRANSCRIPT_STATE.pop((host_id, pane_id), None)
 
 
 def cache_entry(key: tuple):
@@ -287,12 +356,17 @@ def store_cache_entry(key: tuple, entry: dict) -> None:
 
 
 def parse_transcript_response(stdout: bytes) -> tuple[dict, str]:
-    """Split the helper's header block from the raw transcript payload."""
-    text = stdout.decode(errors="replace")
-    marker = "\nTMUXWEB_PAYLOAD\n"
-    index = text.find(marker)
+    """Split the helper's header block from the (possibly gzipped) payload.
+
+    Header lines are plain text; the payload is JSONL, gzipped on the wire when
+    the remote host has gzip, because a serialized transcript is mostly repeated
+    JSON and the remote uplink is the bottleneck.
+    """
+    marker = b"\nTMUXWEB_PAYLOAD\n"
+    index = stdout.find(marker)
+    header_bytes = stdout if index < 0 else stdout[:index]
     header = {}
-    for line in (text if index < 0 else text[:index]).splitlines():
+    for line in header_bytes.decode(errors="replace").splitlines():
         if "<::>" not in line:
             continue
         key, value = line.split("<::>", 1)
@@ -301,7 +375,13 @@ def parse_transcript_response(stdout: bytes) -> tuple[dict, str]:
         raise RuntimeError(header["TMUXWEB_ERROR"])
     if index < 0:
         raise RuntimeError("remote transcript response is incomplete")
-    return header, text[index + len(marker):]
+    payload = stdout[index + len(marker):]
+    if header.get("TMUXWEB_ENCODING") == "gzip" and payload:
+        try:
+            payload = gzip.decompress(payload)
+        except (OSError, EOFError) as exc:
+            raise RuntimeError("cannot decode the remote transcript payload: %s" % exc) from None
+    return header, payload.decode(errors="replace")
 
 
 REMOTE_LIST_SCRIPT = r"""
@@ -751,7 +831,8 @@ class SSHRunner:
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
         limit = max(1, min(int(limit), 1000))
-        key = (self.host.get("id") or "", pane_id, limit)
+        host_id = self.host.get("id") or ""
+        key = (host_id, pane_id, limit)
         entry = cache_entry(key)
         now = time.monotonic()
         if entry:
@@ -763,20 +844,38 @@ class SSHRunner:
                 data["mtime"] = self._probe_mtime(entry["stamp"]) or data.get("mtime", 0)
                 return data
 
-        command = (f"sh -c {shlex.quote(REMOTE_TRANSCRIPT_SCRIPT)} "
-                   f"sh {shlex.quote(pane_id)} {limit}")
-        completed = self.run(command, timeout=90)
-        try:
-            header, payload = parse_transcript_response(completed.stdout)
-        except RuntimeError:
-            if completed.returncode != 0:
-                detail = completed.stderr.decode(errors="replace").strip()
-                if detail:
-                    raise RuntimeError(detail) from None
-            raise
+        state = transcript_state(host_id, pane_id)
+        header: dict[str, str] = {}
+        payload = b""
+        if state and state.get("primary"):
+            header, payload, state = self._follow_transcript(host_id, pane_id, state)
+        if not header:
+            command = (f"sh -c {shlex.quote(REMOTE_TRANSCRIPT_SCRIPT)} "
+                       f"sh {shlex.quote(pane_id)} {limit}")
+            completed = self.run(command, timeout=90)
+            try:
+                header, payload = parse_transcript_response(completed.stdout)
+            except RuntimeError:
+                if completed.returncode != 0:
+                    detail = completed.stderr.decode(errors="replace").strip()
+                    if detail:
+                        raise RuntimeError(detail) from None
+                raise
+            drop_transcript_state(host_id, pane_id)
+            state = {
+                "provider": header.get("TMUXWEB_PROVIDER", ""),
+                "format": header.get("TMUXWEB_FORMAT", "jsonl"),
+                "session": header.get("TMUXWEB_SESSION", ""),
+                "primary": header.get("TMUXWEB_PRIMARY", ""),
+                "offset": self._stamp_size(header.get("TMUXWEB_STAMP", "")),
+                "buffer": payload,
+                "at": now,
+            }
+            if state["primary"]:
+                store_transcript_state(host_id, pane_id, state)
         data = transcript_reader.parse_remote_payload(
             header.get("TMUXWEB_PROVIDER", ""), header.get("TMUXWEB_FORMAT", "jsonl"),
-            payload, limit, header.get("TMUXWEB_SESSION", ""), 0,
+            state.get("buffer", payload), limit, header.get("TMUXWEB_SESSION", ""), 0,
         )
         if not data.get("messages"):
             raise RuntimeError("this session has no messages yet")
@@ -790,6 +889,59 @@ class SSHRunner:
             probe.append(primary + "-wal")
         store_cache_entry(key, {"data": copy.deepcopy(data), "at": now, "probe": probe, "stamp": stamp})
         return data
+
+    @staticmethod
+    def _stamp_size(stamp: str) -> int:
+        tokens = stamp.split()
+        if len(tokens) >= 2:
+            try:
+                return int(tokens[1])
+            except ValueError:
+                return 0
+        return 0
+
+    def _follow_transcript(self, host_id: str, pane_id: str, state: dict) -> tuple[dict, bytes, dict]:
+        """Read only the bytes appended since the last poll (or the tail window).
+
+        Returns (header, payload, state); the header is empty when the fast path
+        cannot be used and the caller should fall back to full discovery.
+        """
+        command = (f"sh -c {shlex.quote(REMOTE_TRANSCRIPT_TAIL_SCRIPT)} "
+                   f"sh {shlex.quote(state['primary'])} {int(state.get('offset') or 0)}")
+        completed = self.run(command, timeout=60)
+        try:
+            header, payload = parse_transcript_response(completed.stdout)
+        except RuntimeError:
+            drop_transcript_state(host_id, pane_id)
+            return {}, b"", state
+        if header.get("TMUXWEB_ERROR"):
+            drop_transcript_state(host_id, pane_id)
+            return {}, b"", state
+        mode = header.get("TMUXWEB_MODE", "full")
+        stamp = header.get("TMUXWEB_STAMP", "")
+        offset = self._stamp_size(stamp)
+        if mode == "append":
+            merged = state.get("remainder", "") + payload
+            cut = merged.rfind("\n") + 1
+            complete, remainder = merged[:cut], merged[cut:]
+            buffer = (state.get("buffer", "") + complete)[-TRANSCRIPT_BUFFER_BYTES:]
+        elif header.get("TMUXWEB_TRUNCATED") == "1":
+            # the window started mid-file, so drop the leading partial line
+            cut = payload.find("\n") + 1
+            buffer, remainder = (payload[cut:], "") if cut > 0 else ("", payload)
+        else:
+            buffer, remainder = payload, ""
+        state = {**state, "offset": offset, "buffer": buffer, "remainder": remainder,
+                 "at": time.monotonic()}
+        store_transcript_state(host_id, pane_id, state)
+        header = {
+            "TMUXWEB_PROVIDER": state.get("provider", ""),
+            "TMUXWEB_FORMAT": state.get("format", "jsonl"),
+            "TMUXWEB_SESSION": state.get("session", ""),
+            "TMUXWEB_PRIMARY": state.get("primary", ""),
+            "TMUXWEB_STAMP": stamp,
+        }
+        return header, b"", state
 
     def list_files(self, directory: str, show_hidden: bool = False, limit: int = 2000) -> dict:
         """List a remote directory with POSIX tools only (no python3 needed)."""

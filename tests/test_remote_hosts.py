@@ -5,8 +5,9 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from remote_hosts import (FIELD_SEPARATOR, REMOTE_LIST_SCRIPT, TRANSCRIPT_CACHE, RemoteHostStore, SSHRunner,
-                          pane_ref, parse_remote_listing, parse_tmux_panes, split_pane_ref, ssh_mux_path,
+from remote_hosts import (FIELD_SEPARATOR, REMOTE_LIST_SCRIPT, REMOTE_TRANSCRIPT_TAIL_SCRIPT, TRANSCRIPT_CACHE,
+                          TRANSCRIPT_STATE, RemoteHostStore, SSHRunner, pane_ref, parse_remote_listing,
+                          parse_tmux_panes, parse_transcript_response, split_pane_ref, ssh_mux_path,
                           validate_private_key_text)
 
 
@@ -219,10 +220,139 @@ class RemoteHostTests(unittest.TestCase):
         # transcripts are pulled as file bytes (tail) and parsed locally; sqlite3 and
         # a Hermes-only python3 runtime are last-resort paths, never the default
         self.assertIn("tail -c", command)
-        self.assertIn("grep -lF", command)
+        # discovery scans only the newest files' tails, never whole 300 MB logs
+        self.assertIn("ls -t", command)
+        self.assertIn("head -3", command)
+        self.assertIn("grep -qF", command)
+        self.assertNotIn("grep -lF", command)
         self.assertLess(command.index("tail -c"), command.index("python3"))
         self.assertNotIn("--pane", command)  # the old python reader invocation is gone
         self.assertEqual([item["text"] for item in data["messages"]], ["问题", "回答"])
+
+    def test_incremental_transcript_only_transfers_new_bytes(self):
+        runner = self.make_runner()
+        calls = []
+
+        first_lines = [
+            json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "id": "m1",
+                                                             "content": [{"type": "input_text", "text": "问题一"}]}}),
+            json.dumps({"type": "response_item", "payload": {"type": "message", "role": "assistant", "id": "m2",
+                                                             "content": [{"type": "output_text", "text": "回答一"}]}}),
+        ]
+        discovery = (b"TMUXWEB_PROVIDER<::>codex\nTMUXWEB_SESSION<::>abc\nTMUXWEB_FORMAT<::>jsonl\n"
+                     b"TMUXWEB_PRIMARY<::>/home/user/.codex/sessions/a.jsonl\n"
+                     b"TMUXWEB_STAMP<::>1793000000 " + str(len("\n".join(first_lines) + "\n")).encode() +
+                     b"\nTMUXWEB_PAYLOAD\n") + ("\n".join(first_lines) + "\n").encode()
+
+        appended = [json.dumps({"type": "response_item", "payload": {
+            "type": "message", "role": "assistant", "id": "m3", "content": [{"type": "output_text", "text": "回答二"}]}})]
+        size_after = len("\n".join(first_lines) + "\n") + len(appended[0] + "\n")
+        follow = (b"TMUXWEB_MODE<::>append\nTMUXWEB_STAMP<::>1793000005 " + str(size_after).encode() +
+                  b"\nTMUXWEB_PAYLOAD\n") + (appended[0] + "\n").encode()
+
+        class Result:
+            def __init__(self, stdout):
+                self.stdout, self.stderr, self.returncode = stdout, b"", 0
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return Result(discovery if "TMUXWEB_MODE" not in command and "tail -c 262144" in command else follow)
+            # discovery script contains the Claude/Codex locator; the follow script stats + tails
+
+        runner.run = fake_run
+        first = runner.transcript("%9", 20)
+        self.assertEqual([item["text"] for item in first["messages"]], ["问题一", "回答一"])
+        TRANSCRIPT_CACHE.clear()  # simulate the next poll after the 2s TTL
+        self.assertIn("TMUXWEB_PAYLOAD", discovery.decode())
+
+        second = runner.transcript("%9", 20)
+        # the follow-up command carries the file and the byte offset, not a refetch
+        self.assertIn("/home/user/.codex/sessions/a.jsonl", calls[-1])
+        self.assertIn(str(len("\n".join(first_lines) + "\n")), calls[-1])
+        self.assertEqual([item["text"] for item in second["messages"]], ["问题一", "回答一", "回答二"])
+
+    def test_incremental_transcript_resets_when_the_file_is_rewritten(self):
+        runner = self.make_runner()
+        calls = []
+        line = json.dumps({"role": "assistant", "content": "旧内容"}) + "\n"
+        rebuilt = json.dumps({"role": "assistant", "content": "新内容"}) + "\n"
+        discovery = (b"TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_SESSION<::>s1\nTMUXWEB_FORMAT<::>hermes-jsonl\n"
+                     b"TMUXWEB_PRIMARY<::>/home/user/.hermes/sessions/s1.jsonl\nTMUXWEB_STAMP<::>1793000000 "
+                     + str(len(line)).encode() + b"\nTMUXWEB_PAYLOAD\n") + line.encode()
+        rewritten = (b"TMUXWEB_MODE<::>full\nTMUXWEB_STAMP<::>1793000100 " + str(len(rebuilt)).encode() +
+                     b"\nTMUXWEB_PAYLOAD\n") + rebuilt.encode()
+
+        class Result:
+            def __init__(self, stdout):
+                self.stdout, self.stderr, self.returncode = stdout, b"", 0
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return Result(discovery if len(calls) == 1 else rewritten)
+
+        runner.run = fake_run
+        first = runner.transcript("%9", 20)
+        self.assertEqual([item["text"] for item in first["messages"]], ["旧内容"])
+        TRANSCRIPT_CACHE.clear()
+        second = runner.transcript("%9", 20)
+        self.assertEqual([item["text"] for item in second["messages"]], ["新内容"])
+
+    def test_incremental_transcript_falls_back_to_discovery_when_the_file_vanishes(self):
+        runner = self.make_runner()
+        calls = []
+        line = json.dumps({"role": "assistant", "content": "仍在"}) + "\n"
+        discovery = (b"TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_SESSION<::>s1\nTMUXWEB_FORMAT<::>hermes-jsonl\n"
+                     b"TMUXWEB_PRIMARY<::>/home/user/.hermes/sessions/s1.jsonl\nTMUXWEB_STAMP<::>1793000000 "
+                     + str(len(line)).encode() + b"\nTMUXWEB_PAYLOAD\n") + line.encode()
+        missing = b"TMUXWEB_ERROR<::>file missing\n"
+
+        class Result:
+            def __init__(self, stdout, returncode=0):
+                self.stdout, self.stderr, self.returncode = stdout, b"", returncode
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if len(calls) == 1:
+                return Result(discovery)
+            if len(calls) == 2:
+                return Result(missing, returncode=25)
+            return Result(discovery)
+
+        runner.run = fake_run
+        runner.transcript("%9", 20)
+        TRANSCRIPT_CACHE.clear()
+        runner.transcript("%9", 20)  # follow fails -> full discovery runs again
+        TRANSCRIPT_CACHE.clear()
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([item["text"] for item in runner.transcript("%9", 20)["messages"]], ["仍在"])
+
+    def test_gzipped_payloads_are_decoded(self):
+        import gzip as gziplib
+        payload = "\n".join([
+            json.dumps({"role": "user", "content": "压缩的问题"}),
+            json.dumps({"role": "assistant", "content": "压缩的回答"}),
+        ]) + "\n"
+        stdout = (b"TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_SESSION<::>s9\nTMUXWEB_FORMAT<::>hermes-jsonl\n"
+                  b"TMUXWEB_ENCODING<::>gzip\nTMUXWEB_PAYLOAD\n") + gziplib.compress(payload.encode())
+        header, decoded = parse_transcript_response(stdout)
+        self.assertEqual(header["TMUXWEB_ENCODING"], "gzip")
+        self.assertEqual(decoded, payload)
+
+        runner = self.make_runner()
+
+        class Result:
+            def __init__(self, stdout):
+                self.stdout, self.stderr, self.returncode = stdout, b"", 0
+
+        runner.run = lambda command, **kwargs: Result(stdout)
+        data = runner.transcript("%9", 10)
+        self.assertEqual([item["text"] for item in data["messages"]], ["压缩的问题", "压缩的回答"])
+
+    def test_a_broken_gzip_payload_is_reported(self):
+        stdout = (b"TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_SESSION<::>s9\nTMUXWEB_FORMAT<::>hermes-jsonl\n"
+                  b"TMUXWEB_ENCODING<::>gzip\nTMUXWEB_PAYLOAD\nnot-gzip")
+        with self.assertRaisesRegex(RuntimeError, "cannot decode"):
+            parse_transcript_response(stdout)
 
     def test_remote_transcript_surfaces_helper_errors(self):
         stdout = b"TMUXWEB_ERROR<::>no Codex transcript for /srv/work\n"
@@ -239,6 +369,7 @@ class RemoteHostTests(unittest.TestCase):
 
     def make_runner(self):
         TRANSCRIPT_CACHE.clear()
+        TRANSCRIPT_STATE.clear()
         return SSHRunner({"id": "0123456789abcdef", "hostname": "host", "port": 22,
                           "username": "user", "auth_type": "password", "credential": "x",
                           "host_key": "host ssh-ed25519 AAAA"})
