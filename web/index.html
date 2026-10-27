@@ -47,7 +47,35 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     .main:fullscreen,.main.fullscreen-fallback{width:100vw;height:100vh;background:var(--page)}.main:fullscreen .topbar,.main.fullscreen-fallback .topbar{padding-left:20px}.app.fullscreen-fallback{display:block}.app.fullscreen-fallback .sidebar{display:none}.app.fullscreen-fallback .main{position:fixed;z-index:100;inset:0}.main:fullscreen .fullscreen-btn,.main.fullscreen-fallback .fullscreen-btn{background:#292825;color:#fff;border-color:#292825}
     @media(max-width:760px){html,body{height:var(--visual-height)}.app,.app.sidebar-collapsed{position:fixed;top:var(--visual-top);left:0;right:0;height:var(--visual-height);grid-template-columns:1fr}.sidebar,.app.sidebar-collapsed .sidebar{position:fixed;z-index:20;inset:0 auto 0 0;width:min(86vw,330px);opacity:1;pointer-events:auto;transform:translateX(-105%);box-shadow:18px 0 50px rgba(0,0,0,.18)}.sidebar.open{transform:none}.sidebar-open,.app.sidebar-collapsed .sidebar-open{display:inline-grid;place-items:center}.drawer-backdrop.show{display:block;position:fixed;z-index:19;inset:0;background:rgba(20,20,18,.35)}.topbar{height:58px;padding:0 10px;gap:8px}.session-sub{max-width:58vw}.status-text{display:none}.top-actions{gap:5px}.fullscreen-btn{width:36px;padding:0;font-size:0}.fullscreen-btn::after{content:'⛶';font-size:18px}.scroll{padding:16px 0 calc(24px + env(safe-area-inset-bottom))}.message-shell,.transcript{width:calc(100% - 18px)}.capture-output{padding:14px 12px;font-size:11px}.chat-bubble{max-width:90%}.assistant-body{font-size:14px;line-height:1.55}.assistant-body table{font-size:12px}.assistant-body th,.assistant-body td{padding:6px 8px}.main{grid-template-rows:58px minmax(0,1fr) calc(126px + env(safe-area-inset-bottom))}.composer{min-height:126px;padding:8px 9px calc(9px + env(safe-area-inset-bottom))}.composer-card{border-radius:15px}.composer textarea{min-height:62px;max-height:72px}.composer-foot{padding-top:5px}.composer-foot span:first-child{display:none}.submit-option{font-size:10px}.terminal-mode{padding:4px}.app.mobile-composing .main{grid-template-rows:0 minmax(44px,1fr) 112px}.app.mobile-composing .topbar{visibility:hidden;overflow:hidden;height:0;border:0}.app.mobile-composing .composer{min-height:112px;padding:7px 8px 6px;background:#f7f7f5;box-shadow:0 -8px 24px rgba(32,31,28,.08)}.app.mobile-composing .composer textarea{min-height:56px;max-height:64px}.app.mobile-composing .composer-foot{padding-top:3px}.app.mobile-composing .scroll{padding-top:8px;padding-bottom:8px}.app.mobile-composing .sidebar,.app.mobile-composing .drawer-backdrop{display:none}}
     @media(max-width:760px){html,body{width:100%;max-width:100%;overflow:hidden;-webkit-text-size-adjust:100%;text-size-adjust:100%}.app,.app.sidebar-collapsed,.main{width:100%;max-width:100vw;min-width:0}.conversation,.scroll,.chat-message{min-width:0;max-width:100%}.scroll{scrollbar-gutter:auto}.message-shell,.transcript{width:calc(100% - 28px);max-width:100%;overflow-wrap:anywhere}.chat-message{margin-bottom:14px}.chat-bubble{max-width:88%;padding:10px 13px}.assistant-body{width:auto;max-width:94%;min-width:0;padding:11px 13px;border-radius:15px;font-size:13.5px;line-height:1.52}.assistant-body img,.assistant-body video,.assistant-body svg{max-width:100%;height:auto}.terminal-frame,.assistant-body pre,.assistant-body table{max-width:100%;overflow-x:auto}.assistant-body table{font-size:11.5px}.assistant-body th,.assistant-body td{padding:5px 7px}.capture-output{padding:12px 10px;font-size:10.5px}.composer{min-width:0;padding-left:12px;padding-right:12px}.composer-inner{width:100%;max-width:100%}.composer textarea{font-size:16px}.app.terminal-view .terminal-mode{padding:0;grid-template-rows:minmax(0,1fr) auto}.terminal-keys{display:block;padding-bottom:env(safe-area-inset-bottom)}.terminal-host .xterm{padding:3px}.terminal-key{height:40px;min-width:45px}}
-  </style>
+    .md-viewer{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:24px}
+  .md-viewer[hidden]{display:none}
+  .md-backdrop{position:absolute;inset:0;background:rgba(10,10,8,.72);backdrop-filter:blur(2px)}
+  .md-panel{position:relative;display:flex;flex-direction:column;width:min(960px,100%);max-height:min(88vh,1000px);border:1px solid #d8d5c9;border-radius:14px;background:#fbfaf6;color:#1d1c19;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+  .md-head{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #e0ded4;background:#f2f0e8}
+  .md-title-wrap{min-width:0;display:flex;flex-direction:column;gap:2px}
+  .md-title-wrap strong{font-weight:500;font-size:14px}
+  .md-path{color:#6b675e;font:11px ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:58vw}
+  .md-tools{display:flex;gap:6px;flex-shrink:0}
+  .md-btn{padding:5px 10px;border:1px solid #d5d2c6;border-radius:8px;background:#fff;color:#1d1c19;font:12px inherit;cursor:pointer;text-decoration:none}
+  .md-btn:hover{background:#eceae1}
+  .md-body{overflow:auto;padding:20px 24px 28px;line-height:1.62;font-size:14px}
+  .md-body.source{white-space:pre-wrap;font:12.5px/1.55 ui-monospace,SFMono-Regular,monospace}
+  .md-body h1,.md-body h2,.md-body h3{margin:1.2em 0 .5em;line-height:1.3;font-weight:600}
+  .md-body h1{font-size:22px} .md-body h2{font-size:18px} .md-body h3{font-size:15px}
+  .md-body p{margin:.55em 0} .md-body ul,.md-body ol{margin:.5em 0;padding-left:22px}
+  .md-body code{font:12.5px ui-monospace,monospace;background:#eceae3;padding:1px 5px;border-radius:4px}
+  .md-body pre{background:#272622;color:#f5f4ed;border:1px solid #d8d5c9;border-radius:8px;padding:12px;overflow:auto}
+  .md-body pre code{background:none;padding:0}
+  .md-body table{border-collapse:collapse;margin:.7em 0;font-size:13px}
+  .md-body th,.md-body td{border:1px solid #d1cfc6;padding:6px 10px}
+  .md-body blockquote{margin:.6em 0;padding:.2em 0 .2em 12px;border-left:3px solid #c96442;color:#5c584f}
+  .md-body img{max-width:100%;height:auto;border-radius:8px}
+  .md-body a{color:#1a5fbf}
+  .md-hint{color:#6b675e;font-size:12px}
+  .md-body .assistant-body{width:auto;max-width:none;min-width:0;padding:0;border:0;background:none;box-shadow:none;font-size:14px;line-height:1.62;color:inherit}
+  body.viewer-open{overflow:hidden}
+  .assistant-body img.local-image{max-height:260px;padding:6px;border-radius:8px;background:#f7f4ea}
+</style>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -93,7 +121,8 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   <main class="main" id="main">
     <header class="topbar"><div style="display:flex;align-items:center;min-width:0"><button class="icon-btn sidebar-open" id="menu" title="展开侧边栏" aria-label="展开侧边栏"><svg class="ico"><use href="#i-menu"/></svg></button><div class="session"><div class="session-title" id="selected-title">选择一个会话</div><div class="session-sub" id="selected-sub">从左侧选择 tmux pane</div></div></div><div class="top-actions"><div class="status"><span class="status-dot" id="status-dot"></span><span class="status-text" id="status-text">未连接</span></div><button class="share-btn" id="share-button" disabled><svg class="ico"><use href="#i-share"/></svg>分享</button><button class="fullscreen-btn" id="fullscreen" title="全屏显示当前窗口"><svg class="ico"><use href="#i-fullscreen"/></svg>对话全屏</button></div></header>
     <div class="error-banner" id="error"></div>
-    <section class="conversation"><div class="scroll" id="scroll"><div class="empty" id="empty"><div><strong>选择一个 tmux 会话</strong>实时查看内容，并在下方继续输入</div></div><div class="transcript" id="transcript"></div><div class="message-shell" id="message-shell" hidden><div class="agent-label"><span class="agent-mark" id="agent-mark">T</span><span id="agent-name">tmux</span></div><div class="terminal-frame"><pre class="capture-output" id="terminal"></pre></div></div></div><button class="jump" id="jump">回到最新 ↓</button><div class="terminal-mode" id="terminal-mode"><div class="terminal-host" id="terminal-host"></div><div class="terminal-keys" id="terminal-keys"><div class="terminal-key-scroll"><button class="terminal-key" data-key="Escape">Esc</button><button class="terminal-key" data-mod="ctrl">Ctrl</button><button class="terminal-key" data-mod="alt">Alt</button><button class="terminal-key" data-key="Tab">Tab</button><button class="terminal-key" data-key="ArrowLeft">←</button><button class="terminal-key" data-key="ArrowUp">↑</button><button class="terminal-key" data-key="ArrowDown">↓</button><button class="terminal-key" data-key="ArrowRight">→</button><button class="terminal-key terminal-pad" id="terminal-pad" aria-label="长按并滑动方向"></button><button class="terminal-key" data-key="PageUp">PgUp</button><button class="terminal-key" data-key="PageDown">PgDn</button><button class="terminal-key" data-key="Home">Home</button><button class="terminal-key" data-key="End">End</button><button class="terminal-key" data-key="c">C</button><button class="terminal-key" data-key="d">D</button><button class="terminal-key" data-key="l">L</button><button class="terminal-key" data-key="z">Z</button><button class="terminal-key" data-key="Enter">Enter</button></div></div></div></section>
+    <section class="conversation"><div class="scroll" id="scroll"><div class="empty" id="empty"><div><strong>选择一个 tmux 会话</strong>实时查看内容，并在下方继续输入</div></div><div class="transcript" id="transcript"></div><div class="message-shell" id="message-shell" hidden><div class="agent-label"><span class="agent-mark" id="agent-mark">T</span><span id="agent-name">tmux</span></div><div class="terminal-frame"><pre class="capture-output" id="terminal"></pre></div></div></div><button class="jump" id="jump">回到最新 ↓</button>
+<div class="terminal-mode" id="terminal-mode"><div class="terminal-host" id="terminal-host"></div><div class="terminal-keys" id="terminal-keys"><div class="terminal-key-scroll"><button class="terminal-key" data-key="Escape">Esc</button><button class="terminal-key" data-mod="ctrl">Ctrl</button><button class="terminal-key" data-mod="alt">Alt</button><button class="terminal-key" data-key="Tab">Tab</button><button class="terminal-key" data-key="ArrowLeft">←</button><button class="terminal-key" data-key="ArrowUp">↑</button><button class="terminal-key" data-key="ArrowDown">↓</button><button class="terminal-key" data-key="ArrowRight">→</button><button class="terminal-key terminal-pad" id="terminal-pad" aria-label="长按并滑动方向"></button><button class="terminal-key" data-key="PageUp">PgUp</button><button class="terminal-key" data-key="PageDown">PgDn</button><button class="terminal-key" data-key="Home">Home</button><button class="terminal-key" data-key="End">End</button><button class="terminal-key" data-key="c">C</button><button class="terminal-key" data-key="d">D</button><button class="terminal-key" data-key="l">L</button><button class="terminal-key" data-key="z">Z</button><button class="terminal-key" data-key="Enter">Enter</button></div></div></div></section>
     <dialog class="session-dialog" id="session-dialog" aria-labelledby="session-dialog-title">
     <form id="session-form">
       <h2 id="session-dialog-title">新建 tmux 会话</h2>
@@ -203,13 +232,16 @@ import {marked} from '/assets/marked.esm.js';
   $('transcript').addEventListener('click',event=>{
     const messageCopy=event.target.closest('[data-msg-copy]');
     if(messageCopy){const text=(state.messageText&&state.messageText.get(messageCopy.dataset.msgCopy))||'';copyText(text,messageCopy);return;}
+    const localLink=event.target.closest('a[href]');
+    if(localLink&&looksLikeMarkdownLink(localLink)&&!event.metaKey&&!event.ctrlKey&&!event.shiftKey){
+      event.preventDefault();openMarkdownViewer(localLink.getAttribute('href'),localLink.textContent.trim()||'');return;}
     const blockCopy=event.target.closest('[data-block-copy]');
     if(blockCopy){const wrap=blockCopy.closest('.block-wrap');if(!wrap)return;
       copyText(wrap.dataset.kind==='table'?wrap.dataset.tsv:wrap.dataset.source,blockCopy);return;}
     const blockSource=event.target.closest('[data-block-source]');
     if(blockSource){const wrap=blockSource.closest('.block-wrap');if(wrap)toggleBlockSource(wrap,blockSource);return;}});
   function paneCwd(){const pane=state.panes.find(item=>item.id===state.selected);return pane&&pane.path?pane.path.replace(/\/+$/,''):'';}
-  function fileLinkHref(raw){const value=String(raw||'').trim();if(!value)return '';
+  function fileLinkHref(raw,baseCwd){const value=String(raw||'').trim();if(!value)return '';
     // real URLs and in-page anchors stay untouched
     if(/^(?:https?:|mailto:|tel:|data:|blob:|javascript:|#)/i.test(value))return value;
     if(value.startsWith('//'))return value;
@@ -219,22 +251,83 @@ import {marked} from '/assets/marked.esm.js';
     try{if(/%[0-9A-Fa-f]{2}/.test(path))path=decodeURIComponent(path);}catch(_error){}
     // editors link to "file.md:3685": keep the file, drop the line/column suffix
     if(!/^[A-Za-z]:[\\/]/.test(path))path=path.replace(/^(.*?):\d+(?::\d+)?$/,(match,file)=>file||match);
-    const cwd=paneCwd();
+    const cwd=baseCwd!==undefined?baseCwd:paneCwd();
     if(/^~\//.test(path)&&cwd)path=cwd.replace(/[^/]*$/,'')+path.slice(2);
     const absolute=path.startsWith('/')||/^[A-Za-z]:[\\/]/.test(path);
     if(!absolute){if(!cwd)return value;path=cwd+'/'+path;}
     if(!state.selected)return value;
     return `/api/panes/${encodeURIComponent(state.selected)}/files/raw?path=${encodeURIComponent(path)}`;}
-  function rewriteLocalLinks(root){if(!root)return;
+  function rewriteLocalLinks(root,baseCwd){if(!root)return;
     root.querySelectorAll('a[href]').forEach(link=>{const href=link.getAttribute('href')||'';
-      const next=fileLinkHref(href);if(next===href)return;
+      const next=fileLinkHref(href,baseCwd);if(next===href)return;
       link.setAttribute('href',next);link.setAttribute('target','_blank');link.setAttribute('rel','noopener noreferrer');
+      link.dataset.localFile='1';
       link.title=(link.title||'')+ (link.title?' · ':'') + '本地文件';});
     // images pointing at local paths would otherwise 404 against the console origin
     root.querySelectorAll('img[src]').forEach(image=>{const src=image.getAttribute('src')||'';
-      const next=fileLinkHref(src);if(next===src)return;
+      const next=fileLinkHref(src,baseCwd);if(next===src)return;
       image.setAttribute('src',next);image.dataset.localFile='1';image.classList.add('local-image');
       image.title=image.title||'本地图片';});}
+  const MD_VIEWER_EXTS=/^(md|markdown|mdx|txt|log|json|ya?ml|csv)$/i;
+  function markdownViewerBase(href){try{const url=new URL(href,location.origin);
+    const path=url.searchParams.get('path')||'';return path.replace(/[^/]*$/,'');}catch(_error){return '';}}
+  function markdownViewerName(href){try{const url=new URL(href,location.origin);
+    const path=url.searchParams.get('path')||'';return path.split('/').pop()||'文件';}catch(_error){return '文件';}}
+  function looksLikeMarkdownLink(link){
+    if(!link||!link.dataset.localFile)return false;
+    const href=link.getAttribute('href')||'';
+    if(!href.includes('/files/raw?'))return false;
+    let path='';
+    try{path=new URL(href,location.origin).searchParams.get('path')||'';}catch(_error){return false;}
+    const ext=(path.split('.').pop()||'').toLowerCase();
+    return MD_VIEWER_EXTS.test(ext);}
+  async function openMarkdownViewer(href,title){
+    const viewer=$('md-viewer'),body=$('md-body'),toggle=$('md-toggle');
+    state.viewer={href,base:markdownViewerBase(href),source:'',path:'',rendered:false};
+    $('md-title').textContent=title||markdownViewerName(href);
+    $('md-path').textContent='';
+    $('md-open').setAttribute('href',href);
+    toggle.hidden=false;toggle.textContent='源码';toggle.setAttribute('aria-pressed','false');
+    body.className='md-body';body.innerHTML='<p class="md-hint">加载中…</p>';
+    viewer.hidden=false;document.body.classList.add('viewer-open');
+    try{
+      const response=await fetch(href,{cache:'no-store'});
+      if(!response.ok)throw new Error(response.status===404?'文件不存在':'读取失败（'+response.status+'）');
+      const text=await response.text();
+      const path=markdownViewerName(href);
+      state.viewer.source=text;state.viewer.path=path;
+      $('md-path').textContent=decodeURIComponent(new URL(href,location.origin).searchParams.get('path')||'');
+      const isMarkdown=/\.(md|markdown|mdx)$/i.test(path);
+      if(!isMarkdown&&text.length>400000){renderSource();return;}
+      if(!isMarkdown){body.innerHTML=`<pre>${htmlEscape(text)}</pre>`;toggle.hidden=true;return;}
+      if(text.length>1200000){
+        body.innerHTML=`<p class="md-hint">文件较大（${Math.round(text.length/1024)} KB），默认显示源码，可切换渲染。</p><pre>${htmlEscape(text.slice(0,1200000))}</pre>`;
+        state.viewer.rendered=false;toggle.textContent='渲染';toggle.setAttribute('aria-pressed','true');return;}
+      renderMarkdown();
+    }catch(error){
+      body.innerHTML=`<p class="block-error">${htmlEscape(String(error.message||error))}</p>`;
+      toggle.hidden=true;}
+    function renderSource(){
+      body.className='md-body source';body.textContent=state.viewer.source;
+      toggle.textContent='渲染';toggle.setAttribute('aria-pressed','true');state.viewer.rendered=false;}
+    function renderMarkdown(){
+      body.className='md-body';
+      body.innerHTML=`<article class="assistant"><div class="assistant-body">${markdown(state.viewer.source)}</div></article>`;
+      enhanceBlocks(body);rewriteLocalLinks(body,state.viewer.base);
+      toggle.textContent='源码';toggle.setAttribute('aria-pressed','false');state.viewer.rendered=true;
+      body.scrollTop=0;}
+    state.viewer.renderSource=renderSource;state.viewer.renderMarkdown=renderMarkdown;}
+  function closeMarkdownViewer(){const viewer=$('md-viewer');if(!viewer||viewer.hidden)return;
+    viewer.hidden=true;document.body.classList.remove('viewer-open');$('md-body').innerHTML='';state.viewer=null;}
+  $('md-viewer').addEventListener('click',event=>{
+    if(event.target.closest('[data-md-close]')){closeMarkdownViewer();return;}
+    // links inside a previewed document open the next document in place
+    const link=event.target.closest('#md-body a[href]');
+    if(link&&looksLikeMarkdownLink(link)&&!event.metaKey&&!event.ctrlKey&&!event.shiftKey){
+      event.preventDefault();openMarkdownViewer(link.getAttribute('href'),link.textContent.trim()||'');}});
+  $('md-toggle').addEventListener('click',()=>{const viewer=state.viewer;if(!viewer||!viewer.renderMarkdown)return;
+    viewer.rendered?viewer.renderSource():viewer.renderMarkdown();});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape')closeMarkdownViewer();});
   function cachedTranscript(id){return state.transcripts.get(id)||null;}
   function rememberTranscript(id,d){if(!id||!d||!Array.isArray(d.messages))return;const previous=cachedTranscript(id)||{};
     state.transcripts.set(id,{...previous,messages:d.messages,provider:d.provider||previous.provider||'',
@@ -379,5 +472,19 @@ import {marked} from '/assets/marked.esm.js';
   if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 })();
 </script>
+<div class="md-viewer" id="md-viewer" hidden>
+      <div class="md-backdrop" data-md-close></div>
+      <section class="md-panel" role="dialog" aria-modal="true" aria-labelledby="md-title">
+        <header class="md-head">
+          <div class="md-title-wrap"><strong id="md-title">文件</strong><span class="md-path" id="md-path"></span></div>
+          <div class="md-tools">
+            <button class="md-btn" id="md-toggle" type="button" aria-pressed="false">源码</button>
+            <a class="md-btn" id="md-open" target="_blank" rel="noopener noreferrer">新标签打开</a>
+            <button class="md-btn" id="md-close" type="button" data-md-close aria-label="关闭">关闭</button>
+          </div>
+        </header>
+        <div class="md-body" id="md-body"></div>
+      </section>
+    </div>
 </body>
 </html>

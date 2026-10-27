@@ -1258,6 +1258,14 @@ class TmuxWebTests(unittest.TestCase):
             response = self.client.get(f"/api/panes/%254/files/raw?path={handle.name}")
         self.assertIn(response.status_code, (401, 403))
 
+    def test_markdown_links_open_an_in_console_preview(self):
+        self.login()
+        response = self.client.get("/")
+        page = response.text
+        for marker in ('id="md-viewer"', 'id="md-toggle"', 'function openMarkdownViewer(',
+                       'function looksLikeMarkdownLink(', 'MD_VIEWER_EXTS'):
+            self.assertIn(marker, page)
+
     def test_rendered_transcript_links_are_rewritten_to_the_raw_endpoint(self):
         self.login()
         response = self.client.get("/")
