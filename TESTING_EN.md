@@ -61,6 +61,11 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   next page (300→600→1200) without moving the reading position, and the control disappears at the session start. `has_more` is true
   at `limit=300` and false once everything is loaded (`tests/test_transcript_reader.py::PagingTests`).
 
+- Working indicator: send to an agent pane (or watch one work) - an animated `处理中 Xs` line grows at the end of the conversation,
+  the header shows `<provider> · 处理中…` and the status dot turns orange; once the reply lands both settle back to idle. Plain
+  shells never show it. The API reports `waiting: true` when the last message is a user message
+  (`test_transcript_reports_an_unanswered_turn`).
+
 ## 1. Install test dependencies
 
 ```bash

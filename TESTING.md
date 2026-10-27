@@ -50,6 +50,8 @@
 
 - 长会话回翻：选一个有几百条消息的会话，首屏 300 条，顶部出现「加载更早的消息」；滚到顶部会自动加一页（300→600→1200），加载后阅读位置不跳、加载完显示最早的消息后按钮消失。API 侧 `has_more` 在 `limit=300` 时为 true、取全后为 false。单测：`tests/test_transcript_reader.py::PagingTests`（claude/codex/hermes 的 has_more 与 limit 上限）。
 
+- 处理中提示：给一个 agent pane 发消息（或等它正在跑），对话末尾出现「处理中 Xs」并逐秒增长，顶栏显示 `<provider> · 处理中…`、状态点为橙色；agent 回复落盘后提示消失、状态点恢复绿色。纯 shell pane 不显示该提示。API 侧 `waiting` 在最后一条是 user 时为 true。单测：`test_transcript_reports_an_unanswered_turn`、`test_progress_indicator_markup_is_present`。
+
 ## 1. 安装测试依赖
 
 ```bash

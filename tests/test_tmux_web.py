@@ -730,10 +730,10 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("signature!==state.transcriptSig", response.text)
 
         # the UI uses one inline SVG sprite instead of ad-hoc text glyphs and emoji
-        for symbol in ("i-folder", "i-server", "i-share", "i-refresh", "i-chevron-left",
+        for symbol in ("i-folder", "i-server", "i-share", "i-external", "i-refresh", "i-chevron-left",
                        "i-menu", "i-upload", "i-close", "i-file", "i-link", "i-parent"):
             self.assertIn(f'<symbol id="{symbol}"', response.text, symbol)
-        for glyph in ("▤", "⌁", "⇧", "↻", "☰", "‹", "⤒", "✕", "⌘", "↰", "📁", "📄", "🔗"):
+        for glyph in ("▤", "⌁", "⇧", "↻", "☰", "‹", "⤒", "✕", "⌘", "↰", "⛶", "📁", "📄", "🔗"):
             self.assertNotIn(glyph, response.text, glyph)
         self.assertIn(".ico{", response.text)
         self.assertIn('aria-label="文件"', response.text)
@@ -1272,6 +1272,52 @@ class TmuxWebTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stdout[-2000:] + completed.stderr[-2000:])
         self.assertIn("# fail 0", completed.stdout)
+
+    def test_transcript_reports_an_unanswered_turn(self):
+        self.login()
+        answered = {"provider": "claude", "mtime": 1, "messages": [
+            {"id": "u1", "role": "user", "text": "问题", "timestamp": "2026-10-27T22:00:00Z"},
+            {"id": "a1", "role": "assistant", "text": "回答", "timestamp": "2026-10-27T22:00:05Z"},
+        ]}
+        self.tmux.transcript = lambda pane_id, limit=200, *args: dict(answered)
+        idle = self.client.get("/api/panes/%254/transcript?limit=20").json()
+        self.assertFalse(idle["waiting"])
+        waiting = {"provider": "claude", "mtime": 1, "messages": [
+            {"id": "u2", "role": "user", "text": "再来一次", "timestamp": "2026-10-27T22:10:00Z"},
+        ]}
+        self.tmux.transcript = lambda pane_id, limit=200, *args: dict(waiting)
+        busy = self.client.get("/api/panes/%254/transcript?limit=20").json()
+        self.assertTrue(busy["waiting"])
+        self.assertEqual(busy["waiting_since"], "2026-10-27T22:10:00Z")
+
+    def test_progress_indicator_markup_is_present(self):
+        self.login()
+        page = self.client.get("/").text
+        for marker in ('id="agent-progress"', "function syncProgress(", "function sinceSeconds(",
+                       "function humanElapsed(", "处理中", "function agentWorking("):
+            self.assertIn(marker, page)
+
+    def test_share_and_fullscreen_entries_are_icons_on_phones(self):
+        self.login()
+        page = self.client.get("/").text
+        # the share management entry reuses the arrow icon, both actions are icon-only
+        self.assertIn('<a class="icon-btn" href="/shares" title="管理分享"', page)
+        self.assertIn('href="/shares" title="管理分享" aria-label="管理分享" style="text-decoration:none"><svg class="ico"><use href="#i-external"/></svg>', page)
+        # the fullscreen label lives in a span so the phone layout can hide it
+        self.assertIn('<svg class="ico"><use href="#i-fullscreen"/></svg><span>对话全屏</span>', page)
+        self.assertIn(".fullscreen-btn span{display:none}", page)
+        # the top bar shrinks instead of pushing its buttons off screen
+        self.assertIn(".session{flex:1 1 auto;min-width:0}", page)
+        self.assertIn(".top-actions{flex:none}", page)
+
+    def test_share_management_buttons_wrap_on_phones(self):
+        self.login()
+        page = self.client.get("/shares").text
+        self.assertIn(".actions button,.actions a{display:inline-flex", page)
+        self.assertIn("white-space:nowrap;cursor:pointer", page)
+        self.assertIn(".actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}", page)
+        self.assertIn("@media(max-width:380px){.actions{grid-template-columns:minmax(0,1fr)}", page)
+        self.assertIn(".head{display:flex;flex-wrap:wrap", page)
 
     def test_transcript_paging_controls_are_present(self):
         self.login()

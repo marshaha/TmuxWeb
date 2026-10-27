@@ -1387,6 +1387,23 @@ def create_app(
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    def with_waiting_hint(data: dict) -> dict:
+        """Tell the UI whether the agent is still working on the last message.
+
+        A trailing user message means the turn has not been answered yet; a
+        transcript that is still being written (recent mtime) means the agent is
+        streaming something we parse only when it completes.
+        """
+        messages = data.get("messages") or []
+        last = messages[-1] if messages else {}
+        # an unanswered user turn is the one signal a transcript can give cheaply;
+        # agents that stream (codex) are covered by the pane-state probe instead
+        waiting = (last.get("role") == "user")
+        since = last.get("timestamp") if waiting else None
+        data["waiting"] = bool(waiting)
+        data["waiting_since"] = since
+        return data
+
     @app.get("/api/panes/{pane_id}/transcript")
     async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0):
         require_auth(request)
@@ -1394,8 +1411,10 @@ def create_app(
         try:
             transport, actual_pane_id = pane_transport(pane_id)
             if refresh and hasattr(transport, "transcript"):
-                return await asyncio.to_thread(transport.transcript, actual_pane_id, limit, True)
-            return await asyncio.to_thread(transport.transcript, actual_pane_id, limit)
+                data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, True)
+            else:
+                data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit)
+            return with_waiting_hint(data)
         except HTTPException:
             raise
         except (TmuxError, RuntimeError, ValueError) as exc:
