@@ -44,7 +44,7 @@
 
 - 远端会话换代：在远端同一个 pane 里结束一个 agent 会话并开新的（标题会变），网页应在 `TMUX_WEB_TRANSCRIPT_RELOCATE`（默认 30s）内切到新会话的消息；点刷新按钮应立即重新定位（请求带 `refresh=1`）。单测覆盖：标题变化触发重定位、超时强制重定位、`refresh=True` 丢弃增量状态（`python -m unittest test_remote_hosts -k rediscover` / `-k relocation` / `-k refresh_drops`）。
 
-- 文件链接改写：在任意对话里出现 `[说明](/绝对路径/文件.png)` 或 `![](相对路径.png)` 时，点击链接应在新标签页打开文件，图片直接内联显示；`https://` 链接仍是普通外链；中文/空格文件名要能正常打开（marked 会百分号编码，需先解码），`xxx.md:3685` 只打开文件本身，文件不存在返回 404。单测：`test_raw_endpoint_serves_text_inline_for_preview`、`test_raw_endpoint_requires_auth`、`test_rendered_transcript_links_are_rewritten_to_the_raw_endpoint`。
+- 文件链接改写：在任意对话里出现 `[说明](/绝对路径/文件.png)` 或 `![](相对路径.png)` 时，点 `.md/.markdown` 链接会在控制台里弹出阅读面板（标题/表格/代码块照常渲染，`源码`↔`渲染` 可切换，Esc、遮罩、`关闭` 均可关闭，`新标签打开` 打开原始文件，面板内相对链接按该文件目录解析），`.json/.log` 等以等宽源码展示；其它类型点击在新标签页打开，图片直接内联显示；`https://` 链接仍是普通外链；中文/空格文件名要能正常打开（marked 会百分号编码，需先解码），`xxx.md:3685` 只打开文件本身，文件不存在返回 404。单测：`test_raw_endpoint_serves_text_inline_for_preview`、`test_raw_endpoint_requires_auth`、`test_rendered_transcript_links_are_rewritten_to_the_raw_endpoint`、`test_markdown_links_open_an_in_console_preview`。
 
 ## 1. 安装测试依赖
 

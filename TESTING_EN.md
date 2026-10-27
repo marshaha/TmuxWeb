@@ -49,7 +49,9 @@ This document covers automated tests that do not require real AI CLIs, plus manu
 - File links: a message containing `[label](/abs/path/file.png)` or `![](relative.png)` must open the file in a new tab with
   images rendered inline, keep `https://` links untouched, and answer 404 for missing paths. Unit tests:
   `test_raw_endpoint_serves_text_inline_for_preview`, `test_raw_endpoint_requires_auth`,
-  `test_rendered_transcript_links_are_rewritten_to_the_raw_endpoint`.
+  `test_rendered_transcript_links_are_rewritten_to_the_raw_endpoint`, `test_markdown_links_open_an_in_console_preview`. Clicking a
+  `.md` link opens the in-console reader (headings, tables, code blocks), `源码`/`渲染` toggle, Esc or backdrop closes, `新标签打开`
+  opens the raw file, and relative links inside the document resolve against its folder. `.json`/`.log` show as monospace source.
 
 ## 1. Install test dependencies
 
