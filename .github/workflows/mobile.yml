@@ -1,0 +1,192 @@
+name: mobile
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "client/**"
+      - ".github/workflows/mobile.yml"
+  pull_request:
+    paths:
+      - "client/**"
+      - ".github/workflows/mobile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.47.8"
+  FLUTTER_CHANNEL: stable
+
+jobs:
+  test:
+    name: flutter test / analyze
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+      - working-directory: client
+        run: flutter pub get
+      - working-directory: client
+        run: flutter analyze --no-pub
+      - working-directory: client
+        run: flutter test --no-pub --reporter expanded
+
+  android:
+    name: Android APK + AAB
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+      - working-directory: client
+        run: flutter pub get
+
+      # A keystore is optional: without it Flutter signs the release build with
+      # the debug key, which installs fine but cannot be uploaded to Play.
+      - name: Configure signing
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        working-directory: client/android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > tmuxweb-release.jks
+          cat > key.properties <<EOF
+          storeFile=tmuxweb-release.jks
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+
+      - name: Build APK and AAB
+        working-directory: client
+        run: |
+          flutter build apk --release --no-pub
+          flutter build appbundle --release --no-pub
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tmuxweb-android
+          path: |
+            client/build/app/outputs/flutter-apk/app-release.apk
+            client/build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+  ios:
+    name: iOS IPA
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+      - working-directory: client
+        run: flutter pub get
+      # `flutter build ipa` runs `pod install` itself; running it earlier fails
+      # because the Podfile only exists after the first Flutter build.
+
+      - name: Detect signing secrets
+        id: signing
+        env:
+          CERT: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+        run: |
+          if [ -n "$CERT" ] && [ -n "$PROFILE" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import certificate and profile
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$APPLE_CERTIFICATE_P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$APPLE_PROVISIONING_PROFILE" | base64 -d \
+            > ~/Library/MobileDevice/Provisioning\ Profiles/tmuxweb.mobileprovision
+
+      - name: Build unsigned IPA
+        if: steps.signing.outputs.signed == 'false'
+        working-directory: client
+        run: |
+          flutter build ipa --release --no-pub --no-codesign
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -R Runner.app Payload/
+          zip -qry "$GITHUB_WORKSPACE/tmuxweb-unsigned.ipa" Payload
+
+      - name: Build signed IPA
+        if: steps.signing.outputs.signed == 'true'
+        working-directory: client
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > ios/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          EOF
+          flutter build ipa --release --no-pub --export-options-plist=ios/ExportOptions.plist
+
+      - name: Upload to TestFlight
+        if: steps.signing.outputs.signed == 'true' && github.event_name != 'pull_request'
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$APP_STORE_CONNECT_API_KEY_P8" | base64 -d \
+            > ~/.appstoreconnect/private_keys/AuthKey_"$APP_STORE_CONNECT_API_KEY_ID".p8
+          xcrun altool --upload-app --type ios \
+            --file client/build/ios/ipa/*.ipa \
+            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tmuxweb-ios
+          path: |
+            client/build/ios/ipa/*.ipa
+            tmuxweb-unsigned.ipa
+          if-no-files-found: error
