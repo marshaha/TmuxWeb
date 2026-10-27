@@ -668,14 +668,14 @@ class SSHRunner:
             raise RuntimeError(detail or "tmux new-session failed")
         return {"session": name, "path": directory}
 
-    def list_panes(self) -> list[dict]:
+    def list_panes(self, timeout: int = 15) -> list[dict]:
         fmt = FIELD_SEPARATOR.join([
             "#{pane_id}", "#{session_name}:#{window_index}.#{pane_index}", "#{session_name}",
             "#{window_index}", "#{window_name}", "#{pane_index}", "#{pane_current_command}",
             "#{pane_title}", "#{pane_current_path}", "#{pane_active}", "#{pane_width}", "#{pane_height}",
         ])
         command = f"tmux list-panes -a -F {shlex.quote(fmt)}"
-        completed = self.run(command)
+        completed = self.run(command, timeout=timeout)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
         return parse_tmux_panes(completed.stdout.decode(errors="replace"), self.host["id"])

@@ -1027,19 +1027,30 @@ def create_app(
         except (TmuxError, OSError) as exc:
             hosts.append({"id": "localhost", "name": "localhost", "kind": "local",
                           "status": "offline", "error": str(exc), "panes": []})
-        for remote in remote_hosts.list_hosts():
+        remotes = remote_hosts.list_hosts()
+        list_timeout = int(os.environ.get("TMUX_WEB_HOSTS_LIST_TIMEOUT", "8"))
+        public_hosts = []
+        for remote in remotes:
             public = {key: remote[key] for key in ("id", "name", "hostname", "port", "username", "auth_type", "fingerprint")}
             public.update({"kind": "ssh", "status": "offline", "panes": []})
+            public_hosts.append(public)
+
+        async def load_remote(public: dict) -> None:
             try:
-                credentialed = remote_hosts.get_host(remote["id"], include_credential=True)
-                public["panes"] = [pane_metadata(pane) for pane in
-                                   await asyncio.to_thread(make_remote_runner(credentialed).list_panes)]
+                credentialed = remote_hosts.get_host(public["id"], include_credential=True)
+                panes = await asyncio.to_thread(
+                    make_remote_runner(credentialed).list_panes, timeout=list_timeout
+                )
+                public["panes"] = [pane_metadata(pane) for pane in panes]
                 public["status"] = "online"
             except Exception as exc:  # noqa: BLE001 - one dead host must not break the tree
                 # SSH failures surface as RuntimeError/OSError, but a hung host
                 # raises subprocess.TimeoutExpired and httpx raises its own types.
                 public["error"] = str(exc)
-            hosts.append(public)
+
+        # Concurrently, so the slowest host sets the latency instead of the sum.
+        await asyncio.gather(*(load_remote(public) for public in public_hosts))
+        hosts.extend(public_hosts)
         return {"hosts": hosts}
 
     async def perform_mcp_tool(name: str, arguments: dict) -> dict:

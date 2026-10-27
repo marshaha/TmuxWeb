@@ -117,7 +117,7 @@ class FakeSSHRunner:
         self.created.append((name, path))
         FakeSSHRunner.created = (name, path)
         return {"session": name, "path": path}
-    def list_panes(self):
+    def list_panes(self, timeout=15):
         extra = [{"id": pane_ref(self.host["id"], "%11"), "pane_id": "%11", "host_id": self.host["id"],
                   "target": "%s:0.0" % name, "session": name, "window": "0", "window_name": "shell",
                   "index": "0", "command": "zsh", "title": "new", "path": path or "/srv/work",
@@ -230,8 +230,8 @@ class TmuxWebTests(unittest.TestCase):
             def __init__(self, host):
                 self.host = host
 
-            def list_panes(self):
-                raise subprocess.TimeoutExpired(cmd=["ssh"], timeout=15)
+            def list_panes(self, timeout=15):
+                raise subprocess.TimeoutExpired(cmd=["ssh"], timeout=timeout)
 
         client = TestClient(create_app(
             self.tmux,
