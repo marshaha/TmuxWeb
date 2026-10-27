@@ -10,6 +10,7 @@ Android / iOS 原生客户端，直接调用 TmuxWeb 的 HTTP API —— **不�
 | 登录 | 服务器地址 + 密码（`POST /login` 换 cookie），也支持 `TMUX_WEB_API_TOKEN` 走 Bearer；地址记住、密码不落盘 |
 | 主机 / pane | 按主机分组，标注 provider 与「有结构化记录 / 纯终端」，下拉刷新 |
 | 对话 | 2 秒轮询 transcript，发送后乐观占位；纯终端 pane 按屏幕文本渲染 |
+| 会话切换缓存 | 每个 pane 的 transcript、滚动位置、草稿都留在内存里（最多 8 个），切回去立刻出画面，再后台刷新 |
 | 消息级复制 | 每条消息「复制全部」，复制整条原文（含代码与表格 markdown 源码） |
 | 块级控件 | 代码 / mermaid / 表格各有工具条：复制（表格复制为 TSV、mermaid 复制源码），表格可「源码 / 渲染」互切 |
 | Markdown | 正文段落用 flutter_markdown 渲染（标题、列表、引用、行内代码、链接） |
@@ -43,7 +44,7 @@ test/
   screens_test.dart            # 登录校验/错误/成功、Token 登录、主机树、分享只读
 ```
 
-测试 44 个，全部离线：HTTP 用 `package:http/testing.dart` 的 `MockClient`，界面用 `FakeApi` / `FakeSource`，
+测试 47 个，全部离线：HTTP 用 `package:http/testing.dart` 的 `MockClient`，界面用 `FakeApi` / `FakeSource`，
 剪贴板用 `SystemChannels.platform` 的 mock handler。
 
 ```bash

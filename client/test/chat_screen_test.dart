@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tmuxweb_client/models/chat_source.dart';
 import 'package:tmuxweb_client/models/models.dart';
+import 'package:tmuxweb_client/models/transcript_cache.dart';
 import 'package:tmuxweb_client/screens/chat_screen.dart';
 import 'package:tmuxweb_client/theme.dart';
 
@@ -22,6 +25,9 @@ class FakeSource implements ChatSource {
   @override
   final bool readOnly;
   final List<String> sent = [];
+
+  @override
+  String get cacheKey => 'pane:test';
 
   @override
   String get title => '测试会话';
@@ -143,6 +149,58 @@ void main() {
     expect(tester.widget<TextField>(find.byKey(const Key('chat-composer'))).controller!.text, isEmpty);
   });
 
+  testWidgets('a cached conversation paints before the network answers', (tester) async {
+    final cache = TranscriptCache();
+    cache.write('pane:test', Transcript(mode: 'transcript', provider: 'codex', mtime: 9, messages: [
+      ChatMessage(id: 'c1', role: 'assistant', text: '缓存里的旧回答'),
+    ]));
+    final source = _SlowSource();
+
+    await tester.pumpWidget(wrap(ChatScreen(source: source, poll: Duration.zero, cache: cache)));
+    await tester.pump(); // one frame: the fetch is still pending
+
+    expect(find.text('缓存里的旧回答'), findsOneWidget);
+    expect(find.text('更新中…'), findsOneWidget);
+    expect(source.calls, 1);
+
+    source.complete(Transcript(mode: 'transcript', provider: 'codex', mtime: 10, messages: [
+      ChatMessage(id: 'c1', role: 'assistant', text: '缓存里的旧回答'),
+      ChatMessage(id: 'c2', role: 'assistant', text: '新到的回答'),
+    ]));
+    await tester.pumpAndSettle();
+
+    expect(find.text('新到的回答'), findsOneWidget);
+    expect(find.text('更新中…'), findsNothing);
+    expect(cache.read('pane:test')!.transcript.messages, hasLength(2));
+  });
+
+  testWidgets('the draft is kept per conversation', (tester) async {
+    final cache = TranscriptCache();
+    await tester.pumpWidget(wrap(ChatScreen(source: FakeSource(), poll: Duration.zero, cache: cache)));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('chat-composer')), '还没发出去的草稿');
+    await tester.pump();
+    expect(cache.draft('pane:test'), '还没发出去的草稿');
+
+    await tester.pumpWidget(wrap(const SizedBox()));
+    await tester.pumpAndSettle();
+
+    await tester.pumpWidget(wrap(ChatScreen(source: FakeSource(), poll: Duration.zero, cache: cache)));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byKey(const Key('chat-composer'))).controller!.text, '还没发出去的草稿');
+  });
+
+  testWidgets('the cache keeps a bounded working set', (tester) async {
+    final cache = TranscriptCache(capacity: 2);
+    for (final key in ['a', 'b', 'c']) {
+      cache.write(key, Transcript(mode: 'transcript', mtime: key, messages: const []));
+    }
+    expect(cache.length, 2);
+    expect(cache.has('a'), isFalse);
+    expect(cache.has('c'), isTrue);
+  });
+
   testWidgets('screen-mode panes render the raw terminal text', (tester) async {
     final source = FakeSource(
       transcript: Transcript(mode: 'screen', mtime: 'x', content: 'zsh\$ ls -la\nresults/', messages: const []),
@@ -166,6 +224,19 @@ void main() {
     expect(find.textContaining('该会话只读，不能发送消息'), findsOneWidget);
     expect(find.text('hi'), findsNothing);
   });
+}
+
+class _SlowSource extends FakeSource {
+  int calls = 0;
+  final _completer = Completer<Transcript>();
+
+  void complete(Transcript transcript) => _completer.complete(transcript);
+
+  @override
+  Future<Transcript> fetch() {
+    calls += 1;
+    return _completer.future;
+  }
 }
 
 class _FailingSource extends FakeSource {

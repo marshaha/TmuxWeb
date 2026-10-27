@@ -4,16 +4,20 @@ import 'package:flutter/material.dart';
 
 import '../models/chat_source.dart';
 import '../models/models.dart';
+import '../models/transcript_cache.dart';
 import '../theme.dart';
 import '../widgets/message_tile.dart';
 
 /// Chat view for a pane or a share link: polls the transcript, renders messages
 /// with per-message and per-block copy controls, sends input when allowed.
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key, required this.source, this.poll = const Duration(seconds: 2)});
+  const ChatScreen({super.key, required this.source, this.poll = const Duration(seconds: 2), this.cache});
 
   final ChatSource source;
   final Duration poll;
+
+  /// Injectable for tests; defaults to the process-wide cache.
+  final TranscriptCache? cache;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -28,29 +32,68 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _error;
   bool _loading = true;
   bool _sending = false;
+  bool _stale = false;
   Timer? _timer;
+
+  TranscriptCache get _cache => widget.cache ?? TranscriptCache.instance;
+  String get _key => widget.source.cacheKey;
 
   @override
   void initState() {
     super.initState();
+    final cached = _cache.read(_key);
+    if (cached != null) {
+      // paint what we already had, then revalidate in the background
+      _data = cached.transcript;
+      _loading = false;
+      _stale = true;
+      _pending.clear();
+    }
+    _controller.text = _cache.draft(_key);
+    _controller.addListener(() => _cache.saveDraft(_key, _controller.text));
+    _scroll.addListener(_rememberScroll);
     _refresh(initial: true);
     if (widget.poll > Duration.zero) {
       _timer = Timer.periodic(widget.poll, (_) => _refresh());
+    }
+    if (cached != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _restoreScroll(cached));
     }
   }
 
   @override
   void dispose() {
+    _rememberScroll();
     _timer?.cancel();
+    _controller.removeListener(() {});
     _controller.dispose();
+    _scroll.removeListener(_rememberScroll);
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _rememberScroll() {
+    if (!_scroll.hasClients || _data == null) return;
+    _cache.saveScroll(_key, _scroll.position.pixels, stickToBottom: _nearBottom);
+  }
+
+  bool get _nearBottom => !_scroll.hasClients || _scroll.position.pixels >= _scroll.position.maxScrollExtent - 80;
+
+  void _restoreScroll(CachedConversation cached) {
+    if (!_scroll.hasClients) return;
+    final target = cached.scrollOffset;
+    if (target == null || cached.stickToBottom) {
+      _scroll.jumpTo(_scroll.position.maxScrollExtent);
+    } else {
+      _scroll.jumpTo(target.clamp(0.0, _scroll.position.maxScrollExtent));
+    }
   }
 
   Future<void> _refresh({bool initial = false}) async {
     try {
       final transcript = await widget.source.fetch();
       if (!mounted) return;
+      _cache.write(_key, transcript);
       final previous = _data;
       final changed = previous == null ||
           previous.mtime != transcript.mtime ||
@@ -63,9 +106,10 @@ class _ChatScreenState extends State<ChatScreen> {
         _data = transcript;
         _error = null;
         _loading = false;
+        _stale = false;
         _pending.removeWhere((text) => seen.contains(text.trim()));
       });
-      if (atBottom) _scrollToEnd();
+      if (atBottom || (initial && previous == null)) _scrollToEnd();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -123,6 +167,8 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
+          if (_stale)
+            const Padding(padding: EdgeInsets.only(right: 4), child: Center(child: _Badge(label: '更新中…'))),
           if (widget.source.readOnly)
             const Padding(padding: EdgeInsets.only(right: 8), child: Center(child: _Badge(label: '只读', accent: true)))
           else if (data?.provider != null)

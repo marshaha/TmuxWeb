@@ -23,6 +23,10 @@ This document covers automated tests that do not require real AI CLIs, plus manu
 
 - Read-only share: create a share with "allow the guest to keep chatting" unchecked; `/share/<slug>` must show the 只读 badge and a read-only notice instead of the composer, `POST /share/<slug>/api/input` must return 403 (while `/api/transcript` stays 200), and a share created with the box checked must still accept input. An old `shares.db` must gain the `allow_input` column on restart, defaulting to 1 so existing shares stay interactive.
 
+- Flutter transcript cache: `flutter test` covers 'a cached conversation paints before the network answers' (first frame renders
+  cached messages with a 更新中… badge, replaced once the fetch lands), 'the draft is kept per conversation', and 'the cache keeps a
+  bounded working set'. On device: open pane A, open pane B, return to A - A's messages appear immediately (brief 更新中… badge)
+  and its scroll offset plus unsent draft are unchanged.
 - Native mobile client: `cd client && flutter test` passes (block splitting order and escaping, table parsing/TSV, URL normalization, cookie login, pane-ref encoding, read-only share 403, chat rendering and copy, block source toggle, composer hidden when read-only, send success/failure, login validation and remembered URL, token login). `flutter analyze` is clean. Device smoke test: `http://<lan-ip>:8899` + password → host tree → open `%7` → copy a message, toggle a table to source, and open a read-only share link and confirm there is no composer. Build check: `flutter build apk --release --split-per-abi` and `appbundle` succeed and `apksigner verify --print-certs` reports `CN=TmuxWeb`.
 
 - Incremental remote transcripts: `python -m unittest test_remote_hosts -k incremental` (a second poll sends only the byte offset, a rewritten file refetches the window, a vanished file falls back to discovery) and `-k gzip` (gzip payloads decode, broken payloads raise). Measured against a host with a 300 MB transcript: first transcript call ~8s, later polls 1-2s, bodies <=60KB.

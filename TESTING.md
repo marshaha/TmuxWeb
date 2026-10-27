@@ -33,6 +33,7 @@
 
 - 只读分享：创建分享时取消勾选「允许访客继续对话」，打开 `/share/<slug>` 应显示橙色「只读」徽标、底部是「只读分享：可以查看内容，但不能发送消息。」且没有输入框；`POST /share/<slug>/api/input` 返回 403 `this share is read-only`，而 `/api/transcript` 仍是 200；勾选创建的分享输入框正常且能发送。旧 `shares.db` 重启后应自动补上 `allow_input` 列（默认 1，老分享保持可对话）。
 
+- Flutter 会话切换缓存：`cd client && flutter test` 中「a cached conversation paints before the network answers」验证有缓存时首帧就渲染旧内容并显示「更新中…」，网络返回后替换且标记消失；「the draft is kept per conversation」验证草稿按会话保留；「the cache keeps a bounded working set」验证最多 8 个（测试用 2 个）。真机：在主机树里打开 A、打开 B、再回到 A，A 的消息应立刻出现（顶部短暂显示「更新中…」），滚动位置与未发送草稿保持不变。
 - 移动客户端（原生 Flutter）：`cd client && flutter test` 全绿（切块顺序与转义、表格解析/TSV、URL 规范化、cookie 登录、pane 引用编码、只读分享 403、聊天渲染与复制、块源码切换、只读隐藏输入框、发送成功/失败、登录校验与记住地址、Token 登录）。`flutter analyze` 无 error。真机冒烟：填 `http://<内网IP>:8899` + 密码 → 主机树 → 打开 `%7` → 消息可复制、表格可切源码、分享链接打开只读分享时没有输入框。构建验收：`flutter build apk --release --split-per-abi` 与 `appbundle` 成功，`apksigner verify --print-certs` 显示 `CN=TmuxWeb`。
 
 - 远端 transcript 增量传输：`cd tests && python -m unittest test_remote_hosts -k incremental` 应通过（第二次轮询只带字节偏移、文件被重写时整窗重取、文件消失时回退定位）；`python -m unittest test_remote_hosts -k gzip` 验证 gzip 负载解码与损坏负载报错。实测一台 300MB 会话的远端主机：首次 `/api/panes/<pane>/transcript` 约 8s，之后 1-2s，响应体 ≤60KB。

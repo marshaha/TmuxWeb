@@ -5,6 +5,9 @@ import '../api/api_client.dart';
 import 'models.dart';
 
 abstract class ChatSource {
+  /// Stable identity used by the transcript cache.
+  String get cacheKey;
+
   String get title;
 
   String get subtitle;
@@ -21,6 +24,9 @@ class PaneChatSource implements ChatSource {
 
   final Api api;
   final Pane pane;
+
+  @override
+  String get cacheKey => 'pane:${pane.ref}';
 
   @override
   String get title => pane.label;
@@ -47,6 +53,9 @@ class ShareChatSource implements ChatSource {
 
   final Api api;
   final ShareMeta meta;
+
+  @override
+  String get cacheKey => 'share:${meta.slug}';
 
   @override
   String get title => meta.title;
