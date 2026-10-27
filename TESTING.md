@@ -44,6 +44,8 @@
 
 - 远端会话换代：在远端同一个 pane 里结束一个 agent 会话并开新的（标题会变），网页应在 `TMUX_WEB_TRANSCRIPT_RELOCATE`（默认 30s）内切到新会话的消息；点刷新按钮应立即重新定位（请求带 `refresh=1`）。单测覆盖：标题变化触发重定位、超时强制重定位、`refresh=True` 丢弃增量状态（`python -m unittest test_remote_hosts -k rediscover` / `-k relocation` / `-k refresh_drops`）。
 
+- 文件链接改写：在任意对话里出现 `[说明](/绝对路径/文件.png)` 或 `![](相对路径.png)` 时，点击链接应在新标签页打开文件，图片直接内联显示；`https://` 链接仍是普通外链；文件不存在时返回 404。单测：`test_raw_endpoint_serves_text_inline_for_preview`、`test_raw_endpoint_requires_auth`、`test_rendered_transcript_links_are_rewritten_to_the_raw_endpoint`。
+
 ## 1. 安装测试依赖
 
 ```bash

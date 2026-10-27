@@ -1433,6 +1433,42 @@ def create_app(
         data["pane"] = pane_id
         return data
 
+    @app.get("/api/panes/{pane_id}/files/raw")
+    async def raw_pane_file(request: Request, pane_id: str, path: str):
+        """Serve a file inline so markdown links to local paths can be opened.
+
+        Only text/images/PDF are previewed; anything else is still safe to show
+        because the response is inert (no scripts run from this origin).
+        """
+        require_auth(request)
+        if not path:
+            raise HTTPException(status_code=422, detail="path is required")
+        try:
+            transport, _actual, _pane = file_target(pane_id)
+            payload = await asyncio.to_thread(transport.download_file, path, download_limit)
+        except HTTPException:
+            raise
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            message = str(exc)
+            if "not a file" in message or "no such file" in message.lower():
+                raise HTTPException(status_code=404, detail=message) from exc
+            raise HTTPException(status_code=503, detail=message) from exc
+        name = os.path.basename(path.rstrip("/")) or "file"
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        inline_types = ("text/", "image/", "application/pdf", "application/json")
+        inline = media_type.startswith(inline_types)
+        headers = {
+            "Content-Length": str(len(payload)),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
+        }
+        if inline:
+            headers["Content-Disposition"] = "inline; filename*=UTF-8''" + quote(name, safe="")
+        else:
+            headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(name, safe="")
+        return Response(content=payload, media_type=media_type, headers=headers)
+
     @app.get("/api/panes/{pane_id}/files/download")
     async def download_pane_file(request: Request, pane_id: str, path: str):
         require_auth(request)

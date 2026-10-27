@@ -185,6 +185,10 @@ evolving on its own.
 
 - login with server URL + password (session cookie) or `TMUX_WEB_API_TOKEN`; the URL is remembered, the password never is
 - host / pane tree with provider badges and screen-text fallback for plain shells
+- Local file links inside a conversation are rewritten at render time: `/abs/path`, `~/path`, `file://…` and relative paths
+  (resolved against the pane's working directory) become `/api/panes/<pane>/files/raw?path=…` and open in a new tab; text,
+  images and PDFs preview inline, everything else downloads as an attachment (the response carries a `sandbox` CSP so a
+  file can never run script in the console). http(s), mailto and anchor links are left alone.
 - conversation polling every two seconds with an optimistic bubble while sending; transcripts, scroll offsets and drafts are
   cached per pane, so switching back paints instantly and revalidates in the background
 - **per-message "copy all"** plus **per-block controls**: copy code, copy tables as TSV, copy mermaid source, and flip tables

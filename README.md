@@ -191,6 +191,7 @@ TMUX_WEB_HOST=0.0.0.0
 
 - 登录：服务器地址 + 密码（换 `tmux_web_session` cookie），或 `TMUX_WEB_API_TOKEN`；地址记住、密码不落盘
 - 主机 / pane 树，标注 provider 与「有结构化记录 / 纯终端」；纯终端按屏幕文本渲染
+- 对话里的本地文件链接会被改写：渲染时把 `/abs/path`、`~/path`、`file://…` 和相对路径（按 pane 的工作目录解析）改成 `/api/panes/<pane>/files/raw?path=…`，点击在新标签页打开；文本/图片/PDF 内联预览，其它类型按附件下载（响应带 `CSP: sandbox`，不会执行文件里的脚本）。https、mailto、锚点等链接原样保留。
 - 对话：2 秒轮询，发送后乐观占位；每个 pane 的 transcript / 滚动位置 / 草稿缓存在内存里，切回去立刻出画面再后台刷新
 - **每条消息「复制全部」**；代码 / mermaid / 表格各自有工具条：复制（表格为 TSV、mermaid 为源码），表格可在「源码 / 渲染」间切换
 - 分享链接：路径 + 密码直接打开；`allow_input=false` 的只读分享隐藏输入框并显示只读横幅

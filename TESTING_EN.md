@@ -46,6 +46,11 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   immediately (`refresh=1`). Unit tests cover title-change relocation, the relocation interval and `refresh=True` dropping the
   incremental state.
 
+- File links: a message containing `[label](/abs/path/file.png)` or `![](relative.png)` must open the file in a new tab with
+  images rendered inline, keep `https://` links untouched, and answer 404 for missing paths. Unit tests:
+  `test_raw_endpoint_serves_text_inline_for_preview`, `test_raw_endpoint_requires_auth`,
+  `test_rendered_transcript_links_are_rewritten_to_the_raw_endpoint`.
+
 ## 1. Install test dependencies
 
 ```bash

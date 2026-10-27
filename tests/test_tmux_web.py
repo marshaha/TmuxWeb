@@ -1233,6 +1233,38 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("attachment", response.headers["content-disposition"])
         self.assertIn("notes.md", response.headers["content-disposition"])
 
+    def test_raw_endpoint_serves_text_inline_for_preview(self):
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory, "chart.png")
+            image.write_bytes(b"\x89PNG\r\n\x1a\n")
+            text = Path(directory, "notes.md")
+            text.write_text("hello 世界")
+            self.tmux.panes[0]["path"] = directory
+            response = self.client.get(f"/api/panes/%254/files/raw?path={text}")
+            picture = self.client.get(f"/api/panes/%254/files/raw?path={image}")
+            missing = self.client.get(f"/api/panes/%254/files/raw?path={directory}/gone.png")
+            self.assertEqual(self.client.get("/api/panes/%254/files/raw").status_code, 422)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode(), "hello 世界")
+        self.assertIn("inline", response.headers["content-disposition"])
+        self.assertEqual(response.headers["content-type"], "text/markdown; charset=utf-8")
+        self.assertIn("sandbox", response.headers["content-security-policy"])
+        self.assertEqual(picture.headers["content-type"], "image/png")
+        self.assertEqual(missing.status_code, 404)
+
+    def test_raw_endpoint_requires_auth(self):
+        with tempfile.NamedTemporaryFile(suffix=".txt") as handle:
+            response = self.client.get(f"/api/panes/%254/files/raw?path={handle.name}")
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_rendered_transcript_links_are_rewritten_to_the_raw_endpoint(self):
+        self.login()
+        response = self.client.get("/")
+        self.assertIn("/files/raw?path=", response.text)
+        self.assertIn("function rewriteLocalLinks(", response.text)
+        self.assertIn("rewriteLocalLinks(host)", response.text)
+
     def test_uploads_a_file_into_the_current_directory(self):
         self.login()
         with tempfile.TemporaryDirectory() as directory:
