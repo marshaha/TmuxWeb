@@ -194,6 +194,9 @@ evolving on its own.
   the same renderer (headings, tables, code blocks, mermaid, block controls), `源码` toggles the raw text, `新标签打开` opens the
   raw file, Esc or a backdrop click closes it; relative links and images inside the document resolve against its own folder, and a
   nested markdown link opens in the same panel. Files above 1.2 MB start in source mode with a `渲染` switch.
+- sends are shown optimistically (发送中/已发送) and reconciled when the transcript echoes them: text is compared whitespace- and
+  wrapping-insensitively, and a rewritten/expanded echo is paired by order, so a placeholder never lingers after later replies;
+  the placeholder sits right after the last message that existed when send was pressed, not at the very end
 - conversation polling every two seconds with an optimistic bubble while sending; transcripts, scroll offsets and drafts are
   cached per pane, so switching back paints instantly and revalidates in the background
 - **per-message "copy all"** plus **per-block controls**: copy code, copy tables as TSV, copy mermaid source, and flip tables

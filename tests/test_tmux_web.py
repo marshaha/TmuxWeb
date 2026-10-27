@@ -2,6 +2,7 @@ import hashlib
 import io
 import os
 import re
+import shutil
 import subprocess
 import unittest
 import json
@@ -699,8 +700,12 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("visualViewport.addEventListener('resize',handleVisualViewportChange)", response.text)
         self.assertIn("pendingMessages:new Map()", response.text)
         self.assertIn("addOptimisticMessage", response.text)
-        self.assertIn("!pending.baselineIds.has(String(message.id))", response.text)
-        self.assertIn("messageTextKey(message.text).includes(messageTextKey(pending.text))", response.text)
+        self.assertIn("const baseline=waiting[0][1].baselineIds;", response.text)
+        self.assertIn("const fresh=messages.filter(message=>message.role==='user'&&!baseline.has(String(message.id)))", response.text)
+        self.assertIn("messageTextKey(message.text)===key", response.text)
+        self.assertIn("function pendingAnchorIndex(messages,pending)", response.text)
+        self.assertIn("pendingAnchorIndex(messages,item.pending)", response.text)
+        self.assertIn("a rewritten/expanded echo still belongs to the same send", response.text)
         self.assertIn("发送中", response.text)
         self.assertIn("已发送 ✓", response.text)
         self.assertIn("发送失败", response.text)
@@ -1257,6 +1262,16 @@ class TmuxWebTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".txt") as handle:
             response = self.client.get(f"/api/panes/%254/files/raw?path={handle.name}")
         self.assertIn(response.status_code, (401, 403))
+
+    def test_optimistic_message_reconciliation_is_covered_by_node(self):
+        if shutil.which("node") is None:
+            self.skipTest("node is not installed")
+        completed = subprocess.run(
+            ["node", "--test", "tests/js/reconcile.test.mjs"],
+            cwd=Path(__file__).resolve().parent.parent, capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout[-2000:] + completed.stderr[-2000:])
+        self.assertIn("# fail 0", completed.stdout)
 
     def test_markdown_links_open_an_in_console_preview(self):
         self.login()

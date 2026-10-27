@@ -46,6 +46,8 @@
 
 - 文件链接改写：在任意对话里出现 `[说明](/绝对路径/文件.png)` 或 `![](相对路径.png)` 时，点 `.md/.markdown` 链接会在控制台里弹出阅读面板（标题/表格/代码块照常渲染，`源码`↔`渲染` 可切换，Esc、遮罩、`关闭` 均可关闭，`新标签打开` 打开原始文件，面板内相对链接按该文件目录解析），`.json/.log` 等以等宽源码展示；其它类型点击在新标签页打开，图片直接内联显示；`https://` 链接仍是普通外链；中文/空格文件名要能正常打开（marked 会百分号编码，需先解码），`xxx.md:3685` 只打开文件本身，文件不存在返回 404。单测：`test_raw_endpoint_serves_text_inline_for_preview`、`test_raw_endpoint_requires_auth`、`test_rendered_transcript_links_are_rewritten_to_the_raw_endpoint`、`test_markdown_links_open_an_in_console_preview`。
 
+- 发送占位：发一条消息后立刻在对话末尾出现带「发送中/已发送 ✓」的占位气泡；等 agent 回显后占位消失、只剩一条真实消息。若 agent 先回复再回显（或回显被改写），占位气泡必须留在你发送时的位置、不能漂到最新回复之后。单测：`node --test tests/js/reconcile.test.mjs`（8+ 个用例，覆盖空白差异、改写配对、按序配对、失败保留、跨 pane 隔离、锚点位置），Python 侧由 `test_optimistic_message_reconciliation_is_covered_by_node` 调用。
+
 ## 1. 安装测试依赖
 
 ```bash

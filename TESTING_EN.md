@@ -53,6 +53,10 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   `.md` link opens the in-console reader (headings, tables, code blocks), `源码`/`渲染` toggle, Esc or backdrop closes, `新标签打开`
   opens the raw file, and relative links inside the document resolve against its folder. `.json`/`.log` show as monospace source.
 
+- Optimistic send: a bubble labelled 发送中/已发送 ✓ appears immediately; once the transcript echoes it the placeholder is retired and
+  a single real message remains. If the agent replies before the echo (or the echo was rewritten), the bubble must keep its
+  send-time position instead of drifting to the bottom. Covered by `node --test tests/js/reconcile.test.mjs`.
+
 ## 1. Install test dependencies
 
 ```bash

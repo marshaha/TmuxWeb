@@ -363,10 +363,45 @@ import {marked} from '/assets/marked.esm.js';
   const mdEscape=value=>String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   marked.use({renderer:{html(token){return mdEscape(token&&(token.text!=null?token.text:token.raw));}}});
   function markdown(value){return marked.parse(String(value==null?'':value),{gfm:true,breaks:false,async:false});}
-  function messageTextKey(text){return String(text).replace(/\r\n/g,'\n').trimEnd();}
-  function reconcilePending(messages){for(const [localId,pending] of state.pendingMessages){if(pending.pane!==state.selected||pending.status==='failed')continue;const match=messages.find(message=>message.role==='user'&&!pending.baselineIds.has(String(message.id))&&messageTextKey(message.text).includes(messageTextKey(pending.text)));if(match)state.pendingMessages.delete(localId);}}
+  // Compare messages the way a human would: the agent may re-wrap, trim or add blank lines
+  function messageTextKey(text){return String(text==null?'':text).replace(/\r\n/g,'\n').replace(/[ \t]+/g,' ').replace(/\s+/g,' ').trim();}
+  function reconcilePending(messages){
+    const waiting=[...state.pendingMessages].filter(([,pending])=>pending.pane===state.selected&&pending.status!=='failed')
+      .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0));
+    if(!waiting.length)return;
+    // only messages that were not part of the transcript when the user hit send
+    const baseline=waiting[0][1].baselineIds;
+    const fresh=messages.filter(message=>message.role==='user'&&!baseline.has(String(message.id)));
+    if(!fresh.length)return;
+    const used=new Set();
+    const claimed=new Map();
+    // exact text first: the transcript usually echoes exactly what was typed
+    for(const [localId,pending] of waiting){
+      const key=messageTextKey(pending.text);
+      const match=fresh.find(message=>!used.has(String(message.id))&&
+        (messageTextKey(message.text)===key||messageTextKey(message.text).includes(key)));
+      if(match){used.add(String(match.id));claimed.set(localId,true);}}
+    // then by order: a rewritten/expanded echo still belongs to the same send
+    for(const [localId] of waiting){
+      if(claimed.has(localId))continue;
+      const next=fresh.find(message=>!used.has(String(message.id)));
+      if(!next)break;
+      used.add(String(next.id));claimed.set(localId,true);}
+    for(const localId of claimed.keys())state.pendingMessages.delete(localId);}
+  // A sent bubble belongs right after the transcript as it looked when the user hit send,
+  // not after whatever the agent wrote in the meantime.
+  function pendingAnchorIndex(messages,pending){const baseline=pending.baselineIds||new Set();
+    for(let index=messages.length-1;index>=0;index--){if(baseline.has(String(messages[index].id)))return index+1;}
+    return 0;}
   function deliveryHtml(pending){if(pending.status==='sending')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>发送中</span>`;if(pending.status==='sent')return `<span class="message-delivery sent">已发送 ✓</span>`;return `<span class="message-delivery failed">发送失败</span>`;}
-  function renderTranscript(messages=state.transcriptMessages){state.transcriptMessages=messages;state.messageText=new Map(messages.map(message=>[String(message.id),String(message.text||'')]));reconcilePending(messages);const host=$('transcript'),copyButton=id=>`<div class="msg-actions"><button class="msg-copy" type="button" data-msg-copy="${esc(id)}" title="复制整条消息（含代码/表格源码）">复制全部</button></div>`,formal=messages.map(message=>message.role==='user'?`<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${htmlEscape(message.text)}</div>${copyButton(message.id)}</div></article>`:`<article class="chat-message assistant" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copyButton(message.id)}</div></article>`),pending=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected).map(([localId,message])=>`<article class="chat-message user pending" data-id="${esc(localId)}"><div class="chat-user-wrap"><div class="chat-bubble">${htmlEscape(message.text)}</div>${deliveryHtml(message)}</div></article>`);host.classList.add('active');$('message-shell').hidden=true;host.innerHTML=[...formal,...pending].join('');enhanceBlocks(host);rewriteLocalLinks(host);}
+  function renderTranscript(messages=state.transcriptMessages){state.transcriptMessages=messages;state.messageText=new Map(messages.map(message=>[String(message.id),String(message.text||'')]));reconcilePending(messages);const host=$('transcript'),copyButton=id=>`<div class="msg-actions"><button class="msg-copy" type="button" data-msg-copy="${esc(id)}" title="复制整条消息（含代码/表格源码）">复制全部</button></div>`,formal=messages.map(message=>message.role==='user'?`<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${htmlEscape(message.text)}</div>${copyButton(message.id)}</div></article>`:`<article class="chat-message assistant" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copyButton(message.id)}</div></article>`),pending=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
+      .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0))
+      .map(([localId,message])=>({pending:message,html:`<article class="chat-message user pending" data-id="${esc(localId)}"><div class="chat-user-wrap"><div class="chat-bubble">${htmlEscape(message.text)}</div>${deliveryHtml(message)}</div></article>`}));host.classList.add('active');$('message-shell').hidden=true;
+    const slots=messages.map(()=>[]);
+    for(const item of pending){const index=Math.min(messages.length,pendingAnchorIndex(messages,item.pending));slots[index]=slots[index]||[];slots[index].push(item.html);}
+    const ordered=messages.map((message,index)=>(slots[index]||[]).join('')+formal[index]).join('')
+      +(slots[messages.length]||[]).join('');
+    host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);}
   const CODE_LANG_RE=/language-([\w+#-]+)/;
   async function copyText(text,button){const value=String(text==null?'':text);let ok=false;
     try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);ok=true;}}catch{}
@@ -419,7 +454,7 @@ import {marked} from '/assets/marked.esm.js';
   function toggleBlockSource(wrap,button){const source=wrap.querySelector('.block-source');const target=wrap.querySelector('.block-rendered');
     if(!source||!target)return;const showSource=source.hidden;source.hidden=!showSource;target.hidden=showSource;
     button.textContent=showSource?'渲染':'源码';button.setAttribute('aria-pressed',String(showSource));}
-  function addOptimisticMessage(text){const localId=`pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,baselineIds=new Set(state.transcriptMessages.map(message=>String(message.id)));state.pendingMessages.set(localId,{pane:state.selected,text,status:'sending',baselineIds});renderTranscript();requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;state.stick=true;});return localId;}
+  function addOptimisticMessage(text){const localId=`pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,baselineIds=new Set(state.transcriptMessages.map(message=>String(message.id)));state.pendingMessages.set(localId,{pane:state.selected,text,status:'sending',baselineIds,createdAt:Date.now()});renderTranscript();requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;state.stick=true;});return localId;}
   function setOptimisticStatus(localId,status){const pending=state.pendingMessages.get(localId);if(!pending)return;pending.status=status;renderTranscript();requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
   async function refreshTranscript(id,{force=false,refresh=false}={}){if(state.selected!==id||state.mode!=='chat')return;
     const follow=atBottom(),first=state.transcriptMtime===null;
