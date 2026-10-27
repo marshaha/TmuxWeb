@@ -197,8 +197,8 @@ evolving on its own.
 - sends are shown optimistically (发送中/已发送) and reconciled when the transcript echoes them: text is compared whitespace- and
   wrapping-insensitively, and a rewritten/expanded echo is paired by order, so a placeholder never lingers after later replies;
   the placeholder sits right after the last message that existed when send was pressed, not at the very end
-- Working indicator: while the agent is still on a turn the conversation ends with an animated `处理中 12s` line and the header
-  reads `<provider> · 处理中…` with a breathing dot. It is derived from the transcript (the last message is still a user message)
+- Reasoning strip: a small line pinned right above the composer reads `…thinking… 1m38s` (animated dots plus elapsed) while the
+  agent works and `…idle…` otherwise; the header mirrors it as `<provider> · thinking…` with a breathing dot. It is derived from the transcript (the last message is still a user message)
   plus the pane-screen probe (`esc to interrupt`/spinner, which covers streaming agents such as codex); when both settle the line
   disappears and the sidebar dot goes back to idle.
 - Long conversations page backwards: the first read takes 300 messages, scrolling to the top doubles it (300→600→1200…, capped by

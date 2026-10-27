@@ -1294,7 +1294,8 @@ class TmuxWebTests(unittest.TestCase):
         self.login()
         page = self.client.get("/").text
         for marker in ('id="agent-progress"', "function syncProgress(", "function sinceSeconds(",
-                       "function humanElapsed(", "处理中", "function agentWorking("):
+                       "function humanElapsed(", "'thinking'", "'idle'", "function agentWorking(",
+                       "agent-progress.working"):
             self.assertIn(marker, page)
 
     def test_share_and_fullscreen_entries_are_icons_on_phones(self):
