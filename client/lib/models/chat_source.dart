@@ -1,0 +1,65 @@
+/// Chat data sources: a pane (authenticated) or a public share link.
+library;
+
+import '../api/api_client.dart';
+import 'models.dart';
+
+abstract class ChatSource {
+  String get title;
+
+  String get subtitle;
+
+  bool get readOnly;
+
+  Future<Transcript> fetch();
+
+  Future<void> send(String text, {bool submit = true});
+}
+
+class PaneChatSource implements ChatSource {
+  PaneChatSource({required this.api, required this.pane});
+
+  final Api api;
+  final Pane pane;
+
+  @override
+  String get title => pane.label;
+
+  @override
+  String get subtitle => [
+        if (pane.provider != null) pane.provider!,
+        if (pane.session.isNotEmpty) pane.session,
+        if (pane.path.isNotEmpty) pane.path,
+      ].join(' · ');
+
+  @override
+  bool get readOnly => false;
+
+  @override
+  Future<Transcript> fetch() => api.transcript(pane.ref);
+
+  @override
+  Future<void> send(String text, {bool submit = true}) => api.sendInput(pane.ref, text, submit: submit);
+}
+
+class ShareChatSource implements ChatSource {
+  ShareChatSource({required this.api, required this.meta});
+
+  final Api api;
+  final ShareMeta meta;
+
+  @override
+  String get title => meta.title;
+
+  @override
+  String get subtitle => '分享 · ${meta.slug}';
+
+  @override
+  bool get readOnly => !meta.allowInput;
+
+  @override
+  Future<Transcript> fetch() => api.shareTranscript(meta.slug);
+
+  @override
+  Future<void> send(String text, {bool submit = true}) => api.shareInput(meta.slug, text, submit: submit);
+}
