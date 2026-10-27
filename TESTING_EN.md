@@ -2,6 +2,29 @@
 
 This document covers automated tests that do not require real AI CLIs, plus manual acceptance for local tmux, remote SSH, mobile browsers, and public reverse proxies.
 
+- File panel: `Ctrl/⌘+click` toggles a row without navigating or downloading, `Shift+click` selects the range from the last anchor, plain click keeps its old meaning (enter dir / download file). Checkboxes are always visible; the 全选 button flips to 取消全选 once everything is selected.
+- File panel: parent navigation lives only in the `..` row (the toolbar no longer duplicates it). The toolbar download button must zip the whole current directory when nothing is selected, and only the selection otherwise — its tooltip follows the count.
+- File panel: type `/etc` in the path bar and press Enter — the listing must switch; relative values (`..`, `src`) must resolve against the pane cwd, Esc restores. Tick "多选", select two files plus one directory, download the zip: entry names must be relative to the current directory with the directory contents intact. Repeat on a remote pane (only `tar` is required there), and confirm an oversized selection returns an explicit 503 instead of hanging.
+
+- Remote host form submit: after typing a password and pressing 测试联通, the `POST /api/remote-hosts/test` request body must carry `"credential":"<typed value>"` with the matching `auth_type`. Checking that the field is merely visible is not enough — a `fields.credential.value` mistake once sent `undefined` and every save/test answered 422.
+- Remote host form: the password is masked by default and only the eye button reveals it; there is no fingerprint confirmation checkbox — testing or adding the host scans and pins the key automatically, the fingerprint is shown as a muted line under the form, and a later key change is refused.
+
+- Agent mode: after adding the local `~/.ssh/id_*.pub` to the remote `authorized_keys`, choosing "本机密钥（SSH Agent）" with no credential must test successfully and list panes; the stored host has `auth_type=agent` and no `credential`. Without authorisation it must fail fast (`Permission denied (publickey,password)`) instead of waiting on a prompt.
+
+- New session: the "+" on a host row opens a dialog prefilled with that host's first pane path; creating must add the session on that host and select the new pane. A duplicate name returns 409, an invalid name or a missing directory returns 422, and the same works on a remote host (pane id carries the host prefix).
+
+- Relay MCP: `TMUXWEB_URL=... TMUXWEB_TOKEN=... python3 mcp_relay.py --selftest` must list every agent pane including remote `host~%pane`; drive it over stdio (`initialize`, `tools/call list_agents`, `ask_agent` against a test pane) and check a busy pane yields `isError` with `pane_tail`, and `read_agent transcript=true` returns messages.
+- HTTP MCP endpoint: `POST /mcp` with `Authorization: Bearer <token>` must answer `initialize` with a protocolVersion, `tools/list` with four tools, return 202 for notifications (no id), 405 for GET and 401 without a token; `tools/call read_agent` returns pane content and missing arguments come back as `isError`, never a 500.
+- No-auth mode: with `TMUX_WEB_MCP_AUTH=off` in `.env` and a restart, `POST /mcp` without an `Authorization` header must answer 200 while `/api/hosts` still answers 401, and the startup log emits one unauthenticated warning; switching back to `on` restores the 401.
+
+- Proxy/Cloudflare: with `TMUX_WEB_TRUST_PROXY=1`, a login request carrying `CF-Connecting-IP` / `X-Forwarded-Proto: https` must return a `Secure` cookie; with `TMUX_WEB_ALLOWED_HOSTS=chat.example.com` any other `Host` answers 421 while that host and `127.0.0.1` work.
+
+- Chat blocks: a message with python code + mermaid + a table must yield three `.block-wrap`s; copying a block flips the button to 已复制, mermaid renders to SVG, and the table toggles between rendered and markdown source. The message-level 复制全部 sits inside the card above a rule. Code containing `<` `>` `&` must render verbatim (a pre-escape + marked double-escape once turned it into `&gt;`), and a `<script>` in a message must stay text (`window.__pwned` unset).
+
+- Read-only share: create a share with "allow the guest to keep chatting" unchecked; `/share/<slug>` must show the 只读 badge and a read-only notice instead of the composer, `POST /share/<slug>/api/input` must return 403 (while `/api/transcript` stays 200), and a share created with the box checked must still accept input. An old `shares.db` must gain the `allow_input` column on restart, defaulting to 1 so existing shares stay interactive.
+
+- Native mobile client: `cd client && flutter test` passes (block splitting order and escaping, table parsing/TSV, URL normalization, cookie login, pane-ref encoding, read-only share 403, chat rendering and copy, block source toggle, composer hidden when read-only, send success/failure, login validation and remembered URL, token login). `flutter analyze` is clean. Device smoke test: `http://<lan-ip>:8899` + password → host tree → open `%7` → copy a message, toggle a table to source, and open a read-only share link and confirm there is no composer. Build check: `flutter build apk --release --split-per-abi` and `appbundle` succeed and `apksigner verify --print-certs` reports `CN=TmuxWeb`.
+
 ## 1. Install test dependencies
 
 ```bash
@@ -21,15 +44,21 @@ python -m unittest discover -s tests -v
 
 The suite uses fake backends and temporary databases. It does not connect to real SSH hosts or type into real tmux/AI sessions. Coverage includes:
 
-- login and API authorization
+- login and API authorization (cookie plus `TMUX_WEB_API_TOKEN` header/bearer)
 - tmux discovery, capture, input, and WebSockets
 - PTY resize and cleanup
-- Claude transcripts and bounded reverse JSONL reads
-- share creation, passwords, expiration, extension, stop, and deletion
+- Claude/Codex/Hermes/Kimi transcript parsing and bounded reverse JSONL reads
+- share creation, passwords, expiration, extension, stop, and deletion (local and remote panes)
 - encrypted remote-host storage, host-scoped pane IDs, and SSH argument construction
+- SSH multiplexing arguments, private mux directory mode, environment opt-out
+- remote digest polling (no text transfer when unchanged), remote transcript JSON and error propagation
+- relay state detection, marker protocol, busy/timeout (504 with tail), cross-host forwarding, relay log
+- file panel: listing order/hidden/truncation, path and file-name rejection, download headers,
+  uploaded byte fidelity, upload size limit, remote helper and SSH transfer arguments
+- provider/capability exposure in pane payloads
 - keeping passwords out of argv and ordinary environment values
 - rejecting public keys pasted as private keys
-- the real-tab remote tmux parser regression
+- the printable remote tmux field-separator regression
 - MCP mailbox protocol and identity restrictions
 
 GitHub Actions runs the same compile and unittest commands on Python 3.11, 3.12, and 3.13.
@@ -95,7 +124,91 @@ ssh user@example-host 'id -un; command -v tmux; tmux list-sessions; tmux list-pa
 
 The tmux socket must belong to the SSH user; different users normally see different tmux servers.
 
-## 6. Share lifecycle acceptance
+## 6. Remote rendering and performance acceptance
+
+Remote panes must look and behave exactly like local ones:
+
+1. A pane whose title contains non-ASCII text must keep it in `/api/hosts` (not `____`).
+2. Selecting a remote Claude/Codex/Kimi/Hermes pane must show a structured transcript (status bar reads `<provider> transcript`), not an ANSI capture.
+3. Remote transcripts must work with only sh/grep/tail on the host. For Hermes, a host with neither a session jsonl nor `sqlite3` falls back to capture without an error banner.
+4. `GET /api/panes/<host_id>~%N/capture` works for remote panes the same way as local ones.
+5. While a live view is open on an idle pane, only short `cksum` commands should appear — no repeated full-screen transfers:
+
+```bash
+ps -ef | grep 'ssh .*tmux capture-pane' | grep -v grep
+```
+
+6. With three remote live views open, only one SSH connection should exist (ControlMaster reuse):
+
+```bash
+ls -l "${XDG_RUNTIME_DIR:-/tmp}/tmuxweb-mux-$(id -u)/"
+```
+
+7. Restarting with `TMUX_WEB_SSH_MUX=0` must still work, with higher latency.
+
+## 7. Cross-server relay acceptance
+
+Start the model-free stand-in agent pane from the repository:
+
+```bash
+tmux new-session -d -s relay-test "python3 -u tests/fake_agent_pane.py"
+tmux list-panes -a -F '#{session_name} #{pane_id}'
+```
+
+Then:
+
+```bash
+export TMUXWEB_URL=http://127.0.0.1:8787
+export TMUXWEB_TOKEN=...            # TMUX_WEB_API_TOKEN from .env
+./relay_client.py peers             # relay-test pane should be listed as idle
+./relay_client.py ask %N 'what is 1+1?' --timeout 30
+# => fake answer to: what is 1+1?
+
+./relay_client.py ask '<host_id>~%N' 'ask across the SSH hop' --timeout 30
+```
+
+The first remote transcript read caches `transcript_reader.py` on the remote host at
+`${XDG_RUNTIME_DIR:-/tmp}/tmuxweb-reader-<hash>.py` (mode 0600, content-hashed so upgrades replace it).
+
+Edges to verify:
+
+1. A generating pane (spinner or `esc to interrupt`) returns 409; `--force` sends anyway.
+2. An agent that ignores the marker protocol returns 504 with the pane tail.
+3. Two concurrent `ask` calls on one pane: the second returns 409.
+4. `/api/relay/log` records OK/timeouts (last 100, cleared on restart).
+5. Real CLI smoke test: pick an idle Claude/Codex/Hermes pane and ask something tiny; never use a pane with unsaved user input.
+6. A wrong token returns 401, and token auth is disabled entirely when `TMUX_WEB_API_TOKEN` is empty.
+
+Cleanup:
+
+```bash
+tmux kill-session -t relay-test
+```
+
+## 8. File panel acceptance
+
+Point a throwaway pane at a test directory (never a production directory):
+
+```bash
+mkdir -p /tmp/tmuxweb-files/sub && echo hello > /tmp/tmuxweb-files/a.txt
+tmux new-session -d -s filetest -c /tmp/tmuxweb-files 'bash'
+```
+
+1. Select that pane and press 「▤」: folders first, sizes shown, hidden files hidden by default.
+2. Enter `sub`, come back with `..` and with the `↑` button.
+3. Click `a.txt`: it downloads with the right name and content (non-ASCII names must survive).
+4. Drop a file on the panel (or use 「⇧」 to pick several): it appears in the current directory with identical bytes.
+5. Uploads over `TMUX_WEB_FILE_UPLOAD_MAX` return 413; names containing `/` or `..` return 422.
+6. Repeat 1–4 on a remote pane to exercise the SSH transport.
+7. On a remote without `python3` (or a minimal `env -i sh -c` shell), listing must still work: file management
+   only needs `find`/`stat`/`head`/`cat`.
+8. With the remote host offline the panel shows the error instead of a blank list; 「↻」 retries.
+9. Remote transcripts follow the remote file: add a message on the remote session and it must show up within 1–2s without a page reload, while an idle remote only costs one `stat` per second.
+
+Cleanup: `tmux kill-session -t filetest; rm -rf /tmp/tmuxweb-files`
+
+## 9. Share lifecycle acceptance
+
 
 Use a disposable local Claude session:
 
@@ -110,7 +223,7 @@ Use a disposable local Claude session:
 
 Do not send acceptance prompts into a user's real conversation.
 
-## 7. Mobile/PWA acceptance
+## 10. Mobile/PWA acceptance
 
 Test at least iOS Safari and Android Chrome:
 
@@ -123,7 +236,7 @@ Test at least iOS Safari and Android Chrome:
 - Closing the keyboard refits and repaints the terminal without a black stale area.
 - PWA installation works, and offline storage does not contain transcripts, API responses, or login pages.
 
-## 8. Public reverse-proxy acceptance
+## 11. Public reverse-proxy acceptance
 
 At the HTTPS endpoint:
 
@@ -139,7 +252,7 @@ Verify:
 - The Service Worker does not cache sensitive requests.
 - Monitoring reports the origin clearly when the local service is stopped.
 
-## 9. Pre-publication privacy check
+## 12. Pre-publication privacy check
 
 ```bash
 git status --ignored --short
