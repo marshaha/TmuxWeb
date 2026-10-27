@@ -354,6 +354,91 @@ class RemoteHostTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "cannot decode"):
             parse_transcript_response(stdout)
 
+    def test_follow_rediscovers_when_the_pane_starts_a_new_session(self):
+        runner = self.make_runner()
+        calls = []
+        old_line = json.dumps({"role": "assistant", "content": "旧会话"}) + "\n"
+        new_line = json.dumps({"role": "assistant", "content": "新会话"}) + "\n"
+        discovery = (
+            "TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_SESSION<::>s1\nTMUXWEB_FORMAT<::>hermes-jsonl\n"
+            "TMUXWEB_TITLE<::>旧任务\nTMUXWEB_PRIMARY<::>/home/user/.hermes/sessions/s1.jsonl\n"
+            f"TMUXWEB_STAMP<::>1793000000 {len(old_line.encode())}\nTMUXWEB_PAYLOAD\n" + old_line
+        ).encode()
+        # the pinned file is still there and unchanged, but the pane title moved on
+        follow = (
+            "TMUXWEB_MODE<::>append\nTMUXWEB_TRUNCATED<::>0\nTMUXWEB_ENCODING<::>none\n"
+            "TMUXWEB_TITLE<::>新任务\n"
+            f"TMUXWEB_STAMP<::>1793000000 {len(old_line.encode())}\nTMUXWEB_PAYLOAD\n"
+        ).encode()
+        rediscovered = (
+            "TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_SESSION<::>s2\nTMUXWEB_FORMAT<::>hermes-jsonl\n"
+            "TMUXWEB_TITLE<::>新任务\nTMUXWEB_PRIMARY<::>/home/user/.hermes/sessions/s2.jsonl\n"
+            f"TMUXWEB_STAMP<::>1793000100 {len(new_line.encode())}\nTMUXWEB_PAYLOAD\n" + new_line
+        ).encode()
+
+        class Result:
+            def __init__(self, stdout):
+                self.stdout, self.stderr, self.returncode = stdout, b"", 0
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if len(calls) == 1:
+                return Result(discovery)
+            if "tail -c +" in command:
+                return Result(follow)
+            return Result(rediscovered)
+
+        runner.run = fake_run
+        first = runner.transcript("%9", 20)
+        self.assertEqual([message["text"] for message in first["messages"]], ["旧会话"])
+        TRANSCRIPT_CACHE.clear()
+        second = runner.transcript("%9", 20)
+        # the stale file is abandoned instead of being tailed forever
+        self.assertEqual([message["text"] for message in second["messages"]], ["新会话"])
+        self.assertEqual(len(calls), 3)
+
+    def test_relocation_interval_forces_a_lookup(self):
+        runner = self.make_runner()
+        line = json.dumps({"role": "assistant", "content": "内容"}) + "\n"
+        discovery = (
+            "TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_SESSION<::>s1\nTMUXWEB_FORMAT<::>hermes-jsonl\n"
+            "TMUXWEB_TITLE<::>任务\nTMUXWEB_PRIMARY<::>/home/user/.hermes/sessions/s1.jsonl\n"
+            f"TMUXWEB_STAMP<::>1793000000 {len(line.encode())}\nTMUXWEB_PAYLOAD\n" + line
+        ).encode()
+        calls = []
+
+        class Result:
+            def __init__(self):
+                self.stdout, self.stderr, self.returncode = discovery, b"", 0
+
+        runner.run = lambda command, **kwargs: (calls.append(command), Result())[1]
+        runner.transcript("%9", 20)
+        TRANSCRIPT_CACHE.clear()
+        TRANSCRIPT_STATE[("0123456789abcdef", "%9")]["relocated_at"] = 0
+        with mock.patch.dict("os.environ", {"TMUXWEB_TRANSCRIPT_RELOCATE": "1"}):
+            runner.transcript("%9", 20)
+        self.assertIn("pane=$1", calls[-1])  # discovery ran again instead of the tail
+
+    def test_refresh_drops_the_incremental_state(self):
+        runner = self.make_runner()
+        line = json.dumps({"role": "assistant", "content": "内容"}) + "\n"
+        discovery = (
+            "TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_SESSION<::>s1\nTMUXWEB_FORMAT<::>hermes-jsonl\n"
+            "TMUXWEB_TITLE<::>任务\nTMUXWEB_PRIMARY<::>/home/user/.hermes/sessions/s1.jsonl\n"
+            f"TMUXWEB_STAMP<::>1793000000 {len(line.encode())}\nTMUXWEB_PAYLOAD\n" + line
+        ).encode()
+
+        class Result:
+            def __init__(self):
+                self.stdout, self.stderr, self.returncode = discovery, b"", 0
+
+        calls = []
+        runner.run = lambda command, **kwargs: (calls.append(command), Result())[1]
+        runner.transcript("%9", 20)
+        self.assertIn(("0123456789abcdef", "%9"), TRANSCRIPT_STATE)
+        runner.transcript("%9", 20, refresh=True)
+        self.assertIn("pane=$1", calls[-1])
+
     def test_remote_transcript_surfaces_helper_errors(self):
         stdout = b"TMUXWEB_ERROR<::>no Codex transcript for /srv/work\n"
         runner = self.fake_transcript_runner(stdout, returncode=23)

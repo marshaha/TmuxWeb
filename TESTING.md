@@ -42,6 +42,8 @@
 
 - 主机编辑：`/hosts` 上点「编辑」改名称/用户名后保存 → 列表立即更新，密码留空则原凭据仍可用；改主机名会重新扫描指纹；↑/↓ 调整顺序后刷新页面顺序保持，`/api/hosts` 的远端主机顺序一致；把认证方式改成密码但不填密码应报 422；保存一个连不上的配置应返回 424 且库里字段回到原值。`python -m unittest test_tmux_web -k remote_host` 覆盖这些路径。
 
+- 远端会话换代：在远端同一个 pane 里结束一个 agent 会话并开新的（标题会变），网页应在 `TMUX_WEB_TRANSCRIPT_RELOCATE`（默认 30s）内切到新会话的消息；点刷新按钮应立即重新定位（请求带 `refresh=1`）。单测覆盖：标题变化触发重定位、超时强制重定位、`refresh=True` 丢弃增量状态（`python -m unittest test_remote_hosts -k rediscover` / `-k relocation` / `-k refresh_drops`）。
+
 ## 1. 安装测试依赖
 
 ```bash

@@ -35,6 +35,10 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - The UI caches each pane's transcript, scroll offset and unsent draft: switching back paints instantly from cache
   (0.02-0.14s measured) and revalidates in the background, repainting only when the signature (mtime + message count +
   last id) changes. The working set is capped at eight panes.
+- Remote sessions are re-located periodically: the client pins the session file and reads only new bytes, but an agent that
+  starts a new session in the same pane writes a new file. Every tail now also reports the pane title, and a changed title
+  (or `TMUX_WEB_TRANSCRIPT_RELOCATE` seconds, 30s by default) triggers a fresh lookup instead of tailing the stale file.
+  The refresh buttons in the web UI and the app send `refresh=1`, which drops the incremental state and cache.
 - Remote transcript transfer is incremental and compressed: the first lookup scans only the tails of the newest three
   session files (never the whole 300 MB log), later polls read just the newly appended bytes (`tail -c +offset`), and the
   payload is gzipped on the wire. Measured on a host with a 300 MB transcript and 0.7s RTT: first load 53s -> 8.6s, later

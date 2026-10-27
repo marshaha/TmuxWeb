@@ -41,6 +41,11 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   matches `/api/hosts`; switching to password auth without a password returns 422; saving an unreachable configuration returns
   424 and the stored fields roll back. Covered by `python -m unittest test_tmux_web -k remote_host`.
 
+- Remote session rollover: end an agent session and start a new one in the same remote pane (the title changes); the UI must switch
+  to the new session within `TMUX_WEB_TRANSCRIPT_RELOCATE` (30s by default), and the refresh button must force a lookup
+  immediately (`refresh=1`). Unit tests cover title-change relocation, the relocation interval and `refresh=True` dropping the
+  incremental state.
+
 ## 1. Install test dependencies
 
 ```bash

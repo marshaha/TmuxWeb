@@ -56,8 +56,8 @@ pane=$1
 limit=${2:-200}
 sep='<::>'
 header() {
-  printf 'TMUXWEB_PROVIDER%s%s\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%s%s\nTMUXWEB_ENCODING%s%s\n' \
-    "$sep" "$provider" "$sep" "$1" "$sep" "$2" "$sep" "$encoding"
+  printf 'TMUXWEB_PROVIDER%s%s\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%s%s\nTMUXWEB_ENCODING%s%s\nTMUXWEB_TITLE%s%s\n' \
+    "$sep" "$provider" "$sep" "$1" "$sep" "$2" "$sep" "$encoding" "$sep" "$title"
   if [ -n "$3" ] && [ -e "$3" ]; then
     printf 'TMUXWEB_PRIMARY%s%s\n' "$sep" "$3"
     stamps=$(stat -c '%Y %s' -- "$3" 2>/dev/null || stat -f '%m %z' -- "$3" 2>/dev/null)
@@ -282,6 +282,7 @@ error "no Hermes transcript source on this host (no session jsonl, no sqlite3, n
 REMOTE_TRANSCRIPT_TAIL_SCRIPT = r"""
 file=$1
 offset=${2:-0}
+pane=$4
 cap=${3:-4194304}
 [ -f "$file" ] || exit 25
 size=$(stat -c '%s' -- "$file" 2>/dev/null || stat -f '%z' -- "$file" 2>/dev/null) || exit 26
@@ -297,8 +298,9 @@ encoding=none
 if command -v gzip >/dev/null 2>&1; then encoding=gzip; fi
 truncated=0
 if [ "$start" -gt 1 ]; then truncated=1; fi
-printf 'TMUXWEB_MODE<::>%s\nTMUXWEB_TRUNCATED<::>%s\nTMUXWEB_ENCODING<::>%s\nTMUXWEB_STAMP<::>%s %s\nTMUXWEB_PAYLOAD\n' \
-  "$mode" "$truncated" "$encoding" "$stamp" "$size"
+title=$(tmux display-message -p -t "$pane" '#{pane_title}' 2>/dev/null)
+printf 'TMUXWEB_MODE<::>%s\nTMUXWEB_TRUNCATED<::>%s\nTMUXWEB_ENCODING<::>%s\nTMUXWEB_TITLE<::>%s\nTMUXWEB_STAMP<::>%s %s\nTMUXWEB_PAYLOAD\n' \
+  "$mode" "$truncated" "$encoding" "$title" "$stamp" "$size"
 if [ "$encoding" = gzip ]; then
   tail -c +"$start" -- "$file" 2>/dev/null | gzip -c
 else
@@ -882,7 +884,7 @@ class SSHRunner:
                 continue
         return max(stamps) if stamps else 0.0
 
-    def transcript(self, pane_id: str, limit: int = 200) -> dict:
+    def transcript(self, pane_id: str, limit: int = 200, refresh: bool = False) -> dict:
         """Pull a remote transcript's bytes and parse them here, like scp + local parse.
 
         Repeated polls reuse a cached parse: within the TTL no SSH call happens at
@@ -893,6 +895,10 @@ class SSHRunner:
         limit = max(1, min(int(limit), 1000))
         host_id = self.host.get("id") or ""
         key = (host_id, pane_id, limit)
+        if refresh:
+            drop_transcript_state(host_id, pane_id)
+            with TRANSCRIPT_CACHE_LOCK:
+                TRANSCRIPT_CACHE.pop(key, None)
         entry = cache_entry(key)
         now = time.monotonic()
         if entry:
@@ -930,6 +936,9 @@ class SSHRunner:
                 "offset": self._stamp_size(header.get("TMUXWEB_STAMP", "")),
                 "buffer": payload,
                 "at": now,
+                "pane": pane_id,
+                "title": header.get("TMUXWEB_TITLE", ""),
+                "relocated_at": now,
             }
             if state["primary"]:
                 store_transcript_state(host_id, pane_id, state)
@@ -960,14 +969,28 @@ class SSHRunner:
                 return 0
         return 0
 
+    @staticmethod
+    def _relocation_due(state: dict) -> bool:
+        """Re-locate the session file periodically, not only when it vanishes."""
+        try:
+            interval = float(os.environ.get("TMUX_WEB_TRANSCRIPT_RELOCATE", "30"))
+        except ValueError:
+            interval = 30.0
+        if interval <= 0:
+            return False
+        return time.monotonic() - float(state.get("relocated_at") or 0) > interval
+
     def _follow_transcript(self, host_id: str, pane_id: str, state: dict) -> tuple[dict, bytes, dict]:
         """Read only the bytes appended since the last poll (or the tail window).
 
         Returns (header, payload, state); the header is empty when the fast path
         cannot be used and the caller should fall back to full discovery.
         """
+        if self._relocation_due(state):
+            return {}, b"", state
         command = (f"sh -c {shlex.quote(REMOTE_TRANSCRIPT_TAIL_SCRIPT)} "
-                   f"sh {shlex.quote(state['primary'])} {int(state.get('offset') or 0)}")
+                   f"sh {shlex.quote(state['primary'])} {int(state.get('offset') or 0)}"
+                   f" 4194304 {shlex.quote(state.get('pane') or '%0')}")
         completed = self.run(command, timeout=60)
         try:
             header, payload = parse_transcript_response(completed.stdout)
@@ -979,6 +1002,12 @@ class SSHRunner:
             return {}, b"", state
         mode = header.get("TMUXWEB_MODE", "full")
         stamp = header.get("TMUXWEB_STAMP", "")
+        current_title = header.get("TMUXWEB_TITLE", "")
+        # A new agent session in the same pane writes a new file: the pinned one
+        # stops changing, which used to look like a frozen conversation.
+        if current_title and state.get("title") and current_title != state["title"]:
+            drop_transcript_state(host_id, pane_id)
+            return {}, b"", state
         offset = self._stamp_size(stamp)
         if mode == "append":
             merged = state.get("remainder", "") + payload
@@ -992,7 +1021,7 @@ class SSHRunner:
         else:
             buffer, remainder = payload, ""
         state = {**state, "offset": offset, "buffer": buffer, "remainder": remainder,
-                 "at": time.monotonic()}
+                 "at": time.monotonic(), "relocated_at": time.monotonic()}
         store_transcript_state(host_id, pane_id, state)
         header = {
             "TMUXWEB_PROVIDER": state.get("provider", ""),

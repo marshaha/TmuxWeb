@@ -1388,11 +1388,13 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/panes/{pane_id}/transcript")
-    async def transcript(request: Request, pane_id: str, limit: int = 200):
+    async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0):
         require_auth(request)
         pane_or_404(pane_id)
         try:
             transport, actual_pane_id = pane_transport(pane_id)
+            if refresh and hasattr(transport, "transcript"):
+                return await asyncio.to_thread(transport.transcript, actual_pane_id, limit, True)
             return await asyncio.to_thread(transport.transcript, actual_pane_id, limit)
         except HTTPException:
             raise

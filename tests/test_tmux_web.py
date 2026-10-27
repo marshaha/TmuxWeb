@@ -684,7 +684,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("-webkit-text-size-adjust:100%", response.text)
         self.assertIn(".chat-message.assistant{justify-content:flex-start}", response.text)
         self.assertIn("background:#fff;color:var(--ink);font-size:15px", response.text)
-        self.assertIn("async function refreshTranscript(id,{force=false}={})", response.text)
+        self.assertIn("refreshTranscript(id,{force=false,refresh=false}", response.text)
         self.assertIn("state.selected!==id||state.mode!=='chat'", response.text)
         self.assertIn("api('/api/hosts')", response.text)
         self.assertIn("treeDetails", response.text)
