@@ -1271,7 +1271,7 @@ class TmuxWebTests(unittest.TestCase):
             cwd=Path(__file__).resolve().parent.parent, capture_output=True, text=True, timeout=120,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout[-2000:] + completed.stderr[-2000:])
-        self.assertIn("# fail 0", completed.stdout)
+        self.assertIn("fail 0", completed.stdout)
 
     def test_transcript_reports_an_unanswered_turn(self):
         self.login()
