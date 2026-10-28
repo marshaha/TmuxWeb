@@ -255,6 +255,7 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 - **看板卡片**：agent 通过 MCP 工具 `publish_home_card` 推上来的结论/告警/链接，可在主页删除
 - **「抓屏」和「终端」是两件事**：聊天模式兜底时用 `tmux capture-pane` 取一份**文本快照**（把整屏文字 + ANSI 转成 HTML 塞进页面），它没有终端语义、每帧整屏重建，全屏 TUI 会卡；「终端」模式是真正的 xterm + PTY（增量写 VT 序列，只重绘变化的格子）。所以 agent 会话读不到 transcript 时不再抓屏，而是给一个「用终端打开（xterm）」按钮。
 - **tmux 路径只探测一次**：探测到的绝对路径（例如 macmini 的 `/opt/homebrew/bin/tmux`）会存进主机记录（`remote_hosts.tmux_path`），之后所有命令、以及终端模式的 PTY attach 都直接用它——之前 macmini 切终端会报 `zsh:1:1 command not found: tmux`，就是因为 attach 那条命令没带上解析出的路径。主机管理页会显示这个路径，没有时提示「tmux 路径待首次连通时记录」。
+- **传输窗口自动适应**：不需要配参数——每次「发现会话」的拉取耗时 >8s 就把该主机的 tail 窗口减半（4MB→1MB 下限），耗时 <2.5s 就加倍回 4MB；实测 oracle（弱网）从 14–30s 降到 5–7s，消息条数不变。
 - **慢网络**：远端 transcript 单次拉取有超时（`TMUX_WEB_TRANSCRIPT_TIMEOUT`，默认 30s；超时提示是「网络较慢」而不是解析失败），tmux 路径探测也限时（`TMUX_WEB_PROBE_TIMEOUT`，默认 10s，超时就退回裸 `tmux` 而不是报错），单次传输字节可调（`TMUX_WEB_REMOTE_PAYLOAD_BYTES`）。实测 oracle（单条 ssh 命令 2–4s）：首次发现会话 ~29s，之后走增量探测 0.9–7.6s。
 - **agent 会话不会退化成刷屏终端**：transcript 读不到内容时（会话刚开、或解析不出来），聊天区显示说明 + 「查看原始屏幕」按钮并自动重试，不再自动切去流式抓屏（Kimi/Claude 这类全屏 TUI 每秒重绘整屏，600 行 × 7000 个节点会把浏览器卡死）。shell pane 仍然照旧显示屏幕。
 - **Kimi 会话挑选**：同一个目录/标题可能有多个 kimi session，只挑 `updatedAt` 最新的那个（旧的往往是中断的回合，里面没有消息）。
@@ -289,7 +290,7 @@ publish_home_card(title="eth 任务已收敛", body="ITER5 结论已写入 notes
 `client/` 是 **原生** Flutter 客户端（Android / iOS），不走 WebView，直接调用 HTTP API；网页版继续独立迭代。
 
 - 登录：服务器地址 + 密码（换 `tmux_web_session` cookie），或 `TMUX_WEB_API_TOKEN`；地址记住、密码不落盘
-- 侧边栏树：主机 → session → window → pane 四级展开（展开状态会记住），pane 前有 idle/busy 圆点（来自 `/api/panes/status`）
+- 侧边栏树：主机 → session → window → pane 四级展开（展开状态会记住），pane 前有 idle/busy 圆点（来自 `/api/panes/status`）；**每台主机行右侧有独立的刷新按钮**（`/api/hosts?refresh=1&host=<id>`，只重新列这一台，实测 macmini 0.14s / oracle 0.37s，不会像整表刷新那样挨个探测所有主机），控制台和主页的树里都有
 - 服务器管理：列表 / 新增 / 编辑 / 删除远程主机，可扫描并固定 SSH 指纹，带「显示凭据」与「不校验连接直接保存」
 - 对话：结构化 transcript（Claude/Codex/Hermes/Kimi），每条消息复制、代码/mermaid/表格块级源码切换与复制
 - 发送：Enter 发送、Shift+Enter 换行；agent 在跑且输入框为空时发送键变红色停止键（Hermes 发 Ctrl+Q，Claude/Codex/Kimi 发 Esc）

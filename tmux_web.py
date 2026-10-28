@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import hmac
 import importlib.util
@@ -1182,12 +1183,46 @@ def create_app(
         except TmuxError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    async def refresh_one_host(host_id: str, payload: dict) -> dict | None:
+        """Re-list the panes of a single host; None when it is not in the snapshot."""
+        fresh = copy.deepcopy(payload)
+        target = next((item for item in fresh.get("hosts") or [] if item.get("id") == host_id), None)
+        if target is None:
+            return None
+        if host_id == "localhost":
+            try:
+                panes = [pane_metadata(pane) for pane in await asyncio.to_thread(tmux.list_panes)]
+                for pane in panes:
+                    pane.setdefault("host_id", "localhost")
+                    pane.setdefault("window_name", "")
+                target.update({"panes": panes, "status": "online"})
+                target.pop("error", None)
+            except (TmuxError, OSError) as exc:
+                target.update({"panes": [], "status": "offline", "error": str(exc)})
+        else:
+            timeout = int(os.environ.get("TMUX_WEB_HOSTS_LIST_TIMEOUT", "8"))
+            try:
+                credentialed = await asyncio.to_thread(remote_hosts.get_host, host_id, include_credential=True)
+                panes = await asyncio.to_thread(runner_for(credentialed).list_panes, timeout=timeout)
+                target.update({"panes": [pane_metadata(pane) for pane in panes], "status": "online"})
+                target.pop("error", None)
+            except Exception as exc:  # noqa: BLE001 - report it on the host row
+                target.update({"panes": [], "status": "offline", "error": str(exc)})
+        hosts_snapshot["value"] = fresh
+        hosts_snapshot["at"] = time.time()
+        return fresh
+
     @app.get("/api/hosts")
-    async def list_hosts(request: Request, refresh: int = 0):
+    async def list_hosts(request: Request, refresh: int = 0, host: str = ""):
         require_auth(request)
         # every 5s poll used to re-probe each remote host over SSH; a 5s snapshot
-        # keeps the sidebar fresh without hammering them (?refresh=1 forces it)
+        # keeps the sidebar fresh without hammering them (?refresh=1 forces it,
+        # &host=<id> re-lists only that host so one click stays cheap)
         cached = hosts_snapshot["value"]
+        if host and refresh and cached is not None:
+            refreshed = await refresh_one_host(host, cached)
+            if refreshed is not None:
+                return refreshed
         if cached is not None and not refresh and (time.time() - hosts_snapshot["at"]) < hosts_snapshot["ttl"]:
             return cached
         hosts = []

@@ -771,6 +771,29 @@ class RemoteHostTests(unittest.TestCase):
         self.assertIn("attach-session -t %13", remote)
         self.assertEqual(session.pane_id, "%13")
 
+    def test_the_transcript_window_adapts_to_the_link(self):
+        """No knob: a slow pull halves the tail, a fast one grows it back."""
+        host = dict(FAKE_SSH_HOST, id="adaptive")
+        remote_hosts._PAYLOAD_WINDOW.pop("adaptive", None)
+        self.assertEqual(remote_hosts.payload_window(host), remote_hosts.PAYLOAD_WINDOW_DEFAULT)
+        remote_hosts.note_pull_duration(host, 12.0)
+        self.assertEqual(remote_hosts.payload_window(host), remote_hosts.PAYLOAD_WINDOW_DEFAULT // 2)
+        for _ in range(10):
+            remote_hosts.note_pull_duration(host, 30.0)
+        self.assertEqual(remote_hosts.payload_window(host), remote_hosts.PAYLOAD_WINDOW_MIN)
+        self.assertGreaterEqual(remote_hosts.PAYLOAD_WINDOW_MIN, 1024 * 1024)  # keep enough tail for history
+        for _ in range(8):
+            remote_hosts.note_pull_duration(host, 0.4)
+        self.assertEqual(remote_hosts.payload_window(host), remote_hosts.PAYLOAD_WINDOW_MAX)
+        # a middling pull keeps whatever was learned
+        before = remote_hosts.payload_window(host)
+        remote_hosts.note_pull_duration(host, 5.0)
+        self.assertEqual(remote_hosts.payload_window(host), before)
+        runner = SSHRunner(host)
+        argv, _environment = runner.command("true")
+        self.assertIn(f"export TMUXWEB_PAYLOAD_BYTES={before};", argv[-1])
+        remote_hosts._PAYLOAD_WINDOW.pop("adaptive", None)
+
     def test_a_stalled_transcript_blames_the_link(self):
         """A hung ssh must surface as 'slow network', not as a broken transcript."""
         host = dict(FAKE_SSH_HOST)

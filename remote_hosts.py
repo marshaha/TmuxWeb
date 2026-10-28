@@ -82,6 +82,34 @@ TMUX_MISSING_HINT = (
 )
 
 _TMUX_BIN_CACHE: dict[str, str] = {}
+
+# How many tail bytes a transcript pull asks for. Starts generous and adapts per
+# host: a slow pull halves it, a quick one doubles it back.
+PAYLOAD_WINDOW_DEFAULT = 4 * 1024 * 1024
+PAYLOAD_WINDOW_MIN = 1024 * 1024   # below this the tail holds too few messages to be useful
+PAYLOAD_WINDOW_MAX = 4 * 1024 * 1024
+_PAYLOAD_WINDOW: dict[str, int] = {}
+
+
+def payload_window(host: dict) -> int:
+    return _PAYLOAD_WINDOW.get(str(host.get("id") or host.get("hostname") or ""), PAYLOAD_WINDOW_DEFAULT)
+
+
+def note_pull_duration(host: dict, elapsed: float) -> None:
+    """Shrink the window on a slow host, grow it back on a fast one."""
+    key = str(host.get("id") or host.get("hostname") or "")
+    current = _PAYLOAD_WINDOW.get(key, PAYLOAD_WINDOW_DEFAULT)
+    if elapsed > 8.0:
+        wanted = max(PAYLOAD_WINDOW_MIN, current // 2)
+    elif elapsed < 2.5:
+        wanted = min(PAYLOAD_WINDOW_MAX, current * 2)
+    else:
+        return
+    if wanted != current:
+        _PAYLOAD_WINDOW[key] = wanted
+        log = LOGGER.warning if wanted < current else LOGGER.info
+        log("transcript window for %s: %d KB -> %d KB (pull took %.1fs)",
+            host.get("name") or key, current // 1024, wanted // 1024, elapsed)
 # A failed probe costs a full SSH round trip; remember it briefly so a bad link does
 # not pay for it on every request, but do retry later in case the host recovers.
 _TMUX_BIN_FAILED: dict[str, float] = {}
@@ -1028,9 +1056,9 @@ class SSHRunner:
             command += ["-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey",
                         "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no"]
         prelude = LOCALE_PRELUDE
-        payload_bytes = os.environ.get("TMUX_WEB_REMOTE_PAYLOAD_BYTES", "").strip()
-        if payload_bytes.isdigit():
-            prelude += f"export TMUXWEB_PAYLOAD_BYTES={payload_bytes}; "
+        pinned = os.environ.get("TMUX_WEB_REMOTE_PAYLOAD_BYTES", "").strip()
+        window = int(pinned) if pinned.isdigit() else payload_window(self.host)
+        prelude += f"export TMUXWEB_PAYLOAD_BYTES={window}; "
         if tmux_bin:
             prelude += f"export TMUX_BIN={shlex.quote(tmux_bin)}; "
         command += [f"{self.host['username']}@{self.host['hostname']}", prelude + remote_command]
@@ -1335,6 +1363,7 @@ class SSHRunner:
         if not header:
             command = (f"sh -c {shlex.quote(REMOTE_TRANSCRIPT_SCRIPT)} "
                        f"sh {shlex.quote(pane_id)} {limit}")
+            started_at = time.monotonic()
             try:
                 completed = self.run(command, timeout=self.transcript_timeout)
             except RuntimeError as exc:
@@ -1342,6 +1371,7 @@ class SSHRunner:
                 raise RuntimeError(
                     f"读取远端 transcript 超时（{self.transcript_timeout}s），可能是到这台主机的网络较慢"
                 ) from exc
+            note_pull_duration(self.host, time.monotonic() - started_at)
             try:
                 header, payload = parse_transcript_response(completed.stdout)
             except RuntimeError:

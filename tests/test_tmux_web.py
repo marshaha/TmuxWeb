@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import unittest
+from unittest import mock
 import json
 import tempfile
 import zipfile
@@ -1340,7 +1341,32 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(body["host"], host["id"])
         self.assertEqual([pane["id"] for pane in body["panes"]], [pane_ref(host["id"], "%11")])
 
-    def test_agent_auth_host_can_be_added_without_a_credential(self):
+    def test_refreshing_one_host_leaves_the_others_alone(self):
+        """The sidebar's per-host refresh must not re-probe every remote."""
+        self.login()
+        self.client.get("/api/hosts?refresh=1")   # snapshot exists now
+        calls = {"n": 0}
+        original = FakeSSHRunner.list_panes
+
+        def counting(runner, *args, **kwargs):
+            calls["n"] += 1
+            return original(runner, *args, **kwargs)
+
+        with mock.patch.object(FakeSSHRunner, "list_panes", counting):
+            local = self.client.get("/api/hosts", params={"refresh": 1, "host": "localhost"})
+            self.assertEqual(local.status_code, 200)
+            self.assertEqual(calls["n"], 0, "a localhost refresh must not touch remote hosts")
+            hosts = {host["id"]: host for host in local.json()["hosts"]}
+            self.assertTrue(hosts["localhost"]["panes"])
+
+            calls["n"] = 0
+            board = self.client.get("/api/hosts", params={"refresh": 1, "host": "localhost"})
+            self.assertEqual(calls["n"], 0)
+            # an unknown host falls back to a full snapshot instead of failing
+            unknown = self.client.get("/api/hosts", params={"refresh": 1, "host": "nope"})
+            self.assertEqual(unknown.status_code, 200)
+
+
         host_key = ("10.0.0.7 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l"
                     "+Kg3QGMCbo2")
         fingerprint = host_key_fingerprint(host_key)

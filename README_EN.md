@@ -253,6 +253,11 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
 - **The tmux path is probed once** — the resolved absolute path (e.g. `/opt/homebrew/bin/tmux` on macmini) is saved with the host
   (`remote_hosts.tmux_path`) and reused by every command *and* by the terminal-mode PTY attach; that attach was missing the path,
   which is why switching to terminal mode on macOS printed `zsh:1:1 command not found: tmux`. The hosts page shows the saved path.
+- **Each host row refreshes on its own** — the sidebar (console and board) has a refresh icon per host calling
+  `/api/hosts?refresh=1&host=<id>`, which re-lists that host only (measured: macmini 0.14s, oracle 0.37s) instead of probing all
+  of them for a full snapshot.
+- **The transfer window adapts by itself** — no setting: a discovery pull slower than 8s halves that host's tail (4MB → 1MB
+  floor), a pull faster than 2.5s doubles it back. Oracle went from 14–30s to 5–7s with the same 28 messages.
 - **Slow links** — a transcript pull is bounded (`TMUX_WEB_TRANSCRIPT_TIMEOUT`, 30s; the error says the network is slow rather than
   claiming the transcript is broken), the tmux path probe is bounded (`TMUX_WEB_PROBE_TIMEOUT`, 10s, then it falls back to bare
   `tmux`), and the transfer size is tunable (`TMUX_WEB_REMOTE_PAYLOAD_BYTES`). Measured on oracle (2–4s per ssh command): ~29s to

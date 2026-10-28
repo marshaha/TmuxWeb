@@ -98,6 +98,17 @@ class HomeBoardTests(unittest.TestCase):
                        "stale-note", "skel", "显示缓存"):
             self.assertIn(marker, page)
 
+    def test_every_host_row_offers_a_refresh(self):
+        page = self.client.get("/home").text
+        for marker in ("data-refresh-host", "refreshOneHost", "class=\"trefresh\""):
+            self.assertIn(marker, page)
+        console = self.client.get("/").text
+        for marker in ("data-refresh-host", "refreshHost", "class=\"host-refresh\""):
+            self.assertIn(marker, console)
+        # both use the cheap per-host endpoint instead of a full re-probe
+        self.assertIn("/api/hosts?refresh=1&host=", page)
+        self.assertIn("/api/hosts?refresh=1&host=", console)
+
     def test_the_sidebar_width_is_draggable_and_remembered(self):
         home = self.client.get("/home")
         for marker in ('id="side-resizer"', "--side-w", "tmux-home-side-w", "col-resize"):
