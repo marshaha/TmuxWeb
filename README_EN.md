@@ -194,7 +194,8 @@ with busy/idle dots and a star per pane (the collapsed state is remembered; at �
 The right side is the board:
 
 - **Favourite cards** — each card can be renamed (pencil → type a name, or 恢复默认 to go back). The default name is
-  **session · window · host**, because the tmux pane title is often just the hostname. Plus a status badge (busy / idle / offline, "thinking…" with a pulse while a turn is unanswered), provider,
+  **session · window · host**, because the tmux pane title is often just the hostname. Hovering a card floats the **full text of the last agent reply** (when the newest message is the user's, it walks back to the
+previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / offline, "thinking…" with a pulse while a turn is unanswered), provider,
   title, path, a **preview of the last message**, and the pane reference. Clicking a card jumps back to the console with that pane
   selected (`/?pane=<pane>`).
 - **Board cards** — notes, results and alerts an agent published through the `publish_home_card` MCP tool; removable in the UI.

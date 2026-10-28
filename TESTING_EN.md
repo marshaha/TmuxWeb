@@ -93,6 +93,9 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   button returns, markdown files preview in a sheet, download saves into the app documents directory, upload and zip work from
   the toolbar. In the server dialog every label sits above its field (no overlapping floating labels).
 
+- Hover preview: hovering a favourite card floats an "agent 回复" panel with the full last agent message (marked 已截断 past
+  6000 chars); when the newest message is the user's it still shows the previous agent turn. The header no longer carries a
+  console button — the sidebar's top icon is the way back.
 - Card names: the default title is `session · window · host` (e.g. `codex · 0: codex · localhost`); the pencil button renames a
   card and the name survives a reload; 恢复默认 clears it; renaming a pane that is not on the board returns 404.
 - Home sidebar: `/home` shows the host → session → window → pane tree with status dots; starring a pane fills the star and adds a

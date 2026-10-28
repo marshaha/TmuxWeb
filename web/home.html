@@ -108,6 +108,12 @@
   .hit-title{font-size:13px;font-weight:600}
   .hit-snippet{font-size:12.5px;color:var(--muted);white-space:pre-wrap;word-break:break-word}
   mark{padding:0 2px;border-radius:3px;background:#f7e2d6;color:#8a3d22}
+  .hover-preview{position:fixed;z-index:30;width:min(520px,calc(100vw - 24px));max-height:min(62vh,520px);display:flex;flex-direction:column;
+    padding:11px 13px;border:1px solid var(--line);border-radius:13px;background:#fff;box-shadow:0 16px 44px rgba(32,31,28,.18);pointer-events:none}
+  .hover-preview[hidden]{display:none}
+  .hp-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px;color:var(--faint)}
+  .hp-head #hp-role{padding:1px 7px;border-radius:20px;border:1px solid var(--line);background:var(--surface);color:var(--muted);font-size:10.5px}
+  .hp-body{overflow:auto;font-size:12.5px;line-height:1.55;color:var(--ink);white-space:pre-wrap;word-break:break-word}
   .rename-dialog{width:min(430px,calc(100vw - 28px));padding:0;border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink);box-shadow:0 18px 50px rgba(32,31,28,.18)}
   .rename-dialog::backdrop{background:rgba(32,31,28,.28)}
   .rename-dialog form{display:grid;gap:10px;padding:18px}
@@ -169,7 +175,6 @@
   <div class="brand"><b>TmuxWeb 主页</b><span>收藏的会话 · 看板 · 搜索</span></div>
   <label class="search"><svg class="ico"><use href="#i-search"/></svg><input id="q" type="search" placeholder="搜索 pane 名、路径、最近对话内容…" spellcheck="false" autocomplete="off"></label>
   <div class="nav">
-    <a href="/" title="回到控制台" aria-label="控制台"><svg class="ico"><use href="#i-console"/></svg></a>
     <a href="/hosts" title="远程主机" aria-label="远程主机"><svg class="ico"><use href="#i-server"/></svg></a>
     <a href="/shares" title="管理分享" aria-label="管理分享"><svg class="ico"><use href="#i-share"/></svg></a>
     <button id="reload" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
@@ -201,6 +206,10 @@
     </div>
   </form>
 </dialog>
+<div class="hover-preview" id="hover-preview" hidden>
+  <div class="hp-head"><span id="hp-role">agent</span><span id="hp-time"></span></div>
+  <div class="hp-body" id="hp-body"></div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -480,6 +489,57 @@
   $('rename-form').addEventListener('submit',event=>{event.preventDefault();saveRename($('rename-input').value);});
   $('rename-cancel').onclick=()=>{$('rename-dialog').close();renameTarget=null;};
   $('rename-reset').onclick=()=>{$('rename-input').value='';saveRename('');};
+
+  // ---------------------------------------------------------------- hover preview
+  const hoverBox=$('hover-preview');
+  let hoverPane=null;
+
+  function agentPreview(paneId){
+    const favorite=(state.board&&state.board.favorites||[]).find(item=>item.pane===paneId);
+    return favorite&&favorite.agent_preview?favorite.agent_preview:null;
+  }
+
+  function placeHover(card){
+    const rect=card.getBoundingClientRect();
+    const viewportW=window.innerWidth, viewportH=window.innerHeight;
+    const width=Math.min(520,viewportW-24);
+    hoverBox.style.width=width+'px';
+    // prefer the right of the card, fall back to the left, then keep it on screen
+    let left=rect.right+12;
+    if(left+width>viewportW-12)left=Math.max(12,rect.left-width-12);
+    const height=Math.min(hoverBox.scrollHeight||260,viewportH*0.62);
+    const top=Math.min(Math.max(12,rect.top),Math.max(12,viewportH-height-12));
+    hoverBox.style.left=left+'px';
+    hoverBox.style.top=top+'px';
+  }
+
+  function showHover(card,paneId){
+    const preview=agentPreview(paneId);
+    if(!preview)return;
+    hoverPane=paneId;
+    $('hp-role').textContent=preview.role==='assistant'?'agent 回复':preview.role;
+    $('hp-time').textContent=[ago(preview.timestamp),preview.truncated?'已截断':''].filter(Boolean).join(' · ');
+    $('hp-body').textContent=preview.text;
+    hoverBox.hidden=false;
+    placeHover(card);
+  }
+
+  function hideHover(){hoverBox.hidden=true;hoverPane=null;}
+
+  document.addEventListener('mouseover',event=>{
+    const card=event.target.closest('.card[data-open]');
+    if(!card||!agentPreview(card.dataset.open))return;
+    if(hoverPane===card.dataset.open&&!hoverBox.hidden)return;
+    showHover(card,card.dataset.open);
+  });
+  document.addEventListener('mouseout',event=>{
+    const card=event.target.closest('.card[data-open]');
+    if(!card)return;
+    if(event.relatedTarget&&card.contains(event.relatedTarget))return;
+    hideHover();
+  });
+  window.addEventListener('scroll',hideHover,{passive:true});
+  window.addEventListener('resize',hideHover);
 
   // remember which tree branches are open
   $('tree').addEventListener('toggle',event=>{

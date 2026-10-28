@@ -48,7 +48,12 @@ class HomeBoardTests(unittest.TestCase):
         # the board keeps a collapsible sidebar with the same tree as the console
         for marker in ('id="tree"', 'id="side-collapse"', 'id="side-open"', 'data-star=',
                        'data-pane=', "tmux-home-sidebar", "loadTree",
-                       'data-rename=', 'id="rename-dialog"', "openRename"):
+                       'data-rename=', 'id="rename-dialog"', "openRename",
+                       'id="hover-preview"', 'agent_preview', "showHover"):
+            self.assertIn(marker, response.text)
+        # the sidebar already links to the console, so the header keeps no duplicate
+        self.assertNotIn('title="回到控制台"', response.text)
+        for marker in ():
             self.assertIn(marker, response.text)
 
     def test_the_console_offers_a_star_per_pane_and_a_home_link(self):
@@ -92,6 +97,38 @@ class HomeBoardTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/home/favorites").json()["favorites"], [])
 
         self.assertEqual(self.favourite("%99").status_code, 404)
+
+    def test_the_hover_preview_skips_a_trailing_user_turn(self):
+        self.tmux.panes[0]["command"] = "claude"
+        self.tmux.transcript = lambda pane_id, limit=200: {
+            "pane": pane_id, "session_id": "s", "mtime": 1,
+            "messages": [
+                {"id": "u1", "role": "user", "text": "先看一下", "timestamp": None},
+                {"id": "a1", "role": "assistant", "text": "第一版结论：a=1", "timestamp": None},
+                {"id": "u2", "role": "user", "text": "继续，跑第二版", "timestamp": None},
+            ],
+        }
+        self.assertEqual(self.favourite().status_code, 201)
+
+        entry = self.client.get("/api/home").json()["favorites"][0]
+        # the card body still shows the newest message
+        self.assertEqual(entry["preview"]["role"], "user")
+        self.assertIn("继续", entry["preview"]["text"])
+        # the hover card shows the agent's last real answer instead
+        self.assertEqual(entry["agent_preview"]["role"], "assistant")
+        self.assertEqual(entry["agent_preview"]["text"], "第一版结论：a=1")
+        self.assertFalse(entry["agent_preview"]["truncated"])
+
+    def test_the_hover_preview_is_capped(self):
+        self.tmux.panes[0]["command"] = "claude"
+        self.tmux.transcript = lambda pane_id, limit=200: {
+            "pane": pane_id, "session_id": "s", "mtime": 1,
+            "messages": [{"id": "a1", "role": "assistant", "text": "x" * 9000, "timestamp": None}],
+        }
+        self.favourite()
+        entry = self.client.get("/api/home").json()["favorites"][0]
+        self.assertEqual(len(entry["agent_preview"]["text"]), 6000)
+        self.assertTrue(entry["agent_preview"]["truncated"])
 
     def test_a_card_can_be_renamed_and_reset_to_the_default(self):
         self.tmux.panes[0]["command"] = "claude"

@@ -388,6 +388,8 @@ class HomeFavoriteRequest(BaseModel):
     title: str = ""
 
 
+AGENT_PREVIEW_CHARS = 6000
+
 class HomeFavoriteTitleRequest(BaseModel):
     title: str = Field(default="", max_length=200)
 
@@ -1758,7 +1760,8 @@ def create_app(
         entry: dict = {"pane": pane_id, "note": note, "status": "offline", "provider": None,
                        "title": custom_title, "default_title": "", "custom_title": custom_title != "",
                        "pane_title": "", "path": "", "session": "", "window": "", "host": "",
-                       "command": "", "preview": None, "waiting": False, "favorite": True}
+                       "command": "", "preview": None, "agent_preview": None,
+                       "waiting": False, "favorite": True}
         try:
             pane = pane_or_404(pane_id)
             transport, actual_pane_id = pane_transport(pane_id)
@@ -1790,6 +1793,20 @@ def create_app(
                 entry["preview"] = {"role": message.get("role") or "", "text": text[:400],
                                     "timestamp": message.get("timestamp")}
                 break
+        # the hover card shows the last *agent* turn, so a trailing user prompt
+        # (or a queued one) does not hide what the agent actually said
+        for message in reversed(messages):
+            role = (message.get("role") or "").lower()
+            text = (message.get("text") or "").strip()
+            if role == "user" or not text:
+                continue
+            entry["agent_preview"] = {
+                "role": role,
+                "text": text[:AGENT_PREVIEW_CHARS],
+                "truncated": len(text) > AGENT_PREVIEW_CHARS,
+                "timestamp": message.get("timestamp"),
+            }
+            break
         try:
             entry["waiting"] = bool(with_waiting_hint(data).get("waiting"))
         except (RuntimeError, ValueError):
