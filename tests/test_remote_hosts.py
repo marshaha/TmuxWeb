@@ -1,14 +1,25 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
 
+import remote_hosts
+
 from remote_hosts import (FIELD_SEPARATOR, REMOTE_LIST_SCRIPT, REMOTE_TRANSCRIPT_TAIL_SCRIPT, TRANSCRIPT_CACHE,
                           TRANSCRIPT_STATE, RemoteHostStore, SSHRunner, pane_ref, parse_remote_listing,
                           parse_tmux_panes, parse_transcript_response, split_pane_ref, ssh_mux_path,
                           validate_private_key_text)
+
+
+FAKE_SSH_HOST = {"id": "probe", "hostname": "10.0.0.9", "port": 22, "username": "ubuntu",
+                 "auth_type": "agent", "host_key": "10.0.0.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbc"}
+
+
+def clear_tmux_cache(host):
+    remote_hosts._TMUX_BIN_CACHE.pop(remote_hosts.tmux_cache_key(host), None)
 
 
 class RemoteHostTests(unittest.TestCase):
@@ -538,6 +549,66 @@ class RemoteHostTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "download limit"):
             runner.download_file("/srv/work/big.bin", 10)
         self.assertEqual(runner.download_file("/srv/work/small.bin", 100), b"x" * 11)
+
+    def test_probe_finds_tmux_outside_the_noninteractive_path(self):
+        with tempfile.TemporaryDirectory() as home:
+            binary = Path(home, "bin", "tmux")
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o755)
+            completed = subprocess.run(
+                ["/bin/sh", "-c", remote_hosts.TMUX_PROBE_SCRIPT], capture_output=True, text=True,
+                env={"HOME": home, "PATH": str(binary.parent)},
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), str(binary))
+
+    def test_probe_is_empty_when_tmux_is_missing(self):
+        with tempfile.TemporaryDirectory() as home:
+            completed = subprocess.run(
+                ["/bin/sh", "-c", remote_hosts.TMUX_PROBE_SCRIPT], capture_output=True, text=True,
+                env={"HOME": home, "PATH": str(Path(home, "empty"))},
+            )
+        self.assertEqual(completed.stdout.strip(), "")
+
+    def test_a_host_without_tmux_gets_an_actionable_error(self):
+        host = dict(FAKE_SSH_HOST)
+        clear_tmux_cache(host)
+        runner = SSHRunner(host)
+
+        class Result:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        runner.run = lambda command, **kwargs: Result()
+        with self.assertRaises(RuntimeError) as caught:
+            runner.tmux_binary()
+        message = str(caught.exception)
+        self.assertIn("brew install tmux", message)
+        self.assertIn("/opt/homebrew/bin", message)
+
+    def test_remote_commands_export_the_resolved_binary(self):
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+        command, _ = runner.command("true", tmux_bin="/opt/homebrew/bin/tmux")
+        self.assertIn("export TMUX_BIN=/opt/homebrew/bin/tmux;", command[-1])
+        plain, _ = runner.command("true")
+        self.assertNotIn("TMUX_BIN=", plain[-1])
+
+        runner.tmux_binary = lambda: "/opt/homebrew/bin/tmux"
+        seen = {}
+        original = runner.command
+
+        def capture(remote_command, **kwargs):
+            seen.update(kwargs)
+            return original(remote_command, **kwargs)
+
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"ok", stderr=b"")
+        runner.command = capture
+        with mock.patch("remote_hosts.subprocess.run", return_value=completed):
+            runner.run("printf done", timeout=1)
+        self.assertEqual(seen.get("tmux_bin"), "/opt/homebrew/bin/tmux")
 
     def test_remote_download_reports_a_missing_file(self):
         runner = self.make_runner()

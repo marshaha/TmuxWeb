@@ -48,6 +48,37 @@ ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 # printable separator plus a forced UTF-8 locale keep remote fields intact.
 FIELD_SEPARATOR = "<::>"
 LOCALE_PRELUDE = "export LC_ALL=${TMUXWEB_REMOTE_LC:-C.UTF-8} LANG=${TMUXWEB_REMOTE_LC:-C.UTF-8}; "
+
+# macOS keeps tmux in /opt/homebrew/bin, which a non-interactive ssh command does
+# not have on PATH: resolve the binary once per host and hand it to the scripts.
+TMUX_PROBE_SCRIPT = r"""
+tmux_path=$(command -v tmux 2>/dev/null)
+if [ -z "$tmux_path" ]; then
+  for candidate in /opt/homebrew/bin/tmux /usr/local/bin/tmux "$HOME/bin/tmux" "$HOME/.local/bin/tmux"; do
+    if [ -x "$candidate" ]; then tmux_path=$candidate; break; fi
+  done
+fi
+if [ -z "$tmux_path" ]; then
+  for shell_name in bash zsh; do
+    if command -v "$shell_name" >/dev/null 2>&1; then
+      candidate=$("$shell_name" -lc 'command -v tmux' 2>/dev/null | tr -d '\r' | head -1)
+      if [ -n "$candidate" ]; then tmux_path=$candidate; break; fi
+    fi
+  done
+fi
+printf '%s' "$tmux_path"
+"""
+
+TMUX_MISSING_HINT = (
+    "tmux is not installed (or not on PATH) on this host; checked PATH, /opt/homebrew/bin, "
+    "/usr/local/bin. macOS: brew install tmux. Linux: sudo apt install tmux."
+)
+
+_TMUX_BIN_CACHE: dict[str, str] = {}
+
+
+def tmux_cache_key(host: dict) -> str:
+    return "%s|%s|%s" % (host.get("id", ""), host.get("hostname", ""), host.get("port", ""))
 # Remote panes are read the same way ``scp`` would: a POSIX shell snippet finds
 # the provider's transcript file (or exports rows with sqlite3 for Hermes) and
 # the bytes are pulled here and parsed by transcript_reader. No remote python.
@@ -103,7 +134,7 @@ if [ "$provider" = claude ]; then
     done
   fi
   if [ -z "$file" ]; then
-    probes=$(tmux capture-pane -p -J -t "$pane" -S -80 2>/dev/null | awk 'length($0) >= 24' | tail -20)
+    probes=$(${TMUX_BIN:-tmux} capture-pane -p -J -t "$pane" -S -80 2>/dev/null | awk 'length($0) >= 24' | tail -20)
     while IFS= read -r probe; do
       [ -n "$probe" ] || continue
       for candidate in $candidates; do
@@ -709,7 +740,8 @@ class SSHRunner:
         return path
 
     def command(self, remote_command: str, *, tty: bool = False, known_hosts: str = "/dev/null",
-                identity_file: str | None = None, multiplex: bool | None = None) -> tuple[list[str], dict[str, str]]:
+                identity_file: str | None = None, multiplex: bool | None = None,
+                tmux_bin: str | None = None) -> tuple[list[str], dict[str, str]]:
         # NOTE: ssh takes the *first* value it sees for an option, so BatchMode
         # must be decided per auth mode below - emitting "BatchMode=no" here made
         # agent mode wait on a password prompt instead of failing fast.
@@ -737,13 +769,33 @@ class SSHRunner:
             # agent mode: offer the local agent/default keys, never fall back to a prompt
             command += ["-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey",
                         "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no"]
-        command += [f"{self.host['username']}@{self.host['hostname']}", LOCALE_PRELUDE + remote_command]
+        prelude = LOCALE_PRELUDE
+        if tmux_bin:
+            prelude += f"export TMUX_BIN={shlex.quote(tmux_bin)}; "
+        command += [f"{self.host['username']}@{self.host['hostname']}", prelude + remote_command]
         environment = ({"SSH_ASKPASS_REQUIRE": "force", "DISPLAY": ":0"}
                        if self.host.get("auth_type") == "password" else {})
         return command, environment
 
+    def tmux_binary(self) -> str:
+        """Absolute path of tmux on the remote host (resolved once per host)."""
+        key = tmux_cache_key(self.host)
+        cached = _TMUX_BIN_CACHE.get(key)
+        if cached:
+            return cached
+        completed = self.run(TMUX_PROBE_SCRIPT, timeout=15, resolve_tmux=False)
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(errors="replace").strip()
+            raise RuntimeError(detail or "could not look up tmux on the remote host")
+        path = completed.stdout.decode(errors="replace").strip().splitlines()
+        found = path[0].strip() if path else ""
+        if not found:
+            raise RuntimeError(TMUX_MISSING_HINT)
+        _TMUX_BIN_CACHE[key] = found
+        return found
+
     def run(self, remote_command: str, *, input_bytes: bytes | None = None,
-            timeout: int = 15) -> subprocess.CompletedProcess:
+            timeout: int = 15, resolve_tmux: bool = True) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory(prefix="tmux-remote-") as directory_name:
             directory = Path(directory_name)
             known_hosts = self._known_hosts(directory)
@@ -766,8 +818,9 @@ class SSHRunner:
                 environment["SSH_ASKPASS"] = str(askpass)
                 environment["SSH_ASKPASS_REQUIRE"] = "force"
                 environment["DISPLAY"] = ":0"
+            tmux_bin = self.tmux_binary() if resolve_tmux else None
             command, extra_environment = self.command(
-                remote_command, known_hosts=str(known_hosts), identity_file=identity_file
+                remote_command, known_hosts=str(known_hosts), identity_file=identity_file, tmux_bin=tmux_bin
             )
             environment.update(extra_environment)
             if read_fd is not None and write_fd is not None:
@@ -781,7 +834,7 @@ class SSHRunner:
                     # pane unreachable: retry once on a direct connection.
                     direct, _ = self.command(
                         remote_command, known_hosts=str(known_hosts), identity_file=identity_file,
-                        multiplex=False,
+                        multiplex=False, tmux_bin=tmux_bin,
                     )
                     completed = subprocess.run(direct, input=input_bytes, capture_output=True, timeout=timeout,
                                                check=False, env=environment, pass_fds=pass_fds,
@@ -801,10 +854,10 @@ class SSHRunner:
         """Start a detached tmux session on the remote host."""
         name = normalize_session_name(name)
         directory = str(path or "").strip()
-        command = f"tmux new-session -d -s {shlex.quote(name)}"
+        command = f"${{TMUX_BIN:-tmux}} new-session -d -s {shlex.quote(name)}"
         if directory:
             quoted = shlex.quote(directory)
-            command = (f"if [ -d {quoted} ]; then tmux new-session -d -s {shlex.quote(name)} "
+            command = (f"if [ -d {quoted} ]; then ${{TMUX_BIN:-tmux}} new-session -d -s {shlex.quote(name)} "
                        f"-c {quoted}; else echo 'no such directory: {directory}' >&2; exit 3; fi")
         completed = self.run(command)
         detail = completed.stderr.decode(errors="replace").strip()
@@ -820,7 +873,7 @@ class SSHRunner:
             "#{window_index}", "#{window_name}", "#{pane_index}", "#{pane_current_command}",
             "#{pane_title}", "#{pane_current_path}", "#{pane_active}", "#{pane_width}", "#{pane_height}",
         ])
-        command = f"tmux list-panes -a -F {shlex.quote(fmt)}"
+        command = f"${{TMUX_BIN:-tmux}} list-panes -a -F {shlex.quote(fmt)}"
         completed = self.run(command, timeout=timeout)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
@@ -829,7 +882,7 @@ class SSHRunner:
     def capture_ansi(self, pane_id: str, history: int = 5000) -> str:
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
-        command = f"tmux capture-pane -p -J -e -t {shlex.quote(pane_id)} -S -{max(20, min(history, 5000))}"
+        command = f"${{TMUX_BIN:-tmux}} capture-pane -p -J -e -t {shlex.quote(pane_id)} -S -{max(20, min(history, 5000))}"
         completed = self.run(command)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote capture failed")
@@ -844,7 +897,7 @@ class SSHRunner:
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
         command = (
-            f"tmux capture-pane -p -J -e -t {shlex.quote(pane_id)} -S -{max(20, min(history, 5000))} | cksum"
+            f"${{TMUX_BIN:-tmux}} capture-pane -p -J -e -t {shlex.quote(pane_id)} -S -{max(20, min(history, 5000))} | cksum"
         )
         completed = self.run(command, timeout=20)
         if completed.returncode != 0:
@@ -1125,9 +1178,9 @@ class SSHRunner:
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
         name = "web-" + secrets.token_hex(6)
-        clear = f"tmux send-keys -t {shlex.quote(pane_id)} C-u; sleep 0.05; " if submit else ""
-        submit_cmd = f"; sleep 0.15; tmux send-keys -t {shlex.quote(pane_id)} C-m" if submit else ""
-        command = clear + f"tmux load-buffer -b {name} -; tmux paste-buffer -b {name} -d -t {shlex.quote(pane_id)}" + submit_cmd
+        clear = f"${{TMUX_BIN:-tmux}} send-keys -t {shlex.quote(pane_id)} C-u; sleep 0.05; " if submit else ""
+        submit_cmd = f"; sleep 0.15; ${{TMUX_BIN:-tmux}} send-keys -t {shlex.quote(pane_id)} C-m" if submit else ""
+        command = clear + f"${{TMUX_BIN:-tmux}} load-buffer -b {name} -; ${{TMUX_BIN:-tmux}} paste-buffer -b {name} -d -t {shlex.quote(pane_id)}" + submit_cmd
         completed = self.run(command, input_bytes=text.encode())
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote send failed")
@@ -1158,7 +1211,7 @@ class RemoteTerminalSession:
             askpass.write_text(f"#!/bin/sh\ncat {shlex.quote(str(password_file))}\n")
             askpass.chmod(0o700)
             environment.update({"SSH_ASKPASS": str(askpass), "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": ":0"})
-        remote_command = f"exec tmux attach-session -t {shlex.quote(pane_id)}"
+        remote_command = f"exec ${{TMUX_BIN:-tmux}} attach-session -t {shlex.quote(pane_id)}"
         command, extra = runner.command(remote_command, tty=True, known_hosts=str(known_hosts), identity_file=identity_file)
         environment.update(extra)
         environment["TERM"] = "xterm-256color"
