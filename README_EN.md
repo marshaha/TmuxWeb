@@ -58,7 +58,8 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 ## Files
 
 Drag the sidebar's right edge to resize it (200–640px, double-click the edge to reset); the width is remembered in
-`localStorage`, separately for the console and the board. On phones the sidebar is a drawer with a fixed width.
+`localStorage` — and the header icon row wraps (scrolling only when even one row cannot fit) so no button is ever clipped.
+The console and the board keep separate widths. On phones the sidebar is a drawer with a fixed width.
 
 The 「▤」 button in the sidebar switches to a file view of the selected pane's working directory; press it again (or 「✕」 inside the panel) to put the panel away and get the pane tree back. The choice is remembered in the browser, and a reload restores both the panel state and the last selected pane.
 

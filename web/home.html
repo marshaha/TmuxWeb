@@ -20,6 +20,13 @@
   .side-head .brand b{font-size:14px;font-weight:650}
   .side-head .brand span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .side-head .icon-btn{width:26px;height:26px}
+  /* keep every header button reachable at any sidebar width */
+  .side-head{flex-wrap:wrap;row-gap:4px}
+  .side-head .brand{flex:1 1 auto;min-width:52px}
+  .side-actions{display:flex;gap:5px;flex:1 1 auto;min-width:0;justify-content:flex-end;margin-left:auto;flex-wrap:wrap;row-gap:5px;
+    overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain}
+  .side-actions::-webkit-scrollbar{display:none}
+  .side-actions>*{flex:none}
   .tree{flex:1;min-height:0;overflow:auto;padding:0 8px 20px;-webkit-overflow-scrolling:touch;scroll-padding-bottom:24px}
   .tree details{border-radius:9px}
   .tree summary{display:flex;align-items:center;gap:6px;padding:6px 7px;border-radius:8px;color:var(--muted);font-size:12.5px;cursor:pointer;list-style:none;user-select:none}
@@ -184,11 +191,13 @@
   <aside class="sidebar" id="sidebar">
     <div class="side-head">
       <div class="brand"><b>会话</b><span id="side-count">载入中…</span></div>
-      <a class="icon-btn" href="/" title="控制台" aria-label="控制台"><svg class="ico"><use href="#i-console"/></svg></a>
-      <a class="icon-btn" href="/hosts" title="远程主机" aria-label="远程主机"><svg class="ico"><use href="#i-server"/></svg></a>
-      <a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享"><svg class="ico"><use href="#i-share"/></svg></a>
-      <button class="icon-btn" id="reload" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
-      <button class="icon-btn" id="side-collapse" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-collapse"/></svg></button>
+      <div class="side-actions">
+        <a class="icon-btn" href="/" title="控制台" aria-label="控制台"><svg class="ico"><use href="#i-console"/></svg></a>
+        <a class="icon-btn" href="/hosts" title="远程主机" aria-label="远程主机"><svg class="ico"><use href="#i-server"/></svg></a>
+        <a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享"><svg class="ico"><use href="#i-share"/></svg></a>
+        <button class="icon-btn" id="reload" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
+        <button class="icon-btn" id="side-collapse" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-collapse"/></svg></button>
+      </div>
     </div>
     <nav class="tree" id="tree" aria-label="会话树"></nav>
     <div class="side-resizer" id="side-resizer" title="拖动调整侧边栏宽度（双击恢复默认）"></div>
@@ -726,6 +735,17 @@
   handle.addEventListener('pointercancel', finish);
   handle.addEventListener('dblclick', () => apply(DEFAULT, true));
   window.addEventListener('resize', () => apply(bar.getBoundingClientRect().width, false));
+})();
+
+(function initIconRowScroll(){
+  document.querySelectorAll('.brand-actions,.side-actions').forEach(row => {
+    row.addEventListener('wheel', event => {
+      if(Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      if(row.scrollWidth <= row.clientWidth + 1) return;
+      row.scrollLeft += event.deltaY;
+      event.preventDefault();
+    }, {passive:false});
+  });
 })();
 
 </script>

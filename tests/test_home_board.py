@@ -72,6 +72,13 @@ class HomeBoardTests(unittest.TestCase):
         # collapsing must still win over the stored width
         self.assertIn(".app.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}", console.text)
 
+        # a narrow sidebar must not lose its action buttons: the row wraps
+        # instead of pushing the last icon under the clipped edge
+        self.assertIn('<div class="side-actions">', home.text)
+        for page in (home.text, console.text):
+            self.assertIn("flex-wrap:wrap;row-gap:", page)
+            self.assertIn("initIconRowScroll", page)
+
     def test_the_full_preview_page_is_served_and_wired_to_the_board(self):
         preview = self.client.get("/preview")
         self.assertEqual(preview.status_code, 200)

@@ -45,6 +45,13 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     .composer{grid-row:3;position:relative;z-index:5;min-height:132px;padding:10px 18px 18px;border-top:1px solid rgba(221,220,213,.8);background:var(--page)}.composer-inner{width:min(100%,820px);margin:auto}.composer-card{position:relative;padding:10px 12px 9px;border:1px solid #cbc9c0;border-radius:18px;background:#fff;box-shadow:var(--shadow)}.composer textarea{display:block;width:100%;min-height:72px;max-height:82px;padding:3px 50px 3px 3px;border:0;resize:none;background:transparent;color:var(--ink);outline:0;line-height:1.5}.composer textarea::placeholder{color:#9c9991}.composer textarea:disabled{opacity:.55}.send{position:absolute;right:11px;bottom:11px;width:38px;height:38px;border:0;border-radius:50%;background:#292825;color:white;font-size:18px;cursor:pointer}.send:hover{background:var(--accent)}.send:disabled{background:#c8c5bd;cursor:not-allowed}.send.stop{background:#b34b43}.send.stop:hover{background:#9c3f38}.composer-foot{display:flex;justify-content:space-between;align-items:center;padding:7px 5px 0;color:var(--muted);font-size:11px}.submit-option{display:flex;align-items:center;gap:5px}.send-state{min-height:17px;color:var(--green)}
     .terminal-mode{display:none;position:absolute;inset:0;padding:10px;background:#111}.terminal-host{width:100%;height:100%;min-width:0;min-height:0;overflow:hidden}.terminal-host .xterm{height:100%;padding:0}.terminal-host .xterm-viewport{overflow-y:auto!important}.terminal-keys{display:none;min-width:0;background:#181818;border-top:1px solid #333}.terminal-key-scroll{display:flex;gap:6px;overflow-x:auto;padding:7px 8px;overscroll-behavior-x:contain;scrollbar-width:none}.terminal-key-scroll::-webkit-scrollbar{display:none}.terminal-key{flex:0 0 auto;min-width:43px;height:38px;padding:0 10px;border:1px solid #454545;border-radius:8px;background:#292929;color:#eee;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;touch-action:manipulation}.terminal-key.active{border-color:#c96442;background:#6b3424;color:#fff}.terminal-pad{position:relative;display:grid;place-items:center;flex-basis:62px;min-width:62px;color:#aaa}.terminal-pad::after{content:'↕↔';font-size:16px}.terminal-pad.holding{border-color:#4f9a65;background:#24452d;color:#fff}.app.terminal-view .scroll,.app.terminal-view .jump{display:none}.app.terminal-view .terminal-mode{display:grid;grid-template-rows:minmax(0,1fr) auto}.app.terminal-view .conversation{background:#111}.app.terminal-view .main{grid-template-rows:58px minmax(0,1fr) 0}.app.terminal-view .composer{display:none;min-height:0;padding:0;border:0;overflow:hidden}
     .main:fullscreen,.main.fullscreen-fallback{width:100vw;height:100vh;background:var(--page)}.main:fullscreen .topbar,.main.fullscreen-fallback .topbar{padding-left:20px}.app.fullscreen-fallback{display:block}.app.fullscreen-fallback .sidebar{display:none}.app.fullscreen-fallback .main{position:fixed;z-index:100;inset:0}.main:fullscreen .fullscreen-btn,.main.fullscreen-fallback .fullscreen-btn{background:#292825;color:#fff;border-color:#292825}
+    /* the icon row must never lose buttons when the sidebar is dragged narrow:
+       wrap it onto its own line, and let it scroll when one line is still not enough */
+    .brand{flex-wrap:wrap;gap:8px;align-items:center}
+    .brand>div:first-child{min-width:0}
+    .brand-actions{display:flex;gap:6px;flex:1 1 auto;min-width:0;justify-content:flex-end;margin-left:auto;flex-wrap:wrap;row-gap:6px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain
+    .brand-actions::-webkit-scrollbar{display:none}
+    .brand-actions>*{flex:none}
     .sidebar{position:relative}
     .side-resizer{position:absolute;top:0;right:0;width:6px;height:100%;cursor:col-resize;z-index:6;touch-action:none}
     .side-resizer::after{content:"";position:absolute;top:0;right:0;width:2px;height:100%;background:transparent;transition:background .12s}
@@ -708,6 +715,17 @@ import {marked} from '/assets/marked.esm.js';
   handle.addEventListener('pointercancel', finish);
   handle.addEventListener('dblclick', () => apply(DEFAULT, true));
   window.addEventListener('resize', () => apply(bar.getBoundingClientRect().width, false));
+})();
+
+(function initIconRowScroll(){
+  document.querySelectorAll('.brand-actions,.side-actions').forEach(row => {
+    row.addEventListener('wheel', event => {
+      if(Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      if(row.scrollWidth <= row.clientWidth + 1) return;
+      row.scrollLeft += event.deltaY;
+      event.preventDefault();
+    }, {passive:false});
+  });
 })();
 
 </script>
