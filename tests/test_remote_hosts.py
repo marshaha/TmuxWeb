@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+from unittest.mock import patch
 from pathlib import Path
 
 import remote_hosts
@@ -711,6 +712,29 @@ class RemoteHostTests(unittest.TestCase):
             )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout.strip(), str(binary))
+
+    def test_a_stalled_transcript_blames_the_link(self):
+        """A hung ssh must surface as 'slow network', not as a broken transcript."""
+        host = dict(FAKE_SSH_HOST)
+        clear_tmux_cache(host)
+        runner = SSHRunner(host)
+
+        def stall(*args, **kwargs):
+            raise RuntimeError("remote command timed out after 30s")
+
+        runner.run = stall
+        with self.assertRaises(RuntimeError) as caught:
+            runner.transcript("%10", 20)
+        self.assertIn("网络", str(caught.exception))
+        self.assertLessEqual(runner.transcript_timeout, 600)
+
+    def test_the_transcript_timeout_is_configurable(self):
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+        with patch.dict(os.environ, {"TMUX_WEB_TRANSCRIPT_TIMEOUT": "12"}):
+            self.assertEqual(runner.transcript_timeout, 12)
+        with patch.dict(os.environ, {"TMUX_WEB_TRANSCRIPT_TIMEOUT": "0"}):
+            self.assertGreaterEqual(runner.transcript_timeout, 5)   # never spin instantly
 
     def test_probe_is_empty_when_tmux_is_missing(self):
         with tempfile.TemporaryDirectory() as home:

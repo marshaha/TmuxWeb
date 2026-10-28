@@ -62,9 +62,13 @@ if [ -z "$tmux_path" ]; then
   done
 fi
 if [ -z "$tmux_path" ]; then
+  # A login shell can hang for ages on a slow host (rc files doing network work),
+  # and this probe runs before every other command: bound it when `timeout` exists.
+  bound=""
+  if command -v timeout >/dev/null 2>&1; then bound="timeout 4"; fi
   for shell_name in bash zsh; do
     if command -v "$shell_name" >/dev/null 2>&1; then
-      candidate=$("$shell_name" -lc 'command -v tmux' 2>/dev/null | tr -d '\r' | head -1)
+      candidate=$($bound "$shell_name" -lc 'command -v tmux' 2>/dev/null | tr -d '\r' | head -1)
       if [ -n "$candidate" ]; then tmux_path=$candidate; break; fi
     fi
   done
@@ -78,6 +82,10 @@ TMUX_MISSING_HINT = (
 )
 
 _TMUX_BIN_CACHE: dict[str, str] = {}
+# A failed probe costs a full SSH round trip; remember it briefly so a bad link does
+# not pay for it on every request, but do retry later in case the host recovers.
+_TMUX_BIN_FAILED: dict[str, float] = {}
+_TMUX_BIN_RETRY_AFTER = 60.0
 
 
 def tmux_cache_key(host: dict) -> str:
@@ -1012,6 +1020,9 @@ class SSHRunner:
             command += ["-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey",
                         "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no"]
         prelude = LOCALE_PRELUDE
+        payload_bytes = os.environ.get("TMUX_WEB_REMOTE_PAYLOAD_BYTES", "").strip()
+        if payload_bytes.isdigit():
+            prelude += f"export TMUXWEB_PAYLOAD_BYTES={payload_bytes}; "
         if tmux_bin:
             prelude += f"export TMUX_BIN={shlex.quote(tmux_bin)}; "
         command += [f"{self.host['username']}@{self.host['hostname']}", prelude + remote_command]
@@ -1028,14 +1039,28 @@ class SSHRunner:
         cached = _TMUX_BIN_CACHE.get(key)
         if cached:
             return cached
-        completed = self.run(TMUX_PROBE_SCRIPT, timeout=15, resolve_tmux=False)
+        failed_at = _TMUX_BIN_FAILED.get(key)
+        if failed_at is not None and (time.monotonic() - failed_at) < _TMUX_BIN_RETRY_AFTER:
+            # fall back to a bare `tmux` rather than refusing to talk to the host
+            return "tmux"
+        try:
+            completed = self.run(TMUX_PROBE_SCRIPT, timeout=self.probe_timeout, resolve_tmux=False)
+        except RuntimeError as exc:
+            # the probe itself stalled: a slow link, not necessarily a missing binary.
+            # Fall back to a bare `tmux` (the script's default) and retry the probe later.
+            _TMUX_BIN_FAILED[key] = time.monotonic()
+            LOGGER.warning("tmux probe timed out on %s: %s", self.host.get("name") or key, exc)
+            return "tmux"
         if completed.returncode != 0:
             detail = completed.stderr.decode(errors="replace").strip()
-            raise RuntimeError(detail or "could not look up tmux on the remote host")
+            _TMUX_BIN_FAILED[key] = time.monotonic()
+            raise RuntimeError(detail or TMUX_MISSING_HINT)
         path = completed.stdout.decode(errors="replace").strip().splitlines()
         found = path[0].strip() if path else ""
         if not found:
+            _TMUX_BIN_FAILED[key] = time.monotonic()
             raise RuntimeError(TMUX_MISSING_HINT)
+        _TMUX_BIN_FAILED.pop(key, None)
         _TMUX_BIN_CACHE[key] = found
         return found
 
@@ -1092,6 +1117,14 @@ class SSHRunner:
             cases.append("  *) exit 1 ;;")
         askpass.write_text("#!/bin/sh\ncase \"$1\" in\n" + "\n".join(cases) + "\nesac\n")
         askpass.chmod(0o700)
+
+    @property
+    def probe_timeout(self) -> int:
+        return max(3, int(os.environ.get("TMUX_WEB_PROBE_TIMEOUT", "10")))
+
+    @property
+    def transcript_timeout(self) -> int:
+        return max(5, int(os.environ.get("TMUX_WEB_TRANSCRIPT_TIMEOUT", "30")))
 
     def run(self, remote_command: str, *, input_bytes: bytes | None = None,
             timeout: int = 15, resolve_tmux: bool = True) -> subprocess.CompletedProcess:
@@ -1284,7 +1317,13 @@ class SSHRunner:
         if not header:
             command = (f"sh -c {shlex.quote(REMOTE_TRANSCRIPT_SCRIPT)} "
                        f"sh {shlex.quote(pane_id)} {limit}")
-            completed = self.run(command, timeout=90)
+            try:
+                completed = self.run(command, timeout=self.transcript_timeout)
+            except RuntimeError as exc:
+                # a degraded link shows up as a stalled ssh, not as a bad transcript
+                raise RuntimeError(
+                    f"读取远端 transcript 超时（{self.transcript_timeout}s），可能是到这台主机的网络较慢"
+                ) from exc
             try:
                 header, payload = parse_transcript_response(completed.stdout)
             except RuntimeError:

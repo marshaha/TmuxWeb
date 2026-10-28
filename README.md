@@ -253,6 +253,8 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 
 - **收藏卡片**：卡片名可改（铅笔图标 → 输入新名字，或「恢复默认」）；默认名是 **session · window · 主机**（tmux 的 pane title 常常只是主机名，所以不再直接用它）；卡片右上角有**完整预览**按钮：电脑上从右侧滑出抽屉，里面是完整的对话页（markdown/代码/表格、可继续发送、可停止、每 2 秒刷新），手机等窄屏则直接跳到 `/preview?pane=…`，返回手势/按钮回到主页；**鼠标悬停卡片会浮出最后一条 agent 回复的完整内容**（浮层可直接用鼠标滚轮滚动）（若最新一条是用户消息，则自动往上找最近的一条 AI 回复，最多 6000 字）；另有状态徽标（busy / idle / 离线；busy 且在等回复时显示「思考中…」并跳动）、provider、标题、路径、**最近一条对话预览**、pane 引用；点卡片直接跳回控制台并选中该 pane（`/?pane=<pane>`）
 - **看板卡片**：agent 通过 MCP 工具 `publish_home_card` 推上来的结论/告警/链接，可在主页删除
+- **「抓屏」和「终端」是两件事**：聊天模式兜底时用 `tmux capture-pane` 取一份**文本快照**（把整屏文字 + ANSI 转成 HTML 塞进页面），它没有终端语义、每帧整屏重建，全屏 TUI 会卡；「终端」模式是真正的 xterm + PTY（增量写 VT 序列，只重绘变化的格子）。所以 agent 会话读不到 transcript 时不再抓屏，而是给一个「用终端打开（xterm）」按钮。
+- **慢网络**：远端 transcript 单次拉取有超时（`TMUX_WEB_TRANSCRIPT_TIMEOUT`，默认 30s；超时提示是「网络较慢」而不是解析失败），tmux 路径探测也限时（`TMUX_WEB_PROBE_TIMEOUT`，默认 10s，超时就退回裸 `tmux` 而不是报错），单次传输字节可调（`TMUX_WEB_REMOTE_PAYLOAD_BYTES`）。实测 oracle（单条 ssh 命令 2–4s）：首次发现会话 ~29s，之后走增量探测 0.9–7.6s。
 - **agent 会话不会退化成刷屏终端**：transcript 读不到内容时（会话刚开、或解析不出来），聊天区显示说明 + 「查看原始屏幕」按钮并自动重试，不再自动切去流式抓屏（Kimi/Claude 这类全屏 TUI 每秒重绘整屏，600 行 × 7000 个节点会把浏览器卡死）。shell pane 仍然照旧显示屏幕。
 - **Kimi 会话挑选**：同一个目录/标题可能有多个 kimi session，只挑 `updatedAt` 最新的那个（旧的往往是中断的回合，里面没有消息）。
 - **切回主页不等待**：`/home` 先用 `localStorage` 里的上一份看板（标「显示缓存，正在更新…」）立刻画出卡片和会话树，再拉最新数据替换；没有缓存就显示骨架屏（统计/卡片/树的占位），不会空白。接口侧 `/api/home` 最多等 1.2 秒——收藏卡片的实时状态和最后一条消息要按 pane 走 SSH，慢的话先返回占位（`pending`），后台读完写进 25 秒缓存，下一次轮询补上。

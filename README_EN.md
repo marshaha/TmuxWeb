@@ -247,6 +247,13 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   title, path, a **preview of the last message**, and the pane reference. Clicking a card jumps back to the console with that pane
   selected (`/?pane=<pane>`).
 - **Board cards** — notes, results and alerts an agent published through the `publish_home_card` MCP tool; removable in the UI.
+- **“Screen capture” is not a terminal** — the chat fallback used `tmux capture-pane`, i.e. a text snapshot rendered into HTML,
+  rebuilt from scratch every frame; a full-screen TUI makes that expensive. Terminal mode is a real xterm + PTY (incremental VT
+  writes). Agent panes therefore offer a “用终端打开（xterm）” button instead of capturing.
+- **Slow links** — a transcript pull is bounded (`TMUX_WEB_TRANSCRIPT_TIMEOUT`, 30s; the error says the network is slow rather than
+  claiming the transcript is broken), the tmux path probe is bounded (`TMUX_WEB_PROBE_TIMEOUT`, 10s, then it falls back to bare
+  `tmux`), and the transfer size is tunable (`TMUX_WEB_REMOTE_PAYLOAD_BYTES`). Measured on oracle (2–4s per ssh command): ~29s to
+  discover a session the first time, 0.9–7.6s for the incremental polls after that.
 - **An agent pane never degrades into a firehose screen** — when the transcript is empty or unreadable the chat area shows a notice
   plus a “view raw screen” button and retries; it no longer auto-falls back to streaming the TUI (a full-screen Kimi/Claude redraw
   is ~550 lines / 7000 DOM nodes twice a second, which froze Chrome). Shell panes still show their screen.

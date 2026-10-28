@@ -620,7 +620,7 @@ import {marked} from '/assets/marked.esm.js';
   function showTranscriptNotice(id,text){
     $('transcript').classList.add('active');
     $('transcript').innerHTML='<div class="transcript-empty"><b>暂时没有可解析的对话</b>'
-      +`<p>${esc(text)}</p><p class="transcript-empty-actions"><button type="button" id="empty-screen">查看原始屏幕</button></p></div>`;
+      +`<p>${esc(text)}</p><p class="transcript-empty-actions"><button type="button" id="empty-screen">用终端打开（xterm）</button></p></div>`;
     const button=$('empty-screen');
     if(button)button.onclick=()=>setMode('terminal');
     $('status-dot').className='status-dot';
