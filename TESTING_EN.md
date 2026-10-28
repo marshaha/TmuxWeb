@@ -70,6 +70,9 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   when the share URL appears, long content scrolls inside, and the 取消 / 创建并复制链接 buttons stay visible even with a 480px
   tall viewport (`test_share_dialog_is_a_fixed_size_sheet_on_phones`, `test_html_pages_are_sent_without_http_cache`).
 
+- macOS host (Homebrew tmux): adding a Mac with password auth must connect; a real failure should be actionable
+  (`brew install tmux`) rather than a bare `command not found`. Covered by four unit tests around TMUX_PROBE_SCRIPT and TMUX_BIN.
+
 ## 1. Install test dependencies
 
 ```bash

@@ -54,6 +54,8 @@
 
 - 分享弹窗尺寸：桌面宽度固定 520px 内，手机（390/320px）贴底全宽、圆角仅顶部、单列表单，出现分享链接后**宽度不变**、内容超长时在弹窗内部滚动，`取消`/`创建并复制链接` 始终可见；键盘把视口压到 480px 高时弹窗仍完整在视口内。单测：`test_share_dialog_is_a_fixed_size_sheet_on_phones`、`test_html_pages_are_sent_without_http_cache`。
 
+- macOS 主机（Homebrew tmux）：用「密码」方式添加 macmini 应能连通；若确实没装，报错要给可执行提示（`brew install tmux`），而不是裸的 `zsh: command not found: tmux`。单测：`test_probe_finds_tmux_outside_the_noninteractive_path`、`test_probe_is_empty_when_tmux_is_missing`、`test_a_host_without_tmux_gets_an_actionable_error`、`test_remote_commands_export_the_resolved_binary`。
+
 ## 1. 安装测试依赖
 
 ```bash
