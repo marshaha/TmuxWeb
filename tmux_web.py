@@ -1867,6 +1867,21 @@ def create_app(
         parts = [part for part in (session, window_label, host_name) if part]
         return " · ".join(parts)
 
+    def home_entry_skeleton(row: dict) -> dict:
+        """What a card can say before any live read: no tmux, no SSH, no I/O."""
+        pane_id = str(row.get("pane_id") or "")
+        host_id = pane_id.split("~", 1)[0] if "~" in pane_id else "localhost"
+        custom_title = row.get("title") or ""
+        try:
+            host_name = host_id if host_id == "localhost" else (remote_hosts.get_host(host_id)["name"] or host_id)
+        except (KeyError, RuntimeError, OSError, ValueError):
+            host_name = host_id
+        return {"pane": pane_id, "note": row.get("note") or "", "status": "unknown", "provider": None,
+                "title": custom_title, "default_title": custom_title or pane_id,
+                "custom_title": custom_title != "", "pane_title": "", "path": "", "session": "",
+                "window": "", "host": host_name, "command": "", "preview": None, "agent_preview": None,
+                "waiting": False, "favorite": True, "pending": True}
+
     def home_entry(pane_id: str, note: str = "", custom_title: str = "") -> dict:
         """Everything a Home card needs about one pane; failures degrade to offline."""
         entry: dict = {"pane": pane_id, "note": note, "status": "offline", "provider": None,
@@ -1925,19 +1940,68 @@ def create_app(
             entry["waiting"] = False
         return entry
 
+    # A card's live half (status + last message) costs one SSH round trip per pane,
+    # which is seconds on a remote host. Entries are cached and the request waits at
+    # most HOME_ENTRY_BUDGET before answering with placeholders; the slow thread
+    # keeps running and fills the cache for the next poll.
+    HOME_ENTRY_CACHE: dict[str, tuple[float, dict]] = {}
+    HOME_ENTRY_TTL = float(os.environ.get("TMUX_WEB_HOME_ENTRY_SECONDS", "25"))
+    HOME_ENTRY_BUDGET = float(os.environ.get("TMUX_WEB_HOME_BUDGET_SECONDS", "1.2"))
+
+    def remember_home_entry(pane_id: str, entry: dict) -> None:
+        HOME_ENTRY_CACHE[pane_id] = (time.time(), entry)
+        if len(HOME_ENTRY_CACHE) > 200:  # bounded
+            oldest = min(HOME_ENTRY_CACHE, key=lambda key: HOME_ENTRY_CACHE[key][0])
+            HOME_ENTRY_CACHE.pop(oldest, None)
+
+    def collect_home_entry(future, pane_id: str) -> None:
+        try:
+            entry = future.result()
+        except Exception:  # noqa: BLE001 - a failed read just leaves the placeholder
+            return
+        remember_home_entry(pane_id, entry)
+
     async def build_home_payload() -> dict:
+        started = time.time()
         favorites = await asyncio.to_thread(home.favorites)
-        entries = await asyncio.gather(
-            *[asyncio.to_thread(home_entry, row["pane_id"], row.get("note") or "", row.get("title") or "")
-              for row in favorites],
-            return_exceptions=True,
-        )
+        loop = asyncio.get_running_loop()
+        slots: list = [None] * len(favorites)
+        futures: dict = {}
+        for index, row in enumerate(favorites):
+            hit = HOME_ENTRY_CACHE.get(row["pane_id"])
+            if hit and (time.time() - hit[0]) < HOME_ENTRY_TTL:
+                slots[index] = hit[1]
+                continue
+            future = loop.run_in_executor(None, home_entry, row["pane_id"],
+                                          row.get("note") or "", row.get("title") or "")
+            futures[future] = index
+        if futures:
+            done, _ = await asyncio.wait(futures, timeout=HOME_ENTRY_BUDGET)
+            for future in done:
+                row = favorites[futures[future]]
+                try:
+                    entry = future.result()
+                except Exception:  # noqa: BLE001
+                    entry = None
+                if isinstance(entry, dict):
+                    remember_home_entry(row["pane_id"], entry)
+                    slots[futures[future]] = entry
+                else:
+                    slots[futures[future]] = home_entry_skeleton(row)
+            for future in set(futures) - done:
+                row = favorites[futures[future]]
+                slots[futures[future]] = home_entry_skeleton(row)
+                future.add_done_callback(lambda fut, pane=row["pane_id"]: collect_home_entry(fut, pane))
         cards = await asyncio.to_thread(home.cards)
         # counters may lag a few seconds; the favourites above are always live
-        states = await asyncio.to_thread(pane_states_cached, 0.4, 8.0)
+        states = await asyncio.to_thread(pane_states_cached, 0.4, 30.0)
+        elapsed = time.time() - started
+        (LOGGER.warning if elapsed > 2 else LOGGER.info)(
+            "home payload in %.2fs (%d favourites, %d pending)", elapsed, len(favorites),
+            sum(1 for entry in slots if entry and entry.get("pending")))
         busy = sum(1 for state in states if state.get("status") == "busy")
         return {
-            "favorites": [entry for entry in entries if isinstance(entry, dict)],
+            "favorites": [entry for entry in slots if isinstance(entry, dict)],
             "cards": cards,
             "stats": {
                 "panes": len(states),
@@ -1960,6 +2024,9 @@ def create_app(
         rows = await asyncio.to_thread(home.favorites)
         return {"favorites": [row["pane_id"] for row in rows], "notes": {row["pane_id"]: row["note"] for row in rows}}
 
+    def forget_home_entry(pane_id: str) -> None:
+        HOME_ENTRY_CACHE.pop(pane_id, None)
+
     @app.post("/api/home/favorites", status_code=201)
     async def add_home_favorite(request: Request, payload: HomeFavoriteRequest):
         require_auth(request)
@@ -1973,6 +2040,7 @@ def create_app(
             row = await asyncio.to_thread(home.add_favorite, payload.pane, payload.note, payload.title)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        forget_home_entry(payload.pane)
         return {"pane": row["pane_id"], "note": row["note"], "title": row.get("title", ""), "favorite": True}
 
     @app.patch("/api/home/favorites/{pane_id}")
@@ -1983,6 +2051,7 @@ def create_app(
             row = await asyncio.to_thread(home.set_favorite_title, pane_id, payload.title)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="pane is not on the board") from exc
+        forget_home_entry(pane_id)
         return {"pane": row["pane_id"], "title": row.get("title", ""), "favorite": True}
 
     @app.delete("/api/home/favorites/{pane_id}")

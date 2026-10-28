@@ -149,6 +149,17 @@
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(16px);padding:9px 15px;border-radius:10px;background:#292825;color:#fff;font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:20;max-width:88vw}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   .sidebar{position:relative}
+  /* first paint: a cached board (marked as stale) or a skeleton, never a blank page */
+  .skel{position:relative;overflow:hidden;border-radius:12px;background:#f2f0e9}
+  .skel::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.7),transparent);
+    transform:translateX(-100%);animation:skel 1.1s ease-in-out infinite}
+  @keyframes skel{to{transform:translateX(100%)}}
+  .skel-stat{width:86px;height:34px}
+  .skel-card{height:136px}
+  .skel-line{height:11px;border-radius:6px;background:#f2f0e9;margin:6px 8px}
+  .stale-note{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border:1px solid var(--line);
+    border-radius:20px;background:#fff;color:var(--muted);font-size:11px}
+  .stale-note::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--amber);animation:pulse 1.2s ease-in-out infinite}
   .side-resizer{position:absolute;top:0;right:0;width:6px;height:100%;cursor:col-resize;z-index:6;touch-action:none}
   .side-resizer::after{content:"";position:absolute;top:0;right:0;width:2px;height:100%;background:transparent;transition:background .12s}
   .side-resizer:hover::after,body.resizing .side-resizer::after{background:#b9b4a8}
@@ -253,8 +264,33 @@
 
 <script>
   const $=id=>document.getElementById(id);
-  const state={board:null,favorites:new Set(),query:'',timer:null,seq:0,hosts:[],states:new Map(),treeOpen:new Set(),treeReady:false};
+  const state={board:null,favorites:new Set(),query:'',timer:null,seq:0,hosts:[],states:new Map(),treeOpen:new Set(),treeReady:false,stale:false};
   const SIDEBAR_KEY='tmux-home-sidebar';
+  // The board is painted from this snapshot on the way back from the console, so
+  // navigation feels instant; the live answer replaces it a moment later.
+  const CACHE_KEY='tmux-home-cache-v1';
+  const CACHE_TEXT=length=>String(length||'').slice(0,600);
+  function slimBoard(board){
+    const slim=entry=>({...entry,
+      preview:entry.preview?{...entry.preview,text:CACHE_TEXT(entry.preview.text)}:null,
+      agent_preview:entry.agent_preview?{...entry.agent_preview,text:CACHE_TEXT(entry.agent_preview.text)}:null});
+    return {...board,
+      favorites:(board.favorites||[]).slice(0,40).map(slim),
+      cards:(board.cards||[]).slice(0,40).map(card=>({...card,body:CACHE_TEXT(card.body)}))};
+  }
+  function readCache(){
+    try{
+      const raw=localStorage.getItem(CACHE_KEY);
+      if(!raw)return null;
+      const data=JSON.parse(raw);
+      if(!data||!data.board||!Array.isArray(data.board.favorites))return null;
+      return data;
+    }catch{return null;}
+  }
+  function writeCache(){
+    if(!state.board)return;
+    try{localStorage.setItem(CACHE_KEY,JSON.stringify({at:Date.now(),board:slimBoard(state.board),hosts:state.hosts||[]}));}catch{}
+  }
   function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function toast(text){const el=$('toast');el.textContent=text;el.classList.add('show');clearTimeout(state.toastTimer);state.toastTimer=setTimeout(()=>el.classList.remove('show'),2200);}
   async function api(url,opts={}){const r=await fetch(url,opts);if(r.status===401){location='/login';throw new Error('登录已失效');}if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||`HTTP ${r.status}`);}return r.json();}
@@ -350,6 +386,7 @@
       const data=await api('/api/hosts');
       state.hosts=data.hosts||[];
       renderTree();
+      writeCache();
       loadFavorites().catch(()=>{});
       refreshStates().catch(()=>{});
     }catch(err){toast(err.message);}
@@ -396,7 +433,13 @@
       state.board=board;
       state.favorites=new Set((board.favorites||[]).map(f=>f.pane));
       if(state.treeReady)syncStars();
+      state.stale=false;
       render();
+      writeCache();
+      // a card that is still being read fills in on the next tick
+      if((board.favorites||[]).some(item=>item.pending)&&!state.pendingTimer){
+        state.pendingTimer=setTimeout(()=>{state.pendingTimer=null;load();},2500);
+      }
     }catch(err){toast(err.message);}
   }
 
@@ -409,7 +452,8 @@
     $('stats').innerHTML=[
       [show(stats.panes),'panes'], [show(stats.busy),'busy'], [show(stats.idle),'idle'],
       [`${stats.favorites||0}`,'收藏'], [`${stats.cards||0}`,'看板卡片'],
-    ].map(([value,label])=>`<div class="stat${label==='busy'&&value!=='0'&&value!=='—'?' hot':''}"><b>${esc(value)}</b><span>${esc(label)}</span></div>`).join('');
+    ].map(([value,label])=>`<div class="stat${label==='busy'&&value!=='0'&&value!=='—'?' hot':''}"><b>${esc(value)}</b><span>${esc(label)}</span></div>`).join('')
+      +(state.stale?'<div class="stale-note">显示缓存，正在更新…</div>':'');
     if(!known&&!state.retryTimer){state.retryTimer=setTimeout(()=>{state.retryTimer=null;load();},4000);}
 
     const favorites=board.favorites||[];
@@ -691,6 +735,28 @@
   });
   $('q').addEventListener('keydown',event=>{if(event.key==='Escape'){event.target.value='';state.query='';search();}});
   $('reload').onclick=()=>{load();loadTree();if(state.query.trim())search();};
+
+  function skeleton(){
+    $('stats').innerHTML='<div class="skel skel-stat"></div>'.repeat(5);
+    $('fav-count').textContent='…';
+    $('card-count').textContent='…';
+    $('favorites').innerHTML='<div class="card skel skel-card"></div>'.repeat(2);
+    $('cards').innerHTML='<div class="card skel skel-card"></div>';
+    $('tree').innerHTML='<div class="skel-line" style="width:70%"></div>'.repeat(8);
+  }
+
+  const cached=readCache();
+  if(cached){
+    // paint first, ask the server second
+    state.board=cached.board;
+    state.hosts=cached.hosts||[];
+    state.favorites=new Set((cached.board.favorites||[]).map(item=>item.pane));
+    state.stale=true;
+    renderTree();
+    render();
+  }else{
+    skeleton();
+  }
 
   applySidebar();
   loadTree();

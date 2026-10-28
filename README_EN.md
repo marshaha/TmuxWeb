@@ -247,6 +247,10 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   title, path, a **preview of the last message**, and the pane reference. Clicking a card jumps back to the console with that pane
   selected (`/?pane=<pane>`).
 - **Board cards** — notes, results and alerts an agent published through the `publish_home_card` MCP tool; removable in the UI.
+- **Going back to the board is instant** — `/home` paints the previous snapshot from `localStorage` first (marked
+  `显示缓存，正在更新…`) and swaps in fresh data when it lands; without a snapshot it shows a skeleton (stats, cards and tree
+  placeholders) instead of a blank page. On the server `/api/home` waits at most 1.2s because each favourite's live half needs an
+  SSH round trip: slow panes come back as placeholders (`pending`) and fill in from a 25s cache on the next poll.
 - **Star in the conversation top bar** — favourites the pane you have open; it stays in sync with the star in the sidebar tree and
   with the board cards. The conversation preview page (`/preview`) carries the same button.
 - **Search** — one box, four groups in priority order: servers, tmux sessions, panes, then the recent messages of every agent pane and finally board cards (hits are highlighted).

@@ -1,5 +1,9 @@
 import json
+import time
 import unittest
+from unittest import mock
+
+import remote_hosts
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
@@ -57,6 +61,42 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("minmax(min(268px,100%),1fr)", response.text)
         # the sidebar already links to the console, so the header keeps no duplicate
         self.assertNotIn('title="回到控制台"', response.text)
+
+    def test_the_board_answers_before_a_slow_host_does(self):
+        """A favourite on a hung host must not hold the whole board hostage."""
+        created = self.client.post("/api/remote-hosts", json={
+            "name": "blackhole", "hostname": "192.0.2.1", "port": 22, "username": "nobody",
+            "auth_type": "password", "credential": "secret", "verify": False,
+        })
+        self.assertEqual(created.status_code, 201)
+        host_id = created.json()["id"]
+        pane = f"{host_id}~%1"
+        self.assertEqual(self.client.post("/api/home/favorites", json={"pane": pane}).status_code, 201)
+
+        def hung_list_panes(_self, timeout=15):
+            time.sleep(4)
+            raise RuntimeError("ssh timed out")
+
+        with mock.patch.object(FakeSSHRunner, "list_panes", hung_list_panes):
+            started = time.time()
+            board = self.client.get("/api/home").json()
+            elapsed = time.time() - started
+        # TestClient drains the worker thread before returning, so this only guards
+        # against falling back to the 15s SSH timeout; the endpoint itself answers at
+        # TMUX_WEB_HOME_BUDGET_SECONDS (measured live: 1.2s with the same hung host).
+        self.assertLess(elapsed, 4.5, f"/api/home took {elapsed:.1f}s with a hung host")
+        entry = next(item for item in board["favorites"] if item["pane"] == pane)
+        # a placeholder is better than blocking every other card
+        self.assertTrue(entry.get("pending"))
+        self.assertEqual(entry["host"], "blackhole")
+        self.client.delete(f"/api/home/favorites/{pane}")
+        self.client.delete(f"/api/remote-hosts/{host_id}")
+
+    def test_the_board_is_painted_from_a_local_snapshot(self):
+        page = self.client.get("/home").text
+        for marker in ("tmux-home-cache-v1", "readCache", "writeCache", "slimBoard",
+                       "stale-note", "skel", "显示缓存"):
+            self.assertIn(marker, page)
 
     def test_the_sidebar_width_is_draggable_and_remembered(self):
         home = self.client.get("/home")
