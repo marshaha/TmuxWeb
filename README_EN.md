@@ -271,6 +271,17 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   `显示缓存，正在更新…`) and swaps in fresh data when it lands; without a snapshot it shows a skeleton (stats, cards and tree
   placeholders) instead of a blank page. On the server `/api/home` waits at most 1.2s because each favourite's live half needs an
   SSH round trip: slow panes come back as placeholders (`pending`) and fill in from a 25s cache on the next poll.
+- **Landing** — `/` redirects to `/home` when there is neither a `?pane=` nor a remembered pane; with a remembered pane the
+  console restores it, so refreshing the console does not eject you.
+- **Recent visits** — the board lists the four panes you opened last (one click back to the console). Visits are recorded by the
+  console (`POST /api/home/recent`); titles/hosts come from the `/api/hosts` snapshot and status from the sweep, so the section
+  never reads a transcript itself.
+- **How busy/idle is decided** — `relay.classify()` over the last 14 lines: an interrupt hint (`esc to interrupt`, `esc to cancel`,
+  `ctrl+c to cancel`) means busy; a spinner in the last 3 lines means busy; progress wording only with an ellipsis
+  (`thinking…`) means busy; a prompt or agent input box (`❯`, `> `, `│ > …`, `user@host:~$`) means idle; anything else is
+  **unknown** — never a default "busy". The old rule matched the bare word "thinking", so Kimi's status bar
+  (`K3.1 Pro thinking: high`, a reasoning-level setting) made idle panes look busy. Board cards additionally override the status
+  with the transcript's own `waiting` flag (`status_source: transcript`).
 - **Star in the conversation top bar** — favourites the pane you have open; it stays in sync with the star in the sidebar tree and
   with the board cards. The conversation preview page (`/preview`) carries the same button.
 - **Search** — one box, four groups in priority order: servers, tmux sessions, panes, then the recent messages of every agent pane and finally board cards (hits are highlighted).

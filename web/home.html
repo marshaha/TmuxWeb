@@ -233,6 +233,8 @@
   <div id="board">
     <h2>收藏 <span class="count" id="fav-count">0</span></h2>
     <div class="grid" id="favorites"></div>
+    <h2>最近访问 <span class="count" id="recent-count">0</span></h2>
+    <div class="grid" id="recent"></div>
     <h2>看板卡片 <span class="count" id="card-count">0</span></h2>
     <div class="grid" id="cards"></div>
   </div>
@@ -282,6 +284,7 @@
       agent_preview:entry.agent_preview?{...entry.agent_preview,text:CACHE_TEXT(entry.agent_preview.text)}:null});
     return {...board,
       favorites:(board.favorites||[]).slice(0,40).map(slim),
+      recent:(board.recent||[]).slice(0,4),
       cards:(board.cards||[]).slice(0,40).map(card=>({...card,body:CACHE_TEXT(card.body)}))};
   }
   function readCache(){
@@ -482,6 +485,10 @@
     $('fav-count').textContent=`${favorites.length}`;
     $('favorites').innerHTML=favorites.length?favorites.map(card).join(''):'<div class="empty"><b>还没有收藏的会话</b>在控制台左侧列表里点 pane 右侧的空心五角星，就能把它放到这里。</div>';
 
+    const recent=board.recent||[];
+    $('recent-count').textContent=`${recent.length}`;
+    $('recent').innerHTML=recent.length?recent.map(recentCard).join(''):'<div class="empty"><b>还没有访问记录</b>打开任意 pane 后，最近的 4 个会出现在这里。</div>';
+
     const cards=board.cards||[];
     $('card-count').textContent=`${cards.length}`;
     $('cards').innerHTML=cards.length?cards.map(cardHtml).join(''):'<div class="empty"><b>看板是空的</b>在任意 agent pane 里让模型调用 MCP 工具 publish_home_card，就能把结论贴到这里。</div>';
@@ -504,6 +511,19 @@
       <div class="card-meta">${esc([favorite.host,favorite.session,favorite.window].filter(Boolean).join(' · ')||favorite.path||meta)}</div>
       ${preview?`<p class="preview"><b>${esc(preview.role||'')}</b> ${esc(preview.text)}</p>`:'<p class="preview" style="color:var(--faint)">还没有对话内容</p>'}
       <div class="card-foot"><span class="grow">${esc(pane)}</span><span>${esc(favorite.command||'')}</span></div>
+    </article>`;
+  }
+
+  // The four panes opened most recently: title/status come from the status sweep,
+  // so this section never triggers a transcript read of its own.
+  function recentCard(item){
+    return `<article class="card" data-open="${esc(item.pane)}">
+      <div class="card-top">${stateBadge(item.status)}
+        ${item.provider?`<span class="kind">${esc(item.provider)}</span>`:''}
+        <span class="card-meta" style="margin-left:auto">${esc(ago(item.visited_at))}</span>
+      </div>
+      <div class="card-title">${esc(item.title)}</div>
+      <div class="card-meta">${esc([item.host,item.session,item.window].filter(Boolean).join(' · ')||item.pane)}</div>
     </article>`;
   }
 

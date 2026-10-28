@@ -273,6 +273,16 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 - **agent 会话不会退化成刷屏终端**：transcript 读不到内容时（会话刚开、或解析不出来），聊天区显示说明 + 「查看原始屏幕」按钮并自动重试，不再自动切去流式抓屏（Kimi/Claude 这类全屏 TUI 每秒重绘整屏，600 行 × 7000 个节点会把浏览器卡死）。shell pane 仍然照旧显示屏幕。
 - **Kimi 会话挑选**：同一个目录/标题可能有多个 kimi session，只挑 `updatedAt` 最新的那个（旧的往往是中断的回合，里面没有消息）。
 - **切回主页不等待**：`/home` 先用 `localStorage` 里的上一份看板（标「显示缓存，正在更新…」）立刻画出卡片和会话树，再拉最新数据替换；没有缓存就显示骨架屏（统计/卡片/树的占位），不会空白。接口侧 `/api/home` 最多等 1.2 秒——收藏卡片的实时状态和最后一条消息要按 pane 走 SSH，慢的话先返回占位（`pending`），后台读完写进 25 秒缓存，下一次轮询补上。
+- **进入首页**：没有 `?pane=` 也没有「上次打开的 pane」时，`/` 自动跳到 `/home`（有上次 pane 时仍直接恢复到那个会话，刷新不会把你踢回首页）
+- **最近访问**：主页在「收藏」下面列出**最近打开的 4 个 pane**（点一下就回控制台）。记录来自控制台的选中动作（`POST /api/home/recent`），标题/主机/session 取自 `/api/hosts` 快照，状态取自状态扫描，所以这一段自己不读 transcript、几乎瞬时
+- **busy/idle 怎么判**：控制台和主页的状态都来自 `relay.classify()` 对 pane 末 14 行的判断——
+  1) 出现 `esc to interrupt` / `esc to cancel` / `ctrl+c to cancel` → busy；
+  2) 末 3 行里有转轮字符（⠋⠙…）→ busy；
+  3) 末 3 行出现带省略号的进度词（`thinking…`/`working…`）→ busy；
+  4) 末 4 行是提示符或 agent 输入框（`❯`、`> `、`│ > …`、`user@host:~$`）→ idle；
+  5) 都不是 → **unknown（灰点）**，不再默认 busy。
+  以前直接把「thinking」当关键词，Kimi 的状态栏 `K3.1 Pro thinking: high`（推理档位）会让空闲 pane 显示 busy，已修。
+  主页卡片还有更权威的一层：拿到 transcript 后按会话自己的 `waiting` 覆盖状态（`status_source: transcript`）。
 - **对话右上角的五角星**：收藏/取消收藏当前打开的 pane，状态与侧边栏列表里的星标、主页卡片联动；对话预览页（`/preview`）头部也有同一个按钮
 - **搜索**：先匹配「服务器 / tmux session / pane 名」，再搜各 agent **最近的对话内容**，最后是看板卡片；结果按这四组分开显示并高亮命中片段
   - 支持**正则**：查询里有正则元字符（`. * + ? [ ] ( ) { } | ^ $ \`）就按正则跑，否则按字面匹配；正则写错会自动退回字面匹配（结果页会标出来）

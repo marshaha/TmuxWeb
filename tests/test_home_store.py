@@ -15,6 +15,23 @@ class HomeStoreTests(unittest.TestCase):
         self.store.close()
         self.directory.cleanup()
 
+    def test_recent_visits_are_newest_first_and_bounded(self):
+        for index in range(6):
+            self.store.touch_recent(f"%{index}")
+            self.store._conn.execute("UPDATE recent SET visited_at = ? WHERE pane_id = ?", (1000 + index, f"%{index}"))
+        self.store._conn.commit()
+        newest = self.store.recent(4)
+        self.assertEqual([row["pane_id"] for row in newest], ["%5", "%4", "%3", "%2"])
+        self.store.touch_recent("%2")       # visiting again moves it to the front
+        self.assertEqual(self.store.recent(1)[0]["pane_id"], "%2")
+        self.assertTrue(self.store.forget_recent("%2"))
+        self.assertNotIn("%2", [row["pane_id"] for row in self.store.recent(10)])
+        for index in range(40):             # the table stays bounded
+            self.store.touch_recent(f"x{index}")
+            self.store._conn.execute("UPDATE recent SET visited_at = ? WHERE pane_id = ?", (2000 + index, f"x{index}"))
+        self.store._conn.commit()
+        self.assertLessEqual(len(self.store.recent(100)), 30)
+
     def test_favourites_round_trip(self):
         self.assertEqual(self.store.favorites(), [])
         self.store.add_favorite("%7", "watch this")

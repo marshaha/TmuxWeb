@@ -23,6 +23,7 @@ CARD_KINDS = ("note", "result", "alert", "link")
 MAX_TITLE = 200
 MAX_BODY = 20000
 MAX_CARDS = 200
+MAX_RECENT = 30
 
 
 def _now() -> float:
@@ -62,6 +63,12 @@ class HomeStore:
                        kind TEXT NOT NULL DEFAULT 'note',
                        created_at REAL NOT NULL,
                        updated_at REAL NOT NULL
+                   )"""
+            )
+            self._conn.execute(
+                """CREATE TABLE IF NOT EXISTS recent (
+                       pane_id TEXT PRIMARY KEY,
+                       visited_at REAL NOT NULL
                    )"""
             )
             self._conn.commit()
@@ -114,6 +121,38 @@ class HomeStore:
         with self._lock:
             row = self._conn.execute("SELECT 1 FROM favorites WHERE pane_id = ?", (pane_id.strip(),)).fetchone()
         return row is not None
+
+    # ---------------------------------------------------------------- recent visits
+    def touch_recent(self, pane_id: str) -> None:
+        """Record that a pane was opened; keeps a bounded, newest-first list."""
+        pane_id = (pane_id or "").strip()
+        if not pane_id:
+            raise ValueError("pane_id is required")
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO recent (pane_id, visited_at) VALUES (?, ?)
+                   ON CONFLICT(pane_id) DO UPDATE SET visited_at = excluded.visited_at""",
+                (pane_id, _now()),
+            )
+            self._conn.execute(
+                "DELETE FROM recent WHERE pane_id NOT IN"
+                " (SELECT pane_id FROM recent ORDER BY visited_at DESC LIMIT ?)",
+                (MAX_RECENT,),
+            )
+            self._conn.commit()
+
+    def recent(self, limit: int = 4) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM recent ORDER BY visited_at DESC LIMIT ?", (max(1, int(limit)),)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def forget_recent(self, pane_id: str) -> bool:
+        with self._lock:
+            cursor = self._conn.execute("DELETE FROM recent WHERE pane_id = ?", ((pane_id or "").strip(),))
+            self._conn.commit()
+            return cursor.rowcount > 0
 
     # ---------------------------------------------------------------- cards
     def add_card(self, title: str, body: str = "", pane_id: str = "", kind: str = "note") -> dict:

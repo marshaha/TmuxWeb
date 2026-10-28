@@ -98,6 +98,27 @@ class HomeBoardTests(unittest.TestCase):
                        "stale-note", "skel", "显示缓存"):
             self.assertIn(marker, page)
 
+    def test_recent_visits_show_up_on_the_board(self):
+        resp = self.client.post("/api/home/recent", json={"pane": "%4"})
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(self.client.post("/api/home/recent", json={"pane": "nonsense"}).status_code, 422)
+        board = self.client.get("/api/home").json()
+        self.assertIn("recent", board)
+        self.assertEqual([item["pane"] for item in board["recent"]], ["%4"])
+        entry = board["recent"][0]
+        self.assertEqual(entry["pane"], "%4")
+        self.assertTrue(entry["title"])          # title/session come from the host snapshot
+        page = self.client.get("/home").text
+        for marker in ("最近访问", "recentCard", 'id="recent"', 'id="recent-count"'):
+            self.assertIn(marker, page)
+
+    def test_the_console_opens_on_the_board_when_there_is_nothing_to_restore(self):
+        page = self.client.get("/").text
+        self.assertIn("landOnBoard", page)
+        self.assertIn("location.replace('/home')", page)
+        self.assertIn("noteRecentVisit", page)
+        self.assertIn("/api/home/recent", page)
+
     def test_every_host_row_offers_a_refresh(self):
         page = self.client.get("/home").text
         for marker in ("data-refresh-host", "refreshOneHost", "class=\"trefresh\""):

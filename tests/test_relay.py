@@ -39,6 +39,22 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(relay.classify("回答中\n⠋ Thinking…"), "busy")
         self.assertEqual(relay.classify("running\n(esc to interrupt)"), "busy")
 
+    def test_a_kimi_status_bar_is_not_a_running_turn(self):
+        """`K3.1 Pro thinking: high` is a model setting, not progress."""
+        screen = ("  ● 已合入并部署\n"
+                  "  ╭──────────────────────────────\n"
+                  "  │ > 拉取新的pr.\n"
+                  "  ╰──────────────────────────────\n"
+                  "  Never Ask  K3.1 Pro thinking: high  ~/workspace/auto_verilog\n")
+        self.assertEqual(relay.classify(screen), "idle")
+
+    def test_plain_output_is_unknown_not_busy(self):
+        self.assertEqual(relay.classify("compiling foo.c\nlinking foo\n"), "unknown")
+
+    def test_soft_progress_needs_an_ellipsis(self):
+        self.assertEqual(relay.classify("✻ Thinking… (12s)"), "busy")
+        self.assertEqual(relay.classify("thinking: high"), "unknown")
+
     def test_empty_screen_is_unknown(self):
         self.assertEqual(relay.classify(""), "unknown")
 

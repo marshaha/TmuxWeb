@@ -400,6 +400,10 @@ class McpToolError(Exception):
 MCP_PROTOCOL_VERSION = "2025-06-18"
 
 
+class HomeRecentRequest(BaseModel):
+    pane: str = ""
+
+
 class HomeFavoriteRequest(BaseModel):
     pane: str = Field(min_length=1, max_length=400)
     note: str = ""
@@ -2036,6 +2040,10 @@ def create_app(
             entry["waiting"] = bool(with_waiting_hint(data).get("waiting"))
         except (RuntimeError, ValueError):
             entry["waiting"] = False
+        # the provider's own transcript knows whether a turn is running; the screen
+        # heuristic can be fooled by status bars ("K3.1 Pro thinking: high")
+        entry["status"] = "busy" if entry["waiting"] else "idle"
+        entry["status_source"] = "transcript"
         return entry
 
     # A card's live half (status + last message) costs one SSH round trip per pane,
@@ -2047,7 +2055,10 @@ def create_app(
     HOME_ENTRY_BUDGET = float(os.environ.get("TMUX_WEB_HOME_BUDGET_SECONDS", "1.2"))
 
     def remember_home_entry(pane_id: str, entry: dict) -> None:
-        HOME_ENTRY_CACHE[pane_id] = (time.time(), entry)
+        # a failed read (unknown/offline, no preview) is retried soon instead of
+        # being trusted for the full TTL
+        ttl = HOME_ENTRY_TTL if (entry.get("preview") or entry.get("status") in ("busy", "idle")) else 5.0
+        HOME_ENTRY_CACHE[pane_id] = (time.time(), entry, ttl)
         if len(HOME_ENTRY_CACHE) > 200:  # bounded
             oldest = min(HOME_ENTRY_CACHE, key=lambda key: HOME_ENTRY_CACHE[key][0])
             HOME_ENTRY_CACHE.pop(oldest, None)
@@ -2067,7 +2078,7 @@ def create_app(
         futures: dict = {}
         for index, row in enumerate(favorites):
             hit = HOME_ENTRY_CACHE.get(row["pane_id"])
-            if hit and (time.time() - hit[0]) < HOME_ENTRY_TTL:
+            if hit and (time.time() - hit[0]) < (hit[2] if len(hit) > 2 else HOME_ENTRY_TTL):
                 slots[index] = hit[1]
                 continue
             future = loop.run_in_executor(None, home_entry, row["pane_id"],
@@ -2098,8 +2109,35 @@ def create_app(
             "home payload in %.2fs (%d favourites, %d pending)", elapsed, len(favorites),
             sum(1 for entry in slots if entry and entry.get("pending")))
         busy = sum(1 for state in states if state.get("status") == "busy")
+        recent_rows = await asyncio.to_thread(home.recent, 4)
+        by_id = {state["id"]: state for state in states}
+        # titles/hosts come from the /api/hosts snapshot too: it is cheap and warm
+        # even when the status sweep has not run yet
+        known: dict[str, dict] = {}
+        for host in (hosts_snapshot["value"] or {}).get("hosts") or []:
+            for pane in host.get("panes") or []:
+                known[pane.get("id")] = {**pane, "host_name": host.get("name") or host.get("id")}
+        recent = []
+        for row in recent_rows:
+            pane_id = row["pane_id"]
+            state = by_id.get(pane_id) or {}
+            pane = known.get(pane_id) or {}
+            host_id = pane_id.split("~", 1)[0] if "~" in pane_id else "localhost"
+            recent.append({
+                "pane": pane_id,
+                "visited_at": row["visited_at"],
+                "title": state.get("title") or pane.get("title") or pane_id,
+                "host": state.get("host_name") or pane.get("host_name") or host_id,
+                "session": state.get("session") or pane.get("session") or "",
+                "window": state.get("window") or pane.get("target") or "",
+                "provider": state.get("provider") or "",
+                # a visit whose pane is gone should read as offline, not "unknown"
+                "status": state.get("status") or ("unknown" if pane else "offline"),
+                "online": bool(state or pane),
+            })
         return {
             "favorites": [entry for entry in slots if isinstance(entry, dict)],
+            "recent": recent,
             "cards": cards,
             "stats": {
                 "panes": len(states),
@@ -2115,6 +2153,23 @@ def create_app(
     async def home_board(request: Request):
         require_auth(request)
         return await build_home_payload()
+
+    @app.post("/api/home/recent", status_code=202)
+    async def touch_home_recent(request: Request, payload: HomeRecentRequest):
+        """Remember that a pane was opened (called by the console on selection)."""
+        require_auth(request)
+        try:
+            split_pane_ref(payload.pane)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid pane reference") from exc
+        await asyncio.to_thread(home.touch_recent, payload.pane)
+        return {"pane": payload.pane, "status": "recorded"}
+
+    @app.delete("/api/home/recent/{pane_id}")
+    async def delete_home_recent(request: Request, pane_id: str):
+        require_auth(request)
+        await asyncio.to_thread(home.forget_recent, pane_id)
+        return {"status": "deleted", "pane": pane_id}
 
     @app.get("/api/home/favorites")
     async def home_favorites(request: Request):

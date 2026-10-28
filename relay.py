@@ -20,10 +20,19 @@ ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 PROMPT_LINE_RE = re.compile(r"^\s*[❯›>]\s*\S?")
 BARE_PROMPT_RE = re.compile(r"^\s*[$#%❯›>]\s*$")
 SHELL_PROMPT_RE = re.compile(r"^\s*(?:\([^)]*\)\s*)?[^\s@]+@[^\s:]+[^\s]*[$#]\s*$")
+# Shown only while a turn runs, next to the interrupt key: reliable.
 BUSY_HINTS = (
     "esc to interrupt", "esc to cancel", "ctrl+c to cancel", "ctrl-c to cancel",
-    "thinking", "generating", "running", "waiting for", "working", "compacting",
+    "esc·interrupt", "esc interrupt",
 )
+# Progress wording is only trusted with an ellipsis and only near the bottom: status
+# bars say things like "K3.1 Pro thinking: high" while the agent sits idle.
+SOFT_BUSY_HINTS = (
+    "thinking…", "thinking...", "generating…", "generating...", "working…", "working...",
+    "compacting…", "compacting...", "running…", "running...", "waiting for",
+)
+# An agent's input box ("│ > 拉取新的pr") also means "ready for input".
+PROMPT_BOX_RE = re.compile(r"^\s*[│|]\s*[>❯›]\s*\S?")
 SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷"
 REPLY_PREFIX = "TMUXWEB_REPLY_"
 
@@ -49,26 +58,28 @@ def strip_ansi(text: str) -> str:
 def classify(text: str) -> str:
     """Best-effort agent state from the visible tail: idle, busy or unknown.
 
-    Ready-for-input is decided by an input prompt anywhere in the last few
-    non-empty lines, because agent TUIs often draw a rule or a status footer
-    under the prompt itself.
+    Ordering matters: an explicit interrupt hint beats everything, a spinner only
+    counts near the bottom (scrollback is full of old frames), progress wording needs
+    an ellipsis, and anything unmatched is *unknown* rather than a fake "busy".
     """
     tail = [line.rstrip() for line in strip_ansi(text or "").splitlines() if line.strip()][-14:]
     if not tail:
         return "unknown"
+    joined = "\n".join(tail).lower()
+    if any(hint in joined for hint in BUSY_HINTS):
+        return "busy"
+    if any(char in line for line in tail[-3:] for char in SPINNER_CHARS):
+        return "busy"
+    for line in tail[-3:]:
+        lowered = line.strip().lower()
+        if any(hint in lowered for hint in SOFT_BUSY_HINTS):
+            return "busy"
     for line in tail[-4:]:
         stripped = line.strip()
-        if PROMPT_LINE_RE.match(stripped) or BARE_PROMPT_RE.match(stripped) or SHELL_PROMPT_RE.match(stripped):
+        if (PROMPT_LINE_RE.match(stripped) or BARE_PROMPT_RE.match(stripped)
+                or SHELL_PROMPT_RE.match(stripped) or PROMPT_BOX_RE.match(line)):
             return "idle"
-    if any(char in line for line in tail for char in SPINNER_CHARS):
-        return "busy"
-    joined = "\n".join(tail).lower()
-    if "esc to interrupt" in joined or "esc to cancel" in joined:
-        return "busy"
-    for hint in BUSY_HINTS:
-        if hint in joined:
-            return "busy"
-    return "busy"
+    return "unknown"
 
 
 def marker(token: str) -> str:
