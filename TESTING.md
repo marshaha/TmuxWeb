@@ -58,6 +58,8 @@
 
 - 主机表单：桌面上「主机/IP」占满一整行且输入框满宽（编辑弹窗同样）；勾选「显示凭据内容」后密码变明文、私钥去遮蔽，取消勾选恢复；勾选「不校验连接直接保存」后用错误密码、甚至填一个不可达地址添加主机都应成功：列表显示离线、指纹位置显示「指纹待首次连通时记录」；之后把地址/凭据改对，第一次连通时会自动记录并固定指纹（`accept-new`），后续按固定指纹校验。单测：`test_a_host_may_be_saved_without_a_working_credential`、`test_host_form_lets_you_reveal_and_skip_verification`。
 
+- 停止推理：让一个 agent pane 处于运行状态（提交一个耗时任务），输入框为空时右下按钮应变成红色方形停止键，标题为「停止当前推理（Esc）」；点击后状态显示「正在停止…」「已发送 Esc」，pane 收到 Esc 后该轮被打断；输入任意文字按钮变回发送箭头，清空又变回停止；在输入框按 Esc 也能停止。单测：`test_escape_can_be_sent_to_interrupt_a_turn`（含非法键 422、未登录 401）、`test_send_button_turns_into_a_stop_button_while_working`。
+
 ## 1. 安装测试依赖
 
 ```bash

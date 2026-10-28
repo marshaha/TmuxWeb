@@ -256,6 +256,10 @@ class TmuxBackend:
             if temporary.exists():
                 temporary.unlink()
 
+    def send_key(self, pane_id: str, key: str) -> None:
+        self.validate_pane(pane_id)
+        self._run("send-keys", "-t", pane_id, key)
+
     def send(self, pane_id: str, text: str, submit: bool = True) -> None:
         pane = self.validate_pane(pane_id)
         buffer_name = f"tmux-web-{secrets.token_hex(8)}"
@@ -279,6 +283,13 @@ class TmuxBackend:
 class InputRequest(BaseModel):
     text: str = Field(min_length=1, max_length=100_000)
     submit: bool = True
+
+
+ALLOWED_KEYS = {"Escape", "Enter", "Tab", "C-c", "C-d", "C-u", "Up", "Down", "Left", "Right"}
+
+
+class KeyRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=16)
 
 
 class ShareCreateRequest(BaseModel):
@@ -1455,6 +1466,20 @@ def create_app(
             transport, actual_pane_id = pane_transport(pane_id)
             await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit)
             return {"status": "sent", "pane": pane_id, "submit": payload.submit}
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/panes/{pane_id}/key")
+    async def send_key(request: Request, pane_id: str, payload: KeyRequest):
+        """Send one named key (Escape interrupts a running agent turn)."""
+        require_auth(request)
+        pane_or_404(pane_id)
+        if payload.key not in ALLOWED_KEYS:
+            raise HTTPException(status_code=422, detail="unsupported key")
+        try:
+            transport, actual_pane_id = pane_transport(pane_id)
+            await asyncio.to_thread(transport.send_key, actual_pane_id, payload.key)
+            return {"status": "sent", "pane": pane_id, "key": payload.key}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

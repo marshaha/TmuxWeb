@@ -1208,6 +1208,14 @@ class SSHRunner:
     def capture(self, pane_id: str, history: int = 5000) -> str:
         return ANSI_RE.sub("", self.capture_ansi(pane_id, history))
 
+    def send_key(self, pane_id: str, key: str) -> None:
+        if not PANE_ID_RE.fullmatch(pane_id):
+            raise ValueError("invalid pane id")
+        command = f"${{TMUX_BIN:-tmux}} send-keys -t {shlex.quote(pane_id)} {shlex.quote(key)}"
+        completed = self.run(command)
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote key send failed")
+
     def send(self, pane_id: str, text: str, submit: bool = True) -> None:
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")

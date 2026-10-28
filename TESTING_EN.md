@@ -79,6 +79,11 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   `test_a_host_may_be_saved_without_a_working_credential`, `test_a_host_can_be_saved_without_a_fingerprint` and
   `test_an_unpinned_host_is_accepted_once_and_then_remembered`.
 
+- Stop a turn: with an agent pane busy and an empty composer the send button turns into a red stop button
+  (停止当前推理（Esc）); clicking it shows 正在停止… / 已发送 Esc and the pane receives Esc, interrupting the turn. Typing text
+  restores the send arrow, clearing it restores stop, and Esc inside the composer also stops. Unit tests:
+  `test_escape_can_be_sent_to_interrupt_a_turn`, `test_send_button_turns_into_a_stop_button_while_working`.
+
 ## 1. Install test dependencies
 
 ```bash

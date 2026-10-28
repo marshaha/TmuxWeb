@@ -328,6 +328,27 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(edited.status_code, 200)
         self.assertEqual(self.remote_store.hosts[host_id][0]["username"], "someone")
 
+    def test_escape_can_be_sent_to_interrupt_a_turn(self):
+        self.login()
+        sent = []
+        self.tmux.send_key = lambda pane_id, key: sent.append((pane_id, key))
+        response = self.client.post("/api/panes/%254/key", json={"key": "Escape"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(sent, [("%4", "Escape")])
+
+        # only the named keys the UI needs are accepted
+        self.assertEqual(self.client.post("/api/panes/%254/key", json={"key": "rm -rf /"}).status_code, 422)
+        self.client.cookies.clear()
+        self.assertIn(self.client.post("/api/panes/%254/key", json={"key": "Escape"}).status_code, (401, 403))
+
+    def test_send_button_turns_into_a_stop_button_while_working(self):
+        self.login()
+        page = self.client.get("/").text
+        for marker in ('id="i-stop"', "function stopAgent(", "function syncSendButton(",
+                       "/key`,{method:'POST'", ".send.stop{background:#b34b43}",
+                       "停止当前推理（Esc）"):
+            self.assertIn(marker, page)
+
     def test_a_host_can_be_saved_without_a_fingerprint(self):
         self.login()
         base = {"name": "no-scan", "hostname": "10.255.255.1", "port": 22, "username": "nobody",
