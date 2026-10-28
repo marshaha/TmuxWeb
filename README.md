@@ -9,7 +9,7 @@ TmuxWeb 是一个自托管的 tmux 与 AI CLI 会话管理中心。它把本机�
 ## 功能
 
 - **多主机管理**：一个本地服务管理 localhost 和 SSH 远程主机；远端只需 SSH 与 tmux，不需安装守护进程。
-- **macOS 的 tmux 路径**：ssh 非交互命令看不到 Homebrew 的 PATH，因此首次连接会把 tmux 解析成绝对路径并缓存（`command -v` → `/opt/homebrew/bin` → `/usr/local/bin` → `~/bin` → `bash/zsh -lc`），之后每条远端命令都带 `TMUX_BIN`；确实没装时报错会提示 `brew install tmux`。
+- **macOS 的 tmux 路径**：ssh 非交互命令看不到 Homebrew 的 PATH，因此首次连接会把 tmux 解析成绝对路径并缓存（`command -v` → `/opt/homebrew/bin` → `/usr/local/bin` → `~/bin` → `bash/zsh -lc`），之后每条远端命令都带 `TMUX_BIN`；确实没装时报错会提示 `brew install tmux`；tmux 装在别处时可用 `TMUX_WEB_TMUX_PATH` 指定。
 - **tmux 树导航**：按主机、session、window、pane 展示；展开状态保存在浏览器本地。
 - **AI 聊天视图**：Claude Code、Codex、Hermes、Kimi Code 读取结构化 transcript（本地和 SSH 远端都能读）；无法解析时回退 ANSI `capture-pane`。
 - **跨服务器中继**：任意 pane 里的 agent 可以通过 HTTP API / `relay_client.py` 向另一台服务器上的 agent pane 提问并拿到回答，TmuxWeb 负责注入、等待和回收答案。

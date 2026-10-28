@@ -11,7 +11,7 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Multi-host control plane**: one local service manages localhost and SSH hosts; remote machines only need SSH and tmux.
 - **tmux on macOS**: a non-interactive ssh command does not see Homebrew's PATH, so the first connection resolves the binary
   to an absolute path (PATH → /opt/homebrew/bin → /usr/local/bin → ~/bin → `bash -lc` / `zsh -lc`), caches it, and exports
-  `TMUX_BIN` for every remote command; a genuinely missing tmux reports `brew install tmux`.
+  `TMUX_BIN` for every remote command; a genuinely missing tmux reports `brew install tmux`, and `TMUX_WEB_TMUX_PATH` overrides the lookup.
 - **Tmux tree**: host/session/window/pane navigation with persisted expansion state.
 - **AI chat view**: structured transcripts for Claude Code, Codex, Hermes, and Kimi Code on localhost *and* SSH hosts, with ANSI `capture-pane` fallback.
 - **Cross-server relay**: an agent in any pane can ask an agent pane on another host and receive its answer through the HTTP API or `relay_client.py`.

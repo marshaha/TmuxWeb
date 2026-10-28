@@ -588,6 +588,16 @@ class RemoteHostTests(unittest.TestCase):
         self.assertIn("brew install tmux", message)
         self.assertIn("/opt/homebrew/bin", message)
 
+    def test_probe_knows_common_mac_prefixes(self):
+        for path in ("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/opt/local/bin/tmux"):
+            self.assertIn(path, remote_hosts.TMUX_PROBE_SCRIPT)
+
+    def test_tmux_path_can_be_forced_through_the_environment(self):
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+        with mock.patch.dict("os.environ", {"TMUX_WEB_TMUX_PATH": "/custom/bin/tmux"}):
+            self.assertEqual(runner.tmux_binary(), "/custom/bin/tmux")
+
     def test_remote_commands_export_the_resolved_binary(self):
         host = dict(FAKE_SSH_HOST)
         runner = SSHRunner(host)

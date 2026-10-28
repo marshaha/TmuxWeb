@@ -54,7 +54,7 @@ LOCALE_PRELUDE = "export LC_ALL=${TMUXWEB_REMOTE_LC:-C.UTF-8} LANG=${TMUXWEB_REM
 TMUX_PROBE_SCRIPT = r"""
 tmux_path=$(command -v tmux 2>/dev/null)
 if [ -z "$tmux_path" ]; then
-  for candidate in /opt/homebrew/bin/tmux /usr/local/bin/tmux "$HOME/bin/tmux" "$HOME/.local/bin/tmux"; do
+  for candidate in /opt/homebrew/bin/tmux /usr/local/bin/tmux /opt/local/bin/tmux "$HOME/bin/tmux" "$HOME/.local/bin/tmux"; do
     if [ -x "$candidate" ]; then tmux_path=$candidate; break; fi
   done
 fi
@@ -779,6 +779,9 @@ class SSHRunner:
 
     def tmux_binary(self) -> str:
         """Absolute path of tmux on the remote host (resolved once per host)."""
+        configured = os.environ.get("TMUX_WEB_TMUX_PATH", "").strip()
+        if configured:
+            return configured
         key = tmux_cache_key(self.host)
         cached = _TMUX_BIN_CACHE.get(key)
         if cached:
