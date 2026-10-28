@@ -107,6 +107,38 @@ class RelayTools:
         result = request("/api/home/cards", {"title": title, "body": body, "pane": pane, "kind": kind})
         return {"card": result, "visible_at": "/home"}
 
+    def list_remote_hosts(self, arguments: dict) -> dict:
+        hosts = request("/api/remote-hosts").get("hosts", [])
+        return {"hosts": [
+            {"id": host.get("id"), "name": host.get("name"), "hostname": host.get("hostname"),
+             "port": host.get("port"), "username": host.get("username"),
+             "auth_type": host.get("auth_type"), "jump_host_id": host.get("jump_host_id") or "",
+             "fingerprint": host.get("fingerprint") or ""}
+            for host in hosts
+        ]}
+
+    def add_remote_host(self, arguments: dict) -> dict:
+        """Register an SSH host (optionally behind a jump host)."""
+        payload = {
+            "name": self._text(arguments, "name", limit=64),
+            "hostname": self._text(arguments, "hostname", limit=255),
+            "username": self._text(arguments, "username", limit=64),
+            "port": int(arguments.get("port") or 22),
+            "auth_type": str(arguments.get("auth_type") or "agent").strip() or "agent",
+            "credential": str(arguments.get("credential") or ""),
+            "jump_host_id": str(arguments.get("jump_host") or "").strip(),
+            "verify": bool(arguments.get("verify", True)),
+        }
+        result = request("/api/remote-hosts", payload, timeout=90)
+        return {"host": {key: result.get(key) for key in
+                         ("id", "name", "hostname", "port", "username", "auth_type", "jump_host_id")},
+                "note": "the console sidebar picks it up on its next refresh"}
+
+    def remove_remote_host(self, arguments: dict) -> dict:
+        host_id = self._text(arguments, "id", limit=64)
+        request(f"/api/remote-hosts/{host_id}", method="DELETE")
+        return {"id": host_id, "removed": True}
+
     def list_home(self, arguments: dict) -> dict:
         limit = max(1, min(int(arguments.get("limit") or 20), 60))
         board = request("/api/home")
@@ -143,6 +175,9 @@ class RelayTools:
             "send_agent": self.send_agent,
             "read_agent": self.read_agent,
             "publish_home_card": self.publish_home_card,
+            "list_remote_hosts": self.list_remote_hosts,
+            "add_remote_host": self.add_remote_host,
+            "remove_remote_host": self.remove_remote_host,
             "list_home": self.list_home,
             "remove_home_card": self.remove_home_card,
         }
@@ -194,6 +229,44 @@ def tool_schemas() -> list[dict]:
                     "submit": {"type": "boolean", "default": True},
                 },
                 "required": ["target", "text"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "list_remote_hosts",
+            "description": ("List the SSH hosts this TmuxWeb server knows: id, name, address, auth type and the jump host it "
+                            "dials through. Credentials are never returned."),
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+        {
+            "name": "add_remote_host",
+            "description": ("Register an SSH host so its tmux panes show up in the console, optionally through a jump host. "
+                            "Defaults to auth_type=agent (your local ssh agent key), so no secret needs to be passed. "
+                            "verify=true fails when the host cannot be reached, verify=false stores it anyway."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "hostname": {"type": "string", "minLength": 1, "maxLength": 255},
+                    "username": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 22},
+                    "auth_type": {"type": "string", "enum": ["agent", "password", "key"], "default": "agent"},
+                    "credential": {"type": "string", "maxLength": 100000,
+                                   "description": "password or private key text; omit for auth_type=agent"},
+                    "jump_host": {"type": "string", "description": "id of another saved host to dial through"},
+                    "verify": {"type": "boolean", "default": True},
+                },
+                "required": ["name", "hostname", "username"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "remove_remote_host",
+            "description": "Forget a saved SSH host by id; hosts that jumped through it fall back to a direct connection.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}},
+                "required": ["id"],
                 "additionalProperties": False,
             },
         },

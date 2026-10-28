@@ -105,7 +105,8 @@ class ProtocolTests(unittest.TestCase):
         listing = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
         self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "read_agent",
-                                       "publish_home_card", "list_home", "remove_home_card"})
+                                       "publish_home_card", "list_home", "remove_home_card",
+                                       "list_remote_hosts", "add_remote_host", "remove_remote_host"})
         self.assertEqual(tools["ask_agent"]["inputSchema"]["required"], ["target", "question"])
 
     def test_notifications_are_ignored_and_unknown_methods_rejected(self):

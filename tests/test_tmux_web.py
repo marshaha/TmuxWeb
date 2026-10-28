@@ -905,7 +905,10 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("(authMode()!=='agent'&&!field)", hosts_page.text)
         # the payload must carry the credential value itself; `fields.credential.value`
         # sent undefined and made every save/test fail with 422
-        self.assertIn("credential:fields.credential}}", hosts_page.text)
+        self.assertIn("credential:fields.credential,jump_host_id:", hosts_page.text)
+        # the add form and the edit dialog both offer a jump host
+        self.assertIn('id="jump-host"', hosts_page.text)
+        self.assertIn('id="edit-jump-host"', hosts_page.text)
         self.assertNotIn("credential:fields.credential.value", hosts_page.text)
         self.assertIn("h.auth_type==='agent'", hosts_page.text)
 
@@ -1186,7 +1189,8 @@ class TmuxWebTests(unittest.TestCase):
         listing = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()
         self.assertEqual({tool["name"] for tool in listing["result"]["tools"]},
                          {"list_agents", "ask_agent", "send_agent", "read_agent",
-                          "publish_home_card", "list_home", "remove_home_card"})
+                          "publish_home_card", "list_home", "remove_home_card",
+                          "list_remote_hosts", "add_remote_host", "remove_remote_host"})
 
         agents = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                                                 "params": {"name": "list_agents", "arguments": {}}}).json()
@@ -1217,7 +1221,7 @@ class TmuxWebTests(unittest.TestCase):
             # the rest of the API keeps its token/cookie check
             still_protected = client.get("/api/hosts")
         self.assertEqual(open_mcp.status_code, 200)
-        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 7)
+        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 10)
         self.assertEqual(still_protected.status_code, 401)
 
     def test_mcp_endpoint_requires_the_api_token(self):

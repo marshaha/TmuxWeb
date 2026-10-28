@@ -342,6 +342,8 @@ class RemoteHostCreateRequest(BaseModel):
     host_key: str = Field(default="", max_length=20_000)
     fingerprint: str = Field(default="", max_length=256)
     confirm_fingerprint: str = Field(default="", max_length=256)
+    # the hop to dial first (another stored host, by id); empty = direct
+    jump_host_id: str = Field(default="", max_length=64)
     # saving with a wrong password/key is allowed: the host is stored and shows
     # up as offline until the credential is fixed
     verify: bool = True
@@ -359,6 +361,7 @@ class RemoteHostUpdateRequest(BaseModel):
     verify: bool | None = None
     host_key: str | None = Field(default=None, min_length=20, max_length=20_000)
     fingerprint: str | None = Field(default=None, min_length=8, max_length=256)
+    jump_host_id: str | None = Field(default=None, max_length=64)
 
 
 class RemoteHostReorderRequest(BaseModel):
@@ -1205,6 +1208,43 @@ def create_app(
     async def perform_mcp_tool(name: str, arguments: dict) -> dict:
         """Same semantics as mcp_relay.py, but executed in-process (no python3 on the client)."""
         arguments = arguments or {}
+        if name == "list_remote_hosts":
+            hosts = await asyncio.to_thread(remote_hosts.list_hosts)
+            return {"hosts": [
+                {"id": host.get("id"), "name": host.get("name"), "hostname": host.get("hostname"),
+                 "port": host.get("port"), "username": host.get("username"),
+                 "auth_type": host.get("auth_type"), "jump_host_id": host.get("jump_host_id") or "",
+                 "fingerprint": host.get("fingerprint") or ""}
+                for host in hosts
+            ]}
+        if name == "add_remote_host":
+            auth_type = str(arguments.get("auth_type") or "agent").strip() or "agent"
+            if auth_type not in AUTH_TYPES:
+                raise McpToolError("auth_type must be agent, password or key")
+            payload = RemoteHostCreateRequest(
+                name=str(arguments.get("name") or "").strip(),
+                hostname=str(arguments.get("hostname") or "").strip(),
+                username=str(arguments.get("username") or "").strip(),
+                port=int(arguments.get("port") or 22),
+                auth_type=auth_type,
+                credential=str(arguments.get("credential") or ""),
+                jump_host_id=str(arguments.get("jump_host") or "").strip(),
+                verify=bool(arguments.get("verify", True)),
+            )
+            try:
+                created = await store_remote_host(payload)
+            except HTTPException as exc:
+                raise McpToolError(str(exc.detail)) from exc
+            return {"host": {key: created.get(key) for key in
+                             ("id", "name", "hostname", "port", "username", "auth_type", "jump_host_id")},
+                    "note": "the console sidebar picks it up on its next refresh"}
+        if name == "remove_remote_host":
+            host_id = str(arguments.get("id") or "").strip()
+            if not host_id:
+                raise McpToolError("id is required")
+            if not await asyncio.to_thread(remote_hosts.delete_host, host_id):
+                raise McpToolError("no such host")
+            return {"id": host_id, "removed": True}
         if name == "publish_home_card":
             title = str(arguments.get("title") or "").strip()
             if not title:
@@ -1395,9 +1435,8 @@ def create_app(
         except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
             raise HTTPException(status_code=424, detail=str(exc)) from exc
 
-    @app.post("/api/remote-hosts", status_code=201)
-    async def create_remote_host(request: Request, payload: RemoteHostCreateRequest):
-        require_auth(request)
+    async def store_remote_host(payload: RemoteHostCreateRequest) -> dict:
+        """Validate and persist a host; shared by the HTTP route and the MCP tool."""
         if payload.auth_type not in AUTH_TYPES:
             raise HTTPException(status_code=422, detail="auth_type must be password, key or agent")
         if payload.auth_type == "key":
@@ -1420,11 +1459,14 @@ def create_app(
                 payload.verify and not hmac.compare_digest(payload.fingerprint, payload.confirm_fingerprint)
             ):
                 raise HTTPException(status_code=409, detail="SSH host key fingerprint was not confirmed")
-        host = remote_hosts.add_host(
-            name=payload.name, hostname=payload.hostname, port=payload.port, username=payload.username,
-            auth_type=payload.auth_type, credential=payload.credential, host_key=payload.host_key,
-            fingerprint=payload.fingerprint,
-        )
+        try:
+            host = remote_hosts.add_host(
+                name=payload.name, hostname=payload.hostname, port=payload.port, username=payload.username,
+                auth_type=payload.auth_type, credential=payload.credential, host_key=payload.host_key,
+                fingerprint=payload.fingerprint, jump_host_id=payload.jump_host_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if payload.verify:
             try:
                 credentialed = remote_hosts.get_host(host["id"], include_credential=True)
@@ -1433,6 +1475,11 @@ def create_app(
                 remote_hosts.delete_host(host["id"])
                 raise HTTPException(status_code=424, detail=str(exc)) from exc
         return host
+
+    @app.post("/api/remote-hosts", status_code=201)
+    async def create_remote_host(request: Request, payload: RemoteHostCreateRequest):
+        require_auth(request)
+        return await store_remote_host(payload)
 
     @app.post("/api/remote-hosts/test")
     async def test_remote_host(request: Request, payload: RemoteHostCreateRequest):
@@ -1495,6 +1542,7 @@ def create_app(
                 name=payload.name, hostname=payload.hostname, port=payload.port,
                 username=payload.username, auth_type=payload.auth_type,
                 credential=payload.credential, host_key=host_key, fingerprint=fingerprint,
+                jump_host_id=payload.jump_host_id,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1529,7 +1577,7 @@ def create_app(
         require_auth(request)
         return {"hosts": [{key: host[key] for key in (
             "id", "name", "hostname", "port", "username", "auth_type", "fingerprint", "created_at",
-            "enabled", "position",
+            "enabled", "position", "jump_host_id",
         )} for host in remote_hosts.list_hosts()]}
 
     @app.delete("/api/remote-hosts/{host_id}")

@@ -615,13 +615,17 @@ class RemoteHostStore:
                     port INTEGER NOT NULL, username TEXT NOT NULL, auth_type TEXT NOT NULL,
                     credential BLOB NOT NULL, host_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
                     created_at REAL NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-                    position INTEGER NOT NULL DEFAULT 0
+                    position INTEGER NOT NULL DEFAULT 0, jump_host_id TEXT NOT NULL DEFAULT ''
                 )
             """)
             columns = {row[1] for row in self.connection.execute("PRAGMA table_info(remote_hosts)")}
             if "position" not in columns:  # databases from before manual ordering
                 self.connection.execute(
                     "ALTER TABLE remote_hosts ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
+                )
+            if "jump_host_id" not in columns:  # databases from before jump hosts
+                self.connection.execute(
+                    "ALTER TABLE remote_hosts ADD COLUMN jump_host_id TEXT NOT NULL DEFAULT ''"
                 )
 
     def _load_key(self) -> bytes:
@@ -636,8 +640,33 @@ class RemoteHostStore:
             os.close(fd)
         return key
 
+    def _checked_jump(self, jump_host_id: str | None, host_id: str = "") -> str:
+        """Validate a jump reference: it must exist, not be self, and not loop."""
+        jump_host_id = (jump_host_id or "").strip()
+        if not jump_host_id:
+            return ""
+        if jump_host_id == host_id:
+            raise ValueError("a host cannot be its own jump host")
+        known = {row["id"] for row in self.connection.execute("SELECT id FROM remote_hosts")}
+        if jump_host_id not in known:
+            raise ValueError("jump host not found")
+        seen = {host_id} if host_id else set()
+        cursor = jump_host_id
+        for _ in range(8):
+            if cursor in seen:
+                raise ValueError("jump host chain loops")
+            seen.add(cursor)
+            row = self.connection.execute(
+                "SELECT jump_host_id FROM remote_hosts WHERE id = ?", (cursor,)
+            ).fetchone()
+            cursor = (row["jump_host_id"] if row else "") or ""
+            if not cursor:
+                return jump_host_id
+        raise ValueError("jump host chain is too deep")
+
     def add_host(self, *, name: str, hostname: str, port: int, username: str,
-                 auth_type: str, credential: str, host_key: str, fingerprint: str) -> dict:
+                 auth_type: str, credential: str, host_key: str, fingerprint: str,
+                 jump_host_id: str = "") -> dict:
         if auth_type not in AUTH_TYPES:
             raise ValueError("invalid auth type")
         if auth_type in {"password", "key"} and not credential:
@@ -647,6 +676,7 @@ class RemoteHostStore:
         if auth_type == "key":
             validate_private_key_text(credential)
         host_id = secrets.token_hex(8)
+        jump_host_id = self._checked_jump(jump_host_id)
         encrypted = self.fernet.encrypt(credential.encode())
         position = self.connection.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM remote_hosts"
@@ -654,9 +684,10 @@ class RemoteHostStore:
         with self.connection:
             self.connection.execute(
                 "INSERT INTO remote_hosts (id, name, hostname, port, username, auth_type, credential,"
-                " host_key, fingerprint, created_at, enabled, position) VALUES (?,?,?,?,?,?,?,?,?,?,1,?)",
+                " host_key, fingerprint, created_at, enabled, position, jump_host_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)",
                 (host_id, name, hostname, int(port), username, auth_type, encrypted,
-                 host_key, fingerprint, time.time(), position),
+                 host_key, fingerprint, time.time(), position, jump_host_id),
             )
         return self.get_host(host_id)
 
@@ -679,7 +710,7 @@ class RemoteHostStore:
     def update_host(self, host_id: str, *, name: str | None = None, hostname: str | None = None,
                     port: int | None = None, username: str | None = None, auth_type: str | None = None,
                     credential: str | None = None, host_key: str | None = None,
-                    fingerprint: str | None = None) -> dict:
+                    fingerprint: str | None = None, jump_host_id: str | None = None) -> dict:
         """Edit a stored host. ``credential=None`` keeps the saved secret."""
         current = self.get_host(host_id, include_credential=True)
         auth = auth_type or current["auth_type"]
@@ -701,16 +732,18 @@ class RemoteHostStore:
             "credential": self.fernet.encrypt(secret.encode()),
             "host_key": (host_key or current["host_key"]),
             "fingerprint": (fingerprint or current["fingerprint"]),
+            "jump_host_id": self._checked_jump(
+                current.get("jump_host_id", "") if jump_host_id is None else jump_host_id, host_id),
         }
         if not fields["name"] or not fields["hostname"] or not fields["username"]:
             raise ValueError("name, hostname and username are required")
         with self.connection:
             self.connection.execute(
                 "UPDATE remote_hosts SET name=?, hostname=?, port=?, username=?, auth_type=?,"
-                " credential=?, host_key=?, fingerprint=? WHERE id=?",
+                " credential=?, host_key=?, fingerprint=?, jump_host_id=? WHERE id=?",
                 (fields["name"], fields["hostname"], fields["port"], fields["username"],
                  fields["auth_type"], fields["credential"], fields["host_key"], fields["fingerprint"],
-                 host_id),
+                 fields["jump_host_id"], host_id),
             )
         return self.get_host(host_id)
 
@@ -728,23 +761,76 @@ class RemoteHostStore:
 
     def delete_host(self, host_id: str) -> bool:
         with self.connection:
+            # hosts that used it as a hop keep working directly instead of dangling
+            self.connection.execute(
+                "UPDATE remote_hosts SET jump_host_id = '' WHERE jump_host_id = ?", (host_id,)
+            )
             cursor = self.connection.execute("DELETE FROM remote_hosts WHERE id = ?", (host_id,))
         return cursor.rowcount > 0
+
+    def jump_host(self, host: dict) -> dict | None:
+        """Resolve the hop for a host (with its credential) or None."""
+        jump_id = (host.get("jump_host_id") or "").strip()
+        if not jump_id:
+            return None
+        try:
+            return self.get_host(jump_id, include_credential=True)
+        except KeyError:
+            return None
 
 
 class SSHRunner:
     def __init__(self, host: dict):
         self.host = host
+        # ``host["jump"]`` is the resolved hop (with its credential), see
+        # RemoteHostStore.jump_host / the app's runner_for()
+        self.jump = host.get("jump") or None
         # set by the app when the stored host has no pinned key yet: it receives
         # the known_hosts line once the first connection succeeds
         self.on_host_key = None
 
-    def _known_hosts(self, directory: Path) -> Path:
-        path = directory / "known_hosts"
-        pinned = (self.host.get("host_key") or "").strip()
-        path.write_text((pinned + "\n") if pinned else "")
+    @staticmethod
+    def _write_known_hosts(path: Path, pinned: str) -> Path:
+        path.write_text((pinned.strip() + "\n") if pinned.strip() else "")
         path.chmod(0o600)
         return path
+
+    def _known_hosts(self, directory: Path) -> Path:
+        return self._write_known_hosts(directory / "known_hosts", self.host.get("host_key") or "")
+
+    def _jump_known_hosts(self, directory: Path) -> Path:
+        return self._write_known_hosts(directory / "known_hosts.jump", (self.jump or {}).get("host_key") or "")
+
+    def jump_description(self) -> str:
+        if not self.jump:
+            return ""
+        return f"{self.jump.get('username')}@{self.jump.get('hostname')}:{self.jump.get('port')}"
+
+    def _jump_options(self, *, identity_file: str | None, known_hosts: str) -> list[str]:
+        """The inner ssh that carries the tunnel (-W %h:%p)."""
+        jump = self.jump or {}
+        pinned = bool((jump.get("host_key") or "").strip())
+        options = [
+            "ssh", "-W", "%h:%p", "-p", str(jump.get("port") or 22),
+            "-o", "ConnectTimeout=8",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
+            "-o", "StrictHostKeyChecking=yes" if pinned else "StrictHostKeyChecking=accept-new",
+            "-o", f"UserKnownHostsFile={known_hosts}",
+            "-o", "LogLevel=ERROR",
+        ]
+        if identity_file:
+            options += ["-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey",
+                        "-o", "PasswordAuthentication=no", "-o", "IdentitiesOnly=yes",
+                        "-i", identity_file]
+        elif jump.get("auth_type") == "password":
+            options += ["-o", "BatchMode=no", "-o", "PreferredAuthentications=password",
+                        "-o", "PubkeyAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
+                        "-o", "NumberOfPasswordPrompts=1"]
+        else:
+            options += ["-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey",
+                        "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no"]
+        options.append(f"{jump.get('username')}@{jump.get('hostname')}")
+        return [shlex.quote(option) for option in options]
 
     def host_key_pinned(self) -> bool:
         return bool((self.host.get("host_key") or "").strip())
@@ -752,7 +838,8 @@ class SSHRunner:
     def command(self, remote_command: str, *, tty: bool = False, known_hosts: str = "/dev/null",
                 identity_file: str | None = None, multiplex: bool | None = None,
                 tmux_bin: str | None = None,
-                host_key_pinned: bool = True) -> tuple[list[str], dict[str, str]]:
+                host_key_pinned: bool = True,
+                jump_proxy: str | None = None) -> tuple[list[str], dict[str, str]]:
         # NOTE: ssh takes the *first* value it sees for an option, so BatchMode
         # must be decided per auth mode below - emitting "BatchMode=no" here made
         # agent mode wait on a password prompt instead of failing fast.
@@ -765,6 +852,9 @@ class SSHRunner:
             "-o", f"UserKnownHostsFile={known_hosts}",
             "-o", "LogLevel=ERROR",
         ]
+        if jump_proxy:
+            # distinct credentials per hop: ProxyCommand runs its own ssh
+            command += ["-o", f"ProxyCommand={jump_proxy}"]
         use_mux = ssh_mux_enabled() if multiplex is None else multiplex
         if use_mux:
             command += [
@@ -810,27 +900,56 @@ class SSHRunner:
         _TMUX_BIN_CACHE[key] = found
         return found
 
+    def build_jump_proxy(self, directory: Path) -> tuple[str | None, str | None, Path | None]:
+        """Prepare the hop's credential files; return (proxy_command, identity, password_file)."""
+        if not self.jump:
+            return None, None, None
+        jump_known_hosts = self._jump_known_hosts(directory)
+        identity, password_file = self._prepare_auth(self.jump, directory, "jump.")
+        proxy = " ".join(self._jump_options(identity_file=identity, known_hosts=str(jump_known_hosts)))
+        return proxy, identity, password_file
+
+    def _prepare_auth(self, host: dict, directory: Path, prefix: str) -> tuple[str | None, Path | None]:
+        """Write this hop's key or password file; return (identity_file, password_file)."""
+        identity_file = None
+        password_file = None
+        if host.get("auth_type") == "key":
+            identity = directory / f"{prefix}identity"
+            identity.write_text(host.get("credential") or "")
+            identity.chmod(0o600)
+            identity_file = str(identity)
+        elif host.get("auth_type") == "password":
+            password_file = directory / f"{prefix}password"
+            password_file.write_text(host.get("credential") or "")
+            password_file.chmod(0o600)
+        return identity_file, password_file
+
+    def _write_askpass(self, directory: Path, password_file: Path | None,
+                       jump_password_file: Path | None, askpass: Path) -> None:
+        """One askpass for both hops: it picks by the hostname in the prompt."""
+        if jump_password_file:
+            jump_host = str((self.jump or {}).get("hostname") or "")
+            body = ("#!/bin/sh\ncase \"$1\" in\n"
+                    f"  *{jump_host}*) cat {shlex.quote(str(jump_password_file))} ;;\n"
+                    f"  *) cat {shlex.quote(str(password_file or jump_password_file))} ;;\nesac\n")
+        else:
+            body = f"#!/bin/sh\ncat {shlex.quote(str(password_file))}\n"
+        askpass.write_text(body)
+        askpass.chmod(0o700)
+
     def run(self, remote_command: str, *, input_bytes: bytes | None = None,
             timeout: int = 15, resolve_tmux: bool = True) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory(prefix="tmux-remote-") as directory_name:
             directory = Path(directory_name)
             known_hosts = self._known_hosts(directory)
-            identity_file = None
+            identity_file, password_file = self._prepare_auth(self.host, directory, "")
+            jump_proxy, jump_identity, jump_password = self.build_jump_proxy(directory)
             pass_fds: tuple[int, ...] = ()
             read_fd = write_fd = None
             environment = os.environ.copy()
-            if self.host["auth_type"] == "key":
-                identity = directory / "identity"
-                identity.write_text(self.host["credential"])
-                identity.chmod(0o600)
-                identity_file = str(identity)
-            elif self.host["auth_type"] == "password":
-                password_file = directory / "password"
-                password_file.write_text(self.host["credential"])
-                password_file.chmod(0o600)
+            if password_file or jump_password:
                 askpass = directory / "askpass.sh"
-                askpass.write_text(f"#!/bin/sh\ncat {shlex.quote(str(password_file))}\n")
-                askpass.chmod(0o700)
+                self._write_askpass(directory, password_file, jump_password, askpass)
                 environment["SSH_ASKPASS"] = str(askpass)
                 environment["SSH_ASKPASS_REQUIRE"] = "force"
                 environment["DISPLAY"] = ":0"
@@ -838,7 +957,7 @@ class SSHRunner:
             pinned = self.host_key_pinned()
             command, extra_environment = self.command(
                 remote_command, known_hosts=str(known_hosts), identity_file=identity_file, tmux_bin=tmux_bin,
-                host_key_pinned=pinned,
+                host_key_pinned=pinned, jump_proxy=jump_proxy,
             )
             environment.update(extra_environment)
             if read_fd is not None and write_fd is not None:
@@ -852,7 +971,7 @@ class SSHRunner:
                     # pane unreachable: retry once on a direct connection.
                     direct, _ = self.command(
                         remote_command, known_hosts=str(known_hosts), identity_file=identity_file,
-                        multiplex=False, tmux_bin=tmux_bin, host_key_pinned=pinned,
+                        multiplex=False, tmux_bin=tmux_bin, host_key_pinned=pinned, jump_proxy=jump_proxy,
                     )
                     completed = subprocess.run(direct, input=input_bytes, capture_output=True, timeout=timeout,
                                                check=False, env=environment, pass_fds=pass_fds,
@@ -1238,23 +1357,16 @@ class RemoteTerminalSession:
         directory = Path(self.tempdir.name)
         runner = SSHRunner(host)
         known_hosts = runner._known_hosts(directory)
-        identity_file = None
+        identity_file, password_file = runner._prepare_auth(host, directory, "")
+        jump_proxy, jump_identity, jump_password = runner.build_jump_proxy(directory)
         environment = os.environ.copy()
-        if host["auth_type"] == "key":
-            identity = directory / "identity"
-            identity.write_text(host["credential"])
-            identity.chmod(0o600)
-            identity_file = str(identity)
-        elif host["auth_type"] == "password":
-            password_file = directory / "password"
-            password_file.write_text(host["credential"])
-            password_file.chmod(0o600)
+        if password_file or jump_password:
             askpass = directory / "askpass.sh"
-            askpass.write_text(f"#!/bin/sh\ncat {shlex.quote(str(password_file))}\n")
-            askpass.chmod(0o700)
+            runner._write_askpass(directory, password_file, jump_password, askpass)
             environment.update({"SSH_ASKPASS": str(askpass), "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": ":0"})
         remote_command = f"exec ${{TMUX_BIN:-tmux}} attach-session -t {shlex.quote(pane_id)}"
-        command, extra = runner.command(remote_command, tty=True, known_hosts=str(known_hosts), identity_file=identity_file)
+        command, extra = runner.command(remote_command, tty=True, known_hosts=str(known_hosts),
+                                        identity_file=identity_file, jump_proxy=jump_proxy)
         environment.update(extra)
         environment["TERM"] = "xterm-256color"
         self.master_fd, slave_fd = os.openpty()

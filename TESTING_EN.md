@@ -115,6 +115,12 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   resumes it; the sidebar polls every 20s without resetting scroll; `/api/hosts` is served from a 5s snapshot unless
   `?refresh=1`. Covered by `test_hosts_list_is_snapshotted_between_polls` and the index-page marker assertions.
 
+- Jump host: in `/hosts` pick another saved host in the 跳板机 field, add a target, and the row shows 经由 <name>; the target must
+  be reachable through the hop (panes listed, content readable). Deleting the hop turns it back into a direct connection;
+  a jump pointing at itself or at an unknown id is rejected with 422. MCP `add_remote_host` (with `jump_host`) plus
+  `list_remote_hosts` let an agent register a host end to end (`test_jump_hosts_are_validated_and_cleared_on_delete`,
+  `test_a_jump_host_becomes_a_proxy_command`).
+
 ## 1. Install test dependencies
 
 ```bash

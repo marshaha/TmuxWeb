@@ -200,6 +200,41 @@ TMUX_WEB_HOST=0.0.0.0
 
 实测（140×40 的 `while true; do echo; done` pane，10 秒窗口）：聊天模式主线程耗时 0.69s → **0.09s**，DOM 文本 363k → 55k 字符；暂停后 6 秒仅 0.02s。
 
+## 跳板机（jump host）与让 agent 自己添加服务器
+
+添加主机时可以选一个已保存的主机作为**跳板机**（`jump_host_id`），连接会先到跳板机再跃到目标：
+
+- 实现方式是 `ProxyCommand` + 内层 `ssh -W %h:%p`，所以**每一跳可以有不同的凭据**（跳板机用自己的密码/私钥，目标用自己的）；密码场景下会生成一个 askpass 脚本，按提示里的主机名区分返回哪一跳的密码
+- 跳板机的主机指纹和普通主机一样固定：已记录就 `StrictHostKeyChecking=yes`，没有就首次连通自动记录
+- 只支持一层跳板；不允许指向自己、指向不存在的主机、或形成环（保存时返回 422）
+- 删除某台跳板机时，经由它的主机自动回退为直连，不会留下悬空引用
+- 主机列表里会显示「经由 xxx」；编辑弹窗里可以改跳板机
+
+### HTTP API
+
+```bash
+# 列表（包含 jump_host_id）
+curl -H "Authorization: Bearer $TMUX_WEB_API_TOKEN" https://your-host/api/remote-hosts
+
+# 添加一台经由跳板机的目标机（agent 认证，不需要传密码）
+curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{
+    "name": "inner-box", "hostname": "10.0.0.20", "username": "ubuntu", "port": 22,
+    "auth_type": "agent", "jump_host_id": "<跳板机的 id>", "verify": false
+  }'
+```
+
+### MCP
+
+| 工具 | 作用 |
+| --- | --- |
+| `list_remote_hosts` | 列出已保存主机（id/名称/地址/认证方式/跳板机），不返回凭据 |
+| `add_remote_host` | 添加主机：`name`、`hostname`、`username`、`port`、`auth_type`（默认 `agent`）、`credential`、`jump_host`（跳板机 id）、`verify` |
+| `remove_remote_host` | 按 id 删除主机 |
+
+`auth_type=agent` 用本机 ssh-agent 密钥，agent 无需传任何密码；`verify=false` 时即使暂时连不上也会保存，等下次连通再固定指纹。
+
+
 ## 主页：收藏、看板与搜索
 
 （主页右上角有「主机 / 分享 / 刷新」，回到控制台的入口在左侧会话树顶部。）控制台左侧每个 pane 右侧有一个五角星：空心 = 未收藏，实心 = 已收藏（点一下切换）。收藏的会话会出现在 `/home` 主页。

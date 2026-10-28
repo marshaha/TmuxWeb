@@ -202,6 +202,24 @@ whole screen DOM, re-fit the font on every frame and let the xterm write queue g
 Measured on a 140x40 `while true; do echo; done` pane over 10s: chat-mode main-thread time 0.69s -> **0.09s**, rendered text
 363k -> 55k chars; 0.02s while paused.
 
+## Jump hosts, and letting an agent add servers
+
+A saved host can be dialled **through another saved host** (`jump_host_id`):
+
+- implemented with `ProxyCommand` + an inner `ssh -W %h:%p`, so **each hop keeps its own credential**; with passwords an
+  askpass script picks the right secret by the hostname in the prompt
+- the hop's host key is pinned like any other (TOFU the first time, strict afterwards)
+- one hop only; pointing at itself, at an unknown id, or forming a loop is rejected with 422
+- deleting a hop falls back to a direct connection instead of leaving a dangling reference
+- the host list shows 经由 <name>; the edit dialog can change it
+
+### HTTP / MCP
+
+`POST /api/remote-hosts` accepts `jump_host_id`. MCP adds `list_remote_hosts`, `add_remote_host` (name, hostname,
+username, port, auth_type, credential, `jump_host`, verify) and `remove_remote_host`, so an agent can register a box itself —
+`auth_type=agent` needs no secret at all, and `verify=false` stores a host that is not reachable yet.
+
+
 ## Home board: favourites, cards and search
 
 Every pane in the console sidebar has a star on the right: hollow = not saved, filled = saved. Starred panes appear on `/home`.

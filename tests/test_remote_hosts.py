@@ -66,6 +66,54 @@ class RemoteHostTests(unittest.TestCase):
         self.assertNotIn("BatchMode=no", command)
         self.assertIn("IdentitiesOnly=yes", command)
 
+    def test_jump_hosts_are_validated_and_cleared_on_delete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = RemoteHostStore(root / "hosts.db", root / "master.key")
+            bastion = store.add_host(name="bastion", hostname="10.0.0.1", port=22, username="jump",
+                                     auth_type="agent", credential="", host_key="", fingerprint="")
+            target = store.add_host(name="target", hostname="10.0.0.2", port=22, username="app",
+                                    auth_type="agent", credential="", host_key="", fingerprint="",
+                                    jump_host_id=bastion["id"])
+            self.assertEqual(target["jump_host_id"], bastion["id"])
+            self.assertEqual(store.jump_host(target)["name"], "bastion")
+            self.assertIsNone(store.jump_host(store.get_host(bastion["id"])))
+
+            # a host cannot jump through itself, through an unknown id, or in a loop
+            with self.assertRaises(ValueError):
+                store.update_host(bastion["id"], jump_host_id=bastion["id"])
+            with self.assertRaises(ValueError):
+                store.update_host(bastion["id"], jump_host_id="deadbeefdeadbeef")
+            with self.assertRaises(ValueError):
+                store.update_host(bastion["id"], jump_host_id=target["id"])
+
+            # editing without touching the hop keeps it
+            store.update_host(target["id"], name="target-renamed")
+            self.assertEqual(store.get_host(target["id"])["jump_host_id"], bastion["id"])
+
+            # deleting the bastion falls back to a direct connection
+            store.delete_host(bastion["id"])
+            self.assertEqual(store.get_host(target["id"])["jump_host_id"], "")
+
+    def test_a_jump_host_becomes_a_proxy_command(self):
+        jump = {"id": "aaaa", "hostname": "bastion.example", "port": 2222, "username": "hop",
+                "auth_type": "agent", "credential": "", "host_key": "bastion ssh-ed25519 AAAA"}
+        runner = SSHRunner({"id": "bbbb", "hostname": "target.example", "port": 22, "username": "app",
+                            "auth_type": "key", "credential": "PRIVATE", "host_key": "target ssh-ed25519 BBBB",
+                            "jump": jump})
+        with tempfile.TemporaryDirectory() as directory:
+            proxy, _, _ = runner.build_jump_proxy(Path(directory))
+        command, _ = runner.command("true", known_hosts="/dev/null", identity_file="/tmp/key",
+                                    multiplex=False, jump_proxy=proxy)
+        proxy = next(item for item in command if item.startswith("ProxyCommand="))
+        self.assertIn("bastion.example", proxy)
+        self.assertIn("-p 2222", proxy)
+        self.assertIn("-W %h:%p", proxy)
+        self.assertIn("hop@bastion.example", proxy)
+        # the hop is pinned like any other host
+        self.assertIn("StrictHostKeyChecking=yes", proxy)
+        self.assertEqual(runner.jump_description(), "hop@bastion.example:2222")
+
     def test_database_file_is_owner_only(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "hosts.db"
