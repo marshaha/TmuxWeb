@@ -143,10 +143,14 @@
   function render(){
     const board=state.board;if(!board)return;
     const stats=board.stats||{};
+    // the pane sweep runs in the background on the server: show a dash until it lands
+    const known=(stats.panes||0)>0;
+    const show=value=>known?`${value||0}`:'—';
     $('stats').innerHTML=[
-      [`${stats.panes||0}`,'panes'], [`${stats.busy||0}`,'busy'], [`${stats.idle||0}`,'idle'],
+      [show(stats.panes),'panes'], [show(stats.busy),'busy'], [show(stats.idle),'idle'],
       [`${stats.favorites||0}`,'收藏'], [`${stats.cards||0}`,'看板卡片'],
-    ].map(([value,label])=>`<div class="stat${label==='busy'&&value!=='0'?' hot':''}"><b>${esc(value)}</b><span>${esc(label)}</span></div>`).join('');
+    ].map(([value,label])=>`<div class="stat${label==='busy'&&value!=='0'&&value!=='—'?' hot':''}"><b>${esc(value)}</b><span>${esc(label)}</span></div>`).join('');
+    if(!known&&!state.retryTimer){state.retryTimer=setTimeout(()=>{state.retryTimer=null;load();},4000);}
 
     const favorites=board.favorites||[];
     $('fav-count').textContent=`${favorites.length}`;
@@ -197,6 +201,8 @@
     const query=state.query.trim();
     if(!query){document.body.classList.remove('searching');$('results').innerHTML='';return;}
     const seq=++state.seq;
+    document.body.classList.add('searching');
+    $('results').innerHTML='<h2>搜索 <span class="count">…</span></h2><div class="empty">正在搜索 pane 与最近对话…</div>';
     try{
       const data=await api(`/api/home/search?q=${encodeURIComponent(query)}`);
       if(seq!==state.seq)return;

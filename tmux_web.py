@@ -746,6 +746,51 @@ def create_app(
         with ThreadPoolExecutor(max_workers=8) as pool:
             return list(pool.map(describe, jobs))
 
+    # ``collect_pane_states`` inspects every pane on every host; the console polls
+    # it every 9s and the Home board needs it for its counters. Cache it briefly and
+    # refresh in the background so a page load never pays for the whole sweep.
+    pane_state_cache: dict = {"at": 0.0, "states": []}
+    pane_state_lock = threading.Lock()
+    pane_state_busy = {"flag": False}
+
+    def _refresh_pane_states() -> None:
+        try:
+            states = collect_pane_states()
+            with pane_state_lock:
+                pane_state_cache.update({"at": time.time(), "states": states})
+        except (RuntimeError, OSError, ValueError):
+            LOGGER.warning("pane state sweep failed", exc_info=True)
+        finally:
+            pane_state_busy["flag"] = False
+
+    def pane_states_cached(wait: float = 3.0, ttl: float = 8.0) -> list[dict]:
+        """Last known pane states, refreshed once they are older than ``ttl``.
+
+        ``wait`` bounds how long a caller blocks for a fresh sweep; a warm cache
+        returns at once and a cold one returns whatever is already there after
+        the deadline, while the sweep keeps running in the background.
+        """
+        with pane_state_lock:
+            fresh = (time.time() - pane_state_cache["at"]) < ttl
+            states = pane_state_cache["states"]
+        if fresh:
+            return states
+        started = threading.Event()
+
+        def refresh() -> None:
+            _refresh_pane_states()
+            started.set()
+
+        with pane_state_lock:
+            should_start = not pane_state_busy["flag"]
+            if should_start:
+                pane_state_busy["flag"] = True
+        if should_start:
+            threading.Thread(target=refresh, daemon=True).start()
+        started.wait(max(0.0, wait))
+        with pane_state_lock:
+            return pane_state_cache["states"]
+
     relay_log: deque[dict] = deque(maxlen=100)
     relay_locks: dict[str, asyncio.Lock] = {}
 
@@ -1726,10 +1771,8 @@ def create_app(
             return_exceptions=True,
         )
         cards = await asyncio.to_thread(home.cards)
-        try:
-            states = await asyncio.to_thread(collect_pane_states)
-        except (RuntimeError, OSError, ValueError):
-            states = []
+        # counters may lag a few seconds; the favourites above are always live
+        states = await asyncio.to_thread(pane_states_cached, 0.4, 8.0)
         busy = sum(1 for state in states if state.get("status") == "busy")
         return {
             "favorites": [entry for entry in entries if isinstance(entry, dict)],
@@ -1782,7 +1825,7 @@ def create_app(
         needle = query.casefold()
 
         def scan() -> tuple[list[dict], list[dict], list[dict]]:
-            states = collect_pane_states()
+            states = pane_states_cached(4.0)
             panes = []
             for state in states:
                 haystack = " ".join(str(state.get(key) or "") for key in
@@ -1851,7 +1894,7 @@ def create_app(
     @app.get("/api/panes/status")
     async def pane_states(request: Request):
         require_auth(request)
-        states = await asyncio.to_thread(collect_pane_states)
+        states = await asyncio.to_thread(pane_states_cached, 6.0)
         return {"panes": [{key: item[key] for key in ("id", "provider", "status")} for item in states]}
 
     async def perform_relay_ask(payload: RelayAskRequest) -> dict:
