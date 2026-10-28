@@ -55,11 +55,22 @@ class HomeBoardTests(unittest.TestCase):
         # otherwise `margin:0 auto` shrinks it and only one card fits per row
         self.assertIn("main{width:100%;padding:16px;max-width:1240px;margin:0 auto}", response.text)
         self.assertIn("minmax(min(268px,100%),1fr)", response.text)
-
         # the sidebar already links to the console, so the header keeps no duplicate
         self.assertNotIn('title="回到控制台"', response.text)
-        for marker in ():
-            self.assertIn(marker, response.text)
+
+    def test_the_sidebar_width_is_draggable_and_remembered(self):
+        home = self.client.get("/home")
+        for marker in ('id="side-resizer"', "--side-w", "tmux-home-side-w", "col-resize"):
+            self.assertIn(marker, home.text)
+        # the phone drawer keeps a fixed width: a wide desktop drag must not
+        # leave a phone with a sidebar that covers the whole screen
+        self.assertIn("width:min(86vw,320px)", home.text)
+
+        console = self.client.get("/")
+        for marker in ('id="side-resizer"', "var(--side-w,280px)", "tmux-side-w"):
+            self.assertIn(marker, console.text)
+        # collapsing must still win over the stored width
+        self.assertIn(".app.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}", console.text)
 
     def test_the_full_preview_page_is_served_and_wired_to_the_board(self):
         preview = self.client.get("/preview")

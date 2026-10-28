@@ -141,8 +141,15 @@
   .chip-btn.primary{background:#292825;border-color:#292825;color:#fff}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(16px);padding:9px 15px;border-radius:10px;background:#292825;color:#fff;font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:20;max-width:88vw}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .sidebar{position:relative}
+  .side-resizer{position:absolute;top:0;right:0;width:6px;height:100%;cursor:col-resize;z-index:6;touch-action:none}
+  .side-resizer::after{content:"";position:absolute;top:0;right:0;width:2px;height:100%;background:transparent;transition:background .12s}
+  .side-resizer:hover::after,body.resizing .side-resizer::after{background:#b9b4a8}
+  body.resizing{user-select:none;cursor:col-resize}
+  body.resizing .app,body.resizing .shell{transition:none}
   @media (max-width:860px){
-    .sidebar{position:fixed;top:0;left:0;z-index:20;transform:translateX(-100%);transition:transform .18s ease;box-shadow:6px 0 24px rgba(38,37,32,.12)}
+    .sidebar{position:fixed;top:0;left:0;z-index:20;width:min(86vw,320px);transform:translateX(-100%);transition:transform .18s ease;box-shadow:6px 0 24px rgba(38,37,32,.12)}
+    .side-resizer{display:none}
     .shell.collapsed .sidebar{display:flex}
     .shell.mobile-open .sidebar{transform:none}
     .shell.mobile-open .backdrop{display:block}
@@ -184,6 +191,7 @@
       <button class="icon-btn" id="side-collapse" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-collapse"/></svg></button>
     </div>
     <nav class="tree" id="tree" aria-label="会话树"></nav>
+    <div class="side-resizer" id="side-resizer" title="拖动调整侧边栏宽度（双击恢复默认）"></div>
   </aside>
   <div class="backdrop" id="backdrop"></div>
 
@@ -679,6 +687,47 @@
   loadTree();
   load();
   setInterval(()=>{if(document.hidden)return;load();refreshStates();},15000);
+(function initSidebarResize(){
+  const KEY = 'tmux-home-side-w', DEFAULT = 268, MIN = 200;
+  const handle = document.getElementById('side-resizer');
+  const bar = document.getElementById('sidebar');
+  if(!handle || !bar) return;
+  const root = document.documentElement;
+  const clamp = width => Math.max(MIN, Math.min(Math.min(640, Math.round(window.innerWidth * 0.6)), Math.round(width)));
+  const apply = (width, save) => {
+    const value = clamp(width);
+    root.style.setProperty('--side-w', value + 'px');
+    if(save){try{localStorage.setItem(KEY, String(value));}catch{}}
+  };
+  let saved = 0;
+  try{saved = parseInt(localStorage.getItem(KEY) || '', 10);}catch{}
+  if(saved) apply(saved, false);
+  let dragging = false, startX = 0, startWidth = 0;
+  handle.addEventListener('pointerdown', event => {
+    if(event.button !== 0) return;
+    event.preventDefault();
+    dragging = true;
+    startX = event.clientX;
+    startWidth = bar.getBoundingClientRect().width;
+    handle.setPointerCapture(event.pointerId);
+    document.body.classList.add('resizing');
+  });
+  handle.addEventListener('pointermove', event => {
+    if(dragging) apply(startWidth + (event.clientX - startX), false);
+  });
+  const finish = event => {
+    if(!dragging) return;
+    dragging = false;
+    if(event && event.pointerId != null && handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    document.body.classList.remove('resizing');
+    apply(bar.getBoundingClientRect().width, true);
+  };
+  handle.addEventListener('pointerup', finish);
+  handle.addEventListener('pointercancel', finish);
+  handle.addEventListener('dblclick', () => apply(DEFAULT, true));
+  window.addEventListener('resize', () => apply(bar.getBoundingClientRect().width, false));
+})();
+
 </script>
 </body>
 </html>
