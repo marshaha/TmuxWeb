@@ -93,6 +93,8 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   button returns, markdown files preview in a sheet, download saves into the app documents directory, upload and zip work from
   the toolbar. In the server dialog every label sits above its field (no overlapping floating labels).
 
+- Card names: the default title is `session · window · host` (e.g. `codex · 0: codex · localhost`); the pencil button renames a
+  card and the name survives a reload; 恢复默认 clears it; renaming a pane that is not on the board returns 404.
 - Home sidebar: `/home` shows the host → session → window → pane tree with status dots; starring a pane fills the star and adds a
   card on the right; clicking a pane row returns to the console with that pane selected; the `‹` button collapses the sidebar on
   wide screens (persisted across reloads, `☰` restores it) and at ≤860px it behaves as a drawer with a backdrop.

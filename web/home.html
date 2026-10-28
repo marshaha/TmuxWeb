@@ -108,6 +108,17 @@
   .hit-title{font-size:13px;font-weight:600}
   .hit-snippet{font-size:12.5px;color:var(--muted);white-space:pre-wrap;word-break:break-word}
   mark{padding:0 2px;border-radius:3px;background:#f7e2d6;color:#8a3d22}
+  .rename-dialog{width:min(430px,calc(100vw - 28px));padding:0;border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink);box-shadow:0 18px 50px rgba(32,31,28,.18)}
+  .rename-dialog::backdrop{background:rgba(32,31,28,.28)}
+  .rename-dialog form{display:grid;gap:10px;padding:18px}
+  .rename-dialog h2{margin:0;font-size:15px;font-weight:650;color:var(--ink)}
+  .dialog-sub{margin:0;color:var(--muted);font-size:11.5px;line-height:1.5;word-break:break-word}
+  .rename-dialog input{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font:13px inherit}
+  .rename-dialog input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(201,100,66,.15)}
+  .rename-actions{display:flex;align-items:center;gap:8px;margin-top:2px}
+  .chip-btn{height:30px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);font-size:12.5px;cursor:pointer}
+  .chip-btn:hover{border-color:#d8c4b8;color:var(--accent)}
+  .chip-btn.primary{background:#292825;border-color:#292825;color:#fff}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(16px);padding:9px 15px;border-radius:10px;background:#292825;color:#fff;font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:20;max-width:88vw}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   @media (max-width:860px){
@@ -135,6 +146,7 @@
   <symbol id="i-share" viewBox="0 0 24 24"><path d="M8 16 16.2 7.8M10.4 7.8h5.8v5.8"/></symbol>
   <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="6.2" rx="1.8"/><rect x="3.5" y="13.3" width="17" height="6.2" rx="1.8"/><path d="M7.2 7.6h.01M7.2 16.4h.01"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5.5 7.5h13M9.5 7.5V5.6h5v1.9M7.4 7.5l.8 11.1h7.6l.8-11.1"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4.6 19.4h3.2l9.4-9.4-3.2-3.2-9.4 9.4z"/><path d="m15.4 4.6 3.2 3.2"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
   <symbol id="i-collapse" viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6"/></symbol>
 </defs></svg>
@@ -176,6 +188,19 @@
 </main>
   </div>
 </div>
+<dialog class="rename-dialog" id="rename-dialog">
+  <form method="dialog" id="rename-form">
+    <h2 id="rename-head">修改卡片名</h2>
+    <p class="dialog-sub" id="rename-sub"></p>
+    <input type="text" id="rename-input" maxlength="200" spellcheck="false" autocomplete="off" placeholder="留空 = 恢复默认（session · window · 主机）">
+    <div class="rename-actions">
+      <button type="button" class="chip-btn" id="rename-reset">恢复默认</button>
+      <span style="flex:1"></span>
+      <button type="button" class="chip-btn" id="rename-cancel">取消</button>
+      <button type="submit" class="chip-btn primary" id="rename-save">保存</button>
+    </div>
+  </form>
+</dialog>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -335,10 +360,11 @@
       <div class="card-top">${stateBadge(favorite.status,favorite.waiting)}
         ${favorite.provider?`<span class="kind">${esc(favorite.provider)}</span>`:''}
         <span class="card-meta" style="margin-left:auto">${esc(ago(favorite.preview&&favorite.preview.timestamp))}</span>
+        <button class="card-btn" data-rename="${esc(pane)}" title="修改卡片名" aria-label="修改卡片名"><svg class="ico"><use href="#i-pencil"/></svg></button>
         <button class="card-btn star" data-unfav="${esc(pane)}" title="取消收藏" aria-label="取消收藏"><svg class="ico"><use href="#i-star"/></svg></button>
       </div>
-      <div class="card-title">${esc(favorite.title||meta)}</div>
-      <div class="card-meta">${esc(favorite.path||meta)}</div>
+      <div class="card-title">${esc(favorite.title||favorite.default_title||favorite.pane_title||meta)}</div>
+      <div class="card-meta">${esc([favorite.host,favorite.session,favorite.window].filter(Boolean).join(' · ')||favorite.path||meta)}</div>
       ${preview?`<p class="preview"><b>${esc(preview.role||'')}</b> ${esc(preview.text)}</p>`:'<p class="preview" style="color:var(--faint)">还没有对话内容</p>'}
       <div class="card-foot"><span class="grow">${esc(pane)}</span><span>${esc(favorite.command||'')}</span></div>
     </article>`;
@@ -417,11 +443,43 @@
       }catch(err){toast(err.message);}
       return;
     }
+    const rename=event.target.closest('[data-rename]');
+    if(rename){event.preventDefault();event.stopPropagation();openRename(rename.dataset.rename);return;}
     const pane=event.target.closest('[data-pane]');
     if(pane){location=consoleUrl(pane.dataset.pane);return;}
     const open=event.target.closest('[data-open]');
     if(open){location=consoleUrl(open.dataset.open);}
   });
+
+  // ---------------------------------------------------------------- rename a card
+  let renameTarget=null;
+  function openRename(paneId){
+    const favorite=(state.board&&state.board.favorites||[]).find(item=>item.pane===paneId);
+    if(!favorite)return;
+    renameTarget=paneId;
+    $('rename-input').value=favorite.custom_title?favorite.title:'';
+    $('rename-input').placeholder=favorite.default_title||'留空 = 恢复默认';
+    $('rename-sub').textContent=`默认：${favorite.default_title||paneId}　·　${paneId}`;
+    $('rename-dialog').showModal();
+    $('rename-input').focus();
+    $('rename-input').select();
+  }
+  async function saveRename(title){
+    if(!renameTarget)return;
+    const paneId=renameTarget;
+    try{
+      await api(`/api/home/favorites/${encodeURIComponent(paneId)}`,{
+        method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:title.trim()}),
+      });
+      $('rename-dialog').close();
+      renameTarget=null;
+      toast(title.trim()?'卡片名已更新':'已恢复默认名');
+      load();
+    }catch(err){toast(err.message);}
+  }
+  $('rename-form').addEventListener('submit',event=>{event.preventDefault();saveRename($('rename-input').value);});
+  $('rename-cancel').onclick=()=>{$('rename-dialog').close();renameTarget=null;};
+  $('rename-reset').onclick=()=>{$('rename-input').value='';saveRename('');};
 
   // remember which tree branches are open
   $('tree').addEventListener('toggle',event=>{

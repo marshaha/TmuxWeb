@@ -193,7 +193,7 @@ TMUX_WEB_HOST=0.0.0.0
 
 主页（`/home`）左侧保留与控制台一致的**可折叠会话树**（主机 → session → window → pane，带 busy/idle 状态点与收藏星标；宽屏时可折叠、折叠状态记在 `localStorage`，窄屏时变成抽屉 + 遮罩）。右侧是看板：
 
-- **收藏卡片**：状态徽标（busy / idle / 离线；busy 且在等回复时显示「思考中…」并跳动）、provider、标题、路径、**最近一条对话预览**、pane 引用；点卡片直接跳回控制台并选中该 pane（`/?pane=<pane>`）
+- **收藏卡片**：卡片名可改（铅笔图标 → 输入新名字，或「恢复默认」）；默认名是 **session · window · 主机**（tmux 的 pane title 常常只是主机名，所以不再直接用它）；另有状态徽标（busy / idle / 离线；busy 且在等回复时显示「思考中…」并跳动）、provider、标题、路径、**最近一条对话预览**、pane 引用；点卡片直接跳回控制台并选中该 pane（`/?pane=<pane>`）
 - **看板卡片**：agent 通过 MCP 工具 `publish_home_card` 推上来的结论/告警/链接，可在主页删除
 - **搜索**：一个输入框同时搜 pane 名 / 标题 / 路径，以及各 agent **最近的对话内容**（命中片段高亮），也搜看板卡片
 - **统计条**：panes / busy / idle / 收藏数 / 看板卡片数

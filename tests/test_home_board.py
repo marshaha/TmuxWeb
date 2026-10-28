@@ -47,7 +47,8 @@ class HomeBoardTests(unittest.TestCase):
             self.assertIn(marker, response.text)
         # the board keeps a collapsible sidebar with the same tree as the console
         for marker in ('id="tree"', 'id="side-collapse"', 'id="side-open"', 'data-star=',
-                       'data-pane=', "tmux-home-sidebar", "loadTree"):
+                       'data-pane=', "tmux-home-sidebar", "loadTree",
+                       'data-rename=', 'id="rename-dialog"', "openRename"):
             self.assertIn(marker, response.text)
 
     def test_the_console_offers_a_star_per_pane_and_a_home_link(self):
@@ -68,7 +69,12 @@ class HomeBoardTests(unittest.TestCase):
         self.assertEqual([item["pane"] for item in board["favorites"]], ["%4"])
         entry = board["favorites"][0]
         self.assertEqual(entry["provider"], "claude")
-        self.assertEqual(entry["title"], "Review | repo")
+        # the default card name is session · window · host, not the raw pane title
+        self.assertEqual(entry["default_title"], "codex · 0: editor · localhost")
+        self.assertEqual(entry["title"], "codex · 0: editor · localhost")
+        self.assertFalse(entry["custom_title"])
+        self.assertEqual(entry["pane_title"], "Review | repo")
+        self.assertEqual(entry["host"], "localhost")
         self.assertEqual(entry["path"], "/work/repo")
         self.assertIn(entry["status"], {"idle", "busy", "unknown"})
         self.assertEqual(entry["preview"]["role"], "assistant")
@@ -86,6 +92,39 @@ class HomeBoardTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/home/favorites").json()["favorites"], [])
 
         self.assertEqual(self.favourite("%99").status_code, 404)
+
+    def test_a_card_can_be_renamed_and_reset_to_the_default(self):
+        self.tmux.panes[0]["command"] = "claude"
+        self.assertEqual(self.favourite().status_code, 201)
+
+        renamed = self.client.patch("/api/home/favorites/" + quote("%4", safe=""),
+                                    json={"title": "ETH 收敛 · 等 review"})
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(renamed.json()["title"], "ETH 收敛 · 等 review")
+
+        entry = self.client.get("/api/home").json()["favorites"][0]
+        self.assertEqual(entry["title"], "ETH 收敛 · 等 review")
+        self.assertTrue(entry["custom_title"])
+        self.assertEqual(entry["default_title"], "codex · 0: editor · localhost")
+
+        # an empty title restores the generated name
+        reset = self.client.patch("/api/home/favorites/" + quote("%4", safe=""), json={"title": ""})
+        self.assertEqual(reset.status_code, 200)
+        entry = self.client.get("/api/home").json()["favorites"][0]
+        self.assertEqual(entry["title"], "codex · 0: editor · localhost")
+        self.assertFalse(entry["custom_title"])
+
+        missing = self.client.patch("/api/home/favorites/" + quote("%99", safe=""), json={"title": "x"})
+        self.assertEqual(missing.status_code, 404)
+
+    def test_a_favourite_can_be_saved_with_its_own_name(self):
+        self.tmux.panes[0]["command"] = "claude"
+        created = self.client.post("/api/home/favorites", json={"pane": "%4", "title": "我的任务"})
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json()["title"], "我的任务")
+        entry = self.client.get("/api/home").json()["favorites"][0]
+        self.assertEqual(entry["title"], "我的任务")
+        self.assertTrue(entry["custom_title"])
 
     # ------------------------------------------------------------------ search
     def test_search_matches_pane_names_and_message_text(self):

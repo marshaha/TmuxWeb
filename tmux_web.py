@@ -385,6 +385,11 @@ MCP_PROTOCOL_VERSION = "2025-06-18"
 class HomeFavoriteRequest(BaseModel):
     pane: str = Field(min_length=1, max_length=400)
     note: str = ""
+    title: str = ""
+
+
+class HomeFavoriteTitleRequest(BaseModel):
+    title: str = Field(default="", max_length=200)
 
 
 class HomeCardRequest(BaseModel):
@@ -1727,20 +1732,47 @@ def create_app(
         require_auth(request)
         return {"peers": await asyncio.to_thread(collect_pane_states)}
 
-    def home_entry(pane_id: str, note: str = "") -> dict:
+    def host_label(pane_id: str) -> str:
+        try:
+            host_id, _ = split_pane_ref(pane_id)
+        except ValueError:
+            return ""
+        if host_id == "localhost":
+            return "localhost"
+        try:
+            return remote_hosts.get_host(host_id).get("name") or host_id
+        except KeyError:
+            return host_id
+
+    def default_card_title(pane: dict, host_name: str) -> str:
+        """session · window:name · host — the pane title is often just the hostname."""
+        session = pane.get("session") or ""
+        window = pane.get("window") or ""
+        window_name = pane.get("window_name") or ""
+        window_label = f"{window}: {window_name}" if window and window_name else (window or window_name)
+        parts = [part for part in (session, window_label, host_name) if part]
+        return " · ".join(parts)
+
+    def home_entry(pane_id: str, note: str = "", custom_title: str = "") -> dict:
         """Everything a Home card needs about one pane; failures degrade to offline."""
         entry: dict = {"pane": pane_id, "note": note, "status": "offline", "provider": None,
-                       "title": "", "path": "", "session": "", "window": "", "command": "",
-                       "preview": None, "waiting": False, "favorite": True}
+                       "title": custom_title, "default_title": "", "custom_title": custom_title != "",
+                       "pane_title": "", "path": "", "session": "", "window": "", "host": "",
+                       "command": "", "preview": None, "waiting": False, "favorite": True}
         try:
             pane = pane_or_404(pane_id)
             transport, actual_pane_id = pane_transport(pane_id)
         except HTTPException:
             return entry
         provider = transcript_reader.provider_for_command(pane.get("command"))
-        entry.update({"provider": provider, "title": pane.get("title") or "",
+        host_name = host_label(pane_id)
+        entry.update({"provider": provider, "pane_title": pane.get("title") or "",
                       "path": pane.get("path") or "", "session": pane.get("session") or "",
-                      "window": pane.get("target") or "", "command": pane.get("command") or ""})
+                      "window": pane.get("target") or "", "command": pane.get("command") or "",
+                      "host": host_name})
+        entry["default_title"] = default_card_title(pane, host_name) or (pane.get("title") or pane_id)
+        if not custom_title:
+            entry["title"] = entry["default_title"]
         try:
             entry["status"] = relay.inspect(transport, actual_pane_id, provider, lines=30)["status"]
         except (RuntimeError, OSError, ValueError):
@@ -1767,7 +1799,8 @@ def create_app(
     async def build_home_payload() -> dict:
         favorites = await asyncio.to_thread(home.favorites)
         entries = await asyncio.gather(
-            *[asyncio.to_thread(home_entry, row["pane_id"], row.get("note") or "") for row in favorites],
+            *[asyncio.to_thread(home_entry, row["pane_id"], row.get("note") or "", row.get("title") or "")
+              for row in favorites],
             return_exceptions=True,
         )
         cards = await asyncio.to_thread(home.cards)
@@ -1803,10 +1836,20 @@ def create_app(
         require_auth(request)
         pane_or_404(payload.pane)
         try:
-            row = await asyncio.to_thread(home.add_favorite, payload.pane, payload.note)
+            row = await asyncio.to_thread(home.add_favorite, payload.pane, payload.note, payload.title)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"pane": row["pane_id"], "note": row["note"], "favorite": True}
+        return {"pane": row["pane_id"], "note": row["note"], "title": row.get("title", ""), "favorite": True}
+
+    @app.patch("/api/home/favorites/{pane_id}")
+    async def rename_home_favorite(request: Request, pane_id: str, payload: HomeFavoriteTitleRequest):
+        """Rename a card; an empty title restores the generated one."""
+        require_auth(request)
+        try:
+            row = await asyncio.to_thread(home.set_favorite_title, pane_id, payload.title)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="pane is not on the board") from exc
+        return {"pane": row["pane_id"], "title": row.get("title", ""), "favorite": True}
 
     @app.delete("/api/home/favorites/{pane_id}")
     async def remove_home_favorite(request: Request, pane_id: str):

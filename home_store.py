@@ -45,9 +45,14 @@ class HomeStore:
                 """CREATE TABLE IF NOT EXISTS favorites (
                        pane_id TEXT PRIMARY KEY,
                        note TEXT NOT NULL DEFAULT '',
+                       title TEXT NOT NULL DEFAULT '',
                        created_at REAL NOT NULL
                    )"""
             )
+            # older databases predate the custom title
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(favorites)")}
+            if "title" not in columns:
+                self._conn.execute("ALTER TABLE favorites ADD COLUMN title TEXT NOT NULL DEFAULT ''")
             self._conn.execute(
                 """CREATE TABLE IF NOT EXISTS cards (
                        id TEXT PRIMARY KEY,
@@ -66,17 +71,31 @@ class HomeStore:
             self._conn.close()
 
     # ---------------------------------------------------------------- favorites
-    def add_favorite(self, pane_id: str, note: str = "") -> dict:
+    def add_favorite(self, pane_id: str, note: str = "", title: str = "") -> dict:
         pane_id = pane_id.strip()
         if not pane_id:
             raise ValueError("pane_id is required")
         with self._lock:
             self._conn.execute(
-                """INSERT INTO favorites (pane_id, note, created_at) VALUES (?, ?, ?)
-                   ON CONFLICT(pane_id) DO UPDATE SET note = excluded.note""",
-                (pane_id, note[:2000], _now()),
+                """INSERT INTO favorites (pane_id, note, title, created_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(pane_id) DO UPDATE SET note = excluded.note,
+                       title = CASE WHEN excluded.title = '' THEN favorites.title ELSE excluded.title END""",
+                (pane_id, note[:2000], title[:MAX_TITLE], _now()),
             )
             self._conn.commit()
+            row = self._conn.execute("SELECT * FROM favorites WHERE pane_id = ?", (pane_id,)).fetchone()
+        return dict(row)
+
+    def set_favorite_title(self, pane_id: str, title: str) -> dict:
+        """Rename a card. An empty title falls back to the generated default."""
+        pane_id = pane_id.strip()
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE favorites SET title = ? WHERE pane_id = ?", ((title or "").strip()[:MAX_TITLE], pane_id)
+            )
+            self._conn.commit()
+            if not cursor.rowcount:
+                raise KeyError(pane_id)
             row = self._conn.execute("SELECT * FROM favorites WHERE pane_id = ?", (pane_id,)).fetchone()
         return dict(row)
 
