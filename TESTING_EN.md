@@ -89,6 +89,10 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   (add/edit/delete, reveal credential, save without verifying), open a real PTY from the chat app bar (auto-reconnect), and
   send on Enter while Shift+Enter inserts a newline (`hosts_tree_test.dart`).
 
+- Flutter file panel: from the chat app bar the folder icon lists the pane directory with sizes, folders open on tap, the up
+  button returns, markdown files preview in a sheet, download saves into the app documents directory, upload and zip work from
+  the toolbar. In the server dialog every label sits above its field (no overlapping floating labels).
+
 ## 1. Install test dependencies
 
 ```bash

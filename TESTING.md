@@ -62,6 +62,8 @@
 
 - Flutter 对齐：手机端应能（1）在侧边栏展开「主机 → session → window → pane」并看到 busy/idle 圆点；（2）进「服务器管理」新增/编辑/删除主机，勾「不校验连接直接保存」后错误密码也能存下；（3）在对话页右上角点终端图标进入 PTY，能敲命令并看到回显（断网后自动重连）；（4）输入框里 Enter 发送、Shift+Enter 换行。单测：`hosts_tree_test.dart`（树分组、状态圆点、Enter/Shift+Enter、`wsUri` 协议推导）、`hosts_admin_screen` 的对话框用例。
 
+- Flutter 文件面板：对话页右上角文件夹图标进入；应能列目录（显示文件大小）、点目录进入、点「↑」回上级、点 markdown 在弹层里渲染、点下载把文件存到应用文档目录、右上角上传/打包 zip 可用。服务器管理弹窗里每个字段的标签都在输入框**上方**，不再和框内文字重叠。单测：`files_screen_test.dart`、`hosts_tree_test.dart` 里的标签位置断言。
+
 ## 1. 安装测试依赖
 
 ```bash

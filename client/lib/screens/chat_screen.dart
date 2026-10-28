@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../api/api_client.dart';
 import '../models/chat_source.dart';
+import 'files_screen.dart';
 import 'terminal_screen.dart';
 import '../models/models.dart';
 import '../models/transcript_cache.dart';
@@ -203,6 +204,19 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
+          if (widget.terminalApi != null && widget.source is PaneChatSource)
+            IconButton(
+              key: const Key('chat-files'),
+              tooltip: '文件',
+              onPressed: () {
+                final source = widget.source;
+                if (source is! PaneChatSource) return;
+                Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => FilesScreen(api: source.api, pane: source.pane),
+                ));
+              },
+              icon: const Icon(Icons.folder_outlined, size: 20),
+            ),
           if (widget.terminalApi != null)
             IconButton(
               key: const Key('chat-terminal'),

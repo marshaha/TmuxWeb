@@ -55,6 +55,16 @@ abstract class Api {
 
   /// Reads the SSH host key so a new host can be pinned on first contact.
   Future<Map<String, dynamic>> scanHostKey(String hostname, int port);
+
+  Future<FileListing> listFiles(String paneRef, {String path = '', bool hidden = false});
+
+  /// Raw bytes of a file, served inline (used for previews and downloads).
+  Future<List<int>> readFile(String paneRef, String path);
+
+  Future<void> uploadFile(String paneRef, String dir, String name, List<int> bytes);
+
+  /// Zip of the given paths; an empty list zips the directory `base`.
+  Future<List<int>> zipFiles(String paneRef, List<String> paths, String base);
 }
 
 String normalizeBaseUrl(String raw) {
@@ -259,6 +269,49 @@ class ApiClient implements Api, TerminalApi {
       body: jsonEncode({'hostname': hostname, 'port': port}),
     );
     return _decode(response);
+  }
+
+  @override
+  Future<FileListing> listFiles(String paneRef, {String path = '', bool hidden = false}) async {
+    final response = await _http.get(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/files', {
+        if (path.isNotEmpty) 'path': path,
+        if (hidden) 'hidden': '1',
+      }),
+      headers: _headers(),
+    );
+    return FileListing.fromJson(_decode(response));
+  }
+
+  @override
+  Future<List<int>> readFile(String paneRef, String path) async {
+    final response = await _http.get(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/files/raw', {'path': path}),
+      headers: _headers(),
+    );
+    if (response.statusCode >= 400) _fail(response);
+    return response.bodyBytes;
+  }
+
+  @override
+  Future<void> uploadFile(String paneRef, String dir, String name, List<int> bytes) async {
+    final response = await _http.put(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/files/upload', {'dir': dir, 'name': name}),
+      headers: {..._headers(), 'Content-Type': 'application/octet-stream'},
+      body: bytes,
+    );
+    _decode(response);
+  }
+
+  @override
+  Future<List<int>> zipFiles(String paneRef, List<String> paths, String base) async {
+    final response = await _http.post(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/files/zip'),
+      headers: _headers(json: true),
+      body: jsonEncode({'paths': paths, 'base': base}),
+    );
+    if (response.statusCode >= 400) _fail(response);
+    return response.bodyBytes;
   }
 
   @override

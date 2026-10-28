@@ -71,6 +71,13 @@ void main() {
 
     await tester.ensureVisible(find.byKey(const Key('host-skip-verify')));
     await tester.pumpAndSettle();
+    // labels sit above their boxes instead of floating over the text
+    final label = tester.getRect(find.text('主机 / IP'));
+    final box = tester.getRect(find.byKey(const Key('host-hostname')));
+    expect(label.bottom, lessThanOrEqualTo(box.top + 1));
+    final nameLabel = tester.getRect(find.text('显示名称'));
+    expect(nameLabel.bottom, lessThanOrEqualTo(tester.getRect(find.byType(TextField).first).top + 1));
+
     await tester.tap(find.byKey(const Key('host-skip-verify')));
     await tester.pumpAndSettle();
     final checkbox = tester.widget<CheckboxListTile>(find.byKey(const Key('host-skip-verify')));

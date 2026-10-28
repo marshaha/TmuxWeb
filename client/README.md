@@ -12,6 +12,7 @@ Android / iOS 原生客户端，直接调用 TmuxWeb 的 HTTP API —— **不�
 | 对话 | 2 秒轮询 transcript，发送后乐观占位；纯终端 pane 按屏幕文本渲染 |
 | 侧边栏树 | 主机 → session → window → pane 四级展开，pane 前有 idle/busy 圆点（来自 `/api/panes/status`） |
 | 服务器管理 | 列表 / 新增 / 编辑 / 删除远程主机，可扫描并固定指纹，支持「显示凭据」「不校验连接直接保存」 |
+| 文件面板 | 浏览 pane 目录（可编辑路径栏 + 上级）、点文件预览（markdown 渲染/图片/文本）、下载到设备、上传、当前目录打包 zip |
 | 终端 | 调 `/ws/terminal/{pane}` 的真实 PTY（xterm 渲染），本地与 SSH pane 都可用，断线自动重连 |
 | 发送键 | Enter 发送、Shift+Enter 换行；agent 在跑且输入框为空时变红色停止键（Hermes 发 Ctrl+Q，其它发 Esc） |
 | 会话切换缓存 | 每个 pane 的 transcript、滚动位置、草稿都留在内存里（最多 8 个），切回去立刻出画面，再后台刷新 |

@@ -203,3 +203,61 @@ class RemoteHost {
         fingerprint: '${json['fingerprint'] ?? ''}',
       );
 }
+
+/// One entry of a pane directory (`/api/panes/{pane}/files`).
+class FileEntry {
+  FileEntry({
+    required this.name,
+    required this.path,
+    required this.isDir,
+    this.size = 0,
+    this.mtime = 0,
+  });
+
+  final String name;
+  final String path;
+  final bool isDir;
+  final int size;
+  final double mtime;
+
+  String get sizeLabel {
+    if (isDir) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    var value = size.toDouble();
+    var unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return unit == 0 ? '${size} B' : '${value.toStringAsFixed(1)} ${units[unit]}';
+  }
+
+  factory FileEntry.fromJson(Map<String, dynamic> json) => FileEntry(
+        name: '${json['name'] ?? ''}',
+        path: '${json['path'] ?? ''}',
+        isDir: '${json['type'] ?? 'file'}' == 'dir',
+        size: int.tryParse('${json['size'] ?? 0}') ?? 0,
+        mtime: double.tryParse('${json['mtime'] ?? 0}') ?? 0,
+      );
+}
+
+class FileListing {
+  FileListing({required this.path, this.parent, this.entries = const [], this.truncated = false, this.pane = ''});
+
+  final String path;
+  final String? parent;
+  final List<FileEntry> entries;
+  final bool truncated;
+  final String pane;
+
+  factory FileListing.fromJson(Map<String, dynamic> json) => FileListing(
+        path: '${json['path'] ?? ''}',
+        parent: (json['parent'] as String?)?.isEmpty ?? true ? null : json['parent'] as String,
+        entries: ((json['entries'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((item) => FileEntry.fromJson(Map<String, dynamic>.from(item)))
+            .toList(),
+        truncated: json['truncated'] == true,
+        pane: '${json['pane'] ?? ''}',
+      );
+}

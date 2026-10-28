@@ -267,6 +267,19 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
     }
   }
 
+  /// Label above the box: the dense filled theme made floating labels overlap.
+  Widget _field(String label, Widget child) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 2, bottom: 4),
+            child: Text(label, style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+          ),
+          child,
+          const SizedBox(height: 10),
+        ],
+      );
+
   @override
   Widget build(BuildContext context) {
     final agent = _authType == 'agent';
@@ -279,52 +292,61 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextField(controller: _name, decoration: const InputDecoration(labelText: '显示名称')),
-              const SizedBox(height: 8),
-              TextField(
-                key: const Key('host-hostname'),
-                controller: _hostname,
-                autocorrect: false,
-                decoration: const InputDecoration(labelText: '主机 / IP'),
+              _field('显示名称', TextField(controller: _name, decoration: const InputDecoration(hintText: 'build-box'))),
+              _field(
+                '主机 / IP',
+                TextField(
+                  key: const Key('host-hostname'),
+                  controller: _hostname,
+                  autocorrect: false,
+                  decoration: const InputDecoration(hintText: '10.0.0.8'),
+                ),
               ),
-              const SizedBox(height: 8),
-              Row(children: [
-                SizedBox(
-                  width: 96,
-                  child: TextField(
-                    controller: _port,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: '端口'),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 104,
+                    child: _field(
+                      '端口',
+                      TextField(
+                        controller: _port,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(hintText: '22'),
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: TextField(controller: _username, decoration: const InputDecoration(labelText: '用户名')),
-                ),
-              ]),
-              const SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                key: const Key('host-auth-type'),
-                initialValue: _authType,
-                decoration: const InputDecoration(labelText: '登录方式'),
-                items: const [
-                  DropdownMenuItem(value: 'password', child: Text('密码')),
-                  DropdownMenuItem(value: 'key', child: Text('OpenSSH 私钥')),
-                  DropdownMenuItem(value: 'agent', child: Text('本机密钥（SSH Agent）')),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _field('用户名', TextField(controller: _username, decoration: const InputDecoration(hintText: 'ubuntu'))),
+                  ),
                 ],
-                onChanged: (value) => setState(() => _authType = value ?? 'password'),
+              ),
+              _field(
+                '登录方式',
+                DropdownButtonFormField<String>(
+                  key: const Key('host-auth-type'),
+                  initialValue: _authType,
+                  decoration: const InputDecoration(),
+                  items: const [
+                    DropdownMenuItem(value: 'password', child: Text('密码')),
+                    DropdownMenuItem(value: 'key', child: Text('OpenSSH 私钥')),
+                    DropdownMenuItem(value: 'agent', child: Text('本机密钥（SSH Agent）')),
+                  ],
+                  onChanged: (value) => setState(() => _authType = value ?? 'password'),
+                ),
               ),
               if (!agent) ...[
-                const SizedBox(height: 8),
-                TextField(
-                  key: const Key('host-credential'),
-                  controller: keyMode ? _key : _credential,
-                  minLines: keyMode ? 4 : 1,
-                  maxLines: keyMode ? 8 : 1,
-                  autocorrect: false,
-                  obscureText: !_reveal && !keyMode,
-                  decoration: InputDecoration(
-                    labelText: keyMode ? '私钥内容' : (_editing ? 'SSH 密码（留空不修改）' : 'SSH 密码'),
+                _field(
+                  keyMode ? '私钥内容' : (_editing ? 'SSH 密码（留空不修改）' : 'SSH 密码'),
+                  TextField(
+                    key: const Key('host-credential'),
+                    controller: keyMode ? _key : _credential,
+                    minLines: keyMode ? 4 : 1,
+                    maxLines: keyMode ? 8 : 1,
+                    autocorrect: false,
+                    obscureText: !_reveal && !keyMode,
+                    decoration: const InputDecoration(),
                   ),
                 ),
                 CheckboxListTile(

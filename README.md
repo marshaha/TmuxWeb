@@ -197,6 +197,7 @@ TMUX_WEB_HOST=0.0.0.0
 - 对话：结构化 transcript（Claude/Codex/Hermes/Kimi），每条消息复制、代码/mermaid/表格块级源码切换与复制
 - 发送：Enter 发送、Shift+Enter 换行；agent 在跑且输入框为空时发送键变红色停止键（Hermes 发 Ctrl+Q，Claude/Codex/Kimi 发 Esc）
 - 终端：调 `/ws/terminal/{pane}` 的真实 PTY（xterm 渲染），本地与 SSH pane 都可用，断线自动重连
+- 文件面板：浏览 pane 目录、点文件预览（markdown/图片/文本）、下载到设备（存到应用文档目录）、上传、打包当前目录 zip
 - 会话缓存：每个 pane 的 transcript、滚动位置、草稿都留在内存（最多 8 个），切回去立刻出画面再后台刷新
 - 分享：输入分享路径（可带密码）以只读/可对话方式查看
 

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,6 +15,7 @@ class FakeApi implements Api {
   final ApiException? hostsError;
   final List<String> logins = [];
   final List<String> sent = [];
+  final List<String> uploads = [];
 
   @override
   Future<void> login({required String baseUrl, required String password, String token = ''}) async {
@@ -62,6 +64,27 @@ class FakeApi implements Api {
   @override
   Future<Map<String, dynamic>> scanHostKey(String hostname, int port) async =>
       {'host_key': '$hostname ssh-ed25519 AAAA', 'fingerprint': 'SHA256:abc'};
+
+  @override
+  Future<FileListing> listFiles(String paneRef, {String path = '', bool hidden = false}) async => FileListing(
+        path: path.isEmpty ? '/srv/work' : path,
+        parent: path.isEmpty ? null : '/srv',
+        entries: [
+          FileEntry(name: 'notes.md', path: '/srv/work/notes.md', isDir: false, size: 2048),
+          FileEntry(name: 'sub', path: '/srv/work/sub', isDir: true),
+        ],
+      );
+
+  @override
+  Future<List<int>> readFile(String paneRef, String path) async => utf8.encode('# 标题\n\n正文');
+
+  @override
+  Future<void> uploadFile(String paneRef, String dir, String name, List<int> bytes) async {
+    uploads.add('$dir/$name|${bytes.length}');
+  }
+
+  @override
+  Future<List<int>> zipFiles(String paneRef, List<String> paths, String base) async => const [80, 75, 3, 4];
 
   @override
   Future<Transcript> transcript(String paneRef, {int limit = 200, bool refresh = false}) async =>
