@@ -185,6 +185,23 @@ Open `/hosts` and follow the staged flow:
 
 Passwords and private keys are not returned by list APIs. A private key must be a complete OpenSSH/PEM private key, not a one-line `ssh-ed25519 AAAA...` public key. Passphrase-encrypted private keys are not currently supported.
 
+## Performance: a firehose pane must not freeze the browser
+
+Log panes (uvicorn, `tail -f`, `make`, a `while true` loop) emit thousands of lines per second. Selecting one used to rebuild the
+whole screen DOM, re-fit the font on every frame and let the xterm write queue grow without bound, which locked up Chrome.
+
+- the live screen stream (`/ws/panes/{pane}`) sends 1500 lines on the first frame and 800 thereafter; a frame larger than 192KB keeps
+  only the tail with a "输出过快，已跳过前面 N 字节" marker; idle panes back off from 0.7s to 3s
+- the client repaints at most every 500ms, renders only the last 600 lines, keeps just the newest pending frame, and stops re-fitting
+  the font unless the container width changed
+- terminal mode batches xterm writes into one rAF and, past a 1.5MB backlog, drops the oldest data with an inline notice
+- a **pause / resume live** button in the top bar freezes the stream without losing the screen
+- `/api/hosts` serves a 5s snapshot (`?refresh=1` re-probes); the sidebar refreshes every 20s and skips identical DOM
+- knobs: `TMUX_WEB_STREAM_LINES`, `TMUX_WEB_STREAM_FIRST_LINES`, `TMUX_WEB_STREAM_MAX_BYTES`, `TMUX_WEB_HOSTS_TTL`
+
+Measured on a 140x40 `while true; do echo; done` pane over 10s: chat-mode main-thread time 0.69s -> **0.09s**, rendered text
+363k -> 55k chars; 0.02s while paused.
+
 ## Home board: favourites, cards and search
 
 Every pane in the console sidebar has a star on the right: hollow = not saved, filled = saved. Starred panes appear on `/home`.

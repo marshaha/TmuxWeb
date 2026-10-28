@@ -770,7 +770,10 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("background:#fff;color:var(--ink);font-size:15px", response.text)
         self.assertIn("refreshTranscript(id,{force=false,refresh=false}", response.text)
         self.assertIn("state.selected!==id||state.mode!=='chat'", response.text)
-        self.assertIn("api('/api/hosts')", response.text)
+        self.assertIn("/api/hosts'", response.text)
+        for marker in ('id="live-toggle"', "CAPTURE_PAINT_MS", "CAPTURE_MAX_LINES", "pushTerminal",
+                       "TERM_BACKLOG_MAX", "queueCapture", "pauseLive", "resumeLive"):
+            self.assertIn(marker, response.text)
         self.assertIn("treeDetails", response.text)
         self.assertIn("treeOpen:new Set()", response.text)
         self.assertIn("tmux-tree-open", response.text)
@@ -1150,6 +1153,28 @@ class TmuxWebTests(unittest.TestCase):
         shares = self.client.get("/api/shares").json()["shares"]
         share_id = next(item["id"] for item in shares if item["slug"] == "shell-share")
         self.assertEqual(self.client.delete(f"/api/shares/{share_id}").status_code, 200)
+
+    def test_hosts_list_is_snapshotted_between_polls(self):
+        calls = {"count": 0}
+        original = self.tmux.list_panes
+
+        def counting(*args, **kwargs):
+            calls["count"] += 1
+            return original(*args, **kwargs)
+
+        self.tmux.list_panes = counting
+        self.login()
+        self.client.get("/api/hosts")
+        first = calls["count"]
+        self.assertGreaterEqual(first, 1)
+
+        # a second poll inside the ttl must not touch tmux/SSH again
+        self.client.get("/api/hosts")
+        self.assertEqual(calls["count"], first)
+
+        # the refresh button forces a real sweep
+        self.client.get("/api/hosts", params={"refresh": 1})
+        self.assertGreater(calls["count"], first)
 
     def test_mcp_endpoint_speaks_streamable_http(self):
         self.login()

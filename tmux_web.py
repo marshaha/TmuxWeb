@@ -559,6 +559,11 @@ def create_app(
     zip_limit = int(os.environ.get("TMUX_WEB_ZIP_MAX", str(file_browser.DEFAULT_ZIP_BYTES)))
     zip_max_files = int(os.environ.get("TMUX_WEB_ZIP_MAX_FILES", str(file_browser.DEFAULT_ZIP_FILES)))
     upload_limit = int(os.environ.get("TMUX_WEB_FILE_UPLOAD_MAX", str(256 * 1024 * 1024)))
+    # The screen stream is a firehose for log panes (uvicorn, tail -f, make). Cap
+    # how much history it transfers and how often, and trim oversized frames.
+    stream_lines = int(os.environ.get("TMUX_WEB_STREAM_LINES", "800"))
+    stream_first_lines = max(stream_lines, int(os.environ.get("TMUX_WEB_STREAM_FIRST_LINES", "1500")))
+    stream_max_bytes = int(os.environ.get("TMUX_WEB_STREAM_MAX_BYTES", str(192 * 1024)))
     if importlib.util.find_spec("websockets") is None and importlib.util.find_spec("wsproto") is None:
         LOGGER.warning(
             "No WebSocket implementation installed: uvicorn rejects /ws/* with 404. "
@@ -798,6 +803,8 @@ def create_app(
         with pane_state_lock:
             return pane_state_cache["states"]
 
+    hosts_snapshot: dict = {"at": 0.0, "value": None,
+                            "ttl": float(os.environ.get("TMUX_WEB_HOSTS_TTL", "5"))}
     relay_log: deque[dict] = deque(maxlen=100)
     relay_locks: dict[str, asyncio.Lock] = {}
 
@@ -1137,8 +1144,13 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/hosts")
-    async def list_hosts(request: Request):
+    async def list_hosts(request: Request, refresh: int = 0):
         require_auth(request)
+        # every 5s poll used to re-probe each remote host over SSH; a 5s snapshot
+        # keeps the sidebar fresh without hammering them (?refresh=1 forces it)
+        cached = hosts_snapshot["value"]
+        if cached is not None and not refresh and (time.time() - hosts_snapshot["at"]) < hosts_snapshot["ttl"]:
+            return cached
         hosts = []
         try:
             panes = [pane_metadata(pane) for pane in tmux.list_panes()]
@@ -1179,7 +1191,10 @@ def create_app(
         # Concurrently, so the slowest host sets the latency instead of the sum.
         await asyncio.gather(*(load_remote(public) for public in public_hosts))
         hosts.extend(public_hosts)
-        return {"hosts": hosts}
+        payload = {"hosts": hosts}
+        hosts_snapshot["value"] = payload
+        hosts_snapshot["at"] = time.time()
+        return payload
 
     async def perform_mcp_tool(name: str, arguments: dict) -> dict:
         """Same semantics as mcp_relay.py, but executed in-process (no python3 on the client)."""
@@ -2035,23 +2050,32 @@ def create_app(
         # actually changed; idle panes then cost a few bytes per tick, and the
         # interval backs off so an idle tab stops hammering the host.
         digest: str | None = None
-        interval = 0.4
+        interval = 0.7
+        lines = stream_first_lines
         try:
             while True:
                 snapshot = getattr(transport, "snapshot_ansi", None)
                 if snapshot is None:
                     capture_ansi = getattr(transport, "capture_ansi", transport.capture)
-                    content = await asyncio.to_thread(capture_ansi, actual_pane_id, 5000)
+                    content = await asyncio.to_thread(capture_ansi, actual_pane_id, lines)
                     new_digest = hashlib.sha1(content.encode()).hexdigest()
                     payload = None if digest == new_digest else content
                     digest = new_digest
                 else:
-                    digest, payload = await asyncio.to_thread(snapshot, actual_pane_id, 5000, digest)
+                    digest, payload = await asyncio.to_thread(snapshot, actual_pane_id, lines, digest)
+                # the first frame carries some scrollback, the rest is tail-only
+                lines = stream_lines
                 if payload is not None:
-                    await websocket.send_json({"type": "capture", "pane": pane_id, "content": payload})
-                    interval = 0.4
+                    if len(payload) > stream_max_bytes:
+                        tail = payload[-stream_max_bytes:]
+                        cut = tail.find("\n")
+                        dropped = len(payload) - (len(tail) - (cut + 1 if cut >= 0 else 0))
+                        payload = f"\x1b[2m… 输出过快，已跳过前面 {dropped} 字节 …\x1b[0m\n" + tail[cut + 1 if cut >= 0 else 0:]
+                    await websocket.send_json({"type": "capture", "pane": pane_id, "content": payload,
+                                               "lines": lines})
+                    interval = 0.7
                 else:
-                    interval = min(2.0, interval * 1.4)
+                    interval = min(3.0, interval * 1.5)
                 await asyncio.sleep(interval)
         except (WebSocketDisconnect, TmuxError, RuntimeError, OSError, ValueError):
             return

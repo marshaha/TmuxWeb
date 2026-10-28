@@ -107,6 +107,11 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   `publish_home_card` over MCP adds a board card and `remove_home_card` deletes it (`tests/test_home_store.py`,
   `tests/test_home_board.py`).
 
+- Firehose pane: with a log pane selected the console must stay above ~50fps, render only the last few hundred lines
+  (with a 只显示最近 600 行 notice), and show an 输出过快 notice if xterm falls behind; the ⏸ button freezes the stream and ▶
+  resumes it; the sidebar polls every 20s without resetting scroll; `/api/hosts` is served from a 5s snapshot unless
+  `?refresh=1`. Covered by `test_hosts_list_is_snapshotted_between_polls` and the index-page marker assertions.
+
 ## 1. Install test dependencies
 
 ```bash
