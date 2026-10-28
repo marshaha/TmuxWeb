@@ -18,7 +18,8 @@ import sqlite3
 import time
 import threading
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
 from urllib.parse import parse_qs, quote
 
@@ -754,6 +755,11 @@ def create_app(
         if not jobs:
             return []
 
+        sweep_timeout = int(os.environ.get("TMUX_WEB_STATE_CAPTURE_TIMEOUT", "8"))
+        for _, _, transport, _pane in jobs:
+            if hasattr(transport, "capture_timeout"):
+                transport.capture_timeout = sweep_timeout
+
         def describe(job):
             host_id, host_name, transport, pane = job
             provider = transcript_reader.provider_for_command(pane.get("command"))
@@ -761,13 +767,17 @@ def create_app(
             try:
                 state = relay.inspect(transport, actual_pane_id, provider, lines=40)
                 status = state["status"]
-            except (RuntimeError, OSError, ValueError):
+            except Exception:  # noqa: BLE001 - one slow or dead pane must not fail the sweep
                 status = "unknown"
+            target = pane.get("target") or ""
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
-                    "host_name": host_name, "target": pane["target"], "provider": provider,
-                    "status": status, "title": pane.get("title", ""), "path": pane.get("path", "")}
+                    "host_name": host_name, "target": target, "provider": provider,
+                    "status": status, "title": pane.get("title", ""), "path": pane.get("path", ""),
+                    "session": target.split(":")[0] if target else "",
+                    "window": pane.get("window_name") or target}
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        workers = max(4, min(32, int(os.environ.get("TMUX_WEB_STATE_WORKERS", "24"))))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             return list(pool.map(describe, jobs))
 
     # ``collect_pane_states`` inspects every pane on every host; the console polls
@@ -778,16 +788,20 @@ def create_app(
     pane_state_busy = {"flag": False}
 
     def _refresh_pane_states() -> None:
+        started_at = time.time()
         try:
             states = collect_pane_states()
             with pane_state_lock:
                 pane_state_cache.update({"at": time.time(), "states": states})
-        except (RuntimeError, OSError, ValueError):
-            LOGGER.warning("pane state sweep failed", exc_info=True)
+            elapsed = time.time() - started_at
+            log = LOGGER.warning if elapsed > 10 else LOGGER.info
+            log("pane state sweep: %d panes in %.1fs", len(states), elapsed)
+        except Exception:  # noqa: BLE001 - a failed sweep must never kill the poller
+            LOGGER.warning("pane state sweep failed after %.1fs", time.time() - started_at, exc_info=True)
         finally:
             pane_state_busy["flag"] = False
 
-    def pane_states_cached(wait: float = 3.0, ttl: float = 8.0) -> list[dict]:
+    def pane_states_cached(wait: float = 3.0, ttl: float = 30.0) -> list[dict]:
         """Last known pane states, refreshed once they are older than ``ttl``.
 
         ``wait`` bounds how long a caller blocks for a fresh sweep; a warm cache
@@ -1977,60 +1991,216 @@ def create_app(
         removed = await asyncio.to_thread(home.remove_favorite, pane_id)
         return {"pane": pane_id, "favorite": False, "removed": removed}
 
+    class QueryMatcher:
+        """Case-insensitive regex when the query looks like one, literal otherwise.
+
+        Plain words stay literal (so "a.b" does not match "axb"), anything with
+        regex metacharacters is compiled, and a broken pattern falls back to a
+        literal search instead of failing the request.
+        """
+
+        METACHARS = set(".*+?[](){}|^$\\")
+
+        def __init__(self, query: str):
+            self.query = query
+            looks_like_regex = any(char in self.METACHARS for char in query)
+            try:
+                self.regex = re.compile(query if looks_like_regex else re.escape(query), re.IGNORECASE)
+                self.mode = "regex" if looks_like_regex else "literal"
+            except re.error:
+                self.regex = re.compile(re.escape(query), re.IGNORECASE)
+                self.mode = "literal-fallback"
+
+        def __call__(self, text) -> bool:
+            return self.search(text) is not None
+
+        def search(self, text):
+            return self.regex.search(str(text or ""))
+
+    def build_matcher(query: str) -> tuple["QueryMatcher", str]:
+        matcher = QueryMatcher(query)
+        return matcher, matcher.mode
+
+    # Conversations are the slow half of a search (one transcript read per agent
+    # pane), so parsed messages are cached briefly and the scan has a deadline.
+    SEARCH_MESSAGE_CACHE: dict[str, tuple[float, list[dict]]] = {}
+    SEARCH_MESSAGE_TTL = float(os.environ.get("TMUX_WEB_SEARCH_CACHE_SECONDS", "25"))
+    SEARCH_BUDGET = float(os.environ.get("TMUX_WEB_SEARCH_BUDGET_SECONDS", "4"))
+    def search_transport(host_id: str):
+        """A transport for one host without listing every pane on every host."""
+        if host_id in ("", "localhost"):
+            return tmux
+        try:
+            host = remote_hosts.get_host(host_id, include_credential=True)
+        except KeyError:
+            return None
+        return runner_for(host)
+
+    # Conversations are the slow half of a search (one transcript read per agent
+    # pane), so parsed messages are cached briefly and the scan has a deadline.
+    SEARCH_MESSAGE_CACHE: dict[str, tuple[float, list[dict]]] = {}
+    SEARCH_MESSAGE_TTL = float(os.environ.get("TMUX_WEB_SEARCH_CACHE_SECONDS", "25"))
+    SEARCH_BUDGET = float(os.environ.get("TMUX_WEB_SEARCH_BUDGET_SECONDS", "4"))
+    def cached_transcript_messages(state: dict, transport, deadline: float) -> list[dict] | None:
+        pane_id = state["id"]
+        now = time.time()
+        hit = SEARCH_MESSAGE_CACHE.get(pane_id)
+        if hit and (now - hit[0]) < SEARCH_MESSAGE_TTL:
+            return hit[1]
+        if now > deadline or transport is None:
+            return None
+        try:
+            data = transport.transcript(state.get("pane_id") or pane_id, 120)
+        except (RuntimeError, OSError, ValueError, transcript_reader.TranscriptError):
+            return None
+        messages = data.get("messages") or []
+        SEARCH_MESSAGE_CACHE[pane_id] = (now, messages)
+        if len(SEARCH_MESSAGE_CACHE) > 80:  # bounded: drop the oldest entry
+            oldest = min(SEARCH_MESSAGE_CACHE, key=lambda key: SEARCH_MESSAGE_CACHE[key][0])
+            SEARCH_MESSAGE_CACHE.pop(oldest, None)
+        return messages
+
     @app.get("/api/home/search")
-    async def home_search(request: Request, q: str = "", limit: int = 20):
-        """Search pane names and the recent messages of every agent pane."""
+    async def home_search(request: Request, q: str = "", limit: int = 20, messages: int = 1):
+        """Search hosts, sessions and panes first, then the cached conversations.
+
+        The query is used as a case-insensitive regular expression when it
+        compiles; otherwise it is treated as a literal substring.
+        """
         require_auth(request)
         query = q.strip()
         limit = max(1, min(int(limit), 60))
         if not query:
-            return {"query": query, "panes": [], "messages": [], "cards": []}
-        needle = query.casefold()
+            return {"query": query, "mode": "empty", "hosts": [], "sessions": [],
+                    "panes": [], "messages": [], "cards": []}
 
-        def scan() -> tuple[list[dict], list[dict], list[dict]]:
-            states = pane_states_cached(4.0)
-            panes = []
+        matcher, mode = build_matcher(query)
+        scan_messages = bool(messages)
+
+        def scan() -> dict:
+            # the board polls the sweep every 15s; wait only a moment on a cold start
+            states = pane_states_cached(2.5, 60.0)
+            host_names = {host["id"]: host.get("name") or host["id"]
+                          for host in remote_hosts.list_hosts()}
+            # 1) servers: name, hostname, id
+            hosts_hit = []
+            for host in remote_hosts.list_hosts():
+                haystack = " ".join(str(host.get(key) or "") for key in ("name", "hostname", "id", "username"))
+                if matcher(haystack):
+                    hosts_hit.append({"id": host["id"], "name": host.get("name") or host["id"],
+                                      "hostname": host.get("hostname") or "",
+                                      "port": host.get("port"), "username": host.get("username") or "",
+                                      "panes": 0})
+            counts = {}
             for state in states:
-                haystack = " ".join(str(state.get(key) or "") for key in
-                                    ("title", "path", "target", "provider", "host_name", "id"))
-                if needle in haystack.casefold():
-                    panes.append({key: state.get(key) for key in
-                                  ("id", "host_name", "target", "provider", "status", "title", "path")})
+                counts[state.get("host_id")] = counts.get(state.get("host_id"), 0) + 1
+            for host in hosts_hit:
+                host["panes"] = counts.get(host["id"], 0)
+            if matcher("localhost") and not any(host["id"] == "localhost" for host in hosts_hit):
+                hosts_hit.append({"id": "localhost", "name": "localhost", "hostname": "localhost",
+                                  "port": 22, "username": "", "panes": counts.get("localhost", 0)})
+
+            # 2) tmux sessions, then 3) panes
+            sessions: list[dict] = []
+            seen_sessions: set[tuple[str, str]] = set()
+            panes: list[dict] = []
+            for state in states:
+                session = str(state.get("session") or "")
+                host_name = state.get("host_name") or host_names.get(state.get("host_id"), "")
+                key = (str(state.get("host_id") or ""), session)
+                if session and key not in seen_sessions and matcher(session):
+                    seen_sessions.add(key)
+                    sessions.append({"host": host_name, "host_id": state.get("host_id"),
+                                     "session": session,
+                                     "panes": sum(1 for other in states
+                                                  if other.get("session") == session
+                                                  and other.get("host_id") == state.get("host_id"))})
+                name_hit = matcher(" ".join(str(state.get(key_) or "") for key_ in
+                                            ("title", "target", "provider", "id", "window")))
+                path_hit = matcher(str(state.get("path") or ""))
+                if name_hit or path_hit:
+                    panes.append({**{key_: state.get(key_) for key_ in
+                                     ("id", "host_id", "host_name", "target", "session", "provider",
+                                      "status", "title", "path", "window")},
+                                  "match": "name" if name_hit else "path"})
+
+            # 4) conversations, from the message cache where possible. Transcript
+            # reads are the slow part (one SSH round trip per agent pane), so they
+            # run concurrently under one deadline and return whatever finished.
             messages: list[dict] = []
-            hosts = {item[0]: (item[2], item[3]) for item in relay_hosts()}
-            jobs = [(state, hosts.get(state["host_id"])) for state in states if state.get("provider")]
-            for state, host in jobs[:16]:
+            partial = False
+            deadline = time.time() + SEARCH_BUDGET
+            if not scan_messages:
+                # the UI asks for names first (instant) and for messages second
+                return {"hosts": hosts_hit[:limit], "sessions": sessions[:limit],
+                        "panes": panes[:limit], "messages": [], "cards": [],
+                        "messages_partial": True, "messages_pending": True,
+                        "indexed": len(states), "indexing": len(states) == 0,
+                        "mode": mode}
+            transports: dict[str, object] = {}
+            candidates = [state for state in states if state.get("provider")][:16]
+            for state in candidates:
+                host_id = str(state.get("host_id") or "")
+                if host_id not in transports:
+                    transports[host_id] = search_transport(host_id)
+            collected: list[tuple[dict, list[dict]]] = []
+            if candidates:
+                # no context manager: it would wait for a slow SSH read to finish.
+                # Whatever is still running is abandoned and reported as partial.
+                pool = ThreadPoolExecutor(max_workers=8)
+                futures = {pool.submit(cached_transcript_messages, state,
+                                       transports.get(str(state.get("host_id") or "")), deadline): state
+                           for state in candidates}
+                try:
+                    for future in as_completed(futures, timeout=max(0.2, deadline - time.time())):
+                        state = futures[future]
+                        try:
+                            data = future.result()
+                        except Exception:  # noqa: BLE001 - one pane must not fail the search
+                            continue
+                        if data:
+                            collected.append((state, data))
+                        if len(collected) >= len(candidates):
+                            break
+                except FuturesTimeout:
+                    partial = True
+                for future in futures:
+                    if not future.done():
+                        partial = True
+                    future.cancel()
+                pool.shutdown(wait=False, cancel_futures=True)
+            for state, cached_messages in collected:
                 if len(messages) >= limit:
                     break
-                transport, panes_of_host = host if host else (None, [])
-                actual = next((pane for pane in panes_of_host if pane["id"] == state["id"]), None)
-                if transport is None or actual is None:
-                    continue
-                try:
-                    data = transport.transcript(actual.get("pane_id") or actual["id"], 120)
-                except (RuntimeError, OSError, ValueError, transcript_reader.TranscriptError):
-                    continue
-                for message in reversed(data.get("messages") or []):
+                for message in reversed(cached_messages):
                     text = " ".join((message.get("text") or "").split())
-                    index = text.casefold().find(needle)
-                    if index < 0:
+                    found = matcher.search(text)
+                    if not found:
                         continue
-                    start = max(0, index - 60)
+                    start = max(0, found.start() - 60)
                     snippet = text[start:start + 220]
                     messages.append({
                         "pane": state["id"], "title": state.get("title") or "",
+                        "session": state.get("session") or "",
+                        "host": state.get("host_name") or "",
                         "provider": state.get("provider"), "role": message.get("role"),
-                        "snippet": ("…" if start else "") + snippet + ("…" if start + 220 < len(text) else ""),
+                        "snippet": ("…" if start else "") + snippet +
+                                   ("…" if start + 220 < len(text) else ""),
                         "timestamp": message.get("timestamp"),
                     })
                     if len(messages) >= limit:
                         break
-            cards = [card for card in home.cards(200)
-                     if needle in f"{card['title']} {card['body']}".casefold()]
-            return panes[:limit], messages, cards[:limit]
 
-        panes, messages, cards = await asyncio.to_thread(scan)
-        return {"query": query, "panes": panes, "messages": messages, "cards": cards}
+            # 5) board cards
+            cards = [card for card in home.cards(200)
+                     if matcher(f"{card['title']} {card['body']}")]
+            return {"hosts": hosts_hit[:limit], "sessions": sessions[:limit],
+                    "panes": panes[:limit], "messages": messages, "cards": cards[:limit],
+                    "messages_partial": partial, "indexed": len(states),
+                    "indexing": len(states) == 0}
+
+        found = await asyncio.to_thread(scan)
+        return {"query": query, "mode": mode, **found}
 
     @app.get("/api/home/cards")
     async def list_home_cards(request: Request, limit: int = 60):
@@ -2057,7 +2227,7 @@ def create_app(
     @app.get("/api/panes/status")
     async def pane_states(request: Request):
         require_auth(request)
-        states = await asyncio.to_thread(pane_states_cached, 6.0)
+        states = await asyncio.to_thread(pane_states_cached, 2.0, 30.0)
         return {"panes": [{key: item[key] for key in ("id", "provider", "status")} for item in states]}
 
     async def perform_relay_ask(payload: RelayAskRequest) -> dict:

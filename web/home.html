@@ -44,7 +44,11 @@
   .tmeta{margin-left:13px;color:var(--faint);font:10px ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .side-foot{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:8px 10px;border-top:1px solid var(--line);font-size:11px;color:var(--faint)}
   .side-foot a{text-decoration:none;padding:2px 6px;border-radius:6px}
-  .side-foot a:hover{background:#fff;color:var(--ink)}
+  .side-foot a,.side-foot button{display:inline-flex;align-items:center;gap:3px;padding:3px 6px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer;text-decoration:none}
+  .side-foot a:hover,.side-foot button:hover{background:#fff;border-color:var(--line);color:var(--ink)}
+  .side-foot .ico{width:12px;height:12px}
+  .side-foot em{font-style:normal}
+  .side-links{display:flex;align-items:center;gap:2px}
   .backdrop{display:none;position:fixed;inset:0;background:rgba(32,31,28,.3);z-index:15}
   .content{flex:1;min-width:0;display:flex;flex-direction:column}
   .icon-btn{display:grid;place-items:center;width:30px;height:30px;padding:0;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--muted);cursor:pointer;flex:none;text-decoration:none}
@@ -102,6 +106,10 @@
   #results{display:none}
   body.searching #board{display:none}
   body.searching #results{display:block}
+  .search-mode{margin:0 0 10px;color:var(--faint);font-size:11.5px}
+  .search-mode b{color:var(--muted)}
+  .host-hit{cursor:default}
+  .host-hit:hover{border-color:var(--line)}
   .hit{padding:11px 13px;border:1px solid var(--line);border-radius:12px;background:var(--card);margin-bottom:8px;cursor:pointer}
   .hit:hover{border-color:#d9c9bd}
   .hit-top{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--faint);margin-bottom:4px}
@@ -178,7 +186,14 @@
       <button class="icon-btn" id="side-collapse" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-collapse"/></svg></button>
     </div>
     <nav class="tree" id="tree" aria-label="会话树"></nav>
-    <footer class="side-foot"><span>点星星收藏</span><span><a href="/hosts">主机</a><a href="/shares">分享</a></span></footer>
+    <footer class="side-foot">
+      <span>点星星收藏 · 搜索支持正则</span>
+      <span class="side-links">
+        <a href="/hosts" title="远程主机"><svg class="ico"><use href="#i-server"/></svg><em>主机</em></a>
+        <a href="/shares" title="管理分享"><svg class="ico"><use href="#i-share"/></svg><em>分享</em></a>
+        <button id="reload" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg><em>刷新</em></button>
+      </span>
+    </footer>
   </aside>
   <div class="backdrop" id="backdrop"></div>
 
@@ -186,12 +201,7 @@
 <header class="top">
   <button class="icon-btn" id="side-open" title="显示会话列表" aria-label="显示会话列表" hidden><svg class="ico"><use href="#i-menu"/></svg></button>
   <div class="brand"><b>TmuxWeb 主页</b><span>收藏的会话 · 看板 · 搜索</span></div>
-  <label class="search"><svg class="ico"><use href="#i-search"/></svg><input id="q" type="search" placeholder="搜索 pane 名、路径、最近对话内容…" spellcheck="false" autocomplete="off"></label>
-  <div class="nav">
-    <a href="/hosts" title="远程主机" aria-label="远程主机"><svg class="ico"><use href="#i-server"/></svg></a>
-    <a href="/shares" title="管理分享" aria-label="管理分享"><svg class="ico"><use href="#i-share"/></svg></a>
-    <button id="reload" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
-  </div>
+  <label class="search"><svg class="ico"><use href="#i-search"/></svg><input id="q" type="search" placeholder="搜索服务器 / session / pane（支持正则），以及最近对话内容…" spellcheck="false" autocomplete="off"></label>
 </header>
 
 <main>
@@ -447,20 +457,44 @@
     if(!query){document.body.classList.remove('searching');$('results').innerHTML='';return;}
     const seq=++state.seq;
     document.body.classList.add('searching');
-    $('results').innerHTML='<h2>搜索 <span class="count">…</span></h2><div class="empty">正在搜索 pane 与最近对话…</div>';
+    $('results').innerHTML='<h2>搜索 <span class="count">…</span></h2><div class="empty">正在搜索服务器、session 与 pane…</div>';
     try{
-      const data=await api(`/api/home/search?q=${encodeURIComponent(query)}`);
+      // names first: that answer is instant. Conversations need one transcript
+      // read per agent pane, so they arrive in a second pass.
+      const names=await api(`/api/home/search?q=${encodeURIComponent(query)}&messages=0`);
       if(seq!==state.seq)return;
-      document.body.classList.add('searching');
-      const panes=data.panes||[],messages=data.messages||[],cards=data.cards||[];
-      let html=`<h2>会话匹配 <span class="count">${panes.length}</span></h2>`;
+      renderSearch(names,query);
+      const full=await api(`/api/home/search?q=${encodeURIComponent(query)}&messages=1`);
+      if(seq!==state.seq)return;
+      renderSearch(full,query);
+    }catch(err){toast(err.message);}
+  }
+
+  function renderSearch(data,query){
+    {
+      const hosts=data.hosts||[],sessions=data.sessions||[],panes=data.panes||[],
+            messages=data.messages||[],cards=data.cards||[];
+      const modeNote=data.mode==='regex'?'正则':(data.mode==='literal-fallback'?'正则无效，已按字面匹配':'字面匹配');
+      const extras=[data.indexing?'会话索引正在建立，几秒后再搜一次':'',
+                    data.messages_pending?'对话搜索中…':(data.messages_partial?'对话还在扫，结果可能不全':'')]
+                    .filter(Boolean).join(' · ');
+      let html=`<div class="search-mode">匹配方式：${modeNote} · 先匹配主机 / session / pane，再看最近的对话${extras?' · '+extras:''}</div>`;
+      html+=`<h2>服务器 <span class="count">${hosts.length}</span></h2>`;
+      html+=hosts.length?hosts.map(h=>`<div class="hit host-hit">
+        <div class="hit-top"><span class="kind">server</span><span>${hosts.length?esc(h.hostname):''}:${Number(h.port)}</span><span>${h.panes||0} panes</span></div>
+        <div class="hit-title">${highlight(h.name,query)}</div></div>`).join(''):'<div class="empty">没有命中的服务器</div>';
+      html+=`<h2>tmux session <span class="count">${sessions.length}</span></h2>`;
+      html+=sessions.length?sessions.map(s=>`<div class="hit host-hit">
+        <div class="hit-top"><span class="kind">session</span><span>${esc(s.host||'')}</span><span>${s.panes||0} panes</span></div>
+        <div class="hit-title">${highlight(s.session,query)}</div></div>`).join(''):'<div class="empty">没有命中的 session</div>';
+      html+=`<h2>pane <span class="count">${panes.length}</span></h2>`;
       html+=panes.length?panes.map(p=>`<div class="hit" data-open="${esc(p.id)}">
-        <div class="hit-top">${stateBadge(p.status)}${p.provider?`<span>${esc(p.provider)}</span>`:''}<span>${esc(p.host_name||'')}</span></div>
+        <div class="hit-top">${stateBadge(p.status)}${p.provider?`<span>${esc(p.provider)}</span>`:''}<span>${esc(p.host_name||'')}</span><span>${esc(p.session||'')}</span></div>
         <div class="hit-title">${highlight(p.title||p.target||p.id,query)}</div>
         <div class="hit-snippet">${highlight(p.path||'',query)}</div></div>`).join(''):'<div class="empty">没有命中的 pane</div>';
       html+=`<h2>对话内容 <span class="count">${messages.length}</span></h2>`;
       html+=messages.length?messages.map(m=>`<div class="hit" data-open="${esc(m.pane)}">
-        <div class="hit-top"><span>${esc(m.role||'')}</span><span>${esc(m.title||m.pane)}</span></div>
+        <div class="hit-top"><span>${esc(m.role||'')}</span><span>${esc(m.host||'')}</span><span>${esc(m.session||m.title||m.pane)}</span></div>
         <div class="hit-snippet">${highlight(m.snippet||'',query)}</div></div>`).join(''):'<div class="empty">最近对话里没有命中</div>';
       if(cards.length){
         html+=`<h2>看板卡片 <span class="count">${cards.length}</span></h2>`;
@@ -470,7 +504,7 @@
           <div class="hit-snippet">${highlight((c.body||'').slice(0,300),query)}</div></div>`).join('');
       }
       $('results').innerHTML=html;
-    }catch(err){toast(err.message);}
+    }
   }
 
   document.addEventListener('click',async event=>{

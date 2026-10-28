@@ -221,6 +221,47 @@ class HomeBoardTests(unittest.TestCase):
 
         self.assertEqual(self.client.get("/api/home/search", params={"q": "  "}).json()["messages"], [])
 
+    def test_search_puts_servers_and_sessions_before_messages(self):
+        self.tmux.panes[0]["command"] = "claude"
+        self.tmux.panes[0]["session"] = "codex-work"
+        self.tmux.panes[0]["target"] = "codex-work:0.0"
+        result = self.client.get("/api/home/search", params={"q": "codex"}).json()
+        self.assertEqual(result["mode"], "literal")
+        self.assertTrue(result["sessions"], "the tmux session name must be in its own group")
+        self.assertEqual(result["sessions"][0]["session"], "codex-work")
+        self.assertEqual(result["panes"][0]["match"], "name")
+        # a plain word stays literal: no regex surprises like "a.b" matching "axb"
+        literal = self.client.get("/api/home/search", params={"q": "codex-work:0.0"}).json()
+        self.assertEqual(literal["mode"], "regex")
+        dotted = self.client.get("/api/home/search", params={"q": "a.b"}).json()
+        self.assertEqual(dotted["mode"], "regex")  # a dot is a metacharacter
+        self.assertEqual(self.client.get("/api/home/search", params={"q": "cod"}).json()["mode"], "literal")
+
+    def test_search_supports_regular_expressions(self):
+        self.tmux.panes[0]["command"] = "claude"
+        anchored = self.client.get("/api/home/search", params={"q": "^Review"}).json()
+        self.assertEqual(anchored["mode"], "regex")
+        self.assertEqual([pane["id"] for pane in anchored["panes"]], ["%4"])
+
+        alternation = self.client.get("/api/home/search", params={"q": "nomatch|Review"}).json()
+        self.assertEqual([pane["id"] for pane in alternation["panes"]], ["%4"])
+
+        # a broken pattern must not fail the request: it falls back to literal
+        broken = self.client.get("/api/home/search", params={"q": "Review("}).json()
+        self.assertEqual(broken["mode"], "literal-fallback")
+        self.assertEqual(broken["panes"], [])
+
+    def test_search_matches_a_saved_server_name(self):
+        self.tmux.panes[0]["command"] = "claude"
+        created = self.client.post("/api/remote-hosts", json={
+            "name": "build-box", "hostname": "10.0.0.55", "port": 22, "username": "ubuntu",
+            "auth_type": "agent", "verify": False,
+        })
+        self.assertEqual(created.status_code, 201)
+        result = self.client.get("/api/home/search", params={"q": "build-box"}).json()
+        self.assertEqual([host["name"] for host in result["hosts"]], ["build-box"])
+        self.assertEqual(result["hosts"][0]["hostname"], "10.0.0.55")
+
     # ------------------------------------------------------------------ cards
     def test_cards_can_be_published_read_and_removed(self):
         created = self.client.post("/api/home/cards", json={

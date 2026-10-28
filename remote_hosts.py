@@ -884,6 +884,9 @@ class RemoteHostStore:
 class SSHRunner:
     def __init__(self, host: dict):
         self.host = host
+        # the status sweep sets a short value: it would rather report "unknown"
+        # than let one slow host stall the whole sweep
+        self.capture_timeout: int | None = None
         # ``host["jump_chain"]`` is the resolved hops, nearest first, each with its
         # credential (see RemoteHostStore.jump_chain / the app's runner_for());
         # ``host["jump"]`` is kept as the first hop for callers that only need one.
@@ -1166,7 +1169,7 @@ class SSHRunner:
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
         command = f"${{TMUX_BIN:-tmux}} capture-pane -p -J -e -t {shlex.quote(pane_id)} -S -{max(20, min(history, 5000))}"
-        completed = self.run(command)
+        completed = self.run(command, timeout=self.capture_timeout or 15)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote capture failed")
         return completed.stdout.decode(errors="replace")
