@@ -209,6 +209,7 @@ TMUX_WEB_HOST=0.0.0.0
 - **支持多级跳板**（A → B → C，最多 `TMUX_WEB_JUMP_MAX_DEPTH` 层，默认 5）：每一跳都用自己的凭据，嵌套成 `ProxyCommand=ssh -W %h:%p ... -o ProxyCommand=ssh -W %h:%p ...`；不允许指向自己、指向不存在的主机、或形成环（保存时返回 422）
 - 删除某台跳板机时，经由它的主机自动回退为直连，不会留下悬空引用
 - 主机列表里会显示完整的「经由 B → A」链路；编辑弹窗里可以改跳板机；`GET /api/remote-hosts` 也返回 `jump_chain` 和 `jump_path`
+- **跳板机不必先添加成主机**：下拉选一台已保存的主机，或者直接在下面那行填 `user@host:port`（也可以只填 `host`）。手填的跳板机复用目标机自己的凭据（同一把 key / 同一个密码），所以密码只存一份；如果跳板机需要**不同**的凭据，就把它单独添加成主机再用下拉引用。两种方式只能选一种，同时填会返回 422
 
 ### HTTP API
 
@@ -222,6 +223,13 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
     "name": "inner-box", "hostname": "10.0.0.20", "username": "ubuntu", "port": 22,
     "auth_type": "agent", "jump_host_id": "<跳板机的 id>", "verify": false
   }'
+
+# 或者不保存跳板机，直接写 user@host:port（复用目标机的凭据）
+curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN" \\
+  -H 'Content-Type: application/json' -d '{
+    "name": "inner-box", "hostname": "10.0.0.20", "username": "ubuntu",
+    "auth_type": "agent", "jump_spec": "ops@bastion.example:2222", "verify": false
+  }'
 ```
 
 ### MCP
@@ -229,7 +237,7 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 | 工具 | 作用 |
 | --- | --- |
 | `list_remote_hosts` | 列出已保存主机（id/名称/地址/认证方式/跳板机），不返回凭据 |
-| `add_remote_host` | 添加主机：`name`、`hostname`、`username`、`port`、`auth_type`（默认 `agent`）、`credential`、`jump_host`（跳板机 id）、`verify` |
+| `add_remote_host` | 添加主机：`name`、`hostname`、`username`、`port`、`auth_type`（默认 `agent`）、`credential`、`jump_host`（已保存跳板机的 id）**或** `jump`（`user@host:port`，不必先添加）、`verify` |
 | `remove_remote_host` | 按 id 删除主机 |
 
 `auth_type=agent` 用本机 ssh-agent 密钥，agent 无需传任何密码；`verify=false` 时即使暂时连不上也会保存，等下次连通再固定指纹。

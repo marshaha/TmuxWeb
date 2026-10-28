@@ -342,8 +342,10 @@ class RemoteHostCreateRequest(BaseModel):
     host_key: str = Field(default="", max_length=20_000)
     fingerprint: str = Field(default="", max_length=256)
     confirm_fingerprint: str = Field(default="", max_length=256)
-    # the hop to dial first (another stored host, by id); empty = direct
+    # the hop to dial first: either a saved host id, or a "user@host:port" typed in
+    # directly (it then borrows this host's credential); at most one of the two
     jump_host_id: str = Field(default="", max_length=64)
+    jump_spec: str = Field(default="", max_length=300)
     # saving with a wrong password/key is allowed: the host is stored and shows
     # up as offline until the credential is fixed
     verify: bool = True
@@ -362,6 +364,7 @@ class RemoteHostUpdateRequest(BaseModel):
     host_key: str | None = Field(default=None, min_length=20, max_length=20_000)
     fingerprint: str | None = Field(default=None, min_length=8, max_length=256)
     jump_host_id: str | None = Field(default=None, max_length=64)
+    jump_spec: str | None = Field(default=None, max_length=300)
 
 
 class RemoteHostReorderRequest(BaseModel):
@@ -1220,8 +1223,10 @@ def create_app(
                 {"id": host.get("id"), "name": host.get("name"), "hostname": host.get("hostname"),
                  "port": host.get("port"), "username": host.get("username"),
                  "auth_type": host.get("auth_type"), "jump_host_id": host.get("jump_host_id") or "",
-                 "jump_path": " -> ".join(hop.get("name") or hop["id"]
+                 "jump_path": " -> ".join((hop.get("name") if hop.get("inline")
+                                           else hop.get("name") or hop["id"])
                                           for hop in remote_hosts.jump_chain(host, limit=jump_max_depth)),
+                 "jump_spec": host.get("jump_spec") or "",
                  "fingerprint": host.get("fingerprint") or ""}
                 for host in hosts
             ]}
@@ -1237,6 +1242,7 @@ def create_app(
                 auth_type=auth_type,
                 credential=str(arguments.get("credential") or ""),
                 jump_host_id=str(arguments.get("jump_host") or "").strip(),
+                jump_spec=str(arguments.get("jump") or "").strip(),
                 verify=bool(arguments.get("verify", True)),
             )
             try:
@@ -1244,7 +1250,8 @@ def create_app(
             except HTTPException as exc:
                 raise McpToolError(str(exc.detail)) from exc
             return {"host": {key: created.get(key) for key in
-                             ("id", "name", "hostname", "port", "username", "auth_type", "jump_host_id")},
+                             ("id", "name", "hostname", "port", "username", "auth_type",
+                              "jump_host_id", "jump_spec")},
                     "note": "the console sidebar picks it up on its next refresh"}
         if name == "remove_remote_host":
             host_id = str(arguments.get("id") or "").strip()
@@ -1472,6 +1479,7 @@ def create_app(
                 name=payload.name, hostname=payload.hostname, port=payload.port, username=payload.username,
                 auth_type=payload.auth_type, credential=payload.credential, host_key=payload.host_key,
                 fingerprint=payload.fingerprint, jump_host_id=payload.jump_host_id,
+                jump_spec=payload.jump_spec,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1550,7 +1558,7 @@ def create_app(
                 name=payload.name, hostname=payload.hostname, port=payload.port,
                 username=payload.username, auth_type=payload.auth_type,
                 credential=payload.credential, host_key=host_key, fingerprint=fingerprint,
-                jump_host_id=payload.jump_host_id,
+                jump_host_id=payload.jump_host_id, jump_spec=payload.jump_spec,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1589,13 +1597,14 @@ def create_app(
         for host in stored:
             item = {key: host[key] for key in (
                 "id", "name", "hostname", "port", "username", "auth_type", "fingerprint", "created_at",
-                "enabled", "position", "jump_host_id",
+                "enabled", "position", "jump_host_id", "jump_spec",
             )}
             chain = remote_hosts.jump_chain(host, limit=jump_max_depth)
             item["jump_chain"] = [{"id": hop["id"], "name": hop.get("name") or hop["id"],
                                    "hostname": hop.get("hostname")}
                                   for hop in chain]
-            item["jump_path"] = " -> ".join(names.get(hop["id"], hop.get("name") or hop["id"])
+            item["jump_path"] = " -> ".join((hop.get("name") if hop.get("inline")
+                                             else names.get(hop["id"], hop.get("name") or hop["id"]))
                                             for hop in chain)
             result.append(item)
         return {"hosts": result}

@@ -594,6 +594,10 @@ def parse_tmux_panes(raw: str, host_id: str, separator: str = FIELD_SEPARATOR) -
     return panes
 
 
+def _format_jump_spec(parsed: dict) -> str:
+    return f"{parsed['username']}@{parsed['hostname']}:{parsed['port']}"
+
+
 class RemoteHostStore:
     def __init__(self, db_path: str | Path, key_path: str | Path):
         self.db_path = Path(db_path) if db_path != ":memory:" else db_path
@@ -615,7 +619,8 @@ class RemoteHostStore:
                     port INTEGER NOT NULL, username TEXT NOT NULL, auth_type TEXT NOT NULL,
                     credential BLOB NOT NULL, host_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
                     created_at REAL NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-                    position INTEGER NOT NULL DEFAULT 0, jump_host_id TEXT NOT NULL DEFAULT ''
+                    position INTEGER NOT NULL DEFAULT 0, jump_host_id TEXT NOT NULL DEFAULT '',
+                    jump_spec TEXT NOT NULL DEFAULT ''
                 )
             """)
             columns = {row[1] for row in self.connection.execute("PRAGMA table_info(remote_hosts)")}
@@ -626,6 +631,10 @@ class RemoteHostStore:
             if "jump_host_id" not in columns:  # databases from before jump hosts
                 self.connection.execute(
                     "ALTER TABLE remote_hosts ADD COLUMN jump_host_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "jump_spec" not in columns:  # databases from before inline jump hosts
+                self.connection.execute(
+                    "ALTER TABLE remote_hosts ADD COLUMN jump_spec TEXT NOT NULL DEFAULT ''"
                 )
 
     def _load_key(self) -> bytes:
@@ -639,6 +648,47 @@ class RemoteHostStore:
         finally:
             os.close(fd)
         return key
+
+    @staticmethod
+    def parse_jump_spec(spec: str, *, default_user: str = "", default_port: int = 22) -> dict:
+        """Parse ``[user@]host[:port]`` into a hop description.
+
+        This lets a jump host be dialled without first saving it as a host of its
+        own; it reuses the target's credential (a bastion that trusts the same key
+        or password), which keeps credentials in one place.
+        """
+        spec = (spec or "").strip()
+        if not spec:
+            raise ValueError("jump host is empty")
+        if "@" in spec:
+            user, _, rest = spec.partition("@")
+            user = user.strip()
+        else:
+            user, rest = default_user, spec
+        rest = rest.strip()
+        hostname, port = rest, int(default_port or 22)
+        if rest.startswith("["):  # [ipv6]:port
+            closing = rest.find("]")
+            if closing < 0:
+                raise ValueError("invalid jump host")
+            hostname = rest[1:closing]
+            tail = rest[closing + 1:]
+            if tail.startswith(":"):
+                port = int(tail[1:])
+        elif rest.count(":") == 1:
+            hostname, _, port_text = rest.partition(":")
+            if port_text.isdigit():
+                port = int(port_text)
+            else:
+                raise ValueError("invalid jump host port")
+        elif rest.count(":") > 1:
+            raise ValueError("wrap an IPv6 jump host in [] and add the port")
+        hostname = hostname.strip()
+        if not hostname or not user:
+            raise ValueError("jump host needs a host and a user")
+        if not (1 <= port <= 65535):
+            raise ValueError("invalid jump host port")
+        return {"hostname": hostname, "port": port, "username": user}
 
     def _checked_jump(self, jump_host_id: str | None, host_id: str = "") -> str:
         """Validate a jump reference: it must exist, not be self, and not loop."""
@@ -666,7 +716,7 @@ class RemoteHostStore:
 
     def add_host(self, *, name: str, hostname: str, port: int, username: str,
                  auth_type: str, credential: str, host_key: str, fingerprint: str,
-                 jump_host_id: str = "") -> dict:
+                 jump_host_id: str = "", jump_spec: str = "") -> dict:
         if auth_type not in AUTH_TYPES:
             raise ValueError("invalid auth type")
         if auth_type in {"password", "key"} and not credential:
@@ -676,7 +726,13 @@ class RemoteHostStore:
         if auth_type == "key":
             validate_private_key_text(credential)
         host_id = secrets.token_hex(8)
+        if (jump_host_id or "").strip() and (jump_spec or "").strip():
+            raise ValueError("choose a saved jump host or type one, not both")
         jump_host_id = self._checked_jump(jump_host_id)
+        jump_spec = (jump_spec or "").strip()
+        if jump_spec:
+            parsed = self.parse_jump_spec(jump_spec, default_user=username, default_port=22)
+            jump_spec = _format_jump_spec(parsed)
         encrypted = self.fernet.encrypt(credential.encode())
         position = self.connection.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM remote_hosts"
@@ -684,10 +740,10 @@ class RemoteHostStore:
         with self.connection:
             self.connection.execute(
                 "INSERT INTO remote_hosts (id, name, hostname, port, username, auth_type, credential,"
-                " host_key, fingerprint, created_at, enabled, position, jump_host_id)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)",
+                " host_key, fingerprint, created_at, enabled, position, jump_host_id, jump_spec)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
                 (host_id, name, hostname, int(port), username, auth_type, encrypted,
-                 host_key, fingerprint, time.time(), position, jump_host_id),
+                 host_key, fingerprint, time.time(), position, jump_host_id, jump_spec),
             )
         return self.get_host(host_id)
 
@@ -710,7 +766,8 @@ class RemoteHostStore:
     def update_host(self, host_id: str, *, name: str | None = None, hostname: str | None = None,
                     port: int | None = None, username: str | None = None, auth_type: str | None = None,
                     credential: str | None = None, host_key: str | None = None,
-                    fingerprint: str | None = None, jump_host_id: str | None = None) -> dict:
+                    fingerprint: str | None = None, jump_host_id: str | None = None,
+                    jump_spec: str | None = None) -> dict:
         """Edit a stored host. ``credential=None`` keeps the saved secret."""
         current = self.get_host(host_id, include_credential=True)
         auth = auth_type or current["auth_type"]
@@ -734,16 +791,22 @@ class RemoteHostStore:
             "fingerprint": (fingerprint or current["fingerprint"]),
             "jump_host_id": self._checked_jump(
                 current.get("jump_host_id", "") if jump_host_id is None else jump_host_id, host_id),
+            "jump_spec": (current.get("jump_spec", "") if jump_spec is None else jump_spec or "").strip(),
         }
+        if fields["jump_host_id"] and fields["jump_spec"]:
+            raise ValueError("choose a saved jump host or type one, not both")
+        if fields["jump_spec"]:
+            fields["jump_spec"] = _format_jump_spec(self.parse_jump_spec(
+                fields["jump_spec"], default_user=fields["username"], default_port=22))
         if not fields["name"] or not fields["hostname"] or not fields["username"]:
             raise ValueError("name, hostname and username are required")
         with self.connection:
             self.connection.execute(
                 "UPDATE remote_hosts SET name=?, hostname=?, port=?, username=?, auth_type=?,"
-                " credential=?, host_key=?, fingerprint=?, jump_host_id=? WHERE id=?",
+                " credential=?, host_key=?, fingerprint=?, jump_host_id=?, jump_spec=? WHERE id=?",
                 (fields["name"], fields["hostname"], fields["port"], fields["username"],
                  fields["auth_type"], fields["credential"], fields["host_key"], fields["fingerprint"],
-                 fields["jump_host_id"], host_id),
+                 fields["jump_host_id"], fields["jump_spec"], host_id),
             )
         return self.get_host(host_id)
 
@@ -769,7 +832,33 @@ class RemoteHostStore:
         return cursor.rowcount > 0
 
     def jump_chain(self, host: dict, limit: int = 5) -> list[dict]:
+        """Inline ``jump_spec`` hop = one entry that reuses this host's credential."""
         """Every hop for a host, nearest first (A -> B -> C gives [B, C], both credentialed)."""
+        spec = (host.get("jump_spec") or "").strip()
+        if spec and not (host.get("jump_host_id") or "").strip():
+            if not host.get("credential") and host.get("id"):
+                # the inline hop borrows this host's secret, so it has to be loaded
+                try:
+                    host = self.get_host(host["id"], include_credential=True)
+                except KeyError:
+                    pass
+            try:
+                parsed = self.parse_jump_spec(spec, default_user=host.get("username") or "",
+                                              default_port=22)
+            except ValueError:
+                return []
+            return [{
+                "id": "",
+                "name": spec,
+                "hostname": parsed["hostname"],
+                "port": parsed["port"],
+                "username": parsed["username"],
+                # a bastion typed inline trusts the same key/password as the target
+                "auth_type": host.get("auth_type") or "agent",
+                "credential": host.get("credential") or "",
+                "host_key": "",
+                "inline": True,
+            }]
         chain: list[dict] = []
         seen: set[str] = set()
         current = (host.get("jump_host_id") or "").strip()

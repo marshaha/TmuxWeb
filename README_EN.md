@@ -215,6 +215,9 @@ A saved host can be dialled **through another saved host** (`jump_host_id`):
 - deleting a hop falls back to a direct connection instead of leaving a dangling reference
 - the host list shows the whole 经由 B -> A path, the edit dialog can change the first hop, and `GET /api/remote-hosts` returns
   `jump_chain` / `jump_path`
+- **a jump host does not have to be saved first**: pick one from the list or type `user@host:port` (or just `host`) in the
+  field below it. A typed hop reuses the target's own credential, so a shared key/password is stored once; give the bastion a
+  different credential by saving it as a host and referencing it instead. Supplying both forms at once is rejected with 422.
 
 ### HTTP / MCP
 

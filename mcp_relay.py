@@ -113,6 +113,7 @@ class RelayTools:
             {"id": host.get("id"), "name": host.get("name"), "hostname": host.get("hostname"),
              "port": host.get("port"), "username": host.get("username"),
              "auth_type": host.get("auth_type"), "jump_host_id": host.get("jump_host_id") or "",
+             "jump_spec": host.get("jump_spec") or "",
              "fingerprint": host.get("fingerprint") or ""}
             for host in hosts
         ]}
@@ -127,11 +128,13 @@ class RelayTools:
             "auth_type": str(arguments.get("auth_type") or "agent").strip() or "agent",
             "credential": str(arguments.get("credential") or ""),
             "jump_host_id": str(arguments.get("jump_host") or "").strip(),
+            "jump_spec": str(arguments.get("jump") or "").strip(),
             "verify": bool(arguments.get("verify", True)),
         }
         result = request("/api/remote-hosts", payload, timeout=90)
         return {"host": {key: result.get(key) for key in
-                         ("id", "name", "hostname", "port", "username", "auth_type", "jump_host_id")},
+                         ("id", "name", "hostname", "port", "username", "auth_type", "jump_host_id",
+                          "jump_spec")},
                 "note": "the console sidebar picks it up on its next refresh"}
 
     def remove_remote_host(self, arguments: dict) -> dict:
@@ -253,7 +256,10 @@ def tool_schemas() -> list[dict]:
                     "auth_type": {"type": "string", "enum": ["agent", "password", "key"], "default": "agent"},
                     "credential": {"type": "string", "maxLength": 100000,
                                    "description": "password or private key text; omit for auth_type=agent"},
-                    "jump_host": {"type": "string", "description": "id of another saved host to dial through"},
+                    "jump_host": {"type": "string",
+                                  "description": "id of another saved host to dial through (see list_remote_hosts)"},
+                    "jump": {"type": "string",
+                             "description": "or type a jump host as user@host:port; it reuses this host's credential"},
                     "verify": {"type": "boolean", "default": True},
                 },
                 "required": ["name", "hostname", "username"],

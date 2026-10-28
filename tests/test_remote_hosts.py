@@ -177,6 +177,44 @@ class RemoteHostTests(unittest.TestCase):
         self.assertIn(str(target_password), body)
         self.assertTrue(body.startswith("#!/bin/sh"))
 
+    def test_a_jump_host_can_be_typed_instead_of_saved(self):
+        self.assertEqual(RemoteHostStore.parse_jump_spec("bastion.example", default_user="app"),
+                         {"hostname": "bastion.example", "port": 22, "username": "app"})
+        self.assertEqual(RemoteHostStore.parse_jump_spec("ops@bastion.example:2222"),
+                         {"hostname": "bastion.example", "port": 2222, "username": "ops"})
+        self.assertEqual(RemoteHostStore.parse_jump_spec("[::1]:2200", default_user="app")["port"], 2200)
+        for bad in ("", "host:abc", "::1"):
+            with self.assertRaises(ValueError):
+                RemoteHostStore.parse_jump_spec(bad, default_user="app")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = RemoteHostStore(root / "hosts.db", root / "master.key")
+            host = store.add_host(name="inner", hostname="10.0.0.9", port=22, username="app",
+                                  auth_type="password", credential="target-secret",
+                                  host_key="", fingerprint="",
+                                  jump_spec="ops@bastion.example:2222")
+            self.assertEqual(host["jump_spec"], "ops@bastion.example:2222")
+            chain = store.jump_chain(host)
+            self.assertEqual(len(chain), 1)
+            self.assertTrue(chain[0]["inline"])
+            self.assertEqual(chain[0]["username"], "ops")
+            self.assertEqual(chain[0]["port"], 2222)
+            # it borrows the target's own credential, which keeps secrets in one place
+            self.assertEqual(chain[0]["credential"], "target-secret")
+
+            runner = SSHRunner({**host, "jump_chain": chain})
+            with tempfile.TemporaryDirectory() as nested:
+                proxy, _ = runner.build_jump_proxy(Path(nested))
+            self.assertIn("ops@bastion.example", proxy)
+            self.assertIn("-p 2222", proxy)
+
+            # a saved hop and a typed one are mutually exclusive
+            with self.assertRaises(ValueError):
+                store.add_host(name="clash", hostname="10.0.0.10", port=22, username="app",
+                               auth_type="agent", credential="", host_key="", fingerprint="",
+                               jump_host_id=host["id"], jump_spec="bastion.example")
+
     def test_database_file_is_owner_only(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "hosts.db"

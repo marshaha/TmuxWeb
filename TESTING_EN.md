@@ -115,6 +115,9 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   resumes it; the sidebar polls every 20s without resetting scroll; `/api/hosts` is served from a 5s snapshot unless
   `?refresh=1`. Covered by `test_hosts_list_is_snapshotted_between_polls` and the index-page marker assertions.
 
+- Unsaved jump host: leave the picker at 直连, type `ops@bastion.example:2222` in the field below, save — the row shows
+  经由 ops@bastion.example:2222 and the generated ssh command carries a ProxyCommand for it (using the target's credential).
+  `host:abc` and supplying the picker *and* the text at once are both 422.
 - Multi-hop: with A, B (jump=A) and C (jump=B) reachable, `GET /api/remote-hosts` reports C's `jump_path` as `B -> A` and the
   list shows 经由 B -> A; panes under C still list and read (A, B, C dialled in order). Deleting B leaves C at `经由 A`;
   deleting A makes it direct. Setting A's jump to C is rejected with 422.
