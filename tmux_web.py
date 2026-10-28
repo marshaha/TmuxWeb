@@ -319,6 +319,9 @@ class RemoteHostCreateRequest(BaseModel):
     host_key: str = Field(min_length=20, max_length=20_000)
     fingerprint: str = Field(min_length=8, max_length=256)
     confirm_fingerprint: str = Field(min_length=8, max_length=256)
+    # saving with a wrong password/key is allowed: the host is stored and shows
+    # up as offline until the credential is fixed
+    verify: bool = True
 
 
 class RemoteHostUpdateRequest(BaseModel):
@@ -330,6 +333,7 @@ class RemoteHostUpdateRequest(BaseModel):
     username: str | None = Field(default=None, min_length=1, max_length=64)
     auth_type: str | None = None
     credential: str | None = Field(default=None, max_length=100_000)
+    verify: bool | None = None
     host_key: str | None = Field(default=None, min_length=20, max_length=20_000)
     fingerprint: str | None = Field(default=None, min_length=8, max_length=256)
 
@@ -1265,12 +1269,13 @@ def create_app(
             auth_type=payload.auth_type, credential=payload.credential, host_key=payload.host_key,
             fingerprint=payload.fingerprint,
         )
-        try:
-            credentialed = remote_hosts.get_host(host["id"], include_credential=True)
-            await asyncio.to_thread(make_remote_runner(credentialed).check)
-        except (RuntimeError, OSError) as exc:
-            remote_hosts.delete_host(host["id"])
-            raise HTTPException(status_code=424, detail=str(exc)) from exc
+        if payload.verify:
+            try:
+                credentialed = remote_hosts.get_host(host["id"], include_credential=True)
+                await asyncio.to_thread(make_remote_runner(credentialed).check)
+            except (RuntimeError, OSError) as exc:
+                remote_hosts.delete_host(host["id"])
+                raise HTTPException(status_code=424, detail=str(exc)) from exc
         return host
 
     @app.post("/api/remote-hosts/test")
@@ -1338,6 +1343,8 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+        if payload.verify is False:
+            return host
         try:
             credentialed = remote_hosts.get_host(host_id, include_credential=True)
             await asyncio.to_thread(make_remote_runner(credentialed).check)

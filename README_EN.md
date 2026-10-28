@@ -9,6 +9,8 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 ## Features
 
 - **Multi-host control plane**: one local service manages localhost and SSH hosts; remote machines only need SSH and tmux.
+- **Host form**: 主机/IP gets its own full-width row; a 显示凭据内容 checkbox reveals the password (and unmasks the private
+  key); 不校验连接直接保存 stores a host even when the password/key is wrong, so it can be fixed later.
 - **tmux on macOS**: a non-interactive ssh command does not see Homebrew's PATH, so the first connection resolves the binary
   to an absolute path (PATH → /opt/homebrew/bin → /usr/local/bin → ~/bin → `bash -lc` / `zsh -lc`), caches it, and exports
   `TMUX_BIN` for every remote command; a genuinely missing tmux reports `brew install tmux`, and `TMUX_WEB_TMUX_PATH` overrides the lookup.

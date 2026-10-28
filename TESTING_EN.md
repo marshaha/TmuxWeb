@@ -73,6 +73,10 @@ This document covers automated tests that do not require real AI CLIs, plus manu
 - macOS host (Homebrew tmux): adding a Mac with password auth must connect; a real failure should be actionable
   (`brew install tmux`) rather than a bare `command not found`. Covered by four unit tests around TMUX_PROBE_SCRIPT and TMUX_BIN.
 
+- Host form: 主机/IP spans its own full-width row (also in the edit dialog); 显示凭据内容 turns the password into plain text and
+  unmasks the private key; 不校验连接直接保存 must save a host with a wrong password (it shows offline) so it can be fixed later
+  (`test_a_host_may_be_saved_without_a_working_credential`).
+
 ## 1. Install test dependencies
 
 ```bash

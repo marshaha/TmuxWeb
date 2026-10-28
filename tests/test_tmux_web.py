@@ -304,6 +304,39 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("Permission denied", failing.json()["detail"])
         self.assertEqual(self.remote_store.hosts[host_id][0]["username"], original["username"])
 
+    def test_a_host_may_be_saved_without_a_working_credential(self):
+        self.login()
+        host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        fingerprint = host_key_fingerprint(host_key)
+        payload = {
+            "name": "half-configured", "hostname": "10.0.0.9", "port": 22, "username": "ubuntu",
+            "auth_type": "password", "credential": "not-the-password", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        }
+        with patch.object(FakeSSHRunner, "check", side_effect=RuntimeError("Permission denied")):
+            refused = self.client.post("/api/remote-hosts", json=payload)
+            saved = self.client.post("/api/remote-hosts", json={**payload, "verify": False})
+        self.assertEqual(refused.status_code, 424)
+        self.assertEqual(saved.status_code, 201)
+        host_id = saved.json()["id"]
+        self.assertIn(host_id, self.remote_store.hosts)
+
+        # editing with verify=false keeps the change even though auth is broken
+        with patch.object(FakeSSHRunner, "check", side_effect=RuntimeError("Permission denied")):
+            edited = self.client.put(f"/api/remote-hosts/{host_id}",
+                                     json={"username": "someone", "verify": False})
+        self.assertEqual(edited.status_code, 200)
+        self.assertEqual(self.remote_store.hosts[host_id][0]["username"], "someone")
+
+    def test_host_form_lets_you_reveal_and_skip_verification(self):
+        self.login()
+        page = self.client.get("/hosts").text
+        for marker in ('id="show-secret"', 'id="skip-verify"', 'id="edit-show-secret"',
+                       'id="edit-skip-verify"', "function applySecret(", ".field.host-row{",
+                       ".field{display:grid;gap:5px;grid-template-columns:minmax(0,1fr)",
+                       "verify:!skipVerify", "payload.verify=!skipVerify"):
+            self.assertIn(marker, page)
+
     def test_reorders_remote_hosts(self):
         self.login()
         host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
