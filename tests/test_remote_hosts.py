@@ -20,7 +20,9 @@ FAKE_SSH_HOST = {"id": "probe", "hostname": "10.0.0.9", "port": 22, "username": 
 
 
 def clear_tmux_cache(host):
-    remote_hosts._TMUX_BIN_CACHE.pop(remote_hosts.tmux_cache_key(host), None)
+    key = remote_hosts.tmux_cache_key(host)
+    remote_hosts._TMUX_BIN_CACHE.pop(key, None)
+    remote_hosts._TMUX_BIN_FAILED.pop(key, None)
 
 
 class RemoteHostTests(unittest.TestCase):
@@ -712,6 +714,62 @@ class RemoteHostTests(unittest.TestCase):
             )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout.strip(), str(binary))
+
+    def test_the_tmux_path_is_saved_with_the_host(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RemoteHostStore(Path(directory) / "hosts.db", Path(directory) / "key")
+            host = store.add_host(name="mac", hostname="10.0.0.8", port=22, username="mars",
+                                  auth_type="agent", credential="", host_key="", fingerprint="")
+            self.assertEqual(host.get("tmux_path", ""), "")
+            updated = store.update_host(host["id"], tmux_path="/opt/homebrew/bin/tmux")
+            self.assertEqual(updated["tmux_path"], "/opt/homebrew/bin/tmux")
+            self.assertEqual(store.get_host(host["id"])["tmux_path"], "/opt/homebrew/bin/tmux")
+            # editing something else must not drop it
+            renamed = store.update_host(host["id"], name="mac-mini")
+            self.assertEqual(renamed["tmux_path"], "/opt/homebrew/bin/tmux")
+
+    def test_a_saved_tmux_path_skips_the_probe(self):
+        host = dict(FAKE_SSH_HOST, tmux_path="/opt/homebrew/bin/tmux")
+        clear_tmux_cache(host)
+        runner = SSHRunner(host)
+
+        def must_not_probe(*args, **kwargs):
+            raise AssertionError("a saved tmux path must not trigger a probe")
+
+        runner.run = must_not_probe
+        self.assertEqual(runner.tmux_binary(), "/opt/homebrew/bin/tmux")
+
+    def test_a_successful_probe_hands_the_path_to_the_app(self):
+        host = dict(FAKE_SSH_HOST)
+        clear_tmux_cache(host)
+        runner = SSHRunner(host)
+
+        class Result:
+            returncode = 0
+            stdout = b"/opt/homebrew/bin/tmux\n"
+            stderr = b""
+
+        runner.run = lambda command, **kwargs: Result()
+        saved = []
+        runner.on_tmux_bin = saved.append
+        self.assertEqual(runner.tmux_binary(), "/opt/homebrew/bin/tmux")
+        self.assertEqual(saved, ["/opt/homebrew/bin/tmux"])
+
+    def test_the_terminal_attach_uses_the_resolved_tmux(self):
+        """`zsh: command not found: tmux` came from the PTY attach missing TMUX_BIN."""
+        host = dict(FAKE_SSH_HOST, id="mac", tmux_path="/opt/homebrew/bin/tmux")
+        clear_tmux_cache(host)
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch("subprocess.Popen") as popen, \
+                mock.patch("os.openpty", return_value=(9, 10)), \
+                mock.patch("os.close"), \
+                mock.patch.object(remote_hosts.RemoteTerminalSession, "_set_size"):
+            session = remote_hosts.RemoteTerminalSession(host, "%13", 80, 24)
+            argv = popen.call_args[0][0]
+            remote = argv[-1]
+        self.assertIn("export TMUX_BIN=/opt/homebrew/bin/tmux", remote)
+        self.assertIn("attach-session -t %13", remote)
+        self.assertEqual(session.pane_id, "%13")
 
     def test_a_stalled_transcript_blames_the_link(self):
         """A hung ssh must surface as 'slow network', not as a broken transcript."""

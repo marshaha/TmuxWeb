@@ -592,6 +592,13 @@ def create_app(
             host["jump_chain"] = chain
             host["jump"] = chain[0]
         runner = make_remote_runner(host)
+        if hasattr(runner, "on_tmux_bin"):
+            def remember_tmux(path: str) -> None:
+                try:
+                    remote_hosts.update_host(host["id"], tmux_path=path)
+                except (KeyError, ValueError, OSError):
+                    LOGGER.warning("could not persist tmux path for %s", host.get("name") or host.get("id"))
+            runner.on_tmux_bin = remember_tmux
         if not (host.get("host_key") or "").strip() and hasattr(runner, "on_host_key"):
             def persist(line: str) -> None:
                 try:
@@ -1241,6 +1248,7 @@ def create_app(
                                            else hop.get("name") or hop["id"])
                                           for hop in remote_hosts.jump_chain(host, limit=jump_max_depth)),
                  "jump_spec": host.get("jump_spec") or "",
+                 "tmux_path": host.get("tmux_path") or "",
                  "fingerprint": host.get("fingerprint") or ""}
                 for host in hosts
             ]}
@@ -1609,9 +1617,9 @@ def create_app(
         names = {host["id"]: host.get("name") or host["id"] for host in stored}
         result = []
         for host in stored:
-            item = {key: host[key] for key in (
+            item = {key: host.get(key, "") for key in (
                 "id", "name", "hostname", "port", "username", "auth_type", "fingerprint", "created_at",
-                "enabled", "position", "jump_host_id", "jump_spec",
+                "enabled", "position", "jump_host_id", "jump_spec", "tmux_path",
             )}
             chain = remote_hosts.jump_chain(host, limit=jump_max_depth)
             item["jump_chain"] = [{"id": hop["id"], "name": hop.get("name") or hop["id"],

@@ -651,7 +651,7 @@ class RemoteHostStore:
                     credential BLOB NOT NULL, host_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
                     created_at REAL NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
                     position INTEGER NOT NULL DEFAULT 0, jump_host_id TEXT NOT NULL DEFAULT '',
-                    jump_spec TEXT NOT NULL DEFAULT ''
+                    jump_spec TEXT NOT NULL DEFAULT '', tmux_path TEXT NOT NULL DEFAULT ''
                 )
             """)
             columns = {row[1] for row in self.connection.execute("PRAGMA table_info(remote_hosts)")}
@@ -666,6 +666,10 @@ class RemoteHostStore:
             if "jump_spec" not in columns:  # databases from before inline jump hosts
                 self.connection.execute(
                     "ALTER TABLE remote_hosts ADD COLUMN jump_spec TEXT NOT NULL DEFAULT ''"
+                )
+            if "tmux_path" not in columns:  # databases from before the tmux path was remembered
+                self.connection.execute(
+                    "ALTER TABLE remote_hosts ADD COLUMN tmux_path TEXT NOT NULL DEFAULT ''"
                 )
 
     def _load_key(self) -> bytes:
@@ -747,7 +751,7 @@ class RemoteHostStore:
 
     def add_host(self, *, name: str, hostname: str, port: int, username: str,
                  auth_type: str, credential: str, host_key: str, fingerprint: str,
-                 jump_host_id: str = "", jump_spec: str = "") -> dict:
+                 jump_host_id: str = "", jump_spec: str = "", tmux_path: str = "") -> dict:
         if auth_type not in AUTH_TYPES:
             raise ValueError("invalid auth type")
         if auth_type in {"password", "key"} and not credential:
@@ -771,10 +775,10 @@ class RemoteHostStore:
         with self.connection:
             self.connection.execute(
                 "INSERT INTO remote_hosts (id, name, hostname, port, username, auth_type, credential,"
-                " host_key, fingerprint, created_at, enabled, position, jump_host_id, jump_spec)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
+                " host_key, fingerprint, created_at, enabled, position, jump_host_id, jump_spec, tmux_path)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)",
                 (host_id, name, hostname, int(port), username, auth_type, encrypted,
-                 host_key, fingerprint, time.time(), position, jump_host_id, jump_spec),
+                 host_key, fingerprint, time.time(), position, jump_host_id, jump_spec, tmux_path or ""),
             )
         return self.get_host(host_id)
 
@@ -798,7 +802,7 @@ class RemoteHostStore:
                     port: int | None = None, username: str | None = None, auth_type: str | None = None,
                     credential: str | None = None, host_key: str | None = None,
                     fingerprint: str | None = None, jump_host_id: str | None = None,
-                    jump_spec: str | None = None) -> dict:
+                    jump_spec: str | None = None, tmux_path: str | None = None) -> dict:
         """Edit a stored host. ``credential=None`` keeps the saved secret."""
         current = self.get_host(host_id, include_credential=True)
         auth = auth_type or current["auth_type"]
@@ -823,6 +827,7 @@ class RemoteHostStore:
             "jump_host_id": self._checked_jump(
                 current.get("jump_host_id", "") if jump_host_id is None else jump_host_id, host_id),
             "jump_spec": (current.get("jump_spec", "") if jump_spec is None else jump_spec or "").strip(),
+            "tmux_path": (current.get("tmux_path", "") if tmux_path is None else tmux_path or "").strip(),
         }
         if fields["jump_host_id"] and fields["jump_spec"]:
             raise ValueError("choose a saved jump host or type one, not both")
@@ -834,10 +839,11 @@ class RemoteHostStore:
         with self.connection:
             self.connection.execute(
                 "UPDATE remote_hosts SET name=?, hostname=?, port=?, username=?, auth_type=?,"
-                " credential=?, host_key=?, fingerprint=?, jump_host_id=?, jump_spec=? WHERE id=?",
+                " credential=?, host_key=?, fingerprint=?, jump_host_id=?, jump_spec=?, tmux_path=?"
+                " WHERE id=?",
                 (fields["name"], fields["hostname"], fields["port"], fields["username"],
                  fields["auth_type"], fields["credential"], fields["host_key"], fields["fingerprint"],
-                 fields["jump_host_id"], fields["jump_spec"], host_id),
+                 fields["jump_host_id"], fields["jump_spec"], fields["tmux_path"], host_id),
             )
         return self.get_host(host_id)
 
@@ -918,6 +924,8 @@ class SSHRunner:
         # the status sweep sets a short value: it would rather report "unknown"
         # than let one slow host stall the whole sweep
         self.capture_timeout: int | None = None
+        # set by the app: persist the path we resolved so later sessions skip the probe
+        self.on_tmux_bin = None
         # ``host["jump_chain"]`` is the resolved hops, nearest first, each with its
         # credential (see RemoteHostStore.jump_chain / the app's runner_for());
         # ``host["jump"]`` is kept as the first hop for callers that only need one.
@@ -1035,6 +1043,11 @@ class SSHRunner:
         configured = os.environ.get("TMUX_WEB_TMUX_PATH", "").strip()
         if configured:
             return configured
+        stored = str(self.host.get("tmux_path") or "").strip()
+        if stored.startswith("/"):
+            # resolved by an earlier session and saved with the host: no probe at all
+            _TMUX_BIN_CACHE[tmux_cache_key(self.host)] = stored
+            return stored
         key = tmux_cache_key(self.host)
         cached = _TMUX_BIN_CACHE.get(key)
         if cached:
@@ -1062,6 +1075,11 @@ class SSHRunner:
             raise RuntimeError(TMUX_MISSING_HINT)
         _TMUX_BIN_FAILED.pop(key, None)
         _TMUX_BIN_CACHE[key] = found
+        if callable(getattr(self, "on_tmux_bin", None)):
+            try:
+                self.on_tmux_bin(found)
+            except (KeyError, ValueError, OSError):
+                LOGGER.warning("could not store the tmux path for %s", self.host.get("name") or key)
         return found
 
     def build_jump_proxy(self, directory: Path) -> tuple[str | None, list[tuple[dict, Path]]]:
@@ -1563,9 +1581,17 @@ class RemoteTerminalSession:
             askpass = directory / "askpass.sh"
             runner._write_askpass(directory, password_file, hop_passwords, askpass)
             environment.update({"SSH_ASKPASS": str(askpass), "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": ":0"})
+        # `${TMUX_BIN:-tmux}` is only right when the variable is exported: on macOS a
+        # non-interactive ssh has no /opt/homebrew/bin on PATH, so passing the resolved
+        # path here is what keeps `attach-session` from failing with "command not found".
+        try:
+            tmux_bin = runner.tmux_binary()
+        except RuntimeError:
+            tmux_bin = ""
         remote_command = f"exec ${{TMUX_BIN:-tmux}} attach-session -t {shlex.quote(pane_id)}"
         command, extra = runner.command(remote_command, tty=True, known_hosts=str(known_hosts),
-                                        identity_file=identity_file, jump_proxy=jump_proxy)
+                                        identity_file=identity_file, jump_proxy=jump_proxy,
+                                        tmux_bin=tmux_bin or None)
         environment.update(extra)
         environment["TERM"] = "xterm-256color"
         self.master_fd, slave_fd = os.openpty()

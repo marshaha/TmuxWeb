@@ -250,6 +250,9 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
 - **“Screen capture” is not a terminal** — the chat fallback used `tmux capture-pane`, i.e. a text snapshot rendered into HTML,
   rebuilt from scratch every frame; a full-screen TUI makes that expensive. Terminal mode is a real xterm + PTY (incremental VT
   writes). Agent panes therefore offer a “用终端打开（xterm）” button instead of capturing.
+- **The tmux path is probed once** — the resolved absolute path (e.g. `/opt/homebrew/bin/tmux` on macmini) is saved with the host
+  (`remote_hosts.tmux_path`) and reused by every command *and* by the terminal-mode PTY attach; that attach was missing the path,
+  which is why switching to terminal mode on macOS printed `zsh:1:1 command not found: tmux`. The hosts page shows the saved path.
 - **Slow links** — a transcript pull is bounded (`TMUX_WEB_TRANSCRIPT_TIMEOUT`, 30s; the error says the network is slow rather than
   claiming the transcript is broken), the tmux path probe is bounded (`TMUX_WEB_PROBE_TIMEOUT`, 10s, then it falls back to bare
   `tmux`), and the transfer size is tunable (`TMUX_WEB_REMOTE_PAYLOAD_BYTES`). Measured on oracle (2–4s per ssh command): ~29s to
