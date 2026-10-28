@@ -406,6 +406,17 @@ fi
 TRANSCRIPT_CACHE_LOCK = threading.Lock()
 TRANSCRIPT_CACHE: dict[tuple, dict] = {}
 TRANSCRIPT_CACHE_TTL = 2.0
+# A poll that costs one ssh round trip should not happen every second on a slow
+# host: remember how long the last pull took and reuse the parse for that long.
+_TRANSCRIPT_TTL: dict[str, float] = {}
+
+
+def transcript_ttl(host_id: str) -> float:
+    return _TRANSCRIPT_TTL.get(host_id, TRANSCRIPT_CACHE_TTL)
+
+
+def note_transcript_latency(host_id: str, elapsed: float) -> None:
+    _TRANSCRIPT_TTL[host_id] = max(TRANSCRIPT_CACHE_TTL, min(10.0, round(elapsed, 1)))
 TRANSCRIPT_CACHE_SIZE = 64
 
 
@@ -1347,7 +1358,7 @@ class SSHRunner:
         entry = cache_entry(key)
         now = time.monotonic()
         if entry:
-            if now - entry.get("at", 0) < TRANSCRIPT_CACHE_TTL:
+            if now - entry.get("at", 0) < transcript_ttl(host_id):
                 return copy.deepcopy(entry["data"])
             if entry.get("probe") and self._probe_value(entry["probe"]) == entry.get("stamp"):
                 entry["at"] = now
@@ -1358,6 +1369,7 @@ class SSHRunner:
         state = transcript_state(host_id, pane_id)
         header: dict[str, str] = {}
         payload = b""
+        poll_started = time.monotonic()
         if state and state.get("primary"):
             header, payload, state = self._follow_transcript(host_id, pane_id, state)
         if not header:
@@ -1399,6 +1411,7 @@ class SSHRunner:
             header.get("TMUXWEB_PROVIDER", ""), header.get("TMUXWEB_FORMAT", "jsonl"),
             state.get("buffer", payload), limit, header.get("TMUXWEB_SESSION", ""), 0,
         )
+        note_transcript_latency(host_id, time.monotonic() - poll_started)
         if not data.get("messages"):
             raise RuntimeError("this session has no messages yet")
         stamp = header.get("TMUXWEB_STAMP", "")
@@ -1573,6 +1586,38 @@ class SSHRunner:
 
     def capture(self, pane_id: str, history: int = 5000) -> str:
         return ANSI_RE.sub("", self.capture_ansi(pane_id, history))
+
+    def capture_many(self, pane_ids, history: int = 40) -> dict:
+        """Capture several panes in one ssh call: pane text keyed by pane id.
+
+        The status sweep needs a short tail of every pane on a host; doing that one
+        ssh per pane made a 35-pane macmini cost 35 round trips.
+        """
+        ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))]
+        if not ids:
+            return {}
+        ids = ids[:80]
+        lines = max(20, min(int(history), 5000))
+        script = "for pane in " + " ".join(shlex.quote(pane) for pane in ids) + "; do " \
+                 "printf '\\036%s\\n' \"$pane\"; " \
+                 "${TMUX_BIN:-tmux} capture-pane -p -J -t \"$pane\" -S -" + str(lines) + " 2>/dev/null; done"
+        completed = self.run(script, timeout=self.capture_timeout or 15)
+        if completed.returncode != 0 and not completed.stdout:
+            raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote capture failed")
+        result = {}
+        current = None
+        buffer = []
+        for line in completed.stdout.decode(errors="replace").split("\n"):
+            if line.startswith("\x1e"):
+                if current is not None:
+                    result[current] = ANSI_RE.sub("", "\n".join(buffer))
+                current = line[1:].strip()
+                buffer = []
+            elif current is not None:
+                buffer.append(line)
+        if current is not None:
+            result[current] = ANSI_RE.sub("", "\n".join(buffer))
+        return result
 
     def send_key(self, pane_id: str, key: str) -> None:
         if not PANE_ID_RE.fullmatch(pane_id):

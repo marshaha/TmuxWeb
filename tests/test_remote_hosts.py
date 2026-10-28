@@ -5,6 +5,12 @@ import tempfile
 import unittest
 from unittest import mock
 from unittest.mock import patch
+
+import relay
+
+
+def relay_status(text):
+    return relay.classify(text)
 from pathlib import Path
 
 import remote_hosts
@@ -770,6 +776,44 @@ class RemoteHostTests(unittest.TestCase):
         self.assertIn("export TMUX_BIN=/opt/homebrew/bin/tmux", remote)
         self.assertIn("attach-session -t %13", remote)
         self.assertEqual(session.pane_id, "%13")
+
+    def test_capture_many_batches_panes_into_one_call(self):
+        """The status sweep must not spend one ssh round trip per pane."""
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+        seen = {}
+
+        class Result:
+            returncode = 0
+            stderr = b""
+            stdout = ("\x1e%1\n❯ \n\x1e%2\n\x1b[31mesc to interrupt\x1b[0m\n").encode()
+
+        def run(command, **kwargs):
+            seen["command"] = command
+            return Result()
+
+        runner.run = run
+        texts = runner.capture_many(["%1", "%2", "not-a-pane"], 40)
+        self.assertEqual(sorted(texts), ["%1", "%2"])
+        self.assertIn("❯", texts["%1"])
+        self.assertNotIn("\x1b[", texts["%2"])          # ansi stripped locally
+        self.assertIn("esc to interrupt", texts["%2"])
+        self.assertEqual(texts["%1"].strip(), "❯")
+        self.assertIn("for pane in", seen["command"])
+        self.assertIn("capture-pane", seen["command"])
+        self.assertEqual(relay_status(texts["%1"]), "idle")
+        self.assertEqual(relay_status(texts["%2"]), "busy")
+
+    def test_a_slow_host_keeps_its_transcript_parse_longer(self):
+        remote_hosts._TRANSCRIPT_TTL.pop("slowhost", None)
+        self.assertEqual(remote_hosts.transcript_ttl("slowhost"), remote_hosts.TRANSCRIPT_CACHE_TTL)
+        remote_hosts.note_transcript_latency("slowhost", 4.6)
+        self.assertEqual(remote_hosts.transcript_ttl("slowhost"), 4.6)
+        remote_hosts.note_transcript_latency("slowhost", 0.1)   # never below the floor
+        self.assertEqual(remote_hosts.transcript_ttl("slowhost"), remote_hosts.TRANSCRIPT_CACHE_TTL)
+        remote_hosts.note_transcript_latency("slowhost", 60)    # and never unbounded
+        self.assertEqual(remote_hosts.transcript_ttl("slowhost"), 10.0)
+        remote_hosts._TRANSCRIPT_TTL.pop("slowhost", None)
 
     def test_the_transcript_window_adapts_to_the_link(self):
         """No knob: a slow pull halves the tail, a fast one grows it back."""

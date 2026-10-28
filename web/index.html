@@ -505,7 +505,7 @@ import {marked} from '/assets/marked.esm.js';
     state.transcriptMtime=entry.mtime;state.transcriptSig=entry.sig;state.transcriptProvider=entry.provider||'';renderTranscript(entry.messages);
     $('status-dot').className='status-dot live';$('status-text').textContent=`${entry.provider||'缓存'} · 更新中…`;
     restorePaneUi(id);return true;}
-  function selectPane(id){if(state.selected&&state.selected!==id)savePaneUi(state.selected);closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();return;}const p=state.panes.find(x=>x.id===id);$('selected-title').textContent=p.title||p.target;$('selected-sub').textContent=`${p.target} · ${p.command} · ${p.path}`;$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);syncLiveButton();syncFavButton();
+  function selectPane(id){if(state.selected&&state.selected!==id)savePaneUi(state.selected);closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedIds=[];$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();return;}const p=state.panes.find(x=>x.id===id);$('selected-title').textContent=p.title||p.target;$('selected-sub').textContent=`${p.target} · ${p.command} · ${p.path}`;$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);syncLiveButton();syncFavButton();
     if(state.mode==='terminal'){connectTerminal(id);}
     else if(paintCachedTranscript(id)){refreshTranscript(id);}  // instant paint, then revalidate
     else {connectTranscript(id,true);}
@@ -555,9 +555,41 @@ import {marked} from '/assets/marked.esm.js';
     for(let index=messages.length-1;index>=0;index--){if(baseline.has(String(messages[index].id)))return index+1;}
     return 0;}
   function deliveryHtml(pending){if(pending.status==='sending')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>发送中</span>`;if(pending.status==='sent')return `<span class="message-delivery sent">已发送 ✓</span>`;return `<span class="message-delivery failed">发送失败</span>`;}
-  function renderTranscript(messages=state.transcriptMessages){state.transcriptMessages=messages;state.messageText=new Map(messages.map(message=>[String(message.id),String(message.text||'')]));reconcilePending(messages);const host=$('transcript'),copyButton=id=>`<div class="msg-actions"><button class="msg-copy" type="button" data-msg-copy="${esc(id)}" title="复制整条消息（含代码/表格源码）">复制全部</button></div>`,formal=messages.map(message=>message.role==='user'?`<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${htmlEscape(message.text)}</div>${copyButton(message.id)}</div></article>`:`<article class="chat-message assistant" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copyButton(message.id)}</div></article>`),pending=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
+  function transcriptBubble(message){
+    const copy=`<div class="msg-actions"><button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）">复制全部</button></div>`;
+    return message.role==='user'
+      ? `<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${htmlEscape(message.text)}</div>${copy}</div></article>`
+      : `<article class="chat-message assistant" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copy}</div></article>`;
+  }
+  // A streaming agent appends one message at a time. Rebuilding every bubble (and
+  // re-parsing every markdown block) for each of them is what made a long chat
+  // feel heavy, so an append-only update only renders the new tail.
+  function renderTranscript(messages=state.transcriptMessages){
+    state.transcriptMessages=messages;
+    state.messageText=new Map(messages.map(message=>[String(message.id),String(message.text||'')]));
+    reconcilePending(messages);
+    const host=$('transcript'),copyButton=id=>`<div class="msg-actions"><button class="msg-copy" type="button" data-msg-copy="${esc(id)}" title="复制整条消息（含代码/表格源码）">复制全部</button></div>`,formal=messages.map(message=>message.role==='user'?`<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${htmlEscape(message.text)}</div>${copyButton(message.id)}</div></article>`:`<article class="chat-message assistant" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copyButton(message.id)}</div></article>`),pending=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
       .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0))
       .map(([localId,message])=>({pending:message,html:`<article class="chat-message user pending" data-id="${esc(localId)}"><div class="chat-user-wrap"><div class="chat-bubble">${htmlEscape(message.text)}</div>${deliveryHtml(message)}</div></article>`}));host.classList.add('active');$('message-shell').hidden=true;
+    const ids=messages.map(message=>String(message.id));
+    const rendered=state.renderedIds||[];
+    // Only append when the DOM really is the list we rendered last time: pending
+    // bubbles, an earlier-page load or any other writer force a full rebuild.
+    const domIds=[...host.querySelectorAll('.chat-message')].map(node=>node.dataset.id||'');
+    const canAppend=rendered.length>0&&ids.length>rendered.length&&!pending.length
+      &&domIds.length===rendered.length&&domIds.every((id,index)=>id===rendered[index])
+      &&rendered.every((id,index)=>ids[index]===id);
+    if(canAppend){
+      const holder=document.createElement('div');
+      holder.innerHTML=messages.slice(rendered.length).map(transcriptBubble).join('');
+      enhanceBlocks(holder);rewriteLocalLinks(holder);
+      const fragment=document.createDocumentFragment();
+      while(holder.firstChild)fragment.appendChild(holder.firstChild);
+      host.appendChild(fragment);
+      state.renderedIds=ids;
+      return;
+    }
+    state.renderedIds=ids;
     const slots=messages.map(()=>[]);
     for(const item of pending){const index=Math.min(messages.length,pendingAnchorIndex(messages,item.pending));slots[index]=slots[index]||[];slots[index].push(item.html);}
     const ordered=messages.map((message,index)=>(slots[index]||[]).join('')+formal[index]).join('')
@@ -630,7 +662,18 @@ import {marked} from '/assets/marked.esm.js';
         if(follow||first)requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
       else {syncProgress();}
     }catch(e){if(state.selected===id&&state.mode==='chat')showError(e.message);}
-    finally{if(state.selected===id&&state.mode==='chat'&&$('transcript').classList.contains('active'))state.transcriptTimer=setTimeout(()=>refreshTranscript(id),1000);}}
+    finally{scheduleTranscriptPoll(id);}}
+  function scheduleTranscriptPoll(id,delay=1000){
+    if(!id||state.selected!==id||state.mode!=='chat')return;
+    if(!$('transcript').classList.contains('active'))return;
+    if(document.hidden)return;                       // resumed by visibilitychange
+    state.transcriptTimer=setTimeout(()=>refreshTranscript(id),delay);
+  }
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden&&state.selected&&state.mode==='chat'&&$('transcript').classList.contains('active')){
+      refreshTranscript(state.selected);
+    }
+  });
   // Agent CLIs draw a full-screen TUI. Falling back to the raw screen stream for
   // them rebuilds ~550 lines / 7000 nodes twice a second and locks up Chrome, so an
   // empty or unreadable transcript gets a notice plus a retry instead. Shell panes

@@ -181,6 +181,16 @@ class TmuxBackend:
                 return pane
         raise TmuxError("pane not found")
 
+    def capture_many(self, pane_ids, history: int = 40) -> dict:
+        """Local captures are a few ms each; this keeps the sweep's interface uniform."""
+        result = {}
+        for pane_id in pane_ids:
+            try:
+                result[pane_id] = self.capture(pane_id, history)
+            except (RuntimeError, OSError, ValueError, TmuxError):
+                continue
+        return result
+
     def capture(self, pane_id: str, history: int = 500) -> str:
         self.validate_pane(pane_id)
         history = max(20, min(history, 5000))
@@ -756,10 +766,30 @@ def create_app(
         return found
 
     def collect_pane_states() -> list[dict]:
+        # Reuse the pane list /api/hosts just probed (the console and the board poll
+        # it) instead of listing every host's panes again: the sweep only needs the
+        # screens, one batched capture per host.
         jobs = []
-        for host_id, host_name, transport, panes in relay_hosts():
-            for pane in panes:
-                jobs.append((host_id, host_name, transport, pane))
+        snapshot = hosts_snapshot["value"]
+        if snapshot and (time.time() - hosts_snapshot["at"]) < 15:
+            for host in snapshot.get("hosts") or []:
+                host_id = str(host.get("id") or "")
+                panes = host.get("panes") or []
+                if not panes:
+                    continue
+                if host_id == "localhost":
+                    transport = tmux
+                else:
+                    try:
+                        transport = runner_for(remote_hosts.get_host(host_id, include_credential=True))
+                    except (KeyError, RuntimeError, OSError, ValueError):
+                        continue
+                for pane in panes:
+                    jobs.append((host_id, host.get("name") or host_id, transport, pane))
+        else:
+            for host_id, host_name, transport, panes in relay_hosts():
+                for pane in panes:
+                    jobs.append((host_id, host_name, transport, pane))
         if not jobs:
             return []
 
@@ -768,15 +798,40 @@ def create_app(
             if hasattr(transport, "capture_timeout"):
                 transport.capture_timeout = sweep_timeout
 
+        # One capture per host: the tail text is classified locally afterwards.
+        captured: dict[int, dict] = {}
+        def grab(transport_panes):
+            key, transport, pane_ids = transport_panes
+            try:
+                return key, transport.capture_many(pane_ids, 40)
+            except Exception:  # noqa: BLE001 - fall back to per-pane captures
+                return key, {}
+        groups: dict[int, tuple] = {}
+        for job in jobs:
+            transport = job[2]
+            actual = job[3].get("pane_id") or job[3]["id"]
+            entry = groups.setdefault(id(transport), (id(transport), transport, []))
+            entry[2].append(actual)
+        with ThreadPoolExecutor(max_workers=max(1, min(8, len(groups) or 1))) as pool:
+            for index, texts in pool.map(grab, list(groups.values())):
+                captured[index] = texts
+
         def describe(job):
             host_id, host_name, transport, pane = job
             provider = transcript_reader.provider_for_command(pane.get("command"))
             actual_pane_id = pane.get("pane_id") or pane["id"]
-            try:
-                state = relay.inspect(transport, actual_pane_id, provider, lines=40)
-                status = state["status"]
-            except Exception:  # noqa: BLE001 - one slow or dead pane must not fail the sweep
-                status = "unknown"
+            text = captured.get(id(transport), {}).get(actual_pane_id)
+            if text is not None:
+                try:
+                    status = relay.classify(text)
+                except Exception:  # noqa: BLE001
+                    status = "unknown"
+            else:
+                try:
+                    state = relay.inspect(transport, actual_pane_id, provider, lines=40)
+                    status = state["status"]
+                except Exception:  # noqa: BLE001 - one slow or dead pane must not fail the sweep
+                    status = "unknown"
             target = pane.get("target") or ""
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
                     "host_name": host_name, "target": target, "provider": provider,
@@ -802,7 +857,7 @@ def create_app(
             with pane_state_lock:
                 pane_state_cache.update({"at": time.time(), "states": states})
             elapsed = time.time() - started_at
-            log = LOGGER.warning if elapsed > 10 else LOGGER.info
+            log = LOGGER.warning if elapsed > 3 else LOGGER.info
             log("pane state sweep: %d panes in %.1fs", len(states), elapsed)
         except Exception:  # noqa: BLE001 - a failed sweep must never kill the poller
             LOGGER.warning("pane state sweep failed after %.1fs", time.time() - started_at, exc_info=True)
