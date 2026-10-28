@@ -45,6 +45,10 @@ class HomeBoardTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
         for marker in ("收藏", "看板卡片", "/api/home/search", "publish_home_card"):
             self.assertIn(marker, response.text)
+        # the board keeps a collapsible sidebar with the same tree as the console
+        for marker in ('id="tree"', 'id="side-collapse"', 'id="side-open"', 'data-star=',
+                       'data-pane=', "tmux-home-sidebar", "loadTree"):
+            self.assertIn(marker, response.text)
 
     def test_the_console_offers_a_star_per_pane_and_a_home_link(self):
         page = self.client.get("/").text
