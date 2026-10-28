@@ -105,7 +105,7 @@ encoding=none
 if command -v gzip >/dev/null 2>&1; then encoding=gzip; fi
 emit() { if [ "$encoding" = gzip ]; then gzip -c; else cat; fi; }
 
-info=$(tmux display-message -p -t "$pane" \
+info=$(${TMUX_BIN:-tmux} display-message -p -t "$pane" \
   "#{pane_current_path}${sep}#{pane_title}${sep}#{pane_current_command}" 2>/dev/null) \
   || error "pane not found: $pane" 21
 cwd=${info%%"$sep"*}
@@ -213,7 +213,7 @@ if [ "$provider" = kimi ]; then
 fi
 
 # hermes: prefer the per-session jsonl the CLI keeps, else query state.db
-pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null)
+pane_pid=$(${TMUX_BIN:-tmux} display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null)
 sid=""
 for candidate in $pane_pid $(pgrep -P "$pane_pid" 2>/dev/null) \
     $(for child in $(pgrep -P "$pane_pid" 2>/dev/null); do pgrep -P "$child" 2>/dev/null; done); do
@@ -332,7 +332,7 @@ encoding=none
 if command -v gzip >/dev/null 2>&1; then encoding=gzip; fi
 truncated=0
 if [ "$start" -gt 1 ]; then truncated=1; fi
-title=$(tmux display-message -p -t "$pane" '#{pane_title}' 2>/dev/null)
+title=$(${TMUX_BIN:-tmux} display-message -p -t "$pane" '#{pane_title}' 2>/dev/null)
 printf 'TMUXWEB_MODE<::>%s\nTMUXWEB_TRUNCATED<::>%s\nTMUXWEB_ENCODING<::>%s\nTMUXWEB_TITLE<::>%s\nTMUXWEB_STAMP<::>%s %s\nTMUXWEB_PAYLOAD\n' \
   "$mode" "$truncated" "$encoding" "$title" "$stamp" "$size"
 if [ "$encoding" = gzip ]; then
@@ -1112,6 +1112,10 @@ class SSHRunner:
                 if completed.returncode == 0 and not pinned and self.on_host_key:
                     self._remember_host_key(known_hosts)
                 return completed
+            except subprocess.TimeoutExpired as exc:
+                # callers catch RuntimeError/OSError: a stuck ssh must look like a
+                # failed command, not escape as an unhandled 500
+                raise RuntimeError(f"remote command timed out after {timeout}s") from exc
             finally:
                 if read_fd is not None:
                     os.close(read_fd)
