@@ -104,7 +104,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(init["result"]["serverInfo"]["name"], "tmuxweb-relay")
         listing = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
-        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "read_agent"})
+        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "read_agent",
+                                       "publish_home_card", "list_home", "remove_home_card"})
         self.assertEqual(tools["ask_agent"]["inputSchema"]["required"], ["target", "question"])
 
     def test_notifications_are_ignored_and_unknown_methods_rejected(self):

@@ -27,6 +27,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 import file_browser
+from home_store import HomeStore
 import mcp_relay
 import relay
 import transcript_reader
@@ -381,6 +382,18 @@ class McpToolError(Exception):
 MCP_PROTOCOL_VERSION = "2025-06-18"
 
 
+class HomeFavoriteRequest(BaseModel):
+    pane: str = Field(min_length=1, max_length=400)
+    note: str = ""
+
+
+class HomeCardRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = ""
+    pane: str = ""
+    kind: str = "note"
+
+
 class RelayAskRequest(BaseModel):
     target: str = Field(min_length=1, max_length=64)
     question: str = Field(min_length=1, max_length=100_000)
@@ -523,6 +536,7 @@ def create_app(
     session_secret: str | None = None,
     terminal_factory=None,
     share_db: str | None = None,
+    home_db: str | None = None,
     remote_store=None,
     remote_runner_factory=None,
 ) -> FastAPI:
@@ -568,6 +582,7 @@ def create_app(
     share_lock = threading.Lock()
     login_limiter = LoginRateLimiter()
     ensure_share_schema(share_connection)
+    home = HomeStore(home_db or os.environ.get("TMUX_WEB_HOME_DB") or str(BASE_DIR / "home.db"))
 
     mcp_auth_required = os.environ.get("TMUX_WEB_MCP_AUTH", "on").strip().lower() not in {
         "0", "off", "no", "false", "none",
@@ -770,6 +785,11 @@ def create_app(
         if str(data.get("session_id")) != row["session_id"]:
             raise HTTPException(status_code=409, detail="shared pane no longer points to the original session")
         return pane
+
+    @app.get("/home", response_class=HTMLResponse)
+    async def home_page() -> FileResponse:
+        return FileResponse(WEB_DIR / "home.html", media_type="text/html",
+                            headers={"Cache-Control": "no-store"})
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
@@ -1112,6 +1132,29 @@ def create_app(
     async def perform_mcp_tool(name: str, arguments: dict) -> dict:
         """Same semantics as mcp_relay.py, but executed in-process (no python3 on the client)."""
         arguments = arguments or {}
+        if name == "publish_home_card":
+            title = str(arguments.get("title") or "").strip()
+            if not title:
+                raise McpToolError("title is required")
+            try:
+                card = await asyncio.to_thread(home.add_card, title, str(arguments.get("body") or ""),
+                                               str(arguments.get("pane") or ""), str(arguments.get("kind") or "note"))
+            except ValueError as exc:
+                raise McpToolError(str(exc)) from exc
+            return {"card": card, "visible_at": "/home"}
+        if name == "list_home":
+            payload = await build_home_payload()
+            limit = max(1, min(int(arguments.get("limit") or 20), 60))
+            payload["cards"] = payload["cards"][:limit]
+            payload["favorites"] = payload["favorites"][:limit]
+            return payload
+        if name == "remove_home_card":
+            card_id = str(arguments.get("id") or "").strip()
+            if not card_id:
+                raise McpToolError("id is required")
+            if not await asyncio.to_thread(home.delete_card, card_id):
+                raise McpToolError("no such card")
+            return {"id": card_id, "removed": True}
         if name == "list_agents":
             peers = await asyncio.to_thread(collect_pane_states)
             if not arguments.get("include_non_agents", False):
@@ -1638,6 +1681,172 @@ def create_app(
     async def relay_peers(request: Request):
         require_auth(request)
         return {"peers": await asyncio.to_thread(collect_pane_states)}
+
+    def home_entry(pane_id: str, note: str = "") -> dict:
+        """Everything a Home card needs about one pane; failures degrade to offline."""
+        entry: dict = {"pane": pane_id, "note": note, "status": "offline", "provider": None,
+                       "title": "", "path": "", "session": "", "window": "", "command": "",
+                       "preview": None, "waiting": False, "favorite": True}
+        try:
+            pane = pane_or_404(pane_id)
+            transport, actual_pane_id = pane_transport(pane_id)
+        except HTTPException:
+            return entry
+        provider = transcript_reader.provider_for_command(pane.get("command"))
+        entry.update({"provider": provider, "title": pane.get("title") or "",
+                      "path": pane.get("path") or "", "session": pane.get("session") or "",
+                      "window": pane.get("target") or "", "command": pane.get("command") or ""})
+        try:
+            entry["status"] = relay.inspect(transport, actual_pane_id, provider, lines=30)["status"]
+        except (RuntimeError, OSError, ValueError):
+            entry["status"] = "unknown"
+        if not provider:
+            return entry
+        try:
+            data = transport.transcript(actual_pane_id, 4)
+        except (RuntimeError, OSError, ValueError, transcript_reader.TranscriptError):
+            return entry
+        messages = data.get("messages") or []
+        for message in reversed(messages):
+            text = " ".join((message.get("text") or "").split())
+            if text:
+                entry["preview"] = {"role": message.get("role") or "", "text": text[:400],
+                                    "timestamp": message.get("timestamp")}
+                break
+        try:
+            entry["waiting"] = bool(with_waiting_hint(data).get("waiting"))
+        except (RuntimeError, ValueError):
+            entry["waiting"] = False
+        return entry
+
+    async def build_home_payload() -> dict:
+        favorites = await asyncio.to_thread(home.favorites)
+        entries = await asyncio.gather(
+            *[asyncio.to_thread(home_entry, row["pane_id"], row.get("note") or "") for row in favorites],
+            return_exceptions=True,
+        )
+        cards = await asyncio.to_thread(home.cards)
+        try:
+            states = await asyncio.to_thread(collect_pane_states)
+        except (RuntimeError, OSError, ValueError):
+            states = []
+        busy = sum(1 for state in states if state.get("status") == "busy")
+        return {
+            "favorites": [entry for entry in entries if isinstance(entry, dict)],
+            "cards": cards,
+            "stats": {
+                "panes": len(states),
+                "busy": busy,
+                "idle": sum(1 for state in states if state.get("status") == "idle"),
+                "favorites": len(favorites),
+                "cards": len(cards),
+            },
+            "generated_at": time.time(),
+        }
+
+    @app.get("/api/home")
+    async def home_board(request: Request):
+        require_auth(request)
+        return await build_home_payload()
+
+    @app.get("/api/home/favorites")
+    async def home_favorites(request: Request):
+        require_auth(request)
+        rows = await asyncio.to_thread(home.favorites)
+        return {"favorites": [row["pane_id"] for row in rows], "notes": {row["pane_id"]: row["note"] for row in rows}}
+
+    @app.post("/api/home/favorites", status_code=201)
+    async def add_home_favorite(request: Request, payload: HomeFavoriteRequest):
+        require_auth(request)
+        pane_or_404(payload.pane)
+        try:
+            row = await asyncio.to_thread(home.add_favorite, payload.pane, payload.note)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"pane": row["pane_id"], "note": row["note"], "favorite": True}
+
+    @app.delete("/api/home/favorites/{pane_id}")
+    async def remove_home_favorite(request: Request, pane_id: str):
+        require_auth(request)
+        removed = await asyncio.to_thread(home.remove_favorite, pane_id)
+        return {"pane": pane_id, "favorite": False, "removed": removed}
+
+    @app.get("/api/home/search")
+    async def home_search(request: Request, q: str = "", limit: int = 20):
+        """Search pane names and the recent messages of every agent pane."""
+        require_auth(request)
+        query = q.strip()
+        limit = max(1, min(int(limit), 60))
+        if not query:
+            return {"query": query, "panes": [], "messages": [], "cards": []}
+        needle = query.casefold()
+
+        def scan() -> tuple[list[dict], list[dict], list[dict]]:
+            states = collect_pane_states()
+            panes = []
+            for state in states:
+                haystack = " ".join(str(state.get(key) or "") for key in
+                                    ("title", "path", "target", "provider", "host_name", "id"))
+                if needle in haystack.casefold():
+                    panes.append({key: state.get(key) for key in
+                                  ("id", "host_name", "target", "provider", "status", "title", "path")})
+            messages: list[dict] = []
+            hosts = {item[0]: (item[2], item[3]) for item in relay_hosts()}
+            jobs = [(state, hosts.get(state["host_id"])) for state in states if state.get("provider")]
+            for state, host in jobs[:16]:
+                if len(messages) >= limit:
+                    break
+                transport, panes_of_host = host if host else (None, [])
+                actual = next((pane for pane in panes_of_host if pane["id"] == state["id"]), None)
+                if transport is None or actual is None:
+                    continue
+                try:
+                    data = transport.transcript(actual.get("pane_id") or actual["id"], 120)
+                except (RuntimeError, OSError, ValueError, transcript_reader.TranscriptError):
+                    continue
+                for message in reversed(data.get("messages") or []):
+                    text = " ".join((message.get("text") or "").split())
+                    index = text.casefold().find(needle)
+                    if index < 0:
+                        continue
+                    start = max(0, index - 60)
+                    snippet = text[start:start + 220]
+                    messages.append({
+                        "pane": state["id"], "title": state.get("title") or "",
+                        "provider": state.get("provider"), "role": message.get("role"),
+                        "snippet": ("…" if start else "") + snippet + ("…" if start + 220 < len(text) else ""),
+                        "timestamp": message.get("timestamp"),
+                    })
+                    if len(messages) >= limit:
+                        break
+            cards = [card for card in home.cards(200)
+                     if needle in f"{card['title']} {card['body']}".casefold()]
+            return panes[:limit], messages, cards[:limit]
+
+        panes, messages, cards = await asyncio.to_thread(scan)
+        return {"query": query, "panes": panes, "messages": messages, "cards": cards}
+
+    @app.get("/api/home/cards")
+    async def list_home_cards(request: Request, limit: int = 60):
+        require_auth(request)
+        return {"cards": await asyncio.to_thread(home.cards, limit)}
+
+    @app.post("/api/home/cards", status_code=201)
+    async def create_home_card(request: Request, payload: HomeCardRequest):
+        require_auth(request)
+        try:
+            card = await asyncio.to_thread(home.add_card, payload.title, payload.body, payload.pane, payload.kind)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return card
+
+    @app.delete("/api/home/cards/{card_id}")
+    async def delete_home_card(request: Request, card_id: str):
+        require_auth(request)
+        removed = await asyncio.to_thread(home.delete_card, card_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="card not found")
+        return {"id": card_id, "removed": True}
 
     @app.get("/api/panes/status")
     async def pane_states(request: Request):

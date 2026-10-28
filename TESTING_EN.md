@@ -93,6 +93,12 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   button returns, markdown files preview in a sheet, download saves into the app documents directory, upload and zip work from
   the toolbar. In the server dialog every label sits above its field (no overlapping floating labels).
 
+- Home board: the star next to a pane turns filled when clicked, and the pane shows up on `/home` with a status badge and the
+  last message preview; clicking a card returns to the console with that pane selected; unstarring on `/home` removes the
+  card; searching a word that appears in a conversation highlights the snippet and jumping to it selects the pane;
+  `publish_home_card` over MCP adds a board card and `remove_home_card` deletes it (`tests/test_home_store.py`,
+  `tests/test_home_board.py`).
+
 ## 1. Install test dependencies
 
 ```bash

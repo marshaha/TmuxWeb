@@ -98,6 +98,27 @@ class RelayTools:
         result = request(pane_path(target, f"/capture?history={history}"))
         return {"target": target, "content": result.get("content", "")}
 
+    def publish_home_card(self, arguments: dict) -> dict:
+        """Put a card on the Home board so a human can see it at /home."""
+        title = self._text(arguments, "title", limit=200)
+        body = str(arguments.get("body") or "")[:20_000]
+        pane = str(arguments.get("pane") or "").strip()
+        kind = str(arguments.get("kind") or "note").strip() or "note"
+        result = request("/api/home/cards", {"title": title, "body": body, "pane": pane, "kind": kind})
+        return {"card": result, "visible_at": "/home"}
+
+    def list_home(self, arguments: dict) -> dict:
+        limit = max(1, min(int(arguments.get("limit") or 20), 60))
+        board = request("/api/home")
+        board["cards"] = board.get("cards", [])[:limit]
+        board["favorites"] = board.get("favorites", [])[:limit]
+        return board
+
+    def remove_home_card(self, arguments: dict) -> dict:
+        card_id = self._text(arguments, "id", limit=64)
+        request(f"/api/home/cards/{card_id}", method="DELETE")
+        return {"id": card_id, "removed": True}
+
     # ---------------------------------------------------------------- helpers
     @staticmethod
     def _target(arguments: dict) -> str:
@@ -121,6 +142,9 @@ class RelayTools:
             "ask_agent": self.ask_agent,
             "send_agent": self.send_agent,
             "read_agent": self.read_agent,
+            "publish_home_card": self.publish_home_card,
+            "list_home": self.list_home,
+            "remove_home_card": self.remove_home_card,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -170,6 +194,42 @@ def tool_schemas() -> list[dict]:
                     "submit": {"type": "boolean", "default": True},
                 },
                 "required": ["target", "text"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "publish_home_card",
+            "description": ("Publish a card to the TmuxWeb Home board (/home) so the human sees your result without opening this pane. "
+                            "Use it for a finished summary, a decision that needs attention, or a link worth keeping."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                    "body": {"type": "string", "maxLength": 20000,
+                             "description": "plain text or markdown; keep it short enough to read on a card"},
+                    "pane": {"type": "string", "description": "optional pane target this card belongs to, e.g. \"%12\""},
+                    "kind": {"type": "string", "enum": ["note", "result", "alert", "link"], "default": "note"},
+                },
+                "required": ["title"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "list_home",
+            "description": "Read the Home board: favourited panes with their status and last message, plus published cards.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20}},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "remove_home_card",
+            "description": "Remove a card you published from the Home board by its id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}},
+                "required": ["id"],
                 "additionalProperties": False,
             },
         },

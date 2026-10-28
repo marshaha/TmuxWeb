@@ -45,9 +45,11 @@ def token() -> str:
     return value
 
 
-def request(path: str, payload: dict | None = None, *, timeout: float = 30.0) -> Any:
+def request(path: str, payload: dict | None = None, *, timeout: float = 30.0,
+            method: str | None = None) -> Any:
     data = json.dumps(payload).encode() if payload is not None else None
-    request = urllib.request.Request(base_url() + path, data=data, method="POST" if data else "GET")
+    verb = method or ("POST" if data is not None else "GET")
+    request = urllib.request.Request(base_url() + path, data=data, method=verb)
     request.add_header("Authorization", f"Bearer {token()}")
     request.add_header("Accept", "application/json")
     if data:

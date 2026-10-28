@@ -185,6 +185,66 @@ Open `/hosts` and follow the staged flow:
 
 Passwords and private keys are not returned by list APIs. A private key must be a complete OpenSSH/PEM private key, not a one-line `ssh-ed25519 AAAA...` public key. Passphrase-encrypted private keys are not currently supported.
 
+## Home board: favourites, cards and search
+
+Every pane in the console sidebar has a star on the right: hollow = not saved, filled = saved. Starred panes appear on `/home`.
+
+`/home` shows:
+
+- **Favourite cards** — status badge (busy / idle / offline, "thinking…" with a pulse while a turn is unanswered), provider,
+  title, path, a **preview of the last message**, and the pane reference. Clicking a card jumps back to the console with that pane
+  selected (`/?pane=<pane>`).
+- **Board cards** — notes, results and alerts an agent published through the `publish_home_card` MCP tool; removable in the UI.
+- **Search** — one box searches pane names, titles and paths, the recent messages of every agent pane (hits are highlighted),
+  and the board cards.
+- **Stats** — panes / busy / idle / favourites / cards, refreshed every 15 s; single column on phones.
+
+### Let an agent post to the board
+
+Three MCP tools, available both through the stdio server and HTTP `/mcp`:
+
+| Tool | Purpose |
+| --- | --- |
+| `publish_home_card` | `title` (required), `body`, `pane`, `kind` (note/result/alert/link) → renders a card on `/home` |
+| `list_home` | read the board: favourites with status and last message, plus cards |
+| `remove_home_card` | delete a card by id |
+
+```
+publish_home_card(title="eth task converged", body="ITER5 notes written, waiting for review", kind="result")
+```
+
+Favourites and cards live in `TMUX_WEB_HOME_DB` (default `home.db`) and do not depend on tmux at all.
+
+## Home board: favourites, cards and search
+
+Every pane in the console sidebar has a star on the right: hollow = not saved, filled = saved. Starred panes appear on `/home`.
+
+`/home` shows:
+
+- **Favourite cards** — status badge (busy / idle / offline, "thinking…" with a pulse while a turn is unanswered), provider,
+  title, path, a **preview of the last message**, and the pane reference. Clicking a card jumps back to the console with that pane
+  selected (`/?pane=<pane>`).
+- **Board cards** — notes, results and alerts an agent published through the `publish_home_card` MCP tool; removable in the UI.
+- **Search** — one box searches pane names, titles and paths, the recent messages of every agent pane (hits are highlighted),
+  and the board cards.
+- **Stats** — panes / busy / idle / favourites / cards, refreshed every 15 s; single column on phones.
+
+### Let an agent post to the board
+
+Three MCP tools, available both through the stdio server and HTTP `/mcp`:
+
+| Tool | Purpose |
+| --- | --- |
+| `publish_home_card` | `title` (required), `body`, `pane`, `kind` (note/result/alert/link) -> renders a card on `/home` |
+| `list_home` | read the board: favourites with status and last message, plus cards |
+| `remove_home_card` | delete a card by id |
+
+```
+publish_home_card(title="eth task converged", body="ITER5 notes written, waiting for review", kind="result")
+```
+
+Favourites and cards live in `TMUX_WEB_HOME_DB` (default `home.db`) and do not depend on tmux at all.
+
 ## Mobile client (native Flutter)
 
 `client/` is a **native** Flutter client (Android / iOS) that talks to the HTTP API directly - no WebView. The web UI keeps

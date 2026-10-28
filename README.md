@@ -187,6 +187,34 @@ TMUX_WEB_HOST=0.0.0.0
 
 接口：`PUT /api/remote-hosts/{id}`（部分字段，`credential` 省略即不修改）、`POST /api/remote-hosts/reorder`（`{"ids": [...]}`）。
 
+## 主页：收藏、看板与搜索
+
+控制台左侧每个 pane 右侧有一个五角星：空心 = 未收藏，实心 = 已收藏（点一下切换）。收藏的会话会出现在 `/home` 主页。
+
+主页（`/home`）内容：
+
+- **收藏卡片**：状态徽标（busy / idle / 离线；busy 且在等回复时显示「思考中…」并跳动）、provider、标题、路径、**最近一条对话预览**、pane 引用；点卡片直接跳回控制台并选中该 pane（`/?pane=<pane>`）
+- **看板卡片**：agent 通过 MCP 工具 `publish_home_card` 推上来的结论/告警/链接，可在主页删除
+- **搜索**：一个输入框同时搜 pane 名 / 标题 / 路径，以及各 agent **最近的对话内容**（命中片段高亮），也搜看板卡片
+- **统计条**：panes / busy / idle / 收藏数 / 看板卡片数
+- 每 15 秒自动刷新；手机上单列布局
+
+### 让 agent 自己往主页贴东西
+
+MCP 新增三个工具（stdio 与 HTTP `/mcp` 都支持）：
+
+| 工具 | 作用 |
+| --- | --- |
+| `publish_home_card` | `title`（必填）、`body`、`pane`、`kind`（note/result/alert/link）→ 在主页生成一张卡片 |
+| `list_home` | 读取主页：收藏（含状态与最后一条消息）+ 卡片 |
+| `remove_home_card` | 按 id 删除自己发布的卡片 |
+
+```
+publish_home_card(title="eth 任务已收敛", body="ITER5 结论已写入 notes，等 review", kind="result")
+```
+
+数据存在 `TMUX_WEB_HOME_DB`（默认 `home.db`），收藏与卡片都只写这一张表，不依赖 tmux。
+
 ## 移动客户端（Flutter 原生）
 
 `client/` 是 **原生** Flutter 客户端（Android / iOS），不走 WebView，直接调用 HTTP API；网页版继续独立迭代。
