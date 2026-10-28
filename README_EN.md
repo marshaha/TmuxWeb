@@ -246,7 +246,7 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
 - **Search** — one box, four groups in priority order: servers, tmux sessions, panes, then the recent messages of every agent pane and finally board cards (hits are highlighted).
   A query containing regex metacharacters runs as a case-insensitive regex; a plain word stays literal, and a broken pattern falls back to a literal search
   (`messages_partial` / `indexing` in the response tell the UI when results are still being scanned). The header keeps only the search box — servers, shares
-  and refresh live in the sidebar footer.
+  and refresh sit in the sidebar header, exactly like the console.
 - **Stats** — panes / busy / idle / favourites / cards, refreshed every 15 s; single column on phones.
 
 ### Let an agent post to the board
