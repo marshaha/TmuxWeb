@@ -52,6 +52,8 @@
 
 - 处理中提示：给一个 agent pane 发消息（或等它正在跑），输入框正上方显示 `…thinking… Xs` 并逐秒增长（橙色跳动点），顶栏显示 `<provider> · thinking…`、状态点为橙色；agent 回复落盘后该行变回 `…idle…`、状态点恢复绿色。纯 shell pane 不显示该提示。API 侧 `waiting` 在最后一条是 user 时为 true。单测：`test_transcript_reports_an_unanswered_turn`、`test_progress_indicator_markup_is_present`。
 
+- 分享弹窗尺寸：桌面宽度固定 520px 内，手机（390/320px）贴底全宽、圆角仅顶部、单列表单，出现分享链接后**宽度不变**、内容超长时在弹窗内部滚动，`取消`/`创建并复制链接` 始终可见；键盘把视口压到 480px 高时弹窗仍完整在视口内。单测：`test_share_dialog_is_a_fixed_size_sheet_on_phones`、`test_html_pages_are_sent_without_http_cache`。
+
 ## 1. 安装测试依赖
 
 ```bash

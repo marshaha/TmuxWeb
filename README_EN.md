@@ -204,6 +204,9 @@ evolving on its own.
 - Long conversations page backwards: the first read takes 300 messages, scrolling to the top doubles it (300→600→1200…, capped by
   `TMUX_WEB_TRANSCRIPT_LIMIT_MAX`, default 3000) and the top bar also offers 加载更早的消息; the reading position is preserved and the
   control disappears once the session start is reached. The share action in the top bar is an icon only (arrow to the upper right).
+- The share dialog sizes itself with `100vw`, not `100%`, so it no longer jumps when the viewport or keyboard changes; on phones
+  (≤600px) it becomes a bottom sheet: full width, rounded top corners only, 88dvh cap, the form scrolls inside and the action
+  buttons stay sticky at the bottom. HTML pages are served with `Cache-Control: no-store`.
 - conversation polling every two seconds with an optimistic bubble while sending; transcripts, scroll offsets and drafts are
   cached per pane, so switching back paints instantly and revalidates in the background
 - **per-message "copy all"** plus **per-block controls**: copy code, copy tables as TSV, copy mermaid source, and flip tables

@@ -736,7 +736,7 @@ def create_app(
     async def login_page(request: Request):
         if authenticated(request):
             return RedirectResponse("/", status_code=303)
-        return FileResponse(WEB_DIR / "login.html")
+        return FileResponse(WEB_DIR / "login.html", headers={"Cache-Control": "no-store"})
 
     @app.post("/login")
     async def login(request: Request):
@@ -773,7 +773,7 @@ def create_app(
     async def index(request: Request):
         if not authenticated(request):
             return RedirectResponse("/login", status_code=303)
-        return FileResponse(WEB_DIR / "index.html")
+        return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/shares")
     async def shares_page(request: Request):

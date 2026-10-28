@@ -66,6 +66,10 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   shells never show it. The API reports `waiting: true` when the last message is a user message
   (`test_transcript_reports_an_unanswered_turn`).
 
+- Share dialog sizing: on phones (390/320px) it is a full-width bottom sheet with single-column fields; the width does not change
+  when the share URL appears, long content scrolls inside, and the 取消 / 创建并复制链接 buttons stay visible even with a 480px
+  tall viewport (`test_share_dialog_is_a_fixed_size_sheet_on_phones`, `test_html_pages_are_sent_without_http_cache`).
+
 ## 1. Install test dependencies
 
 ```bash

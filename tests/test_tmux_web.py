@@ -1311,6 +1311,25 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".session{flex:1 1 auto;min-width:0}", page)
         self.assertIn(".top-actions{flex:none}", page)
 
+    def test_share_dialog_is_a_fixed_size_sheet_on_phones(self):
+        self.login()
+        page = self.client.get("/").text
+        # width no longer depends on the containing block, so it cannot jump
+        self.assertIn(".share-dialog{width:min(calc(100vw - 24px),520px);max-width:520px;max-height:86dvh;overflow:auto;", page)
+        # phones get a bottom sheet with a bounded height and in-place scrolling
+        self.assertIn(".share-dialog{width:100vw;max-width:100vw;max-height:88vh;max-height:88dvh;margin:0;inset:auto 0 0 0;", page)
+        self.assertIn(".share-grid{grid-template-columns:minmax(0,1fr);gap:9px}", page)
+        self.assertIn(".share-actions{position:sticky;bottom:-1px", page)
+
+    def test_html_pages_are_sent_without_http_cache(self):
+        login_page = self.client.get("/login", follow_redirects=False)
+        self.assertEqual(login_page.headers.get("cache-control"), "no-store")
+        self.login()
+        for path in ("/", "/shares", "/hosts"):
+            response = self.client.get(path, follow_redirects=False)
+            self.assertEqual(response.status_code, 200, path)
+            self.assertEqual(response.headers.get("cache-control"), "no-store", path)
+
     def test_share_management_buttons_wrap_on_phones(self):
         self.login()
         page = self.client.get("/shares").text
