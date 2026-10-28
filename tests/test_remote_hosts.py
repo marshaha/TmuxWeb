@@ -102,7 +102,7 @@ class RemoteHostTests(unittest.TestCase):
                             "auth_type": "key", "credential": "PRIVATE", "host_key": "target ssh-ed25519 BBBB",
                             "jump": jump})
         with tempfile.TemporaryDirectory() as directory:
-            proxy, _, _ = runner.build_jump_proxy(Path(directory))
+            proxy, _ = runner.build_jump_proxy(Path(directory))
         command, _ = runner.command("true", known_hosts="/dev/null", identity_file="/tmp/key",
                                     multiplex=False, jump_proxy=proxy)
         proxy = next(item for item in command if item.startswith("ProxyCommand="))
@@ -113,6 +113,69 @@ class RemoteHostTests(unittest.TestCase):
         # the hop is pinned like any other host
         self.assertIn("StrictHostKeyChecking=yes", proxy)
         self.assertEqual(runner.jump_description(), "hop@bastion.example:2222")
+
+    def test_a_jump_chain_is_resolved_in_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = RemoteHostStore(root / "hosts.db", root / "master.key")
+            outer = store.add_host(name="outer", hostname="10.0.0.1", port=22, username="hop",
+                                   auth_type="agent", credential="", host_key="", fingerprint="")
+            middle = store.add_host(name="middle", hostname="10.0.0.2", port=22, username="hop",
+                                    auth_type="agent", credential="", host_key="", fingerprint="",
+                                    jump_host_id=outer["id"])
+            inner = store.add_host(name="inner", hostname="10.0.0.3", port=22, username="app",
+                                   auth_type="agent", credential="", host_key="", fingerprint="",
+                                   jump_host_id=middle["id"])
+            self.assertEqual([hop["name"] for hop in store.jump_chain(store.get_host(inner["id"]))],
+                             ["middle", "outer"])
+            self.assertEqual(store.jump_chain(store.get_host(inner["id"]), limit=1)[0]["name"], "middle")
+            # closing the loop is rejected
+            with self.assertRaises(ValueError):
+                store.update_host(outer["id"], jump_host_id=inner["id"])
+
+    def test_two_hops_become_nested_proxy_commands(self):
+        middle = {"id": "bbbb", "hostname": "mid.example", "port": 2201, "username": "hop",
+                  "auth_type": "key", "credential": "PRIVATE-B", "host_key": ""}
+        outer = {"id": "cccc", "hostname": "outer.example", "port": 2202, "username": "hop",
+                 "auth_type": "key", "credential": "PRIVATE-C", "host_key": ""}
+        runner = SSHRunner({"id": "dddd", "hostname": "target.example", "port": 22, "username": "app",
+                            "auth_type": "agent", "credential": "", "host_key": "",
+                            "jump_chain": [middle, outer]})
+        with tempfile.TemporaryDirectory() as directory:
+            proxy, passwords = runner.build_jump_proxy(Path(directory))
+        self.assertIn("mid.example", proxy)
+        self.assertIn("outer.example", proxy)
+        # the outer hop is dialled by the middle one: it sits inside the nested
+        # ProxyCommand, which the middle ssh runs before connecting itself
+        nested_at = proxy.index("ProxyCommand=")
+        self.assertLess(proxy.index("-p 2201"), nested_at)          # middle port in the outer options
+        self.assertGreater(proxy.index("outer.example"), nested_at)  # outer hop is nested
+        self.assertGreater(proxy.index("hop@mid.example"), nested_at)  # its own destination comes last
+        self.assertGreater(proxy.index("-p 2202"), nested_at)
+        self.assertEqual(passwords, [])
+        self.assertEqual(runner.jump_description(), "hop@mid.example:2201 -> hop@outer.example:2202")
+
+    def test_a_password_hop_and_a_password_target_share_one_askpass(self):
+        hop = {"id": "eeee", "hostname": "hop.example", "port": 22, "username": "hop",
+               "auth_type": "password", "credential": "hop-secret", "host_key": ""}
+        runner = SSHRunner({"id": "ffff", "hostname": "target.example", "port": 22, "username": "app",
+                            "auth_type": "password", "credential": "target-secret", "host_key": "",
+                            "jump_chain": [hop]})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            proxy, passwords = runner.build_jump_proxy(root)
+            target_password = root / "password"
+            target_password.write_text("target-secret")
+            askpass = root / "askpass.sh"
+            runner._write_askpass(root, target_password, passwords, askpass)
+            body = askpass.read_text()
+            hop_secret_file = passwords[0][1].read_text()
+        self.assertEqual(len(passwords), 1)
+        self.assertEqual(hop_secret_file, "hop-secret")
+        self.assertIn("hop.example", body)
+        # the target's own password is the fallback branch
+        self.assertIn(str(target_password), body)
+        self.assertTrue(body.startswith("#!/bin/sh"))
 
     def test_database_file_is_owner_only(self):
         with tempfile.TemporaryDirectory() as directory:

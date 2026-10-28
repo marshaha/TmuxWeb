@@ -768,23 +768,42 @@ class RemoteHostStore:
             cursor = self.connection.execute("DELETE FROM remote_hosts WHERE id = ?", (host_id,))
         return cursor.rowcount > 0
 
+    def jump_chain(self, host: dict, limit: int = 5) -> list[dict]:
+        """Every hop for a host, nearest first (A -> B -> C gives [B, C], both credentialed)."""
+        chain: list[dict] = []
+        seen: set[str] = set()
+        current = (host.get("jump_host_id") or "").strip()
+        while current and len(chain) < max(1, limit):
+            if current in seen:
+                LOGGER.warning("jump chain loops at %s", current)
+                break
+            seen.add(current)
+            try:
+                hop = self.get_host(current, include_credential=True)
+            except KeyError:
+                break
+            chain.append(hop)
+            current = (hop.get("jump_host_id") or "").strip()
+        return chain
+
     def jump_host(self, host: dict) -> dict | None:
-        """Resolve the hop for a host (with its credential) or None."""
-        jump_id = (host.get("jump_host_id") or "").strip()
-        if not jump_id:
-            return None
-        try:
-            return self.get_host(jump_id, include_credential=True)
-        except KeyError:
-            return None
+        """The first hop for a host (with its credential) or None."""
+        chain = self.jump_chain(host, limit=1)
+        return chain[0] if chain else None
 
 
 class SSHRunner:
     def __init__(self, host: dict):
         self.host = host
-        # ``host["jump"]`` is the resolved hop (with its credential), see
-        # RemoteHostStore.jump_host / the app's runner_for()
-        self.jump = host.get("jump") or None
+        # ``host["jump_chain"]`` is the resolved hops, nearest first, each with its
+        # credential (see RemoteHostStore.jump_chain / the app's runner_for());
+        # ``host["jump"]`` is kept as the first hop for callers that only need one.
+        chain = host.get("jump_chain")
+        if chain is None:
+            first = host.get("jump")
+            chain = [first] if first else []
+        self.jump_chain = [hop for hop in chain if hop]
+        self.jump = self.jump_chain[0] if self.jump_chain else None
         # set by the app when the stored host has no pinned key yet: it receives
         # the known_hosts line once the first connection succeeds
         self.on_host_key = None
@@ -798,17 +817,18 @@ class SSHRunner:
     def _known_hosts(self, directory: Path) -> Path:
         return self._write_known_hosts(directory / "known_hosts", self.host.get("host_key") or "")
 
-    def _jump_known_hosts(self, directory: Path) -> Path:
-        return self._write_known_hosts(directory / "known_hosts.jump", (self.jump or {}).get("host_key") or "")
+    def _jump_known_hosts(self, directory: Path, hop: dict | None = None, index: int = 0) -> Path:
+        hop = hop if hop is not None else (self.jump or {})
+        return self._write_known_hosts(directory / f"known_hosts.jump{index}", hop.get("host_key") or "")
 
     def jump_description(self) -> str:
-        if not self.jump:
-            return ""
-        return f"{self.jump.get('username')}@{self.jump.get('hostname')}:{self.jump.get('port')}"
+        return " -> ".join(f"{hop.get('username')}@{hop.get('hostname')}:{hop.get('port')}"
+                           for hop in self.jump_chain)
 
-    def _jump_options(self, *, identity_file: str | None, known_hosts: str) -> list[str]:
-        """The inner ssh that carries the tunnel (-W %h:%p)."""
-        jump = self.jump or {}
+    def _jump_options(self, *, identity_file: str | None, known_hosts: str,
+                      hop: dict | None = None, nested_proxy: str | None = None) -> list[str]:
+        """The inner ssh that carries the tunnel (-W %h:%p), optionally through another hop."""
+        jump = hop if hop is not None else (self.jump or {})
         pinned = bool((jump.get("host_key") or "").strip())
         options = [
             "ssh", "-W", "%h:%p", "-p", str(jump.get("port") or 22),
@@ -829,6 +849,10 @@ class SSHRunner:
         else:
             options += ["-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey",
                         "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no"]
+        if nested_proxy:
+            # this hop is itself reached through the next one: the value is a shell
+            # command line, so it has to be quoted before it is embedded
+            options += ["-o", f"ProxyCommand={nested_proxy}"]
         options.append(f"{jump.get('username')}@{jump.get('hostname')}")
         return [shlex.quote(option) for option in options]
 
@@ -900,14 +924,27 @@ class SSHRunner:
         _TMUX_BIN_CACHE[key] = found
         return found
 
-    def build_jump_proxy(self, directory: Path) -> tuple[str | None, str | None, Path | None]:
-        """Prepare the hop's credential files; return (proxy_command, identity, password_file)."""
-        if not self.jump:
-            return None, None, None
-        jump_known_hosts = self._jump_known_hosts(directory)
-        identity, password_file = self._prepare_auth(self.jump, directory, "jump.")
-        proxy = " ".join(self._jump_options(identity_file=identity, known_hosts=str(jump_known_hosts)))
-        return proxy, identity, password_file
+    def build_jump_proxy(self, directory: Path) -> tuple[str | None, list[tuple[dict, Path]]]:
+        """Prepare every hop's credential files and nest the tunnels.
+
+        Returns (proxy_command, [(hop, password_file), ...]) - the password files
+        feed the askpass script, which picks one per hostname.
+        """
+        if not self.jump_chain:
+            return None, []
+        passwords: list[tuple[dict, Path]] = []
+        # innermost first: the farthest hop is dialled directly
+        nested: str | None = None
+        for index in range(len(self.jump_chain) - 1, -1, -1):
+            hop = self.jump_chain[index]
+            identity, password = self._prepare_auth(hop, directory, f"jump{index}.")
+            if password:
+                passwords.append((hop, password))
+            known_hosts = self._jump_known_hosts(directory, hop, index)
+            parts = self._jump_options(identity_file=identity, known_hosts=str(known_hosts),
+                                       hop=hop, nested_proxy=nested)
+            nested = " ".join(parts)
+        return nested, list(reversed(passwords))
 
     def _prepare_auth(self, host: dict, directory: Path, prefix: str) -> tuple[str | None, Path | None]:
         """Write this hop's key or password file; return (identity_file, password_file)."""
@@ -925,16 +962,20 @@ class SSHRunner:
         return identity_file, password_file
 
     def _write_askpass(self, directory: Path, password_file: Path | None,
-                       jump_password_file: Path | None, askpass: Path) -> None:
-        """One askpass for both hops: it picks by the hostname in the prompt."""
-        if jump_password_file:
-            jump_host = str((self.jump or {}).get("hostname") or "")
-            body = ("#!/bin/sh\ncase \"$1\" in\n"
-                    f"  *{jump_host}*) cat {shlex.quote(str(jump_password_file))} ;;\n"
-                    f"  *) cat {shlex.quote(str(password_file or jump_password_file))} ;;\nesac\n")
+                       hop_passwords: list[tuple[dict, Path]], askpass: Path) -> None:
+        """One askpass for the whole chain: it picks the secret by the hostname in the prompt."""
+        if not hop_passwords and password_file is None:
+            return
+        cases = []
+        for hop, path in hop_passwords:
+            hostname = str(hop.get("hostname") or "").strip()
+            if hostname:
+                cases.append(f'  *{hostname}*) cat {shlex.quote(str(path))} ;;')
+        if password_file is not None:
+            cases.append(f"  *) cat {shlex.quote(str(password_file))} ;;")
         else:
-            body = f"#!/bin/sh\ncat {shlex.quote(str(password_file))}\n"
-        askpass.write_text(body)
+            cases.append("  *) exit 1 ;;")
+        askpass.write_text("#!/bin/sh\ncase \"$1\" in\n" + "\n".join(cases) + "\nesac\n")
         askpass.chmod(0o700)
 
     def run(self, remote_command: str, *, input_bytes: bytes | None = None,
@@ -943,13 +984,13 @@ class SSHRunner:
             directory = Path(directory_name)
             known_hosts = self._known_hosts(directory)
             identity_file, password_file = self._prepare_auth(self.host, directory, "")
-            jump_proxy, jump_identity, jump_password = self.build_jump_proxy(directory)
+            jump_proxy, hop_passwords = self.build_jump_proxy(directory)
             pass_fds: tuple[int, ...] = ()
             read_fd = write_fd = None
             environment = os.environ.copy()
-            if password_file or jump_password:
+            if password_file or hop_passwords:
                 askpass = directory / "askpass.sh"
-                self._write_askpass(directory, password_file, jump_password, askpass)
+                self._write_askpass(directory, password_file, hop_passwords, askpass)
                 environment["SSH_ASKPASS"] = str(askpass)
                 environment["SSH_ASKPASS_REQUIRE"] = "force"
                 environment["DISPLAY"] = ":0"
@@ -1358,11 +1399,11 @@ class RemoteTerminalSession:
         runner = SSHRunner(host)
         known_hosts = runner._known_hosts(directory)
         identity_file, password_file = runner._prepare_auth(host, directory, "")
-        jump_proxy, jump_identity, jump_password = runner.build_jump_proxy(directory)
+        jump_proxy, hop_passwords = runner.build_jump_proxy(directory)
         environment = os.environ.copy()
-        if password_file or jump_password:
+        if password_file or hop_passwords:
             askpass = directory / "askpass.sh"
-            runner._write_askpass(directory, password_file, jump_password, askpass)
+            runner._write_askpass(directory, password_file, hop_passwords, askpass)
             environment.update({"SSH_ASKPASS": str(askpass), "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": ":0"})
         remote_command = f"exec ${{TMUX_BIN:-tmux}} attach-session -t {shlex.quote(pane_id)}"
         command, extra = runner.command(remote_command, tty=True, known_hosts=str(known_hosts),

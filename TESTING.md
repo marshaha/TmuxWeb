@@ -72,6 +72,7 @@
 
 - 刷屏 pane 性能：新建一个日志 pane（`tmux new -d -s perf 'while true; do echo line; done'`）→ 在控制台选中它，聊天模式应保持 50fps 以上、主线程耗时明显低于 1s/10s，屏幕只显示最近几百行并出现「只显示最近 600 行」提示；切到终端模式同样不卡，积压过多时会插入「输出过快，已跳过 N 字节」。顶栏 ⏸ 暂停后屏幕停止刷新（无 CPU 占用），▶ 继续后恢复。侧边栏每 20 秒才刷新一次，滚动位置不会再被重置。`/api/hosts` 第二次调用应命中快照（毫秒级），点刷新按钮才重新探测远端。单测：`test_hosts_list_is_snapshotted_between_polls`。
 
+- 多级跳板：建三台可连的主机 A、B、C，让 B 的跳板机选 A、C 的跳板机选 B → `/api/remote-hosts` 里 C 的 `jump_path` 应为 `B -> A`，列表显示「经由 B -> A」；选中 C 下的 pane 仍能列目录/读内容（实际会依次拨 A、B、C）。删除 B 后 C 变成「经由 A」，再删除 A 则直连。把 A 的跳板机设成 C 会返回 422（成环）。
 - 跳板机：`/hosts` 页新增「跳板机」下拉 → 选另一台已保存主机再添加目标机，保存时走 `ProxyCommand`，列表里该行显示「经由 xxx」。目标只能经跳板机访问时也应能列出 pane 并读取内容；把跳板机删除后该主机自动回退为直连。保存一个指向自己/未知 id 的跳板机会返回 422。MCP：`add_remote_host`（可带 `jump_host`）+ `list_remote_hosts` 应能由 agent 独立完成添加与确认。单测：`test_jump_hosts_are_validated_and_cleared_on_delete`、`test_a_jump_host_becomes_a_proxy_command`。
 
 ## 1. 安装测试依赖

@@ -112,7 +112,8 @@ class FakeRemoteStore:
     def update_host(self, host_id, **changes):
         host, credential = self.hosts[host_id]
         updated = dict(host)
-        for key in ("name", "hostname", "port", "username", "auth_type", "host_key", "fingerprint"):
+        for key in ("name", "hostname", "port", "username", "auth_type", "host_key", "fingerprint",
+                    "jump_host_id"):
             if changes.get(key) is not None:
                 updated[key] = changes[key]
         if changes.get("credential") is not None:
@@ -124,6 +125,19 @@ class FakeRemoteStore:
             raise ValueError("password or private key is required")
         self.hosts[host_id] = (updated, credential)
         return dict(updated)
+
+    def jump_chain(self, host, limit=5):
+        chain, seen = [], set()
+        current = (host.get("jump_host_id") or "").strip()
+        while current and len(chain) < limit and current not in seen:
+            seen.add(current)
+            try:
+                hop = self.get_host(current, include_credential=True)
+            except KeyError:
+                break
+            chain.append(hop)
+            current = (hop.get("jump_host_id") or "").strip()
+        return chain
 
     def reorder_hosts(self, ordered_ids):
         known = list(self.hosts)

@@ -115,6 +115,9 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   resumes it; the sidebar polls every 20s without resetting scroll; `/api/hosts` is served from a 5s snapshot unless
   `?refresh=1`. Covered by `test_hosts_list_is_snapshotted_between_polls` and the index-page marker assertions.
 
+- Multi-hop: with A, B (jump=A) and C (jump=B) reachable, `GET /api/remote-hosts` reports C's `jump_path` as `B -> A` and the
+  list shows 经由 B -> A; panes under C still list and read (A, B, C dialled in order). Deleting B leaves C at `经由 A`;
+  deleting A makes it direct. Setting A's jump to C is rejected with 422.
 - Jump host: in `/hosts` pick another saved host in the 跳板机 field, add a target, and the row shows 经由 <name>; the target must
   be reachable through the hop (panes listed, content readable). Deleting the hop turns it back into a direct connection;
   a jump pointing at itself or at an unknown id is rejected with 422. MCP `add_remote_host` (with `jump_host`) plus

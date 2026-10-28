@@ -573,6 +573,7 @@ def create_app(
             "Install the 'websockets' package (see requirements.txt)."
         )
     make_terminal = terminal_factory or TerminalSession
+    jump_max_depth = max(1, int(os.environ.get("TMUX_WEB_JUMP_MAX_DEPTH", "5")))
     remote_hosts = remote_store or RemoteHostStore(
         os.environ.get("TMUX_WEB_HOST_DB", str(BASE_DIR / "remote_hosts.db")),
         os.environ.get("TMUX_WEB_HOST_KEY", str(BASE_DIR / ".remote_hosts.key")),
@@ -581,6 +582,11 @@ def create_app(
 
     def runner_for(host: dict):
         """Build a runner; a host saved without a pinned key gets pinned on first use."""
+        host = dict(host)
+        chain = remote_hosts.jump_chain(host, limit=jump_max_depth)
+        if chain:
+            host["jump_chain"] = chain
+            host["jump"] = chain[0]
         runner = make_remote_runner(host)
         if not (host.get("host_key") or "").strip() and hasattr(runner, "on_host_key"):
             def persist(line: str) -> None:
@@ -1214,6 +1220,8 @@ def create_app(
                 {"id": host.get("id"), "name": host.get("name"), "hostname": host.get("hostname"),
                  "port": host.get("port"), "username": host.get("username"),
                  "auth_type": host.get("auth_type"), "jump_host_id": host.get("jump_host_id") or "",
+                 "jump_path": " -> ".join(hop.get("name") or hop["id"]
+                                          for hop in remote_hosts.jump_chain(host, limit=jump_max_depth)),
                  "fingerprint": host.get("fingerprint") or ""}
                 for host in hosts
             ]}
@@ -1575,10 +1583,22 @@ def create_app(
     @app.get("/api/remote-hosts")
     async def list_remote_hosts(request: Request):
         require_auth(request)
-        return {"hosts": [{key: host[key] for key in (
-            "id", "name", "hostname", "port", "username", "auth_type", "fingerprint", "created_at",
-            "enabled", "position", "jump_host_id",
-        )} for host in remote_hosts.list_hosts()]}
+        stored = remote_hosts.list_hosts()
+        names = {host["id"]: host.get("name") or host["id"] for host in stored}
+        result = []
+        for host in stored:
+            item = {key: host[key] for key in (
+                "id", "name", "hostname", "port", "username", "auth_type", "fingerprint", "created_at",
+                "enabled", "position", "jump_host_id",
+            )}
+            chain = remote_hosts.jump_chain(host, limit=jump_max_depth)
+            item["jump_chain"] = [{"id": hop["id"], "name": hop.get("name") or hop["id"],
+                                   "hostname": hop.get("hostname")}
+                                  for hop in chain]
+            item["jump_path"] = " -> ".join(names.get(hop["id"], hop.get("name") or hop["id"])
+                                            for hop in chain)
+            result.append(item)
+        return {"hosts": result}
 
     @app.delete("/api/remote-hosts/{host_id}")
     async def delete_remote_host(request: Request, host_id: str):

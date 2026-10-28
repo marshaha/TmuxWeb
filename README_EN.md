@@ -209,9 +209,12 @@ A saved host can be dialled **through another saved host** (`jump_host_id`):
 - implemented with `ProxyCommand` + an inner `ssh -W %h:%p`, so **each hop keeps its own credential**; with passwords an
   askpass script picks the right secret by the hostname in the prompt
 - the hop's host key is pinned like any other (TOFU the first time, strict afterwards)
-- one hop only; pointing at itself, at an unknown id, or forming a loop is rejected with 422
+- **multi-hop chains** are supported (A -> B -> C, up to `TMUX_WEB_JUMP_MAX_DEPTH`, default 5), each hop with its own
+  credential, nested as `ProxyCommand=ssh -W %h:%p ... -o ProxyCommand=ssh -W %h:%p ...`; pointing at itself, at an unknown
+  id, or forming a loop is rejected with 422
 - deleting a hop falls back to a direct connection instead of leaving a dangling reference
-- the host list shows 经由 <name>; the edit dialog can change it
+- the host list shows the whole 经由 B -> A path, the edit dialog can change the first hop, and `GET /api/remote-hosts` returns
+  `jump_chain` / `jump_path`
 
 ### HTTP / MCP
 
