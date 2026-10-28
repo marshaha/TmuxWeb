@@ -316,9 +316,11 @@ class RemoteHostCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     auth_type: str
     credential: str = Field(default="", max_length=100_000)
-    host_key: str = Field(min_length=20, max_length=20_000)
-    fingerprint: str = Field(min_length=8, max_length=256)
-    confirm_fingerprint: str = Field(min_length=8, max_length=256)
+    # empty when the host was saved without a reachable scan: the key is pinned
+    # on the first successful connection (trust on first use)
+    host_key: str = Field(default="", max_length=20_000)
+    fingerprint: str = Field(default="", max_length=256)
+    confirm_fingerprint: str = Field(default="", max_length=256)
     # saving with a wrong password/key is allowed: the host is stored and shows
     # up as offline until the credential is fixed
     verify: bool = True
@@ -527,6 +529,19 @@ def create_app(
         os.environ.get("TMUX_WEB_HOST_KEY", str(BASE_DIR / ".remote_hosts.key")),
     )
     make_remote_runner = remote_runner_factory or SSHRunner
+
+    def runner_for(host: dict):
+        """Build a runner; a host saved without a pinned key gets pinned on first use."""
+        runner = make_remote_runner(host)
+        if not (host.get("host_key") or "").strip() and hasattr(runner, "on_host_key"):
+            def persist(line: str) -> None:
+                try:
+                    remote_hosts.update_host(host["id"], host_key=line,
+                                             fingerprint=host_key_fingerprint(line))
+                except (KeyError, ValueError, OSError):
+                    LOGGER.warning("could not pin the host key of %s", host.get("name"), exc_info=True)
+            runner.on_host_key = persist
+        return runner
     share_db_path = share_db or os.environ.get("TMUX_WEB_SHARE_DB") or str(BASE_DIR / "shares.db")
     share_connection = sqlite3.connect(share_db_path, check_same_thread=False)
     share_connection.row_factory = sqlite3.Row
@@ -606,7 +621,7 @@ def create_app(
         if host_id != "localhost":
             try:
                 host = remote_hosts.get_host(host_id, include_credential=True)
-                panes = make_remote_runner(host).list_panes()
+                panes = runner_for(host).list_panes()
             except (KeyError, RuntimeError, OSError) as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
             for pane in panes:
@@ -629,7 +644,7 @@ def create_app(
             host = remote_hosts.get_host(host_id, include_credential=True)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="remote host not found") from exc
-        return make_remote_runner(host), pane_id
+        return runner_for(host), pane_id
 
     def relay_target(target: str):
         """Resolve a relay target to (transport, pane_id, pane, host_name)."""
@@ -646,7 +661,7 @@ def create_app(
             host = remote_hosts.get_host(host_id, include_credential=True)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="remote host not found") from exc
-        runner = make_remote_runner(host)
+        runner = runner_for(host)
         try:
             panes = runner.list_panes()
         except (RuntimeError, OSError) as exc:
@@ -666,7 +681,7 @@ def create_app(
         for remote in remote_hosts.list_hosts():
             try:
                 credentialed = remote_hosts.get_host(remote["id"], include_credential=True)
-                runner = make_remote_runner(credentialed)
+                runner = runner_for(credentialed)
                 found.append((remote["id"], remote.get("name") or remote["id"], runner, runner.list_panes()))
             except (KeyError, RuntimeError, OSError):
                 continue
@@ -1060,7 +1075,7 @@ def create_app(
             try:
                 credentialed = remote_hosts.get_host(public["id"], include_credential=True)
                 panes = await asyncio.to_thread(
-                    make_remote_runner(credentialed).list_panes, timeout=list_timeout
+                    runner_for(credentialed).list_panes, timeout=list_timeout
                 )
                 public["panes"] = [pane_metadata(pane) for pane in panes]
                 public["status"] = "online"
@@ -1209,7 +1224,7 @@ def create_app(
                 host = remote_hosts.get_host(payload.host, include_credential=True)
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail="remote host not found") from exc
-            transport, host_id = make_remote_runner(host), payload.host
+            transport, host_id = runner_for(host), payload.host
         try:
             created = await asyncio.to_thread(transport.create_session, payload.name, payload.path)
             panes = await asyncio.to_thread(transport.list_panes)
@@ -1256,14 +1271,19 @@ def create_app(
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         if payload.auth_type in {"password", "key"} and not payload.credential:
             raise HTTPException(status_code=422, detail="password or private key is required")
-        try:
-            computed = host_key_fingerprint(payload.host_key)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        if not hmac.compare_digest(computed, payload.fingerprint) or not hmac.compare_digest(
-            payload.fingerprint, payload.confirm_fingerprint
-        ):
-            raise HTTPException(status_code=409, detail="SSH host key fingerprint was not confirmed")
+        if payload.verify and not (payload.host_key and payload.fingerprint):
+            raise HTTPException(status_code=422, detail="SSH host key is required unless verification is skipped")
+        if payload.host_key or payload.fingerprint:
+            if not payload.host_key or not payload.fingerprint:
+                raise HTTPException(status_code=422, detail="host_key and fingerprint must be provided together")
+            try:
+                computed = host_key_fingerprint(payload.host_key)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if not hmac.compare_digest(computed, payload.fingerprint) or (
+                payload.verify and not hmac.compare_digest(payload.fingerprint, payload.confirm_fingerprint)
+            ):
+                raise HTTPException(status_code=409, detail="SSH host key fingerprint was not confirmed")
         host = remote_hosts.add_host(
             name=payload.name, hostname=payload.hostname, port=payload.port, username=payload.username,
             auth_type=payload.auth_type, credential=payload.credential, host_key=payload.host_key,
@@ -1272,7 +1292,7 @@ def create_app(
         if payload.verify:
             try:
                 credentialed = remote_hosts.get_host(host["id"], include_credential=True)
-                await asyncio.to_thread(make_remote_runner(credentialed).check)
+                await asyncio.to_thread(runner_for(credentialed).check)
             except (RuntimeError, OSError) as exc:
                 remote_hosts.delete_host(host["id"])
                 raise HTTPException(status_code=424, detail=str(exc)) from exc
@@ -1347,7 +1367,7 @@ def create_app(
             return host
         try:
             credentialed = remote_hosts.get_host(host_id, include_credential=True)
-            await asyncio.to_thread(make_remote_runner(credentialed).check)
+            await asyncio.to_thread(runner_for(credentialed).check)
         except (RuntimeError, OSError) as exc:
             # keep what was working: an edit should never silently break a host
             remote_hosts.update_host(

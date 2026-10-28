@@ -74,8 +74,10 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   (`brew install tmux`) rather than a bare `command not found`. Covered by four unit tests around TMUX_PROBE_SCRIPT and TMUX_BIN.
 
 - Host form: 主机/IP spans its own full-width row (also in the edit dialog); 显示凭据内容 turns the password into plain text and
-  unmasks the private key; 不校验连接直接保存 must save a host with a wrong password (it shows offline) so it can be fixed later
-  (`test_a_host_may_be_saved_without_a_working_credential`).
+  unmasks the private key; 不校验连接直接保存 must save a host with a wrong password or an unreachable address (it shows offline with a
+  pending fingerprint), and the key is pinned on the first successful connection (TOFU); covered by
+  `test_a_host_may_be_saved_without_a_working_credential`, `test_a_host_can_be_saved_without_a_fingerprint` and
+  `test_an_unpinned_host_is_accepted_once_and_then_remembered`.
 
 ## 1. Install test dependencies
 

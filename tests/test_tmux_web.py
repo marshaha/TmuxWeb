@@ -328,6 +328,18 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(edited.status_code, 200)
         self.assertEqual(self.remote_store.hosts[host_id][0]["username"], "someone")
 
+    def test_a_host_can_be_saved_without_a_fingerprint(self):
+        self.login()
+        base = {"name": "no-scan", "hostname": "10.255.255.1", "port": 22, "username": "nobody",
+                "auth_type": "password", "credential": "x"}
+        strict = self.client.post("/api/remote-hosts", json=dict(base, verify=False, host_key=""))
+        # verification may be skipped, but a verified host still needs a pinned key
+        self.assertEqual(strict.status_code, 201)
+        self.assertEqual(strict.json()["fingerprint"], "")
+        verified = self.client.post("/api/remote-hosts",
+                                    json=dict(base, name="no-scan-2", verify=True, host_key=""))
+        self.assertEqual(verified.status_code, 422)
+
     def test_host_form_lets_you_reveal_and_skip_verification(self):
         self.login()
         page = self.client.get("/hosts").text

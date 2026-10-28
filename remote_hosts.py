@@ -13,6 +13,7 @@ import subprocess
 import time
 import tempfile
 import shlex
+import logging
 import fcntl
 
 import file_browser
@@ -47,6 +48,8 @@ ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 # not UTF-8 (a TAB becomes "_"), and rewrites non-ASCII text the same way. A
 # printable separator plus a forced UTF-8 locale keep remote fields intact.
 FIELD_SEPARATOR = "<::>"
+LOGGER = logging.getLogger("tmuxweb.remote")
+
 LOCALE_PRELUDE = "export LC_ALL=${TMUXWEB_REMOTE_LC:-C.UTF-8} LANG=${TMUXWEB_REMOTE_LC:-C.UTF-8}; "
 
 # macOS keeps tmux in /opt/homebrew/bin, which a non-interactive ssh command does
@@ -732,16 +735,24 @@ class RemoteHostStore:
 class SSHRunner:
     def __init__(self, host: dict):
         self.host = host
+        # set by the app when the stored host has no pinned key yet: it receives
+        # the known_hosts line once the first connection succeeds
+        self.on_host_key = None
 
     def _known_hosts(self, directory: Path) -> Path:
         path = directory / "known_hosts"
-        path.write_text(self.host["host_key"].rstrip() + "\n")
+        pinned = (self.host.get("host_key") or "").strip()
+        path.write_text((pinned + "\n") if pinned else "")
         path.chmod(0o600)
         return path
 
+    def host_key_pinned(self) -> bool:
+        return bool((self.host.get("host_key") or "").strip())
+
     def command(self, remote_command: str, *, tty: bool = False, known_hosts: str = "/dev/null",
                 identity_file: str | None = None, multiplex: bool | None = None,
-                tmux_bin: str | None = None) -> tuple[list[str], dict[str, str]]:
+                tmux_bin: str | None = None,
+                host_key_pinned: bool = True) -> tuple[list[str], dict[str, str]]:
         # NOTE: ssh takes the *first* value it sees for an option, so BatchMode
         # must be decided per auth mode below - emitting "BatchMode=no" here made
         # agent mode wait on a password prompt instead of failing fast.
@@ -749,7 +760,9 @@ class SSHRunner:
             "ssh", "-T" if not tty else "-tt", "-p", str(self.host["port"]),
             "-o", "ConnectTimeout=8",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
-            "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
+            # an unpinned host is accepted once, then pinned for every later call
+            "-o", "StrictHostKeyChecking=yes" if host_key_pinned else "StrictHostKeyChecking=accept-new",
+            "-o", f"UserKnownHostsFile={known_hosts}",
             "-o", "LogLevel=ERROR",
         ]
         use_mux = ssh_mux_enabled() if multiplex is None else multiplex
@@ -822,8 +835,10 @@ class SSHRunner:
                 environment["SSH_ASKPASS_REQUIRE"] = "force"
                 environment["DISPLAY"] = ":0"
             tmux_bin = self.tmux_binary() if resolve_tmux else None
+            pinned = self.host_key_pinned()
             command, extra_environment = self.command(
-                remote_command, known_hosts=str(known_hosts), identity_file=identity_file, tmux_bin=tmux_bin
+                remote_command, known_hosts=str(known_hosts), identity_file=identity_file, tmux_bin=tmux_bin,
+                host_key_pinned=pinned,
             )
             environment.update(extra_environment)
             if read_fd is not None and write_fd is not None:
@@ -837,15 +852,31 @@ class SSHRunner:
                     # pane unreachable: retry once on a direct connection.
                     direct, _ = self.command(
                         remote_command, known_hosts=str(known_hosts), identity_file=identity_file,
-                        multiplex=False, tmux_bin=tmux_bin,
+                        multiplex=False, tmux_bin=tmux_bin, host_key_pinned=pinned,
                     )
                     completed = subprocess.run(direct, input=input_bytes, capture_output=True, timeout=timeout,
                                                check=False, env=environment, pass_fds=pass_fds,
                                                start_new_session=True)
+                if completed.returncode == 0 and not pinned and self.on_host_key:
+                    self._remember_host_key(known_hosts)
                 return completed
             finally:
                 if read_fd is not None:
                     os.close(read_fd)
+
+    def _remember_host_key(self, path: Path) -> None:
+        """Hand the key ssh just accepted to the app so later calls pin it."""
+        try:
+            lines = [line.strip() for line in path.read_text(errors="replace").splitlines()
+                     if line.strip() and not line.startswith("#")]
+        except OSError:
+            return
+        if not lines:
+            return
+        try:
+            self.on_host_key(lines[-1])
+        except Exception:  # noqa: BLE001 - pinning must never break the request
+            LOGGER.warning("could not remember the host key for %s", self.host.get("name"), exc_info=True)
 
     def check(self) -> str:
         completed = self.run("printf TMUX_REMOTE_OK", timeout=12)

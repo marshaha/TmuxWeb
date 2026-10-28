@@ -598,6 +598,23 @@ class RemoteHostTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"TMUX_WEB_TMUX_PATH": "/custom/bin/tmux"}):
             self.assertEqual(runner.tmux_binary(), "/custom/bin/tmux")
 
+    def test_an_unpinned_host_is_accepted_once_and_then_remembered(self):
+        host = dict(FAKE_SSH_HOST, host_key="")
+        runner = SSHRunner(host)
+        self.assertFalse(runner.host_key_pinned())
+        command, _ = runner.command("true", host_key_pinned=False)
+        self.assertIn("StrictHostKeyChecking=accept-new", " ".join(command))
+        pinned_command, _ = runner.command("true", host_key_pinned=True)
+        self.assertIn("StrictHostKeyChecking=yes", " ".join(pinned_command))
+
+        captured = []
+        runner.on_host_key = captured.append
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "known_hosts")
+            path.write_text("10.0.0.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbc\n")
+            runner._remember_host_key(path)
+        self.assertEqual(captured, ["10.0.0.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbc"])
+
     def test_remote_commands_export_the_resolved_binary(self):
         host = dict(FAKE_SSH_HOST)
         runner = SSHRunner(host)

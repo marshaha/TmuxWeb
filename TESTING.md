@@ -56,7 +56,7 @@
 
 - macOS 主机（Homebrew tmux）：用「密码」方式添加 macmini 应能连通；若确实没装，报错要给可执行提示（`brew install tmux`），而不是裸的 `zsh: command not found: tmux`。单测：`test_probe_finds_tmux_outside_the_noninteractive_path`、`test_probe_is_empty_when_tmux_is_missing`、`test_a_host_without_tmux_gets_an_actionable_error`、`test_remote_commands_export_the_resolved_binary`。
 
-- 主机表单：桌面上「主机/IP」占满一整行且输入框满宽（编辑弹窗同样）；勾选「显示凭据内容」后密码变明文、私钥去遮蔽，取消勾选恢复；勾选「不校验连接直接保存」后用错误密码添加主机应成功并在列表显示为离线，改对密码后点「测试」可确认。单测：`test_a_host_may_be_saved_without_a_working_credential`、`test_host_form_lets_you_reveal_and_skip_verification`。
+- 主机表单：桌面上「主机/IP」占满一整行且输入框满宽（编辑弹窗同样）；勾选「显示凭据内容」后密码变明文、私钥去遮蔽，取消勾选恢复；勾选「不校验连接直接保存」后用错误密码、甚至填一个不可达地址添加主机都应成功：列表显示离线、指纹位置显示「指纹待首次连通时记录」；之后把地址/凭据改对，第一次连通时会自动记录并固定指纹（`accept-new`），后续按固定指纹校验。单测：`test_a_host_may_be_saved_without_a_working_credential`、`test_host_form_lets_you_reveal_and_skip_verification`。
 
 ## 1. 安装测试依赖
 
