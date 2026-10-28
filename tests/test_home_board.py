@@ -61,6 +61,20 @@ class HomeBoardTests(unittest.TestCase):
         for marker in ():
             self.assertIn(marker, response.text)
 
+    def test_the_full_preview_page_is_served_and_wired_to_the_board(self):
+        preview = self.client.get("/preview")
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.headers["cache-control"], "no-store")
+        for marker in ("/api/panes/", "/interrupt", "Enter 发送", 'id="back"', "marked.esm.js"):
+            self.assertIn(marker, preview.text)
+
+        page = self.client.get("/home").text
+        for marker in ('data-full=', 'id="preview-drawer"', 'id="pd-frame"', "PREVIEW_WIDE",
+                       "openFullPreview", "closeFullPreview"):
+            self.assertIn(marker, page)
+        # the hover panel has to accept the pointer, otherwise it cannot be scrolled
+        self.assertIn("pointer-events:auto;overscroll-behavior:contain", page)
+
     def test_the_console_offers_a_star_per_pane_and_a_home_link(self):
         page = self.client.get("/").text
         self.assertIn('data-star=', page)

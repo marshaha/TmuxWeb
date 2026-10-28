@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>TmuxWeb · 对话预览</title>
+<link rel="icon" href="/app-icon.svg" type="image/svg+xml">
+<style>
+  :root{--bg:#F0EEE6;--surface:#FAF9F5;--card:#fff;--ink:#262520;--muted:#6f6a5e;--faint:#a09a8c;--line:#E2DFD5;--accent:#C96442;--green:#3f8f5f;--amber:#D89A3C;--danger:#B4442F}
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}
+  .ico{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;display:block}
+  header{flex:none;display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--surface);position:sticky;top:0;z-index:5}
+  .icon-btn{display:grid;place-items:center;width:32px;height:32px;padding:0;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--muted);cursor:pointer;text-decoration:none;flex:none}
+  .icon-btn:hover{color:var(--accent);border-color:#d8c4b8}
+  .head-main{flex:1;min-width:0}
+  .title{font-size:14px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sub{font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .state{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:20px;border:1px solid var(--line);font-size:10.5px;color:var(--muted);background:var(--card);flex:none}
+  .state i{width:6px;height:6px;border-radius:50%;background:var(--faint);display:block}
+  .state.busy{color:#8a5a12;border-color:#eadfc6;background:#fdf6e8}.state.busy i{background:var(--amber);animation:pulse 1.2s ease-in-out infinite}
+  .state.idle{color:#3b7350;border-color:#d6e6da;background:#f2f8f3}.state.idle i{background:var(--green)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  main{flex:1;min-height:0;overflow-y:auto;padding:16px 14px 8px;scrollbar-gutter:stable}
+  .msg{display:flex;margin:0 0 14px}
+  .msg.user{justify-content:flex-end}
+  .bubble{max-width:min(86%,720px);padding:10px 14px;border-radius:16px;background:#e9e7df;white-space:pre-wrap;overflow-wrap:anywhere}
+  .body{max-width:min(94%,780px);padding:12px 15px;border:1px solid var(--line);border-radius:16px;background:#fff;font-size:14px;line-height:1.65;overflow-wrap:anywhere}
+  .body>*:first-child{margin-top:0}.body>*:last-child{margin-bottom:0}
+  .body pre{overflow:auto;padding:12px;border-radius:10px;background:#272622;color:#f5f4ed;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  .body :not(pre)>code{padding:2px 5px;border-radius:5px;background:#eceae3;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .body table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:12px 0;font-size:13px}
+  .body th,.body td{padding:7px 10px;border:1px solid #d1cfc6;text-align:left}
+  .body th{background:#eceae3}
+  .body blockquote{margin-left:0;padding-left:12px;border-left:3px solid var(--accent);color:var(--muted)}
+  .body a{color:var(--accent)}
+  .msg-tools{display:flex;justify-content:flex-end;margin-top:6px;opacity:.5}
+  .msg:hover .msg-tools{opacity:1}
+  .copy{height:22px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.8);color:var(--muted);font-size:11px;cursor:pointer}
+  .copy:hover{background:#fff;color:var(--ink)}
+  .empty{padding:40px 16px;text-align:center;color:var(--muted)}
+  .notice{padding:8px 12px;margin:0 0 12px;border:1px solid #eadfc6;border-radius:10px;background:#fdf6e8;color:#8a5a12;font-size:12px}
+  footer{flex:none;padding:9px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--surface)}
+  .composer{display:flex;align-items:flex-end;gap:8px;padding:8px 10px;border:1px solid #cbc9c0;border-radius:14px;background:#fff}
+  textarea{flex:1;min-height:22px;max-height:120px;padding:4px 2px;border:0;resize:none;background:transparent;color:var(--ink);outline:none;font:inherit;line-height:1.5}
+  .send{display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:50%;background:#292825;color:#fff;cursor:pointer;flex:none}
+  .send:disabled{background:#c8c5bd;cursor:not-allowed}
+  .send.stop{background:var(--danger)}
+  .hint{margin:6px 4px 0;color:var(--faint);font-size:11px}
+  .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);padding:8px 14px;border-radius:10px;background:#292825;color:#fff;font-size:12px;opacity:0;transition:opacity .18s;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6"/></symbol>
+  <symbol id="i-console" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.2v4.4h-4.4"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h13M12 5.5 18.5 12 12 18.5"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2.2"/></symbol>
+</defs></svg>
+
+<header>
+  <button class="icon-btn" id="back" title="返回主页" aria-label="返回">
+    <svg class="ico"><use href="#i-back"/></svg>
+  </button>
+  <div class="head-main">
+    <div class="title" id="title">对话预览</div>
+    <div class="sub" id="sub"></div>
+  </div>
+  <span class="state" id="state"><i></i><span id="state-label">读取中…</span></span>
+  <a class="icon-btn" id="console" title="在控制台打开" aria-label="在控制台打开" href="/">
+    <svg class="ico"><use href="#i-console"/></svg>
+  </a>
+  <button class="icon-btn" id="reload" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
+</header>
+
+<main id="scroll">
+  <div id="messages"><div class="empty">读取对话…</div></div>
+</main>
+
+<footer>
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="继续提问…（Enter 发送，Shift+Enter 换行）"></textarea>
+    <button class="send" id="send" title="发送" aria-label="发送"><svg class="ico"><use href="#i-send"/></svg></button>
+  </div>
+  <div class="hint" id="hint"></div>
+</footer>
+<div class="toast" id="toast"></div>
+
+<script type="module">
+import {marked} from '/assets/marked.esm.js';
+
+const $=id=>document.getElementById(id);
+const pane=new URLSearchParams(location.search).get('pane')||'';
+const state={messages:[],sig:null,pane,waiting:false,stick:true,timer:null,paneInfo:null};
+const scroll=$('scroll');
+
+function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+marked.use({renderer:{html(token){return esc(token&&(token.text!=null?token.text:token.raw));}}});
+const md=value=>marked.parse(String(value??''),{gfm:true,breaks:false,async:false});
+function toast(text){const el=$('toast');el.textContent=text;el.classList.add('show');clearTimeout(state.toastTimer);state.toastTimer=setTimeout(()=>el.classList.remove('show'),1800);}
+async function api(url,opts={}){const r=await fetch(url,opts);if(r.status===401){location='/login';throw new Error('登录已失效');}
+  if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||`HTTP ${r.status}`);}return r.json();}
+function atBottom(){return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<48;}
+function signature(data){return `${data.mtime||''}|${(data.messages||[]).length}|${(data.messages||[]).slice(-1)[0]?.id||''}|${data.waiting?1:0}`;}
+
+function setState(waiting,status){
+  state.waiting=!!waiting;
+  const key=waiting?'busy':(status||'idle');
+  $('state').className='state '+key;
+  $('state-label').textContent=waiting?'思考中…':(key==='idle'?'idle':key);
+  syncSend();
+}
+function syncSend(){
+  const working=state.waiting&&!$('input').value.trim();
+  const button=$('send');
+  button.classList.toggle('stop',working);
+  button.title=working?'停止本轮':'发送';
+  button.setAttribute('aria-label',button.title);
+  button.querySelector('use').setAttribute('href',working?'#i-stop':'#i-send');
+}
+
+function render(){
+  const host=$('messages');
+  host.innerHTML=state.messages.length?state.messages.map(message=>message.role==='user'
+    ?`<article class="msg user"><div><div class="bubble">${esc(message.text)}</div>
+        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}">复制</button></div></div></article>`
+    :`<article class="msg assistant"><div><div class="body">${md(message.text)}</div>
+        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}">复制</button></div></div></article>`).join('')
+    :'<div class="empty">这个会话还没有消息</div>';
+  if(state.stick)requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;});
+}
+
+async function load(info=false){
+  try{
+    const data=await api(`/api/panes/${encodeURIComponent(pane)}/transcript?limit=200`);
+    const sig=signature(data);
+    if(sig!==state.sig||info){
+      const follow=state.stick&&atBottom();
+      state.sig=sig;
+      state.messages=data.messages||[];
+      if(info||!state.messages.length)setState(data.waiting,data.status);
+      else setState(data.waiting,data.status);
+      render();
+      if(!follow)state.stick=false;
+    }
+    $('hint').textContent=`${state.messages.length} 条消息 · 每 2 秒刷新`;
+  }catch(error){
+    $('hint').textContent=error.message;
+    if(!state.messages.length)$('messages').innerHTML=`<div class="empty">${esc(error.message)}</div>`;
+  }finally{
+    clearTimeout(state.timer);
+    state.timer=setTimeout(()=>load(false),2000);
+  }
+}
+
+async function loadPaneInfo(){
+  try{
+    const data=await api('/api/hosts');
+    const owner=(data.hosts||[]).find(host=>(host.panes||[]).some(item=>item.id===pane));
+    const meta=owner&&(owner.panes||[]).find(item=>item.id===pane);
+    state.paneInfo=meta||null;
+    if(!meta)return;
+    document.title=`${meta.title||pane} · 对话预览`;
+    $('title').textContent=meta.title||pane;
+    $('sub').textContent=[owner.name,meta.session,`${meta.window}:${meta.window_name||''}`,meta.command].filter(Boolean).join(' · ');
+    $('console').href=`/?pane=${encodeURIComponent(pane)}`;
+  }catch{}
+}
+
+document.addEventListener('click',async event=>{
+  const copy=event.target.closest('[data-copy]');
+  if(copy){
+    const message=state.messages.find(item=>String(item.id)===copy.dataset.copy);
+    if(!message)return;
+    try{await navigator.clipboard.writeText(String(message.text||''));copy.textContent='已复制';setTimeout(()=>copy.textContent='复制',1400);}catch{toast('复制失败');}
+  }
+});
+
+async function send(){
+  const text=$('input').value;
+  if(!text.trim())return;
+  if(state.waiting){await stop();return;}
+  const input=$('input');
+  input.value='';input.style.height='auto';syncSend();
+  try{
+    await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text,submit:true})});
+    state.stick=true;
+    state.sig=null;
+    load(false);
+  }catch(error){toast(error.message);input.value=text;}
+}
+async function stop(){
+  try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/interrupt`,{method:'POST',headers:{'Content-Type':'application/json'}});
+    toast(d.key==='C-q'?'已发送 Ctrl+Q，正在停止':'已发送 Esc，正在停止');setTimeout(()=>{state.sig=null;load(false);},800);}
+  catch(error){toast(error.message);}
+}
+
+$('send').onclick=send;
+$('input').addEventListener('input',()=>{const input=$('input');input.style.height='auto';input.style.height=Math.min(input.scrollHeight,120)+'px';syncSend();});
+$('input').addEventListener('keydown',event=>{
+  if(event.key!=='Enter'||event.shiftKey||event.isComposing)return;
+  event.preventDefault();
+  send();
+});
+scroll.addEventListener('wheel',()=>{state.stick=atBottom();},{passive:true});
+scroll.addEventListener('scroll',()=>{state.stick=atBottom();},{passive:true});
+$('back').onclick=()=>{if(history.length>1)history.back();else location='/home';};
+$('reload').onclick=()=>{state.sig=null;load(true);};
+
+if(!pane){$('messages').innerHTML='<div class="empty">缺少 pane 参数</div>';}
+else{loadPaneInfo();load(true);syncSend();}
+</script>
+</body>
+</html>

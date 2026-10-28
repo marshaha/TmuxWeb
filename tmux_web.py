@@ -845,6 +845,12 @@ def create_app(
             raise HTTPException(status_code=409, detail="shared pane no longer points to the original session")
         return pane
 
+    @app.get("/preview", response_class=HTMLResponse)
+    async def preview_page() -> FileResponse:
+        """Full chat view for one pane; /home opens it in a drawer (desktop) or directly (mobile)."""
+        return FileResponse(WEB_DIR / "preview.html", media_type="text/html",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/home", response_class=HTMLResponse)
     async def home_page() -> FileResponse:
         return FileResponse(WEB_DIR / "home.html", media_type="text/html",

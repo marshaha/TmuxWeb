@@ -108,12 +108,23 @@
   .hit-title{font-size:13px;font-weight:600}
   .hit-snippet{font-size:12.5px;color:var(--muted);white-space:pre-wrap;word-break:break-word}
   mark{padding:0 2px;border-radius:3px;background:#f7e2d6;color:#8a3d22}
-  .hover-preview{position:fixed;z-index:30;width:min(520px,calc(100vw - 24px));max-height:min(62vh,520px);display:flex;flex-direction:column;
-    padding:11px 13px;border:1px solid var(--line);border-radius:13px;background:#fff;box-shadow:0 16px 44px rgba(32,31,28,.18);pointer-events:none}
+  .hover-preview{pointer-events:auto;overscroll-behavior:contain;scrollbar-width:thin;position:fixed;z-index:30;width:min(520px,calc(100vw - 24px));max-height:min(62vh,520px);display:flex;flex-direction:column;
+    padding:11px 13px;border:1px solid var(--line);border-radius:13px;background:#fff;box-shadow:0 16px 44px rgba(32,31,28,.18)}
   .hover-preview[hidden]{display:none}
   .hp-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px;color:var(--faint)}
   .hp-head #hp-role{padding:1px 7px;border-radius:20px;border:1px solid var(--line);background:var(--surface);color:var(--muted);font-size:10.5px}
-  .hp-body{overflow:auto;font-size:12.5px;line-height:1.55;color:var(--ink);white-space:pre-wrap;word-break:break-word}
+  .hp-body{overflow:auto;min-height:0;font-size:12.5px;line-height:1.55;color:var(--ink);white-space:pre-wrap;word-break:break-word;overscroll-behavior:contain}
+  .preview-drawer{position:fixed;top:0;right:0;bottom:0;z-index:40;display:flex;flex-direction:column;width:min(760px,56vw);
+    min-width:360px;border-left:1px solid var(--line);background:var(--bg);box-shadow:-16px 0 48px rgba(32,31,28,.16);
+    transform:translateX(12px);opacity:0;transition:transform .16s ease,opacity .16s ease}
+  .preview-drawer.open{transform:none;opacity:1}
+  .preview-drawer[hidden]{display:none}
+  .pd-head{flex:none;display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);background:var(--surface)}
+  .pd-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600}
+  .pd-head iframe{flex:1}
+  #pd-frame{flex:1;width:100%;min-height:0;border:0;background:var(--bg)}
+  .pd-backdrop{position:fixed;inset:0;z-index:35;background:rgba(32,31,28,.18)}
+  .pd-backdrop[hidden]{display:none}
   .rename-dialog{width:min(430px,calc(100vw - 28px));padding:0;border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink);box-shadow:0 18px 50px rgba(32,31,28,.18)}
   .rename-dialog::backdrop{background:rgba(32,31,28,.28)}
   .rename-dialog form{display:grid;gap:10px;padding:18px}
@@ -152,6 +163,8 @@
   <symbol id="i-share" viewBox="0 0 24 24"><path d="M8 16 16.2 7.8M10.4 7.8h5.8v5.8"/></symbol>
   <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="6.2" rx="1.8"/><rect x="3.5" y="13.3" width="17" height="6.2" rx="1.8"/><path d="M7.2 7.6h.01M7.2 16.4h.01"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5.5 7.5h13M9.5 7.5V5.6h5v1.9M7.4 7.5l.8 11.1h7.6l.8-11.1"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14.5 4.5H19.5v5M9.5 19.5H4.5v-5M19.5 4.5l-6 6M4.5 19.5l6-6"/></symbol>
   <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4.6 19.4h3.2l9.4-9.4-3.2-3.2-9.4 9.4z"/><path d="m15.4 4.6 3.2 3.2"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
   <symbol id="i-collapse" viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6"/></symbol>
@@ -206,6 +219,15 @@
     </div>
   </form>
 </dialog>
+<aside class="preview-drawer" id="preview-drawer" hidden aria-label="对话完整预览">
+  <div class="pd-head">
+    <span class="pd-title" id="pd-title">对话预览</span>
+    <a class="card-btn" id="pd-console" href="/" title="在控制台打开" aria-label="在控制台打开"><svg class="ico"><use href="#i-console"/></svg></a>
+    <button class="card-btn" id="pd-close" title="关闭预览" aria-label="关闭预览"><svg class="ico"><use href="#i-close"/></svg></button>
+  </div>
+  <iframe id="pd-frame" title="对话预览" referrerpolicy="same-origin"></iframe>
+</aside>
+<div class="pd-backdrop" id="pd-backdrop" hidden></div>
 <div class="hover-preview" id="hover-preview" hidden>
   <div class="hp-head"><span id="hp-role">agent</span><span id="hp-time"></span></div>
   <div class="hp-body" id="hp-body"></div>
@@ -390,6 +412,7 @@
       <div class="card-top">${stateBadge(favorite.status,favorite.waiting)}
         ${favorite.provider?`<span class="kind">${esc(favorite.provider)}</span>`:''}
         <span class="card-meta" style="margin-left:auto">${esc(ago(favorite.preview&&favorite.preview.timestamp))}</span>
+        <button class="card-btn" data-full="${esc(pane)}" title="完整预览对话" aria-label="完整预览对话"><svg class="ico"><use href="#i-expand"/></svg></button>
         <button class="card-btn" data-rename="${esc(pane)}" title="修改卡片名" aria-label="修改卡片名"><svg class="ico"><use href="#i-pencil"/></svg></button>
         <button class="card-btn star" data-unfav="${esc(pane)}" title="取消收藏" aria-label="取消收藏"><svg class="ico"><use href="#i-star"/></svg></button>
       </div>
@@ -475,11 +498,42 @@
     }
     const rename=event.target.closest('[data-rename]');
     if(rename){event.preventDefault();event.stopPropagation();openRename(rename.dataset.rename);return;}
+    const full=event.target.closest('[data-full]');
+    if(full){event.preventDefault();event.stopPropagation();openFullPreview(full.dataset.full);return;}
     const pane=event.target.closest('[data-pane]');
     if(pane){location=consoleUrl(pane.dataset.pane);return;}
     const open=event.target.closest('[data-open]');
     if(open){location=consoleUrl(open.dataset.open);}
   });
+
+  // ---------------------------------------------------------------- full preview
+  const drawer=$('preview-drawer'), drawerFrame=$('pd-frame'), drawerBackdrop=$('pd-backdrop');
+  const PREVIEW_WIDE=1100;   // narrower than this: navigate to the page so the back gesture works
+  let drawerPane=null;
+
+  function openFullPreview(paneId){
+    hideHover();
+    if(window.innerWidth<PREVIEW_WIDE){location.href=`/preview?pane=${encodeURIComponent(paneId)}`;return;}
+    const favorite=(state.board&&state.board.favorites||[]).find(item=>item.pane===paneId);
+    drawerPane=paneId;
+    $('pd-title').textContent=favorite?favorite.title||favorite.pane_title||paneId:paneId;
+    $('pd-console').href=consoleUrl(paneId);
+    drawerFrame.src=`/preview?pane=${encodeURIComponent(paneId)}`;
+    drawer.hidden=false;
+    requestAnimationFrame(()=>drawer.classList.add('open'));
+    drawerBackdrop.hidden=false;
+    document.body.classList.add('drawer-open');
+  }
+  function closeFullPreview(){
+    if(drawer.hidden)return;
+    drawer.classList.remove('open');
+    drawerBackdrop.hidden=true;
+    document.body.classList.remove('drawer-open');
+    setTimeout(()=>{drawer.hidden=true;drawerFrame.src='about:blank';drawerPane=null;},160);
+  }
+  $('pd-close').onclick=closeFullPreview;
+  drawerBackdrop.onclick=closeFullPreview;
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!drawer.hidden)closeFullPreview();});
 
   // ---------------------------------------------------------------- rename a card
   let renameTarget=null;
@@ -534,9 +588,14 @@
     hoverBox.style.top=top+'px';
   }
 
+  let hoverHideTimer=null;
+  function scheduleHideHover(){clearTimeout(hoverHideTimer);hoverHideTimer=setTimeout(hideHover,260);}
+  function cancelHideHover(){clearTimeout(hoverHideTimer);hoverHideTimer=null;}
+
   function showHover(card,paneId){
     const preview=agentPreview(paneId);
     if(!preview)return;
+    cancelHideHover();
     hoverPane=paneId;
     $('hp-role').textContent=preview.role==='assistant'?'agent 回复':preview.role;
     $('hp-time').textContent=[ago(preview.timestamp),preview.truncated?'已截断':''].filter(Boolean).join(' · ');
@@ -556,10 +615,13 @@
   document.addEventListener('mouseout',event=>{
     const card=event.target.closest('.card[data-open]');
     if(!card)return;
-    if(event.relatedTarget&&card.contains(event.relatedTarget))return;
-    hideHover();
+    if(event.relatedTarget&&(card.contains(event.relatedTarget)||hoverBox.contains(event.relatedTarget)))return;
+    scheduleHideHover();
   });
-  window.addEventListener('scroll',hideHover,{passive:true});
+  // the panel is interactive: you can move the pointer onto it and scroll it
+  hoverBox.addEventListener('mouseenter',cancelHideHover);
+  hoverBox.addEventListener('mouseleave',scheduleHideHover);
+  window.addEventListener('scroll',event=>{if(!hoverBox.contains(event.target))hideHover();},{passive:true});
   window.addEventListener('resize',hideHover);
 
   // remember which tree branches are open
