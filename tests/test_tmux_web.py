@@ -582,6 +582,43 @@ class TmuxWebTests(unittest.TestCase):
             ("user", "用户问题"), ("assistant", "可见回答")
         ])
 
+    def test_kimi_picks_the_session_that_is_still_being_written(self):
+        """Two sessions can share a cwd and a title; the newest one holds the messages."""
+        self.tmux.panes[0].update({"command": "kimi", "title": "继续完成工作", "path": "/work/kimi"})
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / ".kimi-code" / "sessions" / "wd_test"
+            def make(name, updated_at, events):
+                session = root / f"session_{name}"
+                wire = session / "agents" / "main" / "wire.jsonl"
+                wire.parent.mkdir(parents=True)
+                (session / "state.json").write_text(json.dumps({
+                    "id": f"session_{name}", "cwd": "/work/kimi", "title": "继续完成工作",
+                    "archived": False, "updatedAt": updated_at,
+                }))
+                wire.write_text("".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events))
+            # an old, aborted session: its tail only has bookkeeping records
+            make("old", 1790000000000, [{"type": "file_history.checkpoint", "turnId": 3},
+                                        {"type": "prompt.completed", "reason": "failed"}])
+            make("live", 1793173903861, [{"type": "agent.message.appended", "time": 2000, "message": {
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "最新回答"}]},
+                "meta": {"source": "llm", "messageId": "assistant-live"}}}])
+
+            backend = TmuxBackend()
+            backend.validate_pane = lambda pane_id: self.tmux.panes[0]
+            with patch("tmux_web.Path.home", return_value=home):
+                result = backend.transcript("%4", 20)
+        self.assertEqual(result["session_id"], "session_live")
+        self.assertEqual([item["text"] for item in result["messages"]], ["最新回答"])
+
+    def test_an_agent_pane_does_not_fall_back_to_its_screen(self):
+        """Streaming a full-screen TUI is what used to lock up the browser."""
+        self.login()
+        page = self.client.get("/").text
+        for marker in ("isAgentPane", "showTranscriptNotice", "retryTranscript",
+                       "transcript-empty", "CAPTURE_MAX_BYTES"):
+            self.assertIn(marker, page)
+
     def test_creates_password_protected_share_and_allows_chat(self):
         self.tmux.panes[0]["command"] = "claude"
         self.login()

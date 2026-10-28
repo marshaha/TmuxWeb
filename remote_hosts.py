@@ -184,29 +184,52 @@ if [ "$provider" = codex ]; then
 fi
 
 if [ "$provider" = kimi ]; then
+  # Several sessions can share a cwd and a title, and only the one being written now
+  # has messages: pick the newest by updatedAt (falling back to the file mtime).
+  # Picking the first glob match landed on dead sessions and reported "no messages".
+  kimi_stamp() {
+    value=$(sed -n 's/.*"updatedAt"[[:space:]]*:[[:space:]]*\([0-9]\{10,\}\).*/\1/p' "$1" 2>/dev/null | head -1)
+    if [ -z "$value" ]; then
+      value=$(stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null || echo 0)
+    fi
+    case $value in
+      [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) value=$((value / 1000)) ;;
+    esac
+    printf '%s' "${value:-0}"
+  }
+  pick_kimi() {  # $1 = 1 -> require the pane title to appear in state.json
+    best=0
+    best_wire=""
+    best_id=""
+    for state in "$HOME"/.kimi-code/sessions/wd_*/session_*/state.json; do
+      [ -f "$state" ] || continue
+      grep -qF -- "$cwd" "$state" 2>/dev/null || continue
+      grep -qF '"archived": true' "$state" 2>/dev/null && continue
+      wire=$(dirname "$state")/agents/main/wire.jsonl
+      [ -f "$wire" ] || continue
+      if [ "$1" = 1 ]; then
+        [ -n "$title" ] || continue
+        grep -qF -- "$title" "$state" 2>/dev/null || continue
+      fi
+      stamp=$(kimi_stamp "$state")
+      if [ "$best_wire" = "" ] || [ "$stamp" -gt "$best" ]; then
+        best=$stamp
+        best_wire=$wire
+        best_id=$(basename "$(dirname "$state")")
+      fi
+    done
+    found=$best_wire
+    found_id=$best_id
+  }
   file=""
   id=""
-  fallback=""
-  fallback_id=""
-  for state in "$HOME"/.kimi-code/sessions/wd_*/session_*/state.json; do
-    [ -f "$state" ] || continue
-    grep -qF -- "$cwd" "$state" 2>/dev/null || continue
-    grep -qF '"archived": true' "$state" 2>/dev/null && continue
-    wire=$(dirname "$state")/agents/main/wire.jsonl
-    [ -f "$wire" ] || continue
-    if [ -n "$title" ] && grep -qF -- "$title" "$state" 2>/dev/null; then
-      file=$wire
-      id=$(basename "$(dirname "$state")")
-      break
-    fi
-    if [ -z "$fallback" ]; then
-      fallback=$wire
-      fallback_id=$(basename "$(dirname "$state")")
-    fi
-  done
-  [ -n "$file" ] || file=$fallback
+  found=""
+  found_id=""
+  pick_kimi 1
+  [ -n "$found" ] || pick_kimi 0
+  file=$found
+  id=$found_id
   [ -n "$file" ] || error "no Kimi transcript for $cwd" 23
-  [ -n "$id" ] || id=$fallback_id
   header "$id" jsonl "$file"
   tail -c "$payload_bytes" -- "$file" 2>/dev/null | emit
   exit 0

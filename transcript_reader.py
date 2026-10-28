@@ -321,14 +321,21 @@ def _kimi_session_path(home, cwd, title):
         wire_path = state_path.parent / "agents" / "main" / "wire.jsonl"
         if not wire_path.is_file():
             continue
-        candidates.append((state, wire_path))
+        stamp = state.get("updatedAt") or state.get("createdAt") or 0
+        try:
+            stamp = float(stamp) / 1000 if float(stamp) > 10**11 else float(stamp)
+        except (TypeError, ValueError):
+            stamp = 0.0
+        candidates.append((state, wire_path, stamp))
+    if not candidates:
+        raise TranscriptError("could not determine Kimi session id")
     title = (title or "").strip()
-    title_matches = [item for item in candidates if item[0].get("title", "").strip() == title]
-    if len(title_matches) == 1:
-        return title_matches[0]
-    if len(candidates) == 1:
-        return candidates[0]
-    raise TranscriptError("could not determine Kimi session id")
+    preferred = [item for item in candidates if item[0].get("title", "").strip() == title]
+    # the live session is the newest one: several can share a cwd (and a title),
+    # and the older ones end in an aborted turn with no messages
+    pool = preferred or candidates
+    pool.sort(key=lambda item: item[2], reverse=True)
+    return pool[0][0], pool[0][1]
 
 
 def parse_kimi(lines, limit, session_id="", mtime=0):

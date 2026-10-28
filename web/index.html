@@ -52,6 +52,14 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     .brand-actions{display:flex;gap:6px;flex:1 1 auto;min-width:0;justify-content:flex-end;margin-left:auto;flex-wrap:wrap;row-gap:6px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain
     .brand-actions::-webkit-scrollbar{display:none}
     .brand-actions>*{flex:none}
+    .transcript-empty{margin:28px auto;max-width:520px;padding:22px 24px;border:1px dashed var(--line);border-radius:16px;
+      background:rgba(255,255,255,.55);color:var(--muted);font-size:13px;line-height:1.6}
+    .transcript-empty b{display:block;margin-bottom:6px;color:var(--ink);font-size:14px;font-weight:600}
+    .transcript-empty p{margin:0}
+    .transcript-empty-actions{margin-top:12px}
+    .transcript-empty-actions button{height:32px;padding:0 14px;border:1px solid var(--line);border-radius:9px;
+      background:#fff;color:var(--ink);font:13px inherit;cursor:pointer}
+    .transcript-empty-actions button:hover{border-color:#d8c4b8;color:var(--accent)}
     .sidebar{position:relative}
     .side-resizer{position:absolute;top:0;right:0;width:6px;height:100%;cursor:col-resize;z-index:6;touch-action:none}
     .side-resizer::after{content:"";position:absolute;top:0;right:0;width:2px;height:100%;background:transparent;transition:background .12s}
@@ -603,22 +611,63 @@ import {marked} from '/assets/marked.esm.js';
       else {syncProgress();}
     }catch(e){if(state.selected===id&&state.mode==='chat')showError(e.message);}
     finally{if(state.selected===id&&state.mode==='chat'&&$('transcript').classList.contains('active'))state.transcriptTimer=setTimeout(()=>refreshTranscript(id),1000);}}
+  // Agent CLIs draw a full-screen TUI. Falling back to the raw screen stream for
+  // them rebuilds ~550 lines / 7000 nodes twice a second and locks up Chrome, so an
+  // empty or unreadable transcript gets a notice plus a retry instead. Shell panes
+  // keep the old behaviour (their screen *is* the content).
+  const AGENT_COMMAND=/^(claude|codex|kimi|python|hermes)/;
+  function isAgentPane(id){const pane=state.panes.find(item=>item.id===id);return !!(pane&&AGENT_COMMAND.test(String(pane.command||'')));}
+  function showTranscriptNotice(id,text){
+    $('transcript').classList.add('active');
+    $('transcript').innerHTML='<div class="transcript-empty"><b>暂时没有可解析的对话</b>'
+      +`<p>${esc(text)}</p><p class="transcript-empty-actions"><button type="button" id="empty-screen">查看原始屏幕</button></p></div>`;
+    const button=$('empty-screen');
+    if(button)button.onclick=()=>setMode('terminal');
+    $('status-dot').className='status-dot';
+    $('status-text').textContent='等待消息';
+  }
+  function retryTranscript(id,delay=4000){
+    clearTimeout(state.transcriptTimer);
+    state.transcriptTimer=setTimeout(()=>{
+      if(state.selected===id&&state.mode==='chat')connectTranscript(id,false);
+    },delay);
+  }
+
   async function connectTranscript(id,allowFallback=false){$('message-shell').hidden=true;$('transcript').classList.add('active');$('status-dot').className='status-dot live';$('status-text').textContent='读取 transcript…';
     try{const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=300`);if(state.selected!==id||state.mode!=='chat')return;
       state.hasMore=!!d.has_more;syncEarlierBar();
-      if(!d.messages||!d.messages.length){$('transcript').classList.remove('active');if(allowFallback){showError('');connect(id);}else showError('该会话还没有消息');return;}
+      if(!d.messages||!d.messages.length){
+        if(isAgentPane(id)){showError('');showTranscriptNotice(id,'这个 agent 会话还没有可读的消息，等它开始工作后会自动刷新。');retryTranscript(id);return;}
+        $('transcript').classList.remove('active');if(allowFallback){showError('');connect(id);}else showError('该会话还没有消息');return;}
       showError('');state.transcriptMtime=d.mtime;state.transcriptSig=transcriptSignature(d);rememberTranscript(id,d);
       state.transcriptProvider=d.provider||'';state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;syncProgress();
       renderTranscript(d.messages);syncProgress();
       const entry=cachedTranscript(id);const top=entry&&entry.scrollTop!=null?entry.scrollTop:scroll.scrollHeight;
       requestAnimationFrame(()=>{scroll.scrollTop=top;state.stick=(entry&&entry.stick===false)?false:true;});
       state.transcriptTimer=setTimeout(()=>refreshTranscript(id),1000);
-    }catch(e){if(state.selected!==id||state.mode!=='chat')return;$('transcript').classList.remove('active');if(allowFallback){showError('');connect(id);}else showError(e.message);}}
+    }catch(e){
+      if(state.selected!==id||state.mode!=='chat')return;
+      if(isAgentPane(id)){showError('');showTranscriptNotice(id,`读取 transcript 失败：${e.message}。会自动重试。`);retryTranscript(id,5000);return;}
+      $('transcript').classList.remove('active');if(allowFallback){showError('');connect(id);}else showError(e.message);
+    }}
   // A log pane changes several times a second. Rebuilding its DOM on every frame
   // (and re-fitting the font) is what used to lock up Chrome, so paint at most
   // every CAPTURE_PAINT_MS, keep only the tail, and only re-fit on width change.
   const CAPTURE_PAINT_MS=500, CAPTURE_MAX_LINES=600;
-  function trimCapture(content){const lines=String(content).split('\n');if(lines.length<=CAPTURE_MAX_LINES)return content;return '… 只显示最近 '+CAPTURE_MAX_LINES+' 行 …\n'+lines.slice(-CAPTURE_MAX_LINES).join('\n');}
+  // A 60KB screen is already ~7000 nodes after ansi_to_html: keep the tail under
+  // both a line and a byte cap so one pathological frame cannot freeze the tab.
+  const CAPTURE_MAX_BYTES=160000;
+  function trimCapture(content){
+    let text=String(content);
+    const lines=text.split('\n');
+    if(lines.length>CAPTURE_MAX_LINES){text='… 只显示最近 '+CAPTURE_MAX_LINES+' 行 …\n'+lines.slice(-CAPTURE_MAX_LINES).join('\n');}
+    if(text.length>CAPTURE_MAX_BYTES){
+      const tail=text.slice(-CAPTURE_MAX_BYTES);
+      const cut=tail.indexOf('\n');
+      text='… 输出过长，已跳过前面 '+text.length+' 字节 …\n'+(cut>=0?tail.slice(cut+1):tail);
+    }
+    return text;
+  }
   function queueCapture(content){state.capturePending=content;if(state.captureTimer)return;
     const wait=Math.max(0,CAPTURE_PAINT_MS-(performance.now()-(state.capturePainted||0)));
     state.captureTimer=setTimeout(paintCapture,wait);}

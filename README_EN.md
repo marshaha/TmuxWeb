@@ -247,6 +247,11 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   title, path, a **preview of the last message**, and the pane reference. Clicking a card jumps back to the console with that pane
   selected (`/?pane=<pane>`).
 - **Board cards** — notes, results and alerts an agent published through the `publish_home_card` MCP tool; removable in the UI.
+- **An agent pane never degrades into a firehose screen** — when the transcript is empty or unreadable the chat area shows a notice
+  plus a “view raw screen” button and retries; it no longer auto-falls back to streaming the TUI (a full-screen Kimi/Claude redraw
+  is ~550 lines / 7000 DOM nodes twice a second, which froze Chrome). Shell panes still show their screen.
+- **Kimi session choice** — several sessions can share one cwd and title; only the newest `updatedAt` is read, because the older
+  ones usually end in an aborted turn with no messages.
 - **Going back to the board is instant** — `/home` paints the previous snapshot from `localStorage` first (marked
   `显示缓存，正在更新…`) and swaps in fresh data when it lands; without a snapshot it shows a skeleton (stats, cards and tree
   placeholders) instead of a blank page. On the server `/api/home` waits at most 1.2s because each favourite's live half needs an
