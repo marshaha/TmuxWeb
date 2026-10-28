@@ -93,6 +93,9 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   button returns, markdown files preview in a sheet, download saves into the app documents directory, upload and zip work from
   the toolbar. In the server dialog every label sits above its field (no overlapping floating labels).
 
+- Home sidebar: `/home` shows the host → session → window → pane tree with status dots; starring a pane fills the star and adds a
+  card on the right; clicking a pane row returns to the console with that pane selected; the `‹` button collapses the sidebar on
+  wide screens (persisted across reloads, `☰` restores it) and at ≤860px it behaves as a drawer with a backdrop.
 - Home board: the star next to a pane turns filled when clicked, and the pane shows up on `/home` with a status badge and the
   last message preview; clicking a card returns to the console with that pane selected; unstarring on `/home` removes the
   card; searching a word that appears in a conversation highlights the snippet and jumping to it selects the pane;
