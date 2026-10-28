@@ -9,6 +9,7 @@ class AppTheme {
   static const card = Color(0xFFFFFFFF);
   static const accent = Color(0xFFC96442);
   static const green = Color(0xFF4F9A65);
+  static const danger = Color(0xFFB34B43);
 
   static ThemeData light() {
     final base = ThemeData.light(useMaterial3: true);

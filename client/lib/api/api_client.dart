@@ -31,6 +31,9 @@ abstract class Api {
 
   Future<void> sendInput(String paneRef, String text, {bool submit = true});
 
+  /// Stop the running turn; returns the key that was sent (C-q or Escape).
+  Future<String> interrupt(String paneRef);
+
   Future<ShareMeta> shareMeta(String slug);
 
   Future<void> shareUnlock(String slug, String password);
@@ -164,6 +167,16 @@ class ApiClient implements Api {
       headers: _headers(),
     );
     return Transcript.fromJson(_decode(response));
+  }
+
+  @override
+  Future<String> interrupt(String paneRef) async {
+    final response = await _http.post(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/interrupt'),
+      headers: _headers(),
+    );
+    final data = _decode(response);
+    return (data['key'] as String?) ?? 'Escape';
   }
 
   @override

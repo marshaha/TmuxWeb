@@ -205,7 +205,9 @@ evolving on its own.
   wrapping-insensitively, and a rewritten/expanded echo is paired by order, so a placeholder never lingers after later replies;
   the placeholder sits right after the last message that existed when send was pressed, not at the very end
 - Stopping a turn: while the agent works and the composer is empty the send button becomes a red stop button (square icon);
-  clicking it (or pressing Esc in the composer) sends `Esc` to the pane to interrupt the turn. Typing text turns it back into
+  clicking it (or pressing Esc in the composer) sends the key that CLI expects - `Ctrl+Q` for Hermes (Ctrl+C also interrupts
+  but a second press within two seconds force-exits its TUI, so it is never sent automatically) and `Esc` for Claude Code,
+  Codex and Kimi. `POST /api/panes/{pane}/interrupt` picks the key; the Flutter client has the same stop button. Typing text turns it back into
   the send arrow, and Enter always sends. Backed by `POST /api/panes/{pane}/key` (Escape/Enter/Tab/C-c/C-d/C-u/arrows only).
 - Reasoning strip: a small line pinned right above the composer reads `…thinking… 1m38s` (animated dots plus elapsed) while the
   agent works and `…idle…` otherwise; the header mirrors it as `<provider> · thinking…` with a breathing dot. It is derived from the transcript (the last message is still a user message)

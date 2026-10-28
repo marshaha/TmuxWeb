@@ -95,7 +95,14 @@ class Transcript {
     this.content = '',
     this.mtime = 0,
     this.readOnly = false,
+    this.waiting = false,
+    this.waitingSince,
   });
+
+  /// True while the agent has not answered the last user message yet, so the
+  /// composer can offer a stop button.
+  final bool waiting;
+  final Object? waitingSince;
 
   final String mode; // transcript | screen
   final String? provider;
@@ -122,6 +129,8 @@ class Transcript {
       content: '${json['content'] ?? ''}',
       mtime: json['mtime'] ?? 0,
       readOnly: readOnly,
+      waiting: json['waiting'] == true,
+      waitingSince: json['waiting_since'],
     );
   }
 }

@@ -229,6 +229,17 @@ void main() {
       );
     });
   });
+
+  test('stopping a turn asks the server for the right key', () async {
+    final requests = <http.Request>[];
+    final client = ApiClient(httpClient: MockClient((request) async {
+      requests.add(request);
+      return http.Response('{"status":"sent","key":"C-q","provider":"hermes"}', 200);
+    }));
+    expect(await client.interrupt('%7'), 'C-q');
+    expect(requests.single.method, 'POST');
+    expect(requests.single.url.path, '/api/panes/%257/interrupt');
+  });
 }
 
 class _Unreachable implements Exception {

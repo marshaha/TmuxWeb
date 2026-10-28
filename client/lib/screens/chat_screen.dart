@@ -32,6 +32,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _error;
   bool _loading = true;
   bool _sending = false;
+  bool _stopping = false;
   bool _stale = false;
   Timer? _timer;
 
@@ -125,6 +126,29 @@ class _ChatScreenState extends State<ChatScreen> {
       _scroll.animateTo(_scroll.position.maxScrollExtent,
           duration: const Duration(milliseconds: 180), curve: Curves.easeOut);
     });
+  }
+
+  /// True while the agent still owes an answer for the last user message.
+  bool get _waiting => _data?.waiting == true;
+
+  /// The composer offers a stop button while the agent works and nothing is typed.
+  bool get _showStop => _waiting && _controller.text.trim().isEmpty && !widget.source.readOnly;
+
+  Future<void> _stop() async {
+    if (_stopping) return;
+    setState(() => _stopping = true);
+    try {
+      final key = await widget.source.stop();
+      if (!mounted) return;
+      final label = key == 'C-q' ? 'Ctrl+Q' : 'Esc';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已发送 $label，正在停止')));
+      await _refresh();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      if (mounted) setState(() => _stopping = false);
+    }
   }
 
   Future<void> _send() async {
@@ -249,6 +273,7 @@ class _ChatScreenState extends State<ChatScreen> {
             child: TextField(
               key: const Key('chat-composer'),
               controller: _controller,
+              onChanged: (_) => setState(() {}),
               minLines: 1,
               maxLines: 5,
               textInputAction: TextInputAction.newline,
@@ -261,12 +286,19 @@ class _ChatScreenState extends State<ChatScreen> {
             height: 46,
             width: 46,
             child: FilledButton(
-              key: const Key('chat-send'),
-              onPressed: _sending ? null : _send,
-              style: FilledButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(46, 46), shape: const CircleBorder()),
-              child: _sending
+              key: Key(_showStop ? 'chat-stop' : 'chat-send'),
+              onPressed: _showStop ? (_stopping ? null : _stop) : (_sending ? null : _send),
+              style: FilledButton.styleFrom(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(46, 46),
+                shape: const CircleBorder(),
+                backgroundColor: _showStop ? AppTheme.danger : null,
+              ),
+              child: _stopping
                   ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.arrow_upward, size: 20),
+                  : _sending
+                      ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : Icon(_showStop ? Icons.stop_rounded : Icons.arrow_upward, size: _showStop ? 24 : 20),
             ),
           ),
         ],

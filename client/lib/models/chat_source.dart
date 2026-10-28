@@ -17,6 +17,9 @@ abstract class ChatSource {
   Future<Transcript> fetch({bool refresh = false});
 
   Future<void> send(String text, {bool submit = true});
+
+  /// Interrupt the running turn; returns the key that was sent.
+  Future<String> stop();
 }
 
 class PaneChatSource implements ChatSource {
@@ -46,6 +49,9 @@ class PaneChatSource implements ChatSource {
 
   @override
   Future<void> send(String text, {bool submit = true}) => api.sendInput(pane.ref, text, submit: submit);
+
+  @override
+  Future<String> stop() => api.interrupt(pane.ref);
 }
 
 class ShareChatSource implements ChatSource {
@@ -71,4 +77,8 @@ class ShareChatSource implements ChatSource {
 
   @override
   Future<void> send(String text, {bool submit = true}) => api.shareInput(meta.slug, text, submit: submit);
+
+  /// A share link has no stop control: visitors cannot interrupt the agent.
+  @override
+  Future<String> stop() async => throw UnsupportedError('无法在分享页面停止');
 }

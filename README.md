@@ -196,7 +196,7 @@ TMUX_WEB_HOST=0.0.0.0
 - 对话里的本地文件链接会被改写：渲染时把 `/abs/path`、`~/path`、`file://…` 和相对路径（按 pane 的工作目录解析）改成 `/api/panes/<pane>/files/raw?path=…`，点击在新标签页打开；文本/图片/PDF 内联预览，其它类型按附件下载（响应带 `CSP: sandbox`，不会执行文件里的脚本）。markdown 里被 `marked` 百分号编码过的中文路径会先解码，`file.md:3685` 这类行号后缀会被去掉；https、mailto、锚点等链接原样保留。
 - 点 `.md/.markdown/.mdx/.txt/.log/.json/.yaml/.csv` 链接不跳转，而是在控制台里弹出阅读面板：markdown 走同一套渲染（标题、表格、代码块、mermaid，块级控件照旧），`源码` 按钮可切原文，`新标签打开` 下载/新开，Esc 或点遮罩关闭；面板里的相对链接与图片按被打开文件所在目录解析，嵌套的 md 链接会在同一面板里继续打开。超过 1.2 MB 的 md 默认显示源码，可手动点「渲染」。
 - 发送后先本地占位（`发送中`/`已发送`）：回显到达时按文本比对（忽略空白/换行差异），文本被 agent 改写时按顺序配对，保证占位气泡不会滞留在后面；占位气泡插在「你按下发送时最后一条消息」之后，而不是永远排在末尾，所以 agent 抢先回复也不会错位。
-- 停止推理：agent 在跑且输入框为空时，发送键变成红色「停止」（方形图标），点击或按 Esc 会向该 pane 发送 `Esc` 打断当前推理；输入框一有文字按钮就恢复成发送箭头（Enter 始终可发送）。接口 `POST /api/panes/{pane}/key`（仅允许 Escape/Enter/Tab/C-c/C-d/C-u/方向键）。
+- 停止推理：agent 在跑且输入框为空时，发送键变成红色「停止」（方形图标），点击（或输入框里按 Esc）会按 CLI 的习惯发按键打断当前推理：Hermes 用 `Ctrl+Q`（实测 `tmux send-keys C-q` 会中断当前回合，会话保留；`Ctrl+C` 也能中断但 2 秒内再按一次会强制退出，所以不自动发），Claude Code / Codex / Kimi 用 `Esc`；输入框一有文字按钮就恢复成发送箭头（Enter 始终可发送）。接口 `POST /api/panes/{pane}/interrupt`（按 provider 选键）与 `POST /api/panes/{pane}/key`（仅允许 Escape/Enter/Tab/C-c/C-d/C-q/C-u/方向键）。Flutter 客户端同样支持：状态栏进入 thinking 且输入框为空时，发送键变为停止键。
 - 推理状态条：输入框正上方常驻一行小字，agent 在跑时显示 `…thinking… 1m38s`（橙色跳动点 + 计时），空闲时显示 `…idle…`；顶栏同步显示 `<provider> · thinking…` 并让状态点橙色呼吸；判断依据是 transcript 最后一条还是 user（本回合未回复），再叠加 pane 屏幕探测（`esc to interrupt`/spinner，覆盖 codex 这种边写边出的情况），两者都结束就回到 `idle`，与侧边栏圆点一致。
 - 长会话往回翻：初次读 300 条，滚到顶部会自动再取一倍（300→600→1200…，上限 `TMUX_WEB_TRANSCRIPT_LIMIT_MAX` 默认 3000），顶部也有「加载更早的消息」按钮；加载后保持当前阅读位置不动，取完更早的消息后按钮自动隐藏。
 - 顶栏的分享入口是纯图标（右上箭头），没有文字。

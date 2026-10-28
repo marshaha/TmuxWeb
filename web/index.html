@@ -387,9 +387,8 @@ import {marked} from '/assets/marked.esm.js';
     const pane=state.selected;if(!pane)return;
     const button=$('send');button.disabled=true;$('send-state').textContent='正在停止…';
     try{
-      await api(`/api/panes/${encodeURIComponent(pane)}/key`,{method:'POST',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'Escape'})});
-      $('send-state').textContent='已发送 Esc';
+      const result=await api(`/api/panes/${encodeURIComponent(pane)}/interrupt`,{method:'POST'});
+      $('send-state').textContent=result&&result.key==='C-q'?'已发送 Ctrl+Q':'已发送 Esc';
     }catch(error){showError(error.message);$('send-state').textContent='停止失败';}
     finally{setTimeout(()=>{button.disabled=!state.selected;if(button.disabled===false)$('send-state').textContent='';syncSendButton();},700);}
   }

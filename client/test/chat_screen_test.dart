@@ -38,6 +38,14 @@ class FakeSource implements ChatSource {
   @override
   Future<Transcript> fetch({bool refresh = false}) async => _transcript;
 
+  int stops = 0;
+
+  @override
+  Future<String> stop() async {
+    stops += 1;
+    return 'C-q';
+  }
+
   @override
   Future<void> send(String text, {bool submit = true}) async {
     sent.add(text);
@@ -49,6 +57,17 @@ class FakeSource implements ChatSource {
     );
   }
 }
+
+
+Transcript waitingTranscript() => Transcript(
+      mode: 'transcript',
+      provider: 'claude',
+      mtime: 2,
+      waiting: true,
+      messages: [
+        ChatMessage(id: 'u1', role: 'user', text: '跑一个很长的任务'),
+      ],
+    );
 
 void main() {
   late List<String> clipboard;
@@ -147,6 +166,27 @@ void main() {
     expect(source.sent, ['继续处理']);
     expect(find.text('继续处理'), findsOneWidget);
     expect(tester.widget<TextField>(find.byKey(const Key('chat-composer'))).controller!.text, isEmpty);
+  });
+
+
+  testWidgets('the send button becomes a stop button while the agent works', (tester) async {
+    final source = FakeSource(transcript: waitingTranscript());
+    await tester.pumpWidget(MaterialApp(theme: AppTheme.light(), home: ChatScreen(source: source, poll: Duration.zero)));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('chat-stop')), findsOneWidget);
+    expect(find.byKey(const Key('chat-send')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('chat-stop')));
+    await tester.pumpAndSettle();
+    expect(source.stops, 1);
+    expect(find.textContaining('Ctrl+Q'), findsOneWidget);
+
+    // typing brings the send arrow back so a new message can still go out
+    await tester.enterText(find.byKey(const Key('chat-composer')), '补充一句');
+    await tester.pump();
+    expect(find.byKey(const Key('chat-send')), findsOneWidget);
+    expect(find.byKey(const Key('chat-stop')), findsNothing);
   });
 
   testWidgets('a cached conversation paints before the network answers', (tester) async {

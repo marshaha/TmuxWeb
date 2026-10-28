@@ -285,7 +285,16 @@ class InputRequest(BaseModel):
     submit: bool = True
 
 
-ALLOWED_KEYS = {"Escape", "Enter", "Tab", "C-c", "C-d", "C-u", "Up", "Down", "Left", "Right"}
+ALLOWED_KEYS = {"Escape", "Enter", "Tab", "C-c", "C-d", "C-q", "C-u", "Up", "Down", "Left", "Right"}
+
+def interrupt_key(provider: str | None) -> str:
+    """Which key stops a running turn for this agent CLI.
+
+    Hermes interrupts on Ctrl+Q (Ctrl+C also interrupts but a second press within
+    two seconds force-exits the TUI, so it is the wrong thing to send blindly).
+    Claude Code, Codex and Kimi cancel on Escape.
+    """
+    return "C-q" if provider == "hermes" else "Escape"
 
 
 class KeyRequest(BaseModel):
@@ -1466,6 +1475,20 @@ def create_app(
             transport, actual_pane_id = pane_transport(pane_id)
             await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit)
             return {"status": "sent", "pane": pane_id, "submit": payload.submit}
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/panes/{pane_id}/interrupt")
+    async def interrupt_pane(request: Request, pane_id: str):
+        """Stop the turn that is running in this pane, using the key its CLI expects."""
+        require_auth(request)
+        pane = pane_or_404(pane_id)
+        provider = transcript_reader.provider_for_command(pane.get("command"))
+        key = interrupt_key(provider)
+        try:
+            transport, actual_pane_id = pane_transport(pane_id)
+            await asyncio.to_thread(transport.send_key, actual_pane_id, key)
+            return {"status": "sent", "pane": pane_id, "key": key, "provider": provider}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

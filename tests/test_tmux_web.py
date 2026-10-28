@@ -13,6 +13,7 @@ from unittest.mock import patch
 from urllib.parse import quote
 from fastapi.testclient import TestClient
 
+import tmux_web
 from tmux_web import ANSI_RE, TmuxBackend, TmuxError, create_app, ensure_share_schema
 import relay
 from tests.fake_terminal import FakeTerminalFactory
@@ -328,6 +329,22 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(edited.status_code, 200)
         self.assertEqual(self.remote_store.hosts[host_id][0]["username"], "someone")
 
+    def test_interrupt_uses_the_key_each_cli_expects(self):
+        self.login()
+        # hermes interrupts on Ctrl+Q (Ctrl+C also interrupts but a second press
+        # force-exits the TUI), the other CLIs on Escape
+        self.assertEqual(tmux_web.interrupt_key("hermes"), "C-q")
+        for provider in ("claude", "codex", "kimi", None):
+            self.assertEqual(tmux_web.interrupt_key(provider), "Escape")
+
+        sent = []
+        self.tmux.panes[0]["command"] = "python3"  # provider_for_command -> hermes
+        self.tmux.send_key = lambda pane_id, key: sent.append((pane_id, key))
+        response = self.client.post("/api/panes/%254/interrupt")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["key"], "C-q")
+        self.assertEqual(sent, [("%4", "C-q")])
+
     def test_escape_can_be_sent_to_interrupt_a_turn(self):
         self.login()
         sent = []
@@ -345,7 +362,7 @@ class TmuxWebTests(unittest.TestCase):
         self.login()
         page = self.client.get("/").text
         for marker in ('id="i-stop"', "function stopAgent(", "function syncSendButton(",
-                       "/key`,{method:'POST'", ".send.stop{background:#b34b43}",
+                       "/interrupt`,{method:'POST'}", ".send.stop{background:#b34b43}",
                        "停止当前推理（Esc）"):
             self.assertIn(marker, page)
 
