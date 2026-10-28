@@ -1851,7 +1851,12 @@ def create_app(
     @app.post("/api/home/favorites", status_code=201)
     async def add_home_favorite(request: Request, payload: HomeFavoriteRequest):
         require_auth(request)
-        pane_or_404(payload.pane)
+        # a well-formed reference is enough: a host that is momentarily
+        # unreachable must not stop you from bookmarking its pane
+        try:
+            split_pane_ref(payload.pane)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid pane reference") from exc
         try:
             row = await asyncio.to_thread(home.add_favorite, payload.pane, payload.note, payload.title)
         except ValueError as exc:

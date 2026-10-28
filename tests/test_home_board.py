@@ -51,6 +51,11 @@ class HomeBoardTests(unittest.TestCase):
                        'data-rename=', 'id="rename-dialog"', "openRename",
                        'id="hover-preview"', 'agent_preview', "showHover"):
             self.assertIn(marker, response.text)
+        # cards live in a responsive grid: main must stretch inside the flex column,
+        # otherwise `margin:0 auto` shrinks it and only one card fits per row
+        self.assertIn("main{width:100%;padding:16px;max-width:1240px;margin:0 auto}", response.text)
+        self.assertIn("minmax(min(268px,100%),1fr)", response.text)
+
         # the sidebar already links to the console, so the header keeps no duplicate
         self.assertNotIn('title="回到控制台"', response.text)
         for marker in ():
@@ -86,6 +91,22 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("A", entry["preview"]["text"])
         self.assertEqual(board["stats"]["favorites"], 1)
 
+    def test_several_favourites_all_come_back(self):
+        self.tmux.panes.append({
+            "id": "%12", "target": "shell:0.0", "session": "shell", "window": "0",
+            "window_name": "shell", "index": "0", "command": "zsh", "title": "SY0100667",
+            "path": "/tmp", "active": False,
+        })
+        for pane in ("%4", "%12"):
+            self.assertEqual(self.favourite(pane).status_code, 201)
+        board = self.client.get("/api/home").json()
+        self.assertEqual(sorted(item["pane"] for item in board["favorites"]), ["%12", "%4"])
+        self.assertEqual(board["stats"]["favorites"], 2)
+        # a shell pane has no transcript, so its card falls back to the pane title
+        shell = next(item for item in board["favorites"] if item["pane"] == "%12")
+        self.assertIsNone(shell["preview"])
+        self.assertEqual(shell["default_title"], "shell · 0: shell · localhost")
+
     def test_favourites_are_listed_removed_and_validated(self):
         self.assertEqual(self.client.get("/api/home/favorites").json()["favorites"], [])
         self.assertEqual(self.favourite().status_code, 201)
@@ -96,7 +117,15 @@ class HomeBoardTests(unittest.TestCase):
         self.assertTrue(removed.json()["removed"])
         self.assertEqual(self.client.get("/api/home/favorites").json()["favorites"], [])
 
-        self.assertEqual(self.favourite("%99").status_code, 404)
+        # a pane that is gone (or whose host is unreachable) can still be bookmarked
+        self.assertEqual(self.favourite("%99").status_code, 201)
+        offline = next(item for item in self.client.get("/api/home").json()["favorites"] if item["pane"] == "%99")
+        self.assertEqual(offline["status"], "offline")
+        self.assertIsNone(offline["preview"])
+        self.client.delete("/api/home/favorites/" + quote("%99", safe=""))
+
+        # a malformed reference is still rejected
+        self.assertEqual(self.favourite("nonsense").status_code, 422)
 
     def test_the_hover_preview_skips_a_trailing_user_turn(self):
         self.tmux.panes[0]["command"] = "claude"

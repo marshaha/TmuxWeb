@@ -61,7 +61,7 @@
   .nav{display:flex;align-items:center;gap:6px;flex:none}
   .nav a,.nav button{display:grid;place-items:center;width:32px;height:32px;padding:0;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--muted);text-decoration:none;cursor:pointer}
   .nav a:hover,.nav button:hover{color:var(--accent);border-color:#d8c4b8}
-  main{padding:16px;max-width:1240px;margin:0 auto}
+  main{width:100%;padding:16px;max-width:1240px;margin:0 auto}
   .stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
   .stat{display:flex;align-items:baseline;gap:6px;padding:7px 12px;border:1px solid var(--line);border-radius:11px;background:var(--surface)}
   .stat b{font-size:15px;font-weight:650}
@@ -69,7 +69,7 @@
   .stat.hot b{color:var(--accent)}
   h2{display:flex;align-items:center;gap:8px;margin:18px 0 10px;font-size:13px;font-weight:650;color:var(--muted);letter-spacing:.02em}
   h2 .count{padding:1px 7px;border:1px solid var(--line);border-radius:20px;background:var(--surface);font:11px ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:400}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:11px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(268px,100%),1fr));gap:11px;width:100%}
   .card{position:relative;display:flex;flex-direction:column;gap:8px;padding:13px 14px;border:1px solid var(--line);border-radius:14px;background:var(--card);cursor:pointer;transition:box-shadow .15s,border-color .15s,transform .15s}
   .card:hover{border-color:#d9c9bd;box-shadow:0 6px 18px rgba(38,37,32,.07);transform:translateY(-1px)}
   .card-top{display:flex;align-items:center;gap:7px;min-width:0}
@@ -253,6 +253,21 @@
       +`<span class="tree-count">${count}</span></summary><div class="tree-children">${children}</div></details>`;
   }
 
+  /** Reflect the favourite set on the existing rows without re-rendering the
+   *  tree: a background refresh that replaces the DOM swallows clicks and
+   *  resets the scroll position. */
+  function syncStars(){
+    document.querySelectorAll('#tree [data-pane]').forEach(button=>{
+      const star=button.querySelector('[data-star]');
+      if(!star)return;
+      const starred=state.favorites.has(button.dataset.pane);
+      star.classList.toggle('on',starred);
+      star.title=starred?'取消收藏':'收藏到主页';
+      const use=star.querySelector('use');
+      if(use)use.setAttribute('href',starred?'#i-star-fill':'#i-star');
+    });
+  }
+
   function paneRow(pane){
     const status=state.states.get(pane.id)||'unknown';
     const starred=state.favorites.has(pane.id);
@@ -315,16 +330,22 @@
     try{
       const data=await api('/api/home/favorites');
       state.favorites=new Set(data.favorites||[]);
-      if(state.treeReady)renderTree();
+      if(state.treeReady)syncStars();
     }catch{}
   }
 
   async function toggleFavorite(paneId){
     const starred=state.favorites.has(paneId);
     try{
-      if(starred){await api(`/api/home/favorites/${encodeURIComponent(paneId)}`,{method:'DELETE'});state.favorites.delete(paneId);}
-      else{await api('/api/home/favorites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane:paneId})});state.favorites.add(paneId);}
-      renderTree();
+      if(starred){
+        await api(`/api/home/favorites/${encodeURIComponent(paneId)}`,{method:'DELETE'});
+        state.favorites.delete(paneId);
+      }else{
+        await api('/api/home/favorites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane:paneId})});
+        state.favorites.add(paneId);
+      }
+      syncStars();
+      toast(starred?'已取消收藏':'已收藏到主页');
       await load();
     }catch(err){toast(err.message);}
   }
@@ -334,7 +355,7 @@
       const board=await api('/api/home');
       state.board=board;
       state.favorites=new Set((board.favorites||[]).map(f=>f.pane));
-      if(state.treeReady)renderTree();
+      if(state.treeReady)syncStars();
       render();
     }catch(err){toast(err.message);}
   }
