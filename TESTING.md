@@ -60,6 +60,8 @@
 
 - 停止推理：让一个 agent pane 处于运行状态（提交一个耗时任务），输入框为空时右下按钮应变成红色方形停止键，标题为「停止当前推理（Esc）」；点击后状态显示「正在停止…」「已发送 Esc」，pane 收到 Esc 后该轮被打断；输入任意文字按钮变回发送箭头，清空又变回停止；在输入框按 Esc 也能停止。**Hermes 的 pane 会收到 Ctrl+Q**（状态角标显示「已发送 Ctrl+Q」），实测能中断当前回合且会话不退出；Claude/Codex/Kimi 收到 Esc。Flutter 客户端：thinking 且输入框为空时按钮为红色停止键，输入文字变回发送键。单测：`test_escape_can_be_sent_to_interrupt_a_turn`（含非法键 422、未登录 401）、`test_send_button_turns_into_a_stop_button_while_working`、`test_interrupt_uses_the_key_each_cli_expects`。
 
+- Flutter 对齐：手机端应能（1）在侧边栏展开「主机 → session → window → pane」并看到 busy/idle 圆点；（2）进「服务器管理」新增/编辑/删除主机，勾「不校验连接直接保存」后错误密码也能存下；（3）在对话页右上角点终端图标进入 PTY，能敲命令并看到回显（断网后自动重连）；（4）输入框里 Enter 发送、Shift+Enter 换行。单测：`hosts_tree_test.dart`（树分组、状态圆点、Enter/Shift+Enter、`wsUri` 协议推导）、`hosts_admin_screen` 的对话框用例。
+
 ## 1. 安装测试依赖
 
 ```bash

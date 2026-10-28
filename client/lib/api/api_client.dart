@@ -41,6 +41,20 @@ abstract class Api {
   Future<Transcript> shareTranscript(String slug, {int limit = 300});
 
   Future<void> shareInput(String slug, String text, {bool submit = true});
+
+  /// Busy/idle state per pane reference (empty when the probe is unavailable).
+  Future<Map<String, String>> paneStates();
+
+  Future<List<RemoteHost>> remoteHosts();
+
+  Future<RemoteHost> createRemoteHost(Map<String, dynamic> payload);
+
+  Future<RemoteHost> updateRemoteHost(String id, Map<String, dynamic> payload);
+
+  Future<void> deleteRemoteHost(String id);
+
+  /// Reads the SSH host key so a new host can be pinned on first contact.
+  Future<Map<String, dynamic>> scanHostKey(String hostname, int port);
 }
 
 String normalizeBaseUrl(String raw) {
@@ -58,7 +72,14 @@ String normalizeBaseUrl(String raw) {
 /// Pane references carry `%` (`%7`, `host~%7`), which must be percent-encoded.
 String encodePaneRef(String ref) => Uri.encodeComponent(ref);
 
-class ApiClient implements Api {
+/// Surface a terminal view needs: socket endpoint and handshake headers.
+abstract class TerminalApi {
+  Map<String, String> get wsHeaders;
+
+  Uri wsUri(String path, [Map<String, String>? query]);
+}
+
+class ApiClient implements Api, TerminalApi {
   ApiClient({String baseUrl = '', http.Client? httpClient})
       : baseUrl = baseUrl.isEmpty ? '' : normalizeBaseUrl(baseUrl),
         _http = httpClient ?? http.Client();
@@ -167,6 +188,77 @@ class ApiClient implements Api {
       headers: _headers(),
     );
     return Transcript.fromJson(_decode(response));
+  }
+
+  /// Headers for the WebSocket handshake (cookie + bearer both work).
+  Map<String, String> get wsHeaders => _headers();
+
+  /// ws:// or wss:// URL for a server path.
+  Uri wsUri(String path, [Map<String, String>? query]) {
+    final base = Uri.parse(baseUrl.isEmpty ? 'http://127.0.0.1' : baseUrl);
+    final uri = base.replace(
+      scheme: base.scheme == 'https' ? 'wss' : 'ws',
+      path: path,
+      queryParameters: query,
+    );
+    return uri;
+  }
+
+  @override
+  Future<Map<String, String>> paneStates() async {
+    final response = await _http.get(_uri('/api/panes/status'), headers: _headers());
+    final data = _decode(response);
+    final states = <String, String>{};
+    for (final item in (data['panes'] as List?) ?? const []) {
+      if (item is Map && item['id'] != null) states['${item['id']}'] = '${item['status'] ?? ''}';
+    }
+    return states;
+  }
+
+  @override
+  Future<List<RemoteHost>> remoteHosts() async {
+    final response = await _http.get(_uri('/api/remote-hosts'), headers: _headers());
+    final data = _decode(response);
+    return ((data['hosts'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((item) => RemoteHost.fromJson(Map<String, dynamic>.from(item)))
+        .toList();
+  }
+
+  @override
+  Future<RemoteHost> createRemoteHost(Map<String, dynamic> payload) async {
+    final response = await _http.post(
+      _uri('/api/remote-hosts'),
+      headers: _headers(json: true),
+      body: jsonEncode(payload),
+    );
+    return RemoteHost.fromJson(_decode(response));
+  }
+
+  @override
+  Future<RemoteHost> updateRemoteHost(String id, Map<String, dynamic> payload) async {
+    final response = await _http.put(
+      _uri('/api/remote-hosts/${Uri.encodeComponent(id)}'),
+      headers: _headers(json: true),
+      body: jsonEncode(payload),
+    );
+    return RemoteHost.fromJson(_decode(response));
+  }
+
+  @override
+  Future<void> deleteRemoteHost(String id) async {
+    final response = await _http.delete(_uri('/api/remote-hosts/${Uri.encodeComponent(id)}'), headers: _headers());
+    _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> scanHostKey(String hostname, int port) async {
+    final response = await _http.post(
+      _uri('/api/remote-hosts/scan-key'),
+      headers: _headers(json: true),
+      body: jsonEncode({'hostname': hostname, 'port': port}),
+    );
+    return _decode(response);
   }
 
   @override

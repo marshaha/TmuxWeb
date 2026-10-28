@@ -1,8 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../api/api_client.dart';
 import '../models/chat_source.dart';
+import 'terminal_screen.dart';
 import '../models/models.dart';
 import '../models/transcript_cache.dart';
 import '../theme.dart';
@@ -11,10 +14,19 @@ import '../widgets/message_tile.dart';
 /// Chat view for a pane or a share link: polls the transcript, renders messages
 /// with per-message and per-block copy controls, sends input when allowed.
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key, required this.source, this.poll = const Duration(seconds: 2), this.cache});
+  const ChatScreen({
+    super.key,
+    required this.source,
+    this.poll = const Duration(seconds: 2),
+    this.cache,
+    this.terminalApi,
+  });
 
   final ChatSource source;
   final Duration poll;
+
+  /// Enables the terminal entry when the caller also has a socket-capable API.
+  final TerminalApi? terminalApi;
 
   /// Injectable for tests; defaults to the process-wide cache.
   final TranscriptCache? cache;
@@ -191,6 +203,20 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
+          if (widget.terminalApi != null)
+            IconButton(
+              key: const Key('chat-terminal'),
+              tooltip: '终端',
+              onPressed: () {
+                final api = widget.terminalApi;
+                final source = widget.source;
+                if (api == null || source is! PaneChatSource) return;
+                Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => TerminalScreen(api: api, pane: source.pane),
+                ));
+              },
+              icon: const Icon(Icons.terminal, size: 20),
+            ),
           if (_stale)
             const Padding(padding: EdgeInsets.only(right: 4), child: Center(child: _Badge(label: '更新中…'))),
           if (widget.source.readOnly)
@@ -270,15 +296,28 @@ class _ChatScreenState extends State<ChatScreen> {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           Expanded(
-            child: TextField(
-              key: const Key('chat-composer'),
-              controller: _controller,
-              onChanged: (_) => setState(() {}),
-              minLines: 1,
-              maxLines: 5,
-              textInputAction: TextInputAction.newline,
-              style: const TextStyle(fontSize: 14.5, height: 1.4),
-              decoration: const InputDecoration(hintText: '继续提问…'),
+            child: Focus(
+              onKeyEvent: (node, event) {
+                if (event is! KeyDownEvent) return KeyEventResult.ignored;
+                final key = event.logicalKey;
+                if (key != LogicalKeyboardKey.enter && key != LogicalKeyboardKey.numpadEnter) {
+                  return KeyEventResult.ignored;
+                }
+                // Shift+Enter keeps the default behaviour: a newline.
+                if (HardwareKeyboard.instance.isShiftPressed) return KeyEventResult.ignored;
+                _send();
+                return KeyEventResult.handled;
+              },
+              child: TextField(
+                key: const Key('chat-composer'),
+                controller: _controller,
+                onChanged: (_) => setState(() {}),
+                minLines: 1,
+                maxLines: 5,
+                textInputAction: TextInputAction.newline,
+                style: const TextStyle(fontSize: 14.5, height: 1.4),
+                decoration: const InputDecoration(hintText: '继续提问…（Enter 发送，Shift+Enter 换行）'),
+              ),
             ),
           ),
           const SizedBox(width: 8),

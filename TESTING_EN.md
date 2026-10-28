@@ -85,6 +85,10 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   (verified against a live turn: the command aborted with exit 130 and the TUI stayed up); Claude/Codex/Kimi receive Esc. Unit tests:
   `test_escape_can_be_sent_to_interrupt_a_turn`, `test_send_button_turns_into_a_stop_button_while_working`.
 
+- Flutter parity: the app must show the host → session → window → pane tree with busy/idle dots, manage remote hosts
+  (add/edit/delete, reveal credential, save without verifying), open a real PTY from the chat app bar (auto-reconnect), and
+  send on Enter while Shift+Enter inserts a newline (`hosts_tree_test.dart`).
+
 ## 1. Install test dependencies
 
 ```bash

@@ -35,8 +35,33 @@ class FakeApi implements Api {
   }
 
   @override
-  @override
   Future<String> interrupt(String paneRef) async => 'Escape';
+
+  @override
+  Future<Map<String, String>> paneStates() async => {'%7': 'idle', 'abc~%0': 'busy'};
+
+  @override
+  Future<List<RemoteHost>> remoteHosts() async => [
+        RemoteHost(id: 'abc', name: 'ctyun', hostname: '100.123.123.8', port: 22,
+            username: 'mars', authType: 'password', fingerprint: 'SHA256:abc'),
+      ];
+
+  @override
+  Future<RemoteHost> createRemoteHost(Map<String, dynamic> payload) async =>
+      RemoteHost(id: 'new', name: '${payload['name']}', hostname: '${payload['hostname']}',
+          port: 22, username: '${payload['username']}', authType: 'password');
+
+  @override
+  Future<RemoteHost> updateRemoteHost(String id, Map<String, dynamic> payload) async =>
+      RemoteHost(id: id, name: '${payload['name'] ?? 'x'}', hostname: 'h', port: 22,
+          username: 'u', authType: 'password');
+
+  @override
+  Future<void> deleteRemoteHost(String id) async {}
+
+  @override
+  Future<Map<String, dynamic>> scanHostKey(String hostname, int port) async =>
+      {'host_key': '$hostname ssh-ed25519 AAAA', 'fingerprint': 'SHA256:abc'};
 
   @override
   Future<Transcript> transcript(String paneRef, {int limit = 200, bool refresh = false}) async =>

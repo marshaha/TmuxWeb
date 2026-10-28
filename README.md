@@ -192,29 +192,13 @@ TMUX_WEB_HOST=0.0.0.0
 `client/` 是 **原生** Flutter 客户端（Android / iOS），不走 WebView，直接调用 HTTP API；网页版继续独立迭代。
 
 - 登录：服务器地址 + 密码（换 `tmux_web_session` cookie），或 `TMUX_WEB_API_TOKEN`；地址记住、密码不落盘
-- 主机 / pane 树，标注 provider 与「有结构化记录 / 纯终端」；纯终端按屏幕文本渲染
-- 对话里的本地文件链接会被改写：渲染时把 `/abs/path`、`~/path`、`file://…` 和相对路径（按 pane 的工作目录解析）改成 `/api/panes/<pane>/files/raw?path=…`，点击在新标签页打开；文本/图片/PDF 内联预览，其它类型按附件下载（响应带 `CSP: sandbox`，不会执行文件里的脚本）。markdown 里被 `marked` 百分号编码过的中文路径会先解码，`file.md:3685` 这类行号后缀会被去掉；https、mailto、锚点等链接原样保留。
-- 点 `.md/.markdown/.mdx/.txt/.log/.json/.yaml/.csv` 链接不跳转，而是在控制台里弹出阅读面板：markdown 走同一套渲染（标题、表格、代码块、mermaid，块级控件照旧），`源码` 按钮可切原文，`新标签打开` 下载/新开，Esc 或点遮罩关闭；面板里的相对链接与图片按被打开文件所在目录解析，嵌套的 md 链接会在同一面板里继续打开。超过 1.2 MB 的 md 默认显示源码，可手动点「渲染」。
-- 发送后先本地占位（`发送中`/`已发送`）：回显到达时按文本比对（忽略空白/换行差异），文本被 agent 改写时按顺序配对，保证占位气泡不会滞留在后面；占位气泡插在「你按下发送时最后一条消息」之后，而不是永远排在末尾，所以 agent 抢先回复也不会错位。
-- 停止推理：agent 在跑且输入框为空时，发送键变成红色「停止」（方形图标），点击（或输入框里按 Esc）会按 CLI 的习惯发按键打断当前推理：Hermes 用 `Ctrl+Q`（实测 `tmux send-keys C-q` 会中断当前回合，会话保留；`Ctrl+C` 也能中断但 2 秒内再按一次会强制退出，所以不自动发），Claude Code / Codex / Kimi 用 `Esc`；输入框一有文字按钮就恢复成发送箭头（Enter 始终可发送）。接口 `POST /api/panes/{pane}/interrupt`（按 provider 选键）与 `POST /api/panes/{pane}/key`（仅允许 Escape/Enter/Tab/C-c/C-d/C-q/C-u/方向键）。Flutter 客户端同样支持：状态栏进入 thinking 且输入框为空时，发送键变为停止键。
-- 推理状态条：输入框正上方常驻一行小字，agent 在跑时显示 `…thinking… 1m38s`（橙色跳动点 + 计时），空闲时显示 `…idle…`；顶栏同步显示 `<provider> · thinking…` 并让状态点橙色呼吸；判断依据是 transcript 最后一条还是 user（本回合未回复），再叠加 pane 屏幕探测（`esc to interrupt`/spinner，覆盖 codex 这种边写边出的情况），两者都结束就回到 `idle`，与侧边栏圆点一致。
-- 长会话往回翻：初次读 300 条，滚到顶部会自动再取一倍（300→600→1200…，上限 `TMUX_WEB_TRANSCRIPT_LIMIT_MAX` 默认 3000），顶部也有「加载更早的消息」按钮；加载后保持当前阅读位置不动，取完更早的消息后按钮自动隐藏。
-- 顶栏的分享入口是纯图标（右上箭头），没有文字。
-- 分享弹窗宽度用 `100vw` 而不是 `100%`，不再随视口/键盘变化而跳动；手机（≤600px）下变成贴底 sheet：占满宽度、圆角只在上方、高度上限 88dvh、表单在内部滚动、操作按钮 sticky 在底部，字段单列排列。HTML 页面统一 `Cache-Control: no-store`，改完刷新即生效。
-- 对话：2 秒轮询，发送后乐观占位；每个 pane 的 transcript / 滚动位置 / 草稿缓存在内存里，切回去立刻出画面再后台刷新
-- **每条消息「复制全部」**；代码 / mermaid / 表格各自有工具条：复制（表格为 TSV、mermaid 为源码），表格可在「源码 / 渲染」间切换
-- 分享链接：路径 + 密码直接打开；`allow_input=false` 的只读分享隐藏输入框并显示只读横幅
-- 不含：终端模式、文件浏览器、新建 session、mermaid 图形渲染（这些仍用网页版）
-
-```bash
-cd client
-flutter pub get
-flutter test                 # 44 个单元 / widget 测试
-flutter build apk --release --split-per-abi
-```
-
-iOS 由 GitHub Actions 在 `macos-latest` 上编译（`.github/workflows/mobile.yml`）：默认未签名 IPA，
-配置证书/描述文件/App Store Connect Key 后自动签名并上传 TestFlight。细节见 `client/README.md`。
+- 侧边栏树：主机 → session → window → pane 四级展开（展开状态会记住），pane 前有 idle/busy 圆点（来自 `/api/panes/status`）
+- 服务器管理：列表 / 新增 / 编辑 / 删除远程主机，可扫描并固定 SSH 指纹，带「显示凭据」与「不校验连接直接保存」
+- 对话：结构化 transcript（Claude/Codex/Hermes/Kimi），每条消息复制、代码/mermaid/表格块级源码切换与复制
+- 发送：Enter 发送、Shift+Enter 换行；agent 在跑且输入框为空时发送键变红色停止键（Hermes 发 Ctrl+Q，Claude/Codex/Kimi 发 Esc）
+- 终端：调 `/ws/terminal/{pane}` 的真实 PTY（xterm 渲染），本地与 SSH pane 都可用，断线自动重连
+- 会话缓存：每个 pane 的 transcript、滚动位置、草稿都留在内存（最多 8 个），切回去立刻出画面再后台刷新
+- 分享：输入分享路径（可带密码）以只读/可对话方式查看
 
 ## 分享会话
 

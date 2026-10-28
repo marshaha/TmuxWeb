@@ -8,6 +8,9 @@ class Pane {
     required this.command,
     this.hostId = 'localhost',
     this.session = '',
+    this.window = '',
+    this.windowName = '',
+    this.index = '',
     this.path = '',
     this.provider,
     this.active = false,
@@ -20,6 +23,9 @@ class Pane {
   final String command;
   final String hostId;
   final String session;
+  final String window;
+  final String windowName;
+  final String index;
   final String path;
   final String? provider;
   final bool active;
@@ -35,6 +41,9 @@ class Pane {
       command: '${json['command'] ?? ''}',
       hostId: '${json['host_id'] ?? hostId}',
       session: '${json['session'] ?? ''}',
+      window: '${json['window'] ?? ''}',
+      windowName: '${json['window_name'] ?? ''}',
+      index: '${json['index'] ?? ''}',
       path: '${json['path'] ?? ''}',
       provider: ((json['provider'] as String?) ?? '').isEmpty ? null : json['provider'] as String,
       active: json['active'] == true,
@@ -159,5 +168,38 @@ class ShareMeta {
         provider: ((json['provider'] as String?) ?? '').isEmpty ? null : json['provider'] as String,
         allowInput: json['allow_input'] == true,
         passwordProtected: json['password_protected'] == true,
+      );
+}
+
+/// A remote SSH host as stored by the server (`/api/remote-hosts`).
+class RemoteHost {
+  RemoteHost({
+    required this.id,
+    required this.name,
+    required this.hostname,
+    required this.port,
+    required this.username,
+    required this.authType,
+    this.fingerprint = '',
+  });
+
+  final String id;
+  final String name;
+  final String hostname;
+  final int port;
+  final String username;
+  final String authType; // password | key | agent
+  final String fingerprint;
+
+  bool get hasPin => fingerprint.isNotEmpty;
+
+  factory RemoteHost.fromJson(Map<String, dynamic> json) => RemoteHost(
+        id: '${json['id'] ?? ''}',
+        name: '${json['name'] ?? ''}',
+        hostname: '${json['hostname'] ?? ''}',
+        port: int.tryParse('${json['port'] ?? 22}') ?? 22,
+        username: '${json['username'] ?? ''}',
+        authType: '${json['auth_type'] ?? 'password'}',
+        fingerprint: '${json['fingerprint'] ?? ''}',
       );
 }

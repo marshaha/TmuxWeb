@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 
+import 'dart:async';
+
 import '../api/api_client.dart';
 import '../models/chat_source.dart';
 import '../models/models.dart';
 import '../theme.dart';
 import 'chat_screen.dart';
+import 'hosts_admin_screen.dart';
 
 /// Host → pane browser: the mobile equivalent of the web sidebar.
 class HostsScreen extends StatefulWidget {
@@ -19,13 +22,31 @@ class HostsScreen extends StatefulWidget {
 
 class _HostsScreenState extends State<HostsScreen> {
   List<Host>? _hosts;
+  Map<String, String> _states = const {};
   String? _error;
   bool _loading = true;
+  Timer? _stateTimer;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _stateTimer = Timer.periodic(const Duration(seconds: 9), (_) => _refreshStates());
+  }
+
+  @override
+  void dispose() {
+    _stateTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refreshStates() async {
+    try {
+      final states = await widget.api.paneStates();
+      if (mounted) setState(() => _states = states);
+    } catch (_) {
+      // the probe is best-effort: a host that is offline just has no dot
+    }
   }
 
   Future<void> _load() async {
@@ -38,6 +59,7 @@ class _HostsScreenState extends State<HostsScreen> {
         _error = null;
         _loading = false;
       });
+      unawaited(_refreshStates());
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -50,8 +72,12 @@ class _HostsScreenState extends State<HostsScreen> {
   int get _paneCount => (_hosts ?? const <Host>[]).fold<int>(0, (sum, host) => sum + host.panes.length);
 
   void _openPane(Pane pane) {
+    final api = widget.api;
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => ChatScreen(source: PaneChatSource(api: widget.api, pane: pane)),
+      builder: (_) => ChatScreen(
+        source: PaneChatSource(api: api, pane: pane),
+        terminalApi: api is TerminalApi ? api as TerminalApi : null,
+      ),
     ));
   }
 
@@ -106,6 +132,17 @@ class _HostsScreenState extends State<HostsScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            key: const Key('hosts-admin'),
+            tooltip: '服务器管理',
+            onPressed: () async {
+              await Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => HostsAdminScreen(api: widget.api),
+              ));
+              await _load();
+            },
+            icon: const Icon(Icons.dns_outlined, size: 20),
+          ),
           IconButton(tooltip: '打开分享链接', onPressed: _openShare, icon: const Icon(Icons.link, size: 20)),
           IconButton(tooltip: '刷新', onPressed: _load, icon: const Icon(Icons.refresh, size: 20)),
         ],
@@ -119,6 +156,67 @@ class _HostsScreenState extends State<HostsScreen> {
           style: const TextStyle(fontSize: 11.5, color: AppTheme.faint),
         ),
       ),
+    );
+  }
+
+  /// host → session → window grouping, stable and cheap for typical sizes.
+  List<(String, List<Pane>)> _groupBySession(List<Pane> panes) {
+    final map = <String, List<Pane>>{};
+    for (final pane in panes) {
+      final key = pane.session.isEmpty ? 'default' : pane.session;
+      map.putIfAbsent(key, () => []).add(pane);
+    }
+    final keys = map.keys.toList()..sort();
+    return [for (final key in keys) (key, map[key]!)];
+  }
+
+  List<(String, List<Pane>)> _groupByWindow(List<Pane> panes) {
+    final map = <String, List<Pane>>{};
+    for (final pane in panes) {
+      final label = pane.windowName.isNotEmpty
+          ? '${pane.index}: ${pane.windowName}'
+          : (pane.index.isNotEmpty ? 'window ${pane.index}' : 'window');
+      map.putIfAbsent(label, () => []).add(pane);
+    }
+    final keys = map.keys.toList()..sort();
+    return [for (final key in keys) (key, map[key]!)];
+  }
+
+  Widget _paneTile(Pane pane) {
+    final status = _states[pane.ref];
+    final busy = status == 'busy';
+    return ListTile(
+      key: Key('pane-${pane.ref}'),
+      dense: true,
+      contentPadding: const EdgeInsets.only(left: 62, right: 16),
+      leading: SizedBox(
+        width: 14,
+        child: Center(
+          child: Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: status == null
+                  ? Colors.transparent
+                  : busy
+                      ? AppTheme.accent
+                      : (status == 'idle' ? AppTheme.green : AppTheme.faint),
+            ),
+          ),
+        ),
+      ),
+      title: Text(pane.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5)),
+      subtitle: Text(
+        [pane.ref, if (pane.provider != null) pane.provider!, if (pane.path.isNotEmpty) pane.path].join(' · '),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 10.5, color: AppTheme.faint),
+      ),
+      trailing: pane.hasTranscript
+          ? const Icon(Icons.chat_bubble_outline, size: 16, color: AppTheme.faint)
+          : const Icon(Icons.terminal, size: 16, color: AppTheme.faint),
+      onTap: () => _openPane(pane),
     );
   }
 
@@ -162,22 +260,41 @@ class _HostsScreenState extends State<HostsScreen> {
             ],
           ),
           children: [
-            for (final pane in host.panes)
-              ListTile(
-                key: Key('pane-${pane.ref}'),
+            for (final session in _groupBySession(host.panes))
+              ExpansionTile(
+                key: PageStorageKey('session-${host.id}-${session.$1}'),
+                initiallyExpanded: true,
+                tilePadding: const EdgeInsets.only(left: 30, right: 16),
+                childrenPadding: EdgeInsets.zero,
                 dense: true,
-                contentPadding: const EdgeInsets.only(left: 34, right: 16),
-                title: Text(pane.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5)),
-                subtitle: Text(
-                  [pane.ref, if (pane.session.isNotEmpty) pane.session, if (pane.provider != null) pane.provider!].join(' · '),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11, color: AppTheme.faint),
-                ),
-                trailing: pane.hasTranscript
-                    ? const Icon(Icons.chat_bubble_outline, size: 16, color: AppTheme.faint)
-                    : const Icon(Icons.terminal, size: 16, color: AppTheme.faint),
-                onTap: () => _openPane(pane),
+                shape: const Border(),
+                collapsedShape: const Border(),
+                title: Row(children: [
+                  const Icon(Icons.folder_outlined, size: 15, color: AppTheme.faint),
+                  const SizedBox(width: 7),
+                  Flexible(
+                    child: Text(session.$1,
+                        maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+                  ),
+                  const SizedBox(width: 6),
+                  Text('${session.$2.length}', style: const TextStyle(fontSize: 10.5, color: AppTheme.faint)),
+                ]),
+                children: [
+                  for (final window in _groupByWindow(session.$2))
+                    ExpansionTile(
+                      key: PageStorageKey('window-${host.id}-${session.$1}-${window.$1}'),
+                      initiallyExpanded: true,
+                      tilePadding: const EdgeInsets.only(left: 46, right: 16),
+                      dense: true,
+                      shape: const Border(),
+                      collapsedShape: const Border(),
+                      title: Text(window.$1,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                      children: [for (final pane in window.$2) _paneTile(pane)],
+                    ),
+                ],
               ),
           ],
         );

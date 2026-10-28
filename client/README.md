@@ -10,6 +10,10 @@ Android / iOS 原生客户端，直接调用 TmuxWeb 的 HTTP API —— **不�
 | 登录 | 服务器地址 + 密码（`POST /login` 换 cookie），也支持 `TMUX_WEB_API_TOKEN` 走 Bearer；地址记住、密码不落盘 |
 | 主机 / pane | 按主机分组，标注 provider 与「有结构化记录 / 纯终端」，下拉刷新 |
 | 对话 | 2 秒轮询 transcript，发送后乐观占位；纯终端 pane 按屏幕文本渲染 |
+| 侧边栏树 | 主机 → session → window → pane 四级展开，pane 前有 idle/busy 圆点（来自 `/api/panes/status`） |
+| 服务器管理 | 列表 / 新增 / 编辑 / 删除远程主机，可扫描并固定指纹，支持「显示凭据」「不校验连接直接保存」 |
+| 终端 | 调 `/ws/terminal/{pane}` 的真实 PTY（xterm 渲染），本地与 SSH pane 都可用，断线自动重连 |
+| 发送键 | Enter 发送、Shift+Enter 换行；agent 在跑且输入框为空时变红色停止键（Hermes 发 Ctrl+Q，其它发 Esc） |
 | 会话切换缓存 | 每个 pane 的 transcript、滚动位置、草稿都留在内存里（最多 8 个），切回去立刻出画面，再后台刷新 |
 | 消息级复制 | 每条消息「复制全部」，复制整条原文（含代码与表格 markdown 源码） |
 | 块级控件 | 代码 / mermaid / 表格各有工具条：复制（表格复制为 TSV、mermaid 复制源码），表格可「源码 / 渲染」互切 |
