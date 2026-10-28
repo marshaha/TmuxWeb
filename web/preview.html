@@ -57,6 +57,8 @@
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6"/></symbol>
   <symbol id="i-console" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.2v4.4h-4.4"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 4.6 2.4 5 5.5.8-4 3.9.9 5.5-4.8-2.6-4.8 2.6.9-5.5-4-3.9 5.5-.8z"/></symbol>
+  <symbol id="i-star-fill" viewBox="0 0 24 24"><path d="m12 4.6 2.4 5 5.5.8-4 3.9.9 5.5-4.8-2.6-4.8 2.6.9-5.5-4-3.9 5.5-.8z" fill="currentColor"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h13M12 5.5 18.5 12 12 18.5"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2.2"/></symbol>
 </defs></svg>
@@ -73,6 +75,7 @@
   <a class="icon-btn" id="console" title="在控制台打开" aria-label="在控制台打开" href="/">
     <svg class="ico"><use href="#i-console"/></svg>
   </a>
+  <button class="icon-btn" id="fav" title="收藏到主页" aria-label="收藏到主页" aria-pressed="false"><svg class="ico"><use href="#i-star"/></svg></button>
   <button class="icon-btn" id="reload" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
 </header>
 
@@ -100,6 +103,31 @@ const scroll=$('scroll');
 function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 marked.use({renderer:{html(token){return esc(token&&(token.text!=null?token.text:token.raw));}}});
 const md=value=>marked.parse(String(value??''),{gfm:true,breaks:false,async:false});
+const favBtn=document.getElementById('fav');
+function paintFav(on){
+  if(!favBtn)return;
+  favBtn.classList.toggle('on',on);
+  favBtn.setAttribute('aria-pressed',on?'true':'false');
+  favBtn.title=on?'取消收藏':'收藏到主页';
+  favBtn.setAttribute('aria-label',favBtn.title);
+  const use=favBtn.querySelector('use');
+  if(use)use.setAttribute('href',on?'#i-star-fill':'#i-star');
+}
+async function syncFav(){
+  if(!pane){paintFav(false);return;}
+  try{const data=await api('/api/home/favorites');paintFav((data.favorites||[]).includes(pane));}catch{}
+}
+if(favBtn)favBtn.onclick=async()=>{
+  if(!pane)return;
+  const on=favBtn.classList.contains('on');
+  try{
+    if(on)await api(`/api/home/favorites/${encodeURIComponent(pane)}`,{method:'DELETE'});
+    else await api('/api/home/favorites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane})});
+    paintFav(!on);
+    toast(!on?'已收藏到主页':'已取消收藏');
+  }catch(err){toast(err.message);}
+};
+syncFav();
 function toast(text){const el=$('toast');el.textContent=text;el.classList.add('show');clearTimeout(state.toastTimer);state.toastTimer=setTimeout(()=>el.classList.remove('show'),1800);}
 async function api(url,opts={}){const r=await fetch(url,opts);if(r.status===401){location='/login';throw new Error('登录已失效');}
   if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||`HTTP ${r.status}`);}return r.json();}

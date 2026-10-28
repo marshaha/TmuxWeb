@@ -247,6 +247,8 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   title, path, a **preview of the last message**, and the pane reference. Clicking a card jumps back to the console with that pane
   selected (`/?pane=<pane>`).
 - **Board cards** — notes, results and alerts an agent published through the `publish_home_card` MCP tool; removable in the UI.
+- **Star in the conversation top bar** — favourites the pane you have open; it stays in sync with the star in the sidebar tree and
+  with the board cards. The conversation preview page (`/preview`) carries the same button.
 - **Search** — one box, four groups in priority order: servers, tmux sessions, panes, then the recent messages of every agent pane and finally board cards (hits are highlighted).
   A query containing regex metacharacters runs as a case-insensitive regex; a plain word stays literal, and a broken pattern falls back to a literal search
   (`messages_partial` / `indexing` in the response tell the UI when results are still being scanned). The header keeps only the search box — servers, shares

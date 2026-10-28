@@ -102,6 +102,18 @@ class HomeBoardTests(unittest.TestCase):
         # the star must not be reported as a pane target
         self.assertNotIn('data-pane="%4" data-star', page)
 
+    def test_an_open_conversation_has_a_star_in_its_top_bar(self):
+        console = self.client.get("/").text
+        for marker in ('id="fav-toggle"', "syncFavButton", "#i-star-fill",
+                       "$('fav-toggle').onclick"):
+            self.assertIn(marker, console)
+        # the star follows the selection, so it must be refreshed by selectPane too
+        self.assertIn("syncLiveButton();syncFavButton();", console)
+
+        preview = self.client.get("/preview", params={"pane": "%7"}).text
+        for marker in ('id="fav"', "function syncFav", "/api/home/favorites", "paintFav"):
+            self.assertIn(marker, preview)
+
     # ------------------------------------------------------------------ favorites
     def test_a_favourite_shows_up_on_the_board_with_status_and_preview(self):
         self.tmux.panes[0]["command"] = "claude"   # the fake only has a transcript for claude
