@@ -87,6 +87,17 @@ class MobileTerminalTests(unittest.TestCase):
         self.assertIn(".terminal-keys{display:flex;padding-bottom:env(safe-area-inset-bottom)}", self.page)
         self.assertIn("@media(max-width:760px)", self.page)
 
+    def test_the_pwa_shell_is_public_but_the_api_is_not(self):
+        """A browser installs the PWA before login, so the shell must not need a cookie."""
+        anonymous = TestClient(create_app(
+            FakeTmux(), password=PASSWORD, session_secret="test-secret",
+            terminal_factory=FakeTerminalFactory(), share_db=":memory:", home_db=":memory:",
+            remote_store=FakeRemoteStore(), remote_runner_factory=FakeSSHRunner,
+        ))
+        for path in ("/manifest.webmanifest", "/sw.js", "/assets/app-icon-32.png", "/assets/app-icon.svg"):
+            self.assertEqual(anonymous.get(path).status_code, 200, path)
+        self.assertEqual(anonymous.get("/api/hosts").status_code, 401)
+
     def test_every_page_carries_the_pwa_tags(self):
         manifest = self.client.get("/manifest.webmanifest").json()
         self.assertEqual(manifest["display"], "standalone")

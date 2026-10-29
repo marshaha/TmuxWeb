@@ -1354,13 +1354,12 @@ def create_app(
         return {"status": "sent", "submit": payload.submit}
 
     @app.get("/manifest.webmanifest")
-    async def web_manifest(request: Request):
-        require_auth(request)
+    async def web_manifest() -> FileResponse:
+        """Public on purpose: a browser installs the PWA before anyone logs in."""
         return FileResponse(WEB_DIR / "manifest.webmanifest", media_type="application/manifest+json")
 
     @app.get("/sw.js")
-    async def service_worker(request: Request):
-        require_auth(request)
+    async def service_worker() -> FileResponse:
         return FileResponse(
             WEB_DIR / "sw.js",
             media_type="text/javascript",
@@ -1368,20 +1367,17 @@ def create_app(
         )
 
     @app.get("/assets/app-icon.svg")
-    async def app_icon_svg(request: Request):
-        require_auth(request)
+    async def app_icon_svg() -> FileResponse:
         return FileResponse(WEB_DIR / "app-icon.svg", media_type="image/svg+xml")
 
     @app.get("/assets/app-icon-maskable-{size}.png")
-    async def app_icon_maskable_png(request: Request, size: int):
-        require_auth(request)
+    async def app_icon_maskable_png(size: int):
         if size not in {192, 512}:
             raise HTTPException(status_code=404, detail="icon not found")
         return FileResponse(WEB_DIR / f"app-icon-maskable-{size}.png", media_type="image/png")
 
     @app.get("/assets/app-icon-{size}.png")
-    async def app_icon_png(request: Request, size: int):
-        require_auth(request)
+    async def app_icon_png(size: int):
         if size not in {32, 180, 192, 512}:
             raise HTTPException(status_code=404, detail="icon not found")
         return FileResponse(WEB_DIR / f"app-icon-{size}.png", media_type="image/png")
