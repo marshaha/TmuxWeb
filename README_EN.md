@@ -22,7 +22,9 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Remote rendering performance**: SSH connection multiplexing, remote content digests, idle backoff — and non-ASCII pane titles no longer arrive as `_`.
 - **File panel**: browse the selected pane's working directory in the sidebar (enter/leave folders, scroll), download with a click and upload by drag-and-drop, on localhost and over SSH alike.
 - **Message actions**: every message has a "复制全部" (copy all) button; each block inside a message (code / mermaid / table) has its own toolbar — copy the block (tables copy as TSV, mermaid copies the source) and, for tables and mermaid, flip between source and rendered. Mermaid is vendored locally and loaded lazily, only when a message actually contains a mermaid block.
-- **Multi-window** (`/grid`): several conversations side by side on one page. Three layouts — **side by side** (draggable widths),
+- **Multi-window** (`/grid`): same shell as the board — the session tree sidebar is the board's (same icons,
+  expand/collapse-all, draggable width, collapsible, drawer on a phone), and clicking a session in it adds that pane
+  as a window. Several conversations side by side on one page. Three layouts — **side by side** (draggable widths),
   **grid 2**, **grid 3** — and dragging a window's title bar reorders it; layout, order and widths live in localStorage. A window
   scrolled out of view drops to one request every 15s (and refreshes the moment it comes back), so four or five remote
   conversations do not saturate anything. The console sidebar's «+» pushes the current pane straight in (`/grid?add=…`), and the full preview page has a

@@ -132,11 +132,13 @@ class HomeBoardTests(unittest.TestCase):
 
     def test_the_sidebar_width_is_draggable_and_remembered(self):
         home = self.client.get("/home")
-        for marker in ('id="side-resizer"', "--side-w", "tmux-home-side-w", "col-resize"):
+        for marker in ('id="side-resizer"', "--side-w", "tmux-home-side-w"):
             self.assertIn(marker, home.text)
-        # the phone drawer keeps a fixed width: a wide desktop drag must not
-        # leave a phone with a sidebar that covers the whole screen
-        self.assertIn("width:min(86vw,320px)", home.text)
+        # the drag styles live in the shared sidebar stylesheet now (board + grid)
+        shell = self.client.get("/assets/shell.css").text
+        for marker in ("col-resize", "width:min(86vw,320px)"):
+            self.assertIn(marker, shell)
+        self.assertIn('href="/assets/shell.css"', home.text)
 
         console = self.client.get("/")
         for marker in ('id="side-resizer"', "var(--side-w,280px)", "tmux-side-w"):
@@ -147,9 +149,11 @@ class HomeBoardTests(unittest.TestCase):
         # a narrow sidebar must not lose its action buttons: the row wraps
         # instead of pushing the last icon under the clipped edge
         self.assertIn('<div class="side-actions">', home.text)
-        for page in (home.text, console.text):
-            self.assertIn("flex-wrap:wrap;row-gap:", page)
-            self.assertIn("initIconRowScroll", page)
+        # the board's sidebar lives in the shared stylesheet now
+        self.assertIn("flex-wrap:wrap;row-gap:", self.client.get("/assets/shell.css").text)
+        self.assertIn("initIconRowScroll", home.text)
+        self.assertIn("flex-wrap:wrap;row-gap:", console.text)
+        self.assertIn("initIconRowScroll", console.text)
 
     def test_a_card_previews_first_and_the_panel_holds_the_ways_in(self):
         """Cards preview; the panel offers full preview / chat / close."""

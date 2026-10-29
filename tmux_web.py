@@ -1366,6 +1366,15 @@ def create_app(
             headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
         )
 
+    @app.get("/assets/shell.{kind}")
+    async def shell_asset(kind: str):
+        """The session sidebar shared by /home and /grid."""
+        if kind not in {"css", "js"}:
+            raise HTTPException(status_code=404, detail="asset not found")
+        media = "text/css" if kind == "css" else "text/javascript"
+        return FileResponse(WEB_DIR / "assets" / f"shell.{kind}", media_type=media,
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/app-icon.svg")
     async def app_icon_svg() -> FileResponse:
         return FileResponse(WEB_DIR / "app-icon.svg", media_type="image/svg+xml")

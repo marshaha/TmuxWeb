@@ -144,6 +144,24 @@ class GridPageTests(unittest.TestCase):
         self.assertIn('id="open-grid"', page)
         self.assertIn("'/grid?add='", page)
 
+    def test_the_grid_uses_the_same_sidebar_shell_as_the_board(self):
+        page = self.client.get("/grid").text
+        for marker in ('href="/assets/shell.css"', 'src="/assets/shell.js"',
+                       'id="sidebar"', 'id="tree"', 'id="side-collapse"', 'id="side-open"',
+                       'id="tree-expand"', 'id="tree-collapse"', 'id="drawer-backdrop"',
+                       "TmuxShell.mount("):
+            self.assertIn(marker, page)
+        # clicking a session row puts that pane in a window
+        self.assertIn("onPane: paneId => addPane(paneId)", page)
+        # and the shell fetches /api/hosts, so the page must not do it twice
+        self.assertNotIn("loadMeta\n", page)
+        self.assertIn("if(window.TmuxShell)", page)
+
+        shell = self.client.get("/assets/shell.js").text
+        for marker in ("window.TmuxShell", "function renderTree", "tmux-tree-open",
+                       "api/home/favorites", "/api/panes/status"):
+            self.assertIn(marker, shell)
+
     def test_the_console_can_push_its_pane_into_the_grid(self):
         console = self.client.get("/").text
         self.assertIn('id="grid-add"', console)

@@ -10,15 +10,23 @@
   <meta name="apple-mobile-web-app-title" content="Tmux Chat">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/assets/app-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/shell.css">
   <link rel="icon" href="/assets/app-icon-32.png" sizes="32x32" type="image/png">
   <link rel="apple-touch-icon" href="/assets/app-icon-180.png">
   <title>多窗口 · TmuxWeb</title>
   <style>
-    :root{color-scheme:light;--page:#f7f7f5;--surface:#fff;--surface2:#f4f3ee;--ink:#242421;--muted:#73716b;--faint:#a09d95;--line:#dddcd5;--accent:#c96442;--green:#4f9a65;--amber:#d89a3c;--danger:#b34b43;--side-w:0px}
+    :root{color-scheme:light;--page:#f7f7f5;--surface:#fff;--surface2:#f4f3ee;--ink:#242421;--muted:#73716b;--faint:#a09d95;--line:#dddcd5;--accent:#c96442;--green:#4f9a65;--amber:#d89a3c;--danger:#b34b43;--side-w:268px}
     *{box-sizing:border-box}
     html,body{height:100%}
-    body{margin:0;display:flex;flex-direction:column;background:var(--page);color:var(--ink);
-      font:14px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif;overflow:hidden}
+    body{margin:0;background:var(--page);color:var(--ink);
+      font:14px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif;overflow:hidden;height:100dvh}
+    .main{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
+    .main-menu{display:none}
+    .side-hint{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font-size:11px}
+    .shell-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(8px);z-index:60;padding:9px 14px;border-radius:10px;background:#292825;color:#fff;font-size:12px;opacity:0;pointer-events:none;transition:opacity .15s,transform .15s}
+    .shell-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+    .shell.collapsed .main-menu{display:inline-grid;place-items:center;margin-right:6px}
+    @media(max-width:860px){.main-menu{display:inline-grid;place-items:center;margin-right:6px}}
     .top{flex:none;display:flex;align-items:center;gap:8px;height:52px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--page)}
     .top strong{font:500 15px Georgia,serif}
     .top .count{color:var(--faint);font-size:11px}
@@ -31,7 +39,7 @@
     .btn .ico{width:15px;height:15px}
     .ico{fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
     .btn[hidden]{display:none}
-    .grid{flex:1;min-height:0;display:flex;overflow-x:auto;overscroll-behavior-x:contain;background:var(--page)}
+    .grid{flex:1;min-height:0;min-width:0;display:flex;overflow-x:auto;overscroll-behavior-x:contain;background:var(--page)}
     .cell{position:relative;flex:0 0 auto;display:flex;flex-direction:column;min-width:240px;min-height:0;background:var(--surface);
       border:1px solid var(--line);border-radius:12px;margin:8px 0 8px 8px;overflow:hidden}
     .cell:last-of-type{margin-right:8px}
@@ -111,12 +119,46 @@
   <symbol id="i-preset" viewBox="0 0 24 24"><path d="M6 4.6h9.4L19 8.2v11.2H6Z"/><path d="M9 4.6v5h6v-5M9 19.4v-4.6h6v4.6"/></symbol>
   <symbol id="i-max" viewBox="0 0 24 24"><path d="M9 4.6H4.6V9M15 4.6h4.4V9M20 15v4.4h-4.4M9 19.4H4.6V15"></path></symbol>
   <symbol id="i-restore" viewBox="0 0 24 24"><path d="M4.6 9.4h4.8V4.6M19.4 9.4h-4.8V4.6M19.4 14.6h-4.8v4.8M4.6 14.6h4.8v4.8"></path></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 4.6 2.3 4.9 5.3.7-3.9 3.7 1 5.3-4.7-2.6-4.7 2.6 1-5.3L4.4 10.2l5.3-.7z"/></symbol>
+  <symbol id="i-star-fill" viewBox="0 0 24 24"><path d="m12 4.6 2.3 4.9 5.3.7-3.9 3.7 1 5.3-4.7-2.6-4.7 2.6 1-5.3L4.4 10.2l5.3-.7z" fill="currentColor"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.2v4.4h-4.4"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="6" rx="1.8"/><rect x="3.4" y="13.4" width="17.2" height="6" rx="1.8"/><path d="M7 7.6h.01M7 16.4h.01"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><circle cx="17.4" cy="6" r="2.4"/><circle cx="6.6" cy="12" r="2.4"/><circle cx="17.4" cy="18" r="2.4"/><path d="m8.8 10.8 6.4-3.6M8.8 13.2l6.4 3.6"/></symbol>
+  <symbol id="i-collapse" viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="i-tree-open" viewBox="0 0 24 24"><path d="m7 6 5 4 5-4M7 13l5 4 5-4"/></symbol>
+  <symbol id="i-tree-close" viewBox="0 0 24 24"><path d="m7 11 5-4 5 4M7 18l5-4 5 4"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"></path></symbol>
   <symbol id="i-console" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"></path></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="M4.5 10.6 12 4.4l7.5 6.2V19a1.4 1.4 0 0 1-1.4 1.4H5.9A1.4 1.4 0 0 1 4.5 19Z"></path></symbol>
 </defs></svg>
 
+<div class="shell" id="shell">
+<aside class="sidebar" id="sidebar">
+  <div class="side-head">
+    <div class="brand"><b>会话</b><span id="side-count">载入中…</span></div>
+    <div class="side-actions">
+      <a class="icon-btn" href="/" title="控制台" aria-label="控制台"><svg class="ico"><use href="#i-console"/></svg></a>
+      <a class="icon-btn" href="/home" title="主页" aria-label="主页"><svg class="ico"><use href="#i-home"/></svg></a>
+      <a class="icon-btn" href="/hosts" title="远程主机" aria-label="远程主机"><svg class="ico"><use href="#i-server"/></svg></a>
+      <a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享"><svg class="ico"><use href="#i-share"/></svg></a>
+      <button class="icon-btn" id="reload" type="button" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
+      <button class="icon-btn" id="side-collapse" type="button" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-collapse"/></svg></button>
+    </div>
+  </div>
+  <div class="tree-tools">
+    <span class="tree-tools-label">会话</span>
+    <button class="tree-tool" id="tree-expand" type="button" title="展开全部" aria-label="展开全部"><svg class="ico"><use href="#i-tree-open"/></svg></button>
+    <button class="tree-tool" id="tree-collapse" type="button" title="折叠全部" aria-label="折叠全部"><svg class="ico"><use href="#i-tree-close"/></svg></button>
+  </div>
+  <nav class="tree" id="tree" aria-label="Tmux 会话"></nav>
+  <div class="side-resizer" id="side-resizer"></div>
+  <footer class="side-foot"><span class="side-hint">点会话即加入窗口</span><form method="post" action="/logout"><button class="logout">退出</button></form></footer>
+</aside>
+<div class="backdrop" id="drawer-backdrop"></div>
+<main class="main">
 <div class="top">
+  <button class="icon-btn main-menu" id="side-open" type="button" title="会话列表" aria-label="会话列表"><svg class="ico"><use href="#i-menu"/></svg></button>
   <strong>多窗口</strong>
   <span class="count" id="count"></span>
   <span class="spacer"></span>
@@ -131,6 +173,10 @@
 </div>
 
 <div class="grid" id="grid"><div class="empty"><div><b>还没有窗口</b>点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。</div></div></div>
+
+</main>
+</div>
+<div class="shell-toast" aria-live="polite"></div>
 
 <dialog id="picker">
   <form method="dialog" class="picker" id="picker-form">
@@ -152,6 +198,7 @@
     <div class="picker-foot"><button class="btn" value="cancel" type="submit">关闭</button></div>
   </form>
 </dialog>
+<script src="/assets/shell.js"></script>
 <script>
 (() => {
   const $=id=>document.getElementById(id);
@@ -562,10 +609,30 @@
     if(wanted)state.panes=wanted.split(',').map(item=>item.trim()).filter(Boolean).slice(0,6);
   }
   render();
-  loadMeta();
   loadStatus();
   setInterval(loadStatus,10000);
-  setInterval(loadMeta,30000);
+  // the sidebar owns /api/hosts now: reuse its pane metadata instead of polling twice
+  if(window.TmuxShell){
+    TmuxShell.mount({
+      onPane: paneId => addPane(paneId),
+      onHosts: hosts => {
+        state.titles.clear();
+        for(const host of hosts||[]){
+          for(const pane of host.panes||[]){
+            state.titles.set(pane.id,pane);
+          }
+        }
+        for(const cell of document.querySelectorAll('.cell')){
+          const label=cell.querySelector('.cell-title');
+          if(label)label.textContent=titleFor(cell.dataset.pane);
+        }
+        applyDefaultModes();
+      },
+    });
+  }else{
+    loadMeta();
+    setInterval(loadMeta,30000);
+  }
   setInterval(syncVisibility,5000);      // safety net while a window is still loading
 })();
 </script>
