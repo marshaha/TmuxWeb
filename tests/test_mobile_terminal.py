@@ -52,6 +52,14 @@ class MobileTerminalTests(unittest.TestCase):
         self.assertIn("},true);", self.page)          # xterm stops propagation, so capture first
         self.assertIn("addEventListener('touchstart'", self.page)
 
+    def test_the_keyboard_target_is_editable_so_ios_drops_its_form_assistant_bar(self):
+        """iOS shows up/down/Done above the keyboard for form controls; contenteditable is not one."""
+        self.assertIn("function useEditableCapture()", self.page)
+        self.assertIn("setAttribute('contenteditable','true')", self.page)
+        self.assertIn("params.get('kb')==='input'", self.page)      # escape hatch
+        self.assertIn("field.isContentEditable", self.page)
+        self.assertIn("inputType!=='deleteContentBackward'", self.page)   # backspace on empty
+
     def test_pinch_zooms_the_font_and_it_is_remembered(self):
         self.assertIn("setupTerminalZoom", self.page)
         self.assertIn("tmux-term-font", self.page)

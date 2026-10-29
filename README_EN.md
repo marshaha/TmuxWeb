@@ -35,7 +35,9 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
   the leftover space. On a phone the windows stack full width. Linked from the console and board sidebars. Every page
   (`/`, `/home`, `/preview`, `/grid`, `/hosts`, `/shares`) now requires a login and remembers where to return.
 - **Real terminal**: xterm.js + PTY attach with input, resize and ANSI. On a phone it now works the way Termius does:
-  no visible input box (an invisible field captures the soft keyboard, tapping the terminal opens it, the keyboard
+  no visible input box (an invisible contenteditable captures the soft keyboard, tapping the terminal opens it, the keyboard
+  button hides it; it is contenteditable rather than an `<input>` because iOS hangs its "↑ ↓ Done" form-assistant bar off
+  form controls and that bar cannot be removed from a web page — `?kb=input` switches back if an iOS build misbehaves;
   button hides it); one scrollable key row (`shift tab`, paste, `?`, `/`, `esc`, `tab`, `ctrl`, `alt`, arrows, `^C`) with
   **more** and **keyboard** pinned on the right; `ctrl`/`alt` latch onto the next character; a four-column extended pad
   (`^C ^D ^Z ^L …`, `| ~ - = : ; ! $ % ^ < > ( ) { } [ ]`, home/end/pgUp/pgDn, arrows, paste/del/@/&) that replaces the
