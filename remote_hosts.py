@@ -11,6 +11,8 @@ import secrets
 import sqlite3
 import subprocess
 import time
+
+import agent_status
 import tempfile
 import shlex
 import logging
@@ -121,7 +123,13 @@ def tmux_cache_key(host: dict) -> str:
 # Remote panes are read the same way ``scp`` would: a POSIX shell snippet finds
 # the provider's transcript file (or exports rows with sqlite3 for Hermes) and
 # the bytes are pulled here and parsed by transcript_reader. No remote python.
-REMOTE_TRANSCRIPT_SCRIPT = r"""
+REMOTE_TRANSCRIPT_SCRIPT = agent_status.STATUS_SHELL + r"""
+# TMUXWEB_STATUS_ONLY=1 stops right after the session file is known and prints its verdict:
+# the sweep uses that to ask "is this agent running" without pulling a transcript.
+status_emit() {
+  printf 'TMUXWEB_STATUS%s%s\nTMUXWEB_PROVIDER%s%s\n' "$sep" "$(status_of "$provider" "$1")" "$sep" "$provider"
+  exit 0
+}
 pane=$1
 limit=${2:-200}
 sep='<::>'
@@ -188,6 +196,7 @@ PROBES
   fi
   [ -n "$file" ] || file=$(printf '%s\n' "$candidates" | head -1)
   [ -n "$file" ] || error "no Claude transcript for $cwd" 23
+  [ "${TMUXWEB_STATUS_ONLY:-0}" = 1 ] && status_emit "$file"
   header "$(basename "$file" .jsonl)" jsonl "$file"
   tail -c "$payload_bytes" -- "$file" 2>/dev/null | emit
   exit 0
@@ -213,6 +222,7 @@ if [ "$provider" = codex ]; then
     done
   fi
   [ -n "$file" ] || error "no Codex transcript for $cwd" 23
+  [ "${TMUXWEB_STATUS_ONLY:-0}" = 1 ] && status_emit "$file"
   [ -n "$id" ] || id=$(basename "$file" .jsonl | sed 's/^rollout-[0-9T:.-]*-//')
   header "$id" jsonl "$file"
   tail -c "$payload_bytes" -- "$file" 2>/dev/null | emit
@@ -266,6 +276,7 @@ if [ "$provider" = kimi ]; then
   file=$found
   id=$found_id
   [ -n "$file" ] || error "no Kimi transcript for $cwd" 23
+  [ "${TMUXWEB_STATUS_ONLY:-0}" = 1 ] && status_emit "$file"
   header "$id" jsonl "$file"
   tail -c "$payload_bytes" -- "$file" 2>/dev/null | emit
   exit 0
@@ -357,7 +368,7 @@ except Exception as exc:  # noqa: BLE001 - report and let the caller fall back
     sys.exit(4)
 info = os.stat(db)
 sys.stdout.write(
-    "TMUXWEB_PROVIDER%shermes\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%shermes-rows\n"
+    "TMUXWEB_STATUS%sunknown\nTMUXWEB_PROVIDER%shermes\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%shermes-rows\n"
     "TMUXWEB_PRIMARY%s%s\nTMUXWEB_STAMP%s%d %d\nTMUXWEB_PAYLOAD\n"
     % (sep, sep, sid, sep, sep, db, sep, int(info.st_mtime), info.st_size)
 )
@@ -650,9 +661,10 @@ def parse_tmux_panes(raw: str, host_id: str, separator: str = FIELD_SEPARATOR) -
     panes = []
     for line in raw.splitlines():
         fields = line.split(separator)
-        if len(fields) != 12:
+        if len(fields) not in (12, 13):
             continue
-        pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields
+        pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields[:12]
+        activity = fields[12] if len(fields) > 12 else ""
         if not PANE_ID_RE.fullmatch(pane_id):
             continue
         panes.append({
@@ -660,6 +672,7 @@ def parse_tmux_panes(raw: str, host_id: str, separator: str = FIELD_SEPARATOR) -
             "target": target, "session": session, "window": window, "window_name": window_name,
             "index": index, "command": command, "title": title, "path": path,
             "active": active == "1", "width": int(width), "height": int(height),
+            "activity": int(activity) if str(activity).isdigit() else 0,
         })
     return panes
 
@@ -1275,6 +1288,7 @@ class SSHRunner:
             "#{pane_id}", "#{session_name}:#{window_index}.#{pane_index}", "#{session_name}",
             "#{window_index}", "#{window_name}", "#{pane_index}", "#{pane_current_command}",
             "#{pane_title}", "#{pane_current_path}", "#{pane_active}", "#{pane_width}", "#{pane_height}",
+            "#{window_activity}",
         ])
         command = f"${{TMUX_BIN:-tmux}} list-panes -a -F {shlex.quote(fmt)}"
         completed = self.run(command, timeout=timeout)
@@ -1617,6 +1631,34 @@ class SSHRunner:
                 buffer.append(line)
         if current is not None:
             result[current] = ANSI_RE.sub("", "\n".join(buffer))
+        return result
+
+    def status_many(self, pane_ids) -> dict:
+        """Ask each agent pane's session file whether its turn is still running.
+
+        One ssh for the whole host: the transcript script's status-only mode resolves
+        the session file exactly like a transcript read would (same Claude/Kimi
+        disambiguation) and prints nothing but the verdict.
+        """
+        ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))][:80]
+        if not ids:
+            return {}
+        script = (
+            "S=" + shlex.quote(REMOTE_TRANSCRIPT_SCRIPT) + "; "
+            "for pane in " + " ".join(shlex.quote(pane) for pane in ids) + "; do "
+            "printf '\\037%s ' \"$pane\"; "
+            "TMUXWEB_STATUS_ONLY=1 sh -c \"$S\" sh \"$pane\" 1 2>/dev/null "
+            "| sed -n 's/^TMUXWEB_STATUS" + FIELD_SEPARATOR + r"\(.*\)$/\1/p' | head -1; done"
+        )
+        completed = self.run(script, timeout=self.transcript_timeout)
+        result = {}
+        for line in completed.stdout.decode(errors="replace").splitlines():
+            if not line.startswith("\x1f"):
+                continue
+            pane, _, state = line[1:].partition(" ")
+            state = state.strip()
+            if pane and state:
+                result[pane] = state
         return result
 
     def send_key(self, pane_id: str, key: str) -> None:

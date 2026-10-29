@@ -315,12 +315,18 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
 - **Recent visits** — the board lists the four panes you opened last (one click back to the console). Visits are recorded by the
   console (`POST /api/home/recent`); titles/hosts come from the `/api/hosts` snapshot and status from the sweep, so the section
   never reads a transcript itself.
-- **How busy/idle is decided** — `relay.classify()` over the last 14 lines: an interrupt hint (`esc to interrupt`, `esc to cancel`,
-  `ctrl+c to cancel`) means busy; a spinner in the last 3 lines means busy; progress wording only with an ellipsis
-  (`thinking…`) means busy; a prompt or agent input box (`❯`, `> `, `│ > …`, `user@host:~$`) means idle; anything else is
-  **unknown** — never a default "busy". The old rule matched the bare word "thinking", so Kimi's status bar
-  (`K3.1 Pro thinking: high`, a reasoning-level setting) made idle panes look busy. Board cards additionally override the status
-  with the transcript's own `waiting` flag (`status_source: transcript`).
+- **How busy/idle is decided** — the first source with an answer wins (the API reports it as `status_source`):
+  1. **the agent's own session file** (`session`, most reliable): every agent writes an explicit record when a turn ends, so one record
+     from the last 64KB is enough — Claude `{"type":"system","subtype":"turn_duration"}`, Codex `event_msg`/`task_complete`
+     (`task_started` = running), Kimi `{"type":"prompt.completed"}`. The newest *decisive* record wins, so bookkeeping codex appends
+     after the turn cannot hide the verdict, and a file untouched for `TMUX_WEB_STATUS_STALE_SECONDS` (600s) is not counted as busy
+     (an aborted session ends on `agent.message.appended` and would otherwise look busy forever).
+  2. **tmux output activity** (`activity`): `#{window_activity}` within `TMUX_WEB_ACTIVITY_BUSY_SECONDS` (3s) means output is flowing;
+     it costs nothing extra, it rides along with list-panes.
+  3. **screen text** (`screen`, last resort): interrupt hints / spinners / progress words with an ellipsis mean busy, a prompt or
+     agent input box means idle, anything else is unknown (grey dot).
+  Measured before/after: three Kimi panes were reported busy because their footer says `Kimi K3 thinking`; all three are idle now.
+  Remote hosts answer with **one ssh per host** (the same rules in shell, no python3 needed there), hosts probed in parallel: 72 panes in 4.5s.
 - **Star in the conversation top bar** — favourites the pane you have open; it stays in sync with the star in the sidebar tree and
   with the board cards. The conversation preview page (`/preview`) carries the same button.
 - **Search** — one box, four groups in priority order: servers, tmux sessions, panes, then the recent messages of every agent pane and finally board cards (hits are highlighted).

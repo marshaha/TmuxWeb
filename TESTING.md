@@ -87,6 +87,9 @@
 - 视图切换：顶栏星星左边有聊天/终端两个图标按钮，点击互切且高亮跟随；侧边栏里不再有这组按钮；390px 宽度下顶栏仍是一行、不溢出。
 - 预览页：`/preview?pane=…` 顶栏有聊天和终端两个入口（都在星星左边），终端入口打开的地址带 `mode=terminal`，落地即终端视图。
 - 首页进入：清掉 `localStorage['tmux-last-pane']` 后打开 `/` → 自动跳到 `/home`；在有「上次 pane」的情况下打开 `/` → 留在控制台并恢复那个会话；任意打开一个 pane 后回主页 → 「最近访问」里出现它（最多 4 个，最新在前）。
+- busy 判定：`GET /api/panes/status` 里每个 pane 带 `status_source`；agent pane 多数是 `session`（会话文件结论），shell pane 是 `screen`/`activity`。
+  让某个 claude/codex/kimi pane 真正跑一个回合 → 它应变 busy（`session`）；跑完 → idle。文件不再更新却停在 busy 的（中断的会话）应显示 idle。
+  Kimi 状态栏写着 `thinking` 时不应误判 busy。单测：`tests/test_agent_status.py`（含 Python 与远端 shell 规则一致性）。
 - busy 判定：Kimi pane 空闲时状态应是 idle（状态栏里有 `thinking: high` 也不会误判）；agent 正在跑时出现 `esc to interrupt` 才是 busy；纯日志 pane 是灰点 unknown。单测：`tests/test_relay.py::test_a_kimi_status_bar_is_not_a_running_turn`、`::test_plain_output_is_unknown_not_busy`、`::test_soft_progress_needs_an_ellipsis`。
 - 主页秒开：先正常打开一次 `/home`（写入缓存），再在控制台 ↔ 主页之间来回切 → 主页内容立刻出现、不会空白；用 DevTools 把 `/api/home` 设成离线/慢速 → 仍然显示缓存卡片并带「显示缓存，正在更新…」，恢复后自动去掉；清掉 `localStorage['tmux-home-cache-v1']` 再拦接口 → 显示骨架屏（统计胶囊 + 卡片占位）。后端：给一个不可达主机上的 pane 加收藏 → `/api/home` 1–2 秒返回且该卡片 `pending=true`，其余卡片正常。单测：`tests/test_home_board.py::test_the_board_answers_before_a_slow_host_does`、`::test_the_board_is_painted_from_a_local_snapshot`。
 - 侧边栏主机刷新：每台主机行右侧有刷新按钮 → 只刷新这一台（网络上几百毫秒），树不会折叠、选中的 pane 不变、其他主机数目不变；主机离线时行内提示错误。单测：`tests/test_tmux_web.py::test_refreshing_one_host_leaves_the_others_alone`、`tests/test_home_board.py::test_every_host_row_offers_a_refresh`。

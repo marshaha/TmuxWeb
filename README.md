@@ -286,14 +286,15 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 - **登录保留深链**：未登录访问 `/?pane=...`、`/preview?pane=...` 会跳 `?next=`，登录后回到原地址（`next` 只接受站内路径，`//evil` 之类直接回 `/`）
 - **进入首页**：没有 `?pane=` 也没有「上次打开的 pane」时，`/` 自动跳到 `/home`（有上次 pane 时仍直接恢复到那个会话，刷新不会把你踢回首页）
 - **最近访问**：主页在「收藏」下面列出**最近打开的 4 个 pane**（点一下就回控制台）。记录来自控制台的选中动作（`POST /api/home/recent`），标题/主机/session 取自 `/api/hosts` 快照，状态取自状态扫描，所以这一段自己不读 transcript、几乎瞬时
-- **busy/idle 怎么判**：控制台和主页的状态都来自 `relay.classify()` 对 pane 末 14 行的判断——
-  1) 出现 `esc to interrupt` / `esc to cancel` / `ctrl+c to cancel` → busy；
-  2) 末 3 行里有转轮字符（⠋⠙…）→ busy；
-  3) 末 3 行出现带省略号的进度词（`thinking…`/`working…`）→ busy；
-  4) 末 4 行是提示符或 agent 输入框（`❯`、`> `、`│ > …`、`user@host:~$`）→ idle；
-  5) 都不是 → **unknown（灰点）**，不再默认 busy。
-  以前直接把「thinking」当关键词，Kimi 的状态栏 `K3.1 Pro thinking: high`（推理档位）会让空闲 pane 显示 busy，已修。
-  主页卡片还有更权威的一层：拿到 transcript 后按会话自己的 `waiting` 覆盖状态（`status_source: transcript`）。
+- **busy/idle 怎么判**：按可信度从高到低取第一个有结论的来源（`/api/panes/status` 会带 `status_source` 告诉你是哪一个）：
+  1. **agent 自己的会话文件**（`session`，最准）：每个 agent 在回合结束时都会写一条明确记录，只读文件末尾 64KB 的一条记录，不解析整份 transcript ——
+     Claude `{"type":"system","subtype":"turn_duration"}` = 回合结束；Codex `{"type":"event_msg","payload":{"type":"task_complete"}}` = 结束、`task_started` = 正在跑；
+     Kimi `{"type":"prompt.completed"}` = 结束。取「最近一条有结论的记录」，所以 codex 在回合结束后追加的 `thread_settings_applied` 之类不会把结论盖掉；
+     会话文件超过 `TMUX_WEB_STATUS_STALE_SECONDS`（默认 600s）没写入还判 busy 的，按 idle 处理（中断的会话会永远停在 `agent.message.appended`）。
+  2. **tmux 输出活跃度**（`activity`）：`#{window_activity}` 距今 ≤3s 视为正在输出（`TMUX_WEB_ACTIVITY_BUSY_SECONDS`）。不用额外命令，跟着 list-panes 一起拿。
+  3. **屏幕文本**（`screen`，兜底）：末 14 行里出现 `esc to interrupt` / 转轮 / 带省略号的进度词 → 忙；提示符或 agent 输入框 → 闲；都不是 → 灰点 unknown。
+  实测这套改动之前，3 个 Kimi pane 因为状态栏写着 `Kimi K3 thinking` / `K3.1 Pro thinking: high` 被误判成 busy，现在全部 idle。
+  远端主机：`/api/panes/status` 会用**每台主机一条 ssh** 让远端脚本按同一套规则（同样是 shell 实现，不需要远端 python3）回答所有 agent pane，各主机并行探测；72 个 pane 一次扫描 4.5s。
 - **对话右上角的五角星**：收藏/取消收藏当前打开的 pane，状态与侧边栏列表里的星标、主页卡片联动；对话预览页（`/preview`）头部也有同一个按钮
 - **搜索**：先匹配「服务器 / tmux session / pane 名」，再搜各 agent **最近的对话内容**，最后是看板卡片；结果按这四组分开显示并高亮命中片段
   - 支持**正则**：查询里有正则元字符（`. * + ? [ ] ( ) { } | ^ $ \`）就按正则跑，否则按字面匹配；正则写错会自动退回字面匹配（结果页会标出来）

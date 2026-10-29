@@ -784,6 +784,24 @@ class RemoteHostTests(unittest.TestCase):
         self.assertIn('set-option -w -t "$S" window-size', remote)
         self.assertEqual(session.pane_id, "%13")
 
+    def test_status_many_asks_every_pane_in_one_ssh(self):
+        """A 35-pane host must not cost 35 round trips just to learn busy/idle."""
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+        seen = {}
+
+        def fake_run(command, **kwargs):
+            seen["command"] = command
+            return subprocess.CompletedProcess([], 0, b"\x1f%8 idle\n\x1f%9 busy\n", b"")
+
+        with mock.patch.object(runner, "run", side_effect=fake_run):
+            states = runner.status_many(["%8", "%9", "bogus"])
+        self.assertEqual(states, {"%8": "idle", "%9": "busy"})
+        command = seen["command"]
+        self.assertIn("for pane in %8 %9", command)          # the bogus id is dropped
+        self.assertIn("TMUXWEB_STATUS_ONLY=1", command)
+        self.assertIn("TMUXWEB_STATUS", command)
+
     def test_the_remote_attach_records_and_restores_the_window_size(self):
         """A phone-sized attach must not leave the oracle window at 47 columns."""
         host = dict(FAKE_SSH_HOST)

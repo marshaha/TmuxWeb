@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 import file_browser
 from home_store import HomeStore
 import mcp_relay
+import agent_status
 import relay
 import transcript_reader
 from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, RemoteHostStore, RemoteTerminalSession, SSHRunner,
@@ -159,15 +160,16 @@ class TmuxBackend:
             "#{pane_id}", "#{session_name}:#{window_index}.#{pane_index}",
             "#{session_name}", "#{window_index}", "#{window_name}", "#{pane_index}",
             "#{pane_current_command}", "#{pane_title}", "#{pane_current_path}",
-            "#{pane_active}", "#{pane_width}", "#{pane_height}",
+            "#{pane_active}", "#{pane_width}", "#{pane_height}", "#{window_activity}",
         ])
         raw = self._run("list-panes", "-a", "-F", format_string)
         panes = []
         for line in raw.splitlines():
             fields = line.split(FIELD_SEPARATOR)
-            if len(fields) != 12:
+            if len(fields) not in (12, 13):
                 continue
-            pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields
+            pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields[:12]
+            activity = fields[12] if len(fields) > 12 else ""
             panes.append({
                 "id": pane_id,
                 "host_id": "localhost",
@@ -180,6 +182,7 @@ class TmuxBackend:
                 "title": title,
                 "path": path,
                 "active": active == "1",
+                "activity": int(activity) if str(activity).isdigit() else 0,
                 "width": int(width),
                 "height": int(height),
             })
@@ -891,26 +894,98 @@ def create_app(
             for index, texts in pool.map(grab, list(groups.values())):
                 captured[index] = texts
 
+        # Ask each agent's own session file whether its turn is running: the screen lies
+        # (a status bar saying "thinking: high" is a model setting, a TUI redraws while
+        # idle) while the session file records the turn boundary. Remote hosts answer for
+        # all their panes in one ssh call.
+        native: dict[str, str] = {}
+        local_agents = [job[3] for job in jobs
+                        if job[0] == "localhost"
+                        and transcript_reader.provider_for_command(job[3].get("command"))]
+        remote_agents: dict[int, tuple] = {}
+        for job in jobs:
+            host_id, _, transport, pane = job
+            provider = transcript_reader.provider_for_command(pane.get("command"))
+            if host_id == "localhost" or not provider or not hasattr(transport, "status_many"):
+                continue
+            group = remote_agents.setdefault(id(transport), (transport, host_id, []))
+            group[2].append(pane.get("pane_id") or pane["id"])
+
+        def ask_host(group):
+            transport, host_id, ids = group
+            try:
+                states = transport.status_many(ids) or {}
+            except Exception:  # noqa: BLE001 - a dead host keeps its screen verdict
+                return []
+            # host-scoped: "%8" exists on several hosts and means a different pane
+            return [(f"{host_id}~{pane_id}" if "~" not in str(pane_id) else str(pane_id), state)
+                    for pane_id, state in states.items()]
+
+        def probe_native():
+            groups = list(remote_agents.values())
+            if not groups:
+                return []
+            answers = []
+            with ThreadPoolExecutor(max_workers=max(1, min(6, len(groups)))) as host_pool:
+                for listing in host_pool.map(ask_host, groups):
+                    answers.extend(listing)
+            return answers
+
+        if local_agents:
+            def probe_local():
+                out = []
+                for pane in local_agents:
+                    provider = transcript_reader.provider_for_command(pane.get("command"))
+                    try:
+                        state = agent_status.status_for_pane(
+                            provider, pane.get("path", ""), pane.get("title", ""))
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if state in (agent_status.BUSY, agent_status.IDLE):
+                        out.append((pane["id"], state))
+                return out
+        else:
+            def probe_local():
+                return []
+
+        with ThreadPoolExecutor(max_workers=2) as probe_pool:
+            local_future = probe_pool.submit(probe_local)
+            remote_future = probe_pool.submit(probe_native)
+            for listing in (local_future.result(), remote_future.result()):
+                for key, state in listing:
+                    native[key] = state
+
+        busy_window = float(os.environ.get("TMUX_WEB_ACTIVITY_BUSY_SECONDS", "3"))
+        now = time.time()
+
         def describe(job):
             host_id, host_name, transport, pane = job
             provider = transcript_reader.provider_for_command(pane.get("command"))
             actual_pane_id = pane.get("pane_id") or pane["id"]
             text = captured.get(id(transport), {}).get(actual_pane_id)
-            if text is not None:
+            activity = pane.get("activity") or 0
+            age = (now - activity) if activity else None
+            surface = native.get(pane["id"])
+            if surface in (agent_status.BUSY, agent_status.IDLE):
+                status, source = surface, "session"
+            elif age is not None and age <= busy_window:
+                status, source = "busy", "activity"
+            elif text is not None:
                 try:
-                    status = relay.classify(text)
+                    status, source = relay.classify(text), "screen"
                 except Exception:  # noqa: BLE001
-                    status = "unknown"
+                    status, source = "unknown", "screen"
             else:
                 try:
                     state = relay.inspect(transport, actual_pane_id, provider, lines=40)
-                    status = state["status"]
+                    status, source = state["status"], "screen"
                 except Exception:  # noqa: BLE001 - one slow or dead pane must not fail the sweep
-                    status = "unknown"
+                    status, source = "unknown", "screen"
             target = pane.get("target") or ""
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
                     "host_name": host_name, "target": target, "provider": provider,
-                    "status": status, "title": pane.get("title", ""), "path": pane.get("path", ""),
+                    "status": status, "status_source": source, "activity_age": age,
+                    "title": pane.get("title", ""), "path": pane.get("path", ""),
                     "session": target.split(":")[0] if target else "",
                     "window": pane.get("window_name") or target}
 
@@ -2122,6 +2197,16 @@ def create_app(
         # heuristic can be fooled by status bars ("K3.1 Pro thinking: high")
         entry["status"] = "busy" if entry["waiting"] else "idle"
         entry["status_source"] = "transcript"
+        # ...and the sweep already asked each session file directly: that verdict wins
+        # over a transcript read that may be a page behind
+        with pane_state_lock:
+            swept = list(pane_state_cache["states"])
+        for state in swept:
+            if state.get("id") == pane_id and state.get("status_source") == "session" \
+                    and state.get("status") in ("busy", "idle"):
+                entry["status"] = state["status"]
+                entry["status_source"] = "session"
+                break
         return entry
 
     # A card's live half (status + last message) costs one SSH round trip per pane,
@@ -2528,7 +2613,8 @@ def create_app(
     async def pane_states(request: Request):
         require_auth(request)
         states = await asyncio.to_thread(pane_states_cached, 2.0, 30.0)
-        return {"panes": [{key: item[key] for key in ("id", "provider", "status")} for item in states]}
+        return {"panes": [{key: item.get(key) for key in ("id", "provider", "status", "status_source")}
+                          for item in states]}
 
     async def perform_relay_ask(payload: RelayAskRequest) -> dict:
         """Ask a pane and wait for the answer: used by the HTTP route and the MCP endpoint."""
