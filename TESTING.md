@@ -84,6 +84,8 @@
 - 手机终端输入：终端模式 → 点输入框弹键盘 → 逐字输入能立刻在终端看到 echo；退格/回车生效；中文输入法上屏后才发送；点终端空白处键盘收起、布局回满。
 - 键盘弹出/收起：终端区域高度跟随可视区（不是整屏重画），DevTools console 里 `state.termWs` 只在行列变化时收到一条 `{type:'resize'}`；滚动到中间不会跳回底部。
 - 深链登录：未登录打开 `/?pane=%25xx` → 登录后回到同一个 pane；把 `next` 改成 `//evil.example` → 登录后回 `/`。
+- 视图切换：顶栏星星左边有聊天/终端两个图标按钮，点击互切且高亮跟随；侧边栏里不再有这组按钮；390px 宽度下顶栏仍是一行、不溢出。
+- 预览页：`/preview?pane=…` 顶栏有聊天和终端两个入口（都在星星左边），终端入口打开的地址带 `mode=terminal`，落地即终端视图。
 - 首页进入：清掉 `localStorage['tmux-last-pane']` 后打开 `/` → 自动跳到 `/home`；在有「上次 pane」的情况下打开 `/` → 留在控制台并恢复那个会话；任意打开一个 pane 后回主页 → 「最近访问」里出现它（最多 4 个，最新在前）。
 - busy 判定：Kimi pane 空闲时状态应是 idle（状态栏里有 `thinking: high` 也不会误判）；agent 正在跑时出现 `esc to interrupt` 才是 busy；纯日志 pane 是灰点 unknown。单测：`tests/test_relay.py::test_a_kimi_status_bar_is_not_a_running_turn`、`::test_plain_output_is_unknown_not_busy`、`::test_soft_progress_needs_an_ellipsis`。
 - 主页秒开：先正常打开一次 `/home`（写入缓存），再在控制台 ↔ 主页之间来回切 → 主页内容立刻出现、不会空白；用 DevTools 把 `/api/home` 设成离线/慢速 → 仍然显示缓存卡片并带「显示缓存，正在更新…」，恢复后自动去掉；清掉 `localStorage['tmux-home-cache-v1']` 再拦接口 → 显示骨架屏（统计胶囊 + 卡片占位）。后端：给一个不可达主机上的 pane 加收藏 → `/api/home` 1–2 秒返回且该卡片 `pending=true`，其余卡片正常。单测：`tests/test_home_board.py::test_the_board_answers_before_a_slow_host_does`、`::test_the_board_is_painted_from_a_local_snapshot`。

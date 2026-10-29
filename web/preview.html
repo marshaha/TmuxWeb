@@ -58,6 +58,8 @@
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4.5 5.8h15a1.2 1.2 0 0 1 1.2 1.2v8.4a1.2 1.2 0 0 1-1.2 1.2H9.6l-4 3.1a.5.5 0 0 1-.8-.4v-2.7H4.5a1.2 1.2 0 0 1-1.2-1.2V7a1.2 1.2 0 0 1 1.2-1.2Z"></path><path d="M7.8 9.6h8.4M7.8 12.9h5.6"></path></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3.4" y="5" width="17.2" height="14" rx="2"></rect><path d="m7.2 10 2.4 2.2-2.4 2.2M12.4 14.6h4.2"></path></symbol>
   <symbol id="i-console" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.2v4.4h-4.4"/></symbol>
   <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 4.6 2.4 5 5.5.8-4 3.9.9 5.5-4.8-2.6-4.8 2.6.9-5.5-4-3.9 5.5-.8z"/></symbol>
@@ -75,9 +77,8 @@
     <div class="sub" id="sub"></div>
   </div>
   <span class="state" id="state"><i></i><span id="state-label">读取中…</span></span>
-  <a class="icon-btn" id="console" title="在控制台打开" aria-label="在控制台打开" href="/">
-    <svg class="ico"><use href="#i-console"/></svg>
-  </a>
+  <a class="icon-btn" id="open-chat" title="在控制台用聊天视图打开" aria-label="在控制台用聊天视图打开" href="/"><svg class="ico"><use href="#i-chat"/></svg></a>
+  <a class="icon-btn" id="open-terminal" title="在控制台用终端视图打开" aria-label="在控制台用终端视图打开" href="/"><svg class="ico"><use href="#i-terminal"/></svg></a>
   <button class="icon-btn" id="fav" title="收藏到主页" aria-label="收藏到主页" aria-pressed="false"><svg class="ico"><use href="#i-star"/></svg></button>
   <button class="icon-btn" id="reload" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
 </header>
@@ -197,7 +198,8 @@ async function loadPaneInfo(){
     document.title=`${meta.title||pane} · 对话预览`;
     $('title').textContent=meta.title||pane;
     $('sub').textContent=[owner.name,meta.session,`${meta.window}:${meta.window_name||''}`,meta.command].filter(Boolean).join(' · ');
-    $('console').href=`/?pane=${encodeURIComponent(pane)}`;
+    $('open-chat').href=`/?pane=${encodeURIComponent(pane)}`;
+    $('open-terminal').href=`/?pane=${encodeURIComponent(pane)}&mode=terminal`;
   }catch{}
 }
 

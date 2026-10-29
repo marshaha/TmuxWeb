@@ -157,6 +157,12 @@ class HomeBoardTests(unittest.TestCase):
         self.assertEqual(preview.headers["cache-control"], "no-store")
         for marker in ("/api/panes/", "/interrupt", "Enter 发送", 'id="back"', "marked.esm.js"):
             self.assertIn(marker, preview.text)
+        # chat/terminal sit next to the star and replace the old "open in console" button,
+        # which pointed at the same place as the chat link
+        for marker in ('id="open-chat"', 'id="open-terminal"', "i-chat", "i-terminal"):
+            self.assertIn(marker, preview.text)
+        self.assertNotIn('id="console"', preview.text)
+        self.assertIn("mode=terminal", preview.text)
 
         page = self.client.get("/home").text
         for marker in ('data-full=', 'id="preview-drawer"', 'id="pd-frame"', "PREVIEW_WIDE",
@@ -164,6 +170,23 @@ class HomeBoardTests(unittest.TestCase):
             self.assertIn(marker, page)
         # the hover panel has to accept the pointer, otherwise it cannot be scrolled
         self.assertIn("pointer-events:auto;overscroll-behavior:contain", page)
+
+    def test_the_chat_and_terminal_switch_sits_next_to_the_star(self):
+        page = self.client.get("/").text
+        start = page.index('class="top-actions"')
+        head = page[start:page.index("</header>", start)]
+        self.assertIn('id="chat-mode"', head)
+        self.assertIn('id="terminal-mode-button"', head)
+        # the pair comes right before the star
+        self.assertLess(head.index('id="chat-mode"'), head.index('id="fav-toggle"'))
+        self.assertLess(head.index('id="terminal-mode-button"'), head.index('id="fav-toggle"'))
+        # and is gone from the sidebar
+        sidebar = page[page.index('class="sidebar"'):page.index('class="main"')]
+        self.assertNotIn("mode-switch", sidebar)
+        self.assertIn("aria-pressed", head)
+        # a deep link may ask for the terminal view
+        self.assertIn("get('mode')", page)
+        self.assertIn("setMode('terminal')", page)
 
     def test_the_console_offers_a_star_per_pane_and_a_home_link(self):
         page = self.client.get("/").text
