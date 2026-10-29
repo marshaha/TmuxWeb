@@ -31,7 +31,7 @@ TmuxWeb 是一个自托管的 tmux 与 AI CLI 会话管理中心。它把本机�
   弹窗里填会话名（字母/数字/`.`/`-`/`_`，1–64 字符）和可选工作目录，目录不存在会直接报错；建完自动展开并选中该 pane。
 - **远程连接**：支持密码、私钥，以及直接使用本机密钥/SSH Agent（远端已授权该公钥时不必再输入凭据）；固定 SSH host key 指纹；密码/私钥使用独立 Fernet 主密钥加密保存（本机密钥模式不保存任何凭据）。
 - **会话分享**：可设置 slug、密码、有效期，并可选择**只读 / 可对话**；支持续期、重置密码、停止和删除；**任何 pane 都能分享**——有结构化 transcript 的（Claude / Codex / Kimi / Hermes）按消息渲染，纯 shell 则按屏幕文本渲染且可继续输入。
-- **PWA/移动端**：适配软键盘、安全区和窄屏；Service Worker 不缓存 API、transcript 或登录状态。
+- **PWA/移动端**：所有页面（控制台、主页、多窗口、终端、主机、分享）都带 `manifest`、`apple-touch-icon`、`apple-mobile-web-app-*` 和 `theme-color`，可以「添加到主屏幕」以独立窗口运行；manifest 里有 `shortcuts`（主页看板 / 多窗口）。终端在 **>760px 的桌面浏览器上不显示底部辅助键条**，整块高度全给终端；窄屏才出现键条与自绘键盘。Service Worker 不缓存 API、transcript 或登录状态。
 - **图标**：`web/app-icon.svg` 是唯一源文件（深色圆角底 + 米白 `>` ＋ 陶土色块光标），`scripts/build_icons.py` 从它渲染出 32/180/192/512 的 PNG 与 maskable 变体；所有页面（含登录页）都带 favicon，manifest 里 `any` 与 `maskable` 分开声明，安卓圆形裁剪不会切到图案。
 - **文件面板**：路径栏可直接编辑（绝对路径或相对 pane 当前目录，回车跳转、Esc 取消，聚焦时全选），工具栏的下载按钮直接打包当前目录（有选中则只打包选中项）；每行都带勾选框，`Ctrl/⌘ + 点` 切换单项、`Shift + 点` 选范围（桌面习惯），选中后页脚出现「全选 / 清空 / 下载 zip (N)」，文件或整个目录都能打包（本地用 zipfile，远端只需 `tar`，拉回字节后本地转 zip）；解压总量上限 `TMUX_WEB_ZIP_MAX`（默认 128MB）、文件数 `TMUX_WEB_ZIP_MAX_FILES`（默认 1000）。
 - **受控 MCP 邮箱**：可选的 Claude Code、Codex、Hermes 文本消息中继，不开放任意 shell/文件能力。

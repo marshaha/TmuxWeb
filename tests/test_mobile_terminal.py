@@ -80,6 +80,24 @@ class MobileTerminalTests(unittest.TestCase):
         self.assertIn("/iP(hone|ad|od)/.test(navigator.userAgent)", self.page)
         self.assertIn("forced==='custom'", self.page)     # ?kb=custom forces the pad
 
+    def test_a_desktop_gets_a_bare_terminal_and_only_phones_get_the_key_bar(self):
+        # the bar must stay hidden outside the phone breakpoint; an unscoped
+        # '.terminal-keys{display:flex}' once made it show up on the desktop too
+        self.assertIn(".terminal-keys{display:none;flex-direction:column}", self.page)
+        self.assertIn(".terminal-keys{display:flex;padding-bottom:env(safe-area-inset-bottom)}", self.page)
+        self.assertIn("@media(max-width:760px)", self.page)
+
+    def test_every_page_carries_the_pwa_tags(self):
+        manifest = self.client.get("/manifest.webmanifest").json()
+        self.assertEqual(manifest["display"], "standalone")
+        self.assertTrue(manifest["icons"])
+        self.assertTrue(manifest["shortcuts"])
+        for path in ("/", "/home", "/grid", "/preview?pane=%254", "/term?pane=%254", "/hosts", "/shares"):
+            page = self.client.get(path).text
+            for marker in ('rel="manifest"', 'apple-mobile-web-app-capable', 'apple-touch-icon',
+                           'name="theme-color"'):
+                self.assertIn(marker, page, f"{path} missing {marker}")
+
     def test_a_deep_link_survives_a_slow_remote_scan(self):
         """?pane= used to be applied on the first /api/hosts reply, before remote panes existed."""
         self.assertIn("state.wantedPane=wanted||null", self.page)
