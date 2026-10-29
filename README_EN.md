@@ -37,7 +37,9 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Real terminal**: xterm.js + PTY attach with input, resize and ANSI. On a phone it now works the way Termius does:
   no visible input box (an invisible contenteditable captures the soft keyboard, tapping the terminal opens it, the keyboard
   button hides it; it is contenteditable rather than an `<input>` because iOS hangs its "↑ ↓ Done" form-assistant bar off
-  form controls and that bar cannot be removed from a web page — `?kb=input` switches back if an iOS build misbehaves. On iOS the keyboard is **opt-in** (the keyboard key in the bar),
+  form controls and that bar cannot be removed from a web page — `?kb=input` switches back if an iOS build misbehaves. On iOS the terminal types on a **self-drawn keyboard** (qwerty rows, a `123`/symbols layer, del with auto-repeat,
+  space, ret, and a `系统键盘` key that hands over to the system keyboard and remembers that choice), because the
+  `WKFormAccessoryView` strip cannot be removed for *any* focused editable element;
   because WKWebView attaches a native `WKFormAccessoryView` (the "↑ ↓ Done" strip) to any focused editable element and
   no web API removes it; `?kb=auto` restores tap-to-type;
   button hides it); one scrollable key row (`shift tab`, paste, `?`, `/`, `esc`, `tab`, `ctrl`, `alt`, arrows, `^C`) with
