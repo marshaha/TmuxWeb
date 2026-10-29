@@ -152,7 +152,7 @@ class GridPageTests(unittest.TestCase):
                        "TmuxShell.mount("):
             self.assertIn(marker, page)
         # clicking a session row puts that pane in a window
-        self.assertIn("onPane: paneId => addPane(paneId)", page)
+        self.assertIn("onPane: paneId => openPane(paneId)", page)
         # and the shell fetches /api/hosts, so the page must not do it twice
         self.assertNotIn("loadMeta\n", page)
         self.assertIn("if(window.TmuxShell)", page)
