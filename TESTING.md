@@ -362,6 +362,7 @@ git grep -nE 'BEGIN (OPENSSH |RSA |EC |ENCRYPTED )?PRIVATE KEY|password\s*=|api[
 - 真实公网 IP、域名、用户名
 - Claude/Codex/Hermes transcript
 
+- iOS 键盘：在 iPhone Safari/主屏打开终端 → 点终端**不应**弹键盘（因此也没有那条白条）；点按键条右侧键盘图标才起键盘；`?kb=auto` 应恢复「点终端即起键盘」。非 iOS（桌面/安卓）行为不变，点终端直接起键盘。
 - iOS 键盘助手条：iPhone 上用 Safari/添加到主屏打开终端并点终端起键盘 → 键盘上方**不应**出现「↑ ↓ ✓」那条白条（那是 WebKit 给表单控件的表单助手条）；若仍出现，访问 `/?pane=…&mode=terminal&kb=input` 对比，确认是 contenteditable 还是 input 触发的。
 - 手机终端（390×780）：进入终端 → 底部只有一行按键（shift tab / 粘贴 / ? / / / esc / tab / ctrl / alt / 方向键 / ^C，可横向滑动），右侧常驻「更多」和「键盘」图标；**页面上没有输入框**。点终端任意位置 → 隐藏输入框获得焦点（真机上软键盘弹出）、终端高度收缩而顶栏仍在。点 / 和字母 → pane 里出现对应字符；点 ctrl 再点 c → 发出 ^C（pane 里看到 C:130 之类的取消提示）。点「更多」→ 四列扩展键面板出现、系统键盘收起、终端仍在面板上方可见；再点一次收起并重新聚焦。
 - 手机终端缩放：双指捏合 → 字号变化（9–22px）、列数重排、`localStorage['tmux-term-font']` 记录；刷新后保持。

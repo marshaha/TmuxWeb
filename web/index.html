@@ -872,10 +872,9 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const on=!!sta
   function useEditableCapture(){
     const field=$('terminal-input');
     if(!field||field.isContentEditable)return;
-    const params=new URLSearchParams(location.search);
     let forced=false;
     try{forced=localStorage.getItem('tmux-kb-input')==='1';}catch{}
-    if(params.get('kb')==='input'||forced)return;
+    if(KB_MODE==='input'||forced)return;
     const editable=document.createElement('div');
     editable.id='terminal-input';
     editable.className='terminal-kb-input';
@@ -887,6 +886,18 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const on=!!sta
     editable.setAttribute('spellcheck','false');
     editable.setAttribute('aria-hidden','true');
     field.replaceWith(editable);
+  }
+  // iOS attaches a native accessory bar to the web view whenever an editable element is focused;
+  // it cannot be hidden from the page, so on iOS the keyboard is only summoned on purpose.
+  // read once: choosing a pane rewrites the URL to '/', which would drop the flag
+  const KB_MODE=new URLSearchParams(location.search).get('kb')||'';
+  function keyboardOnTerminalTap(){
+    const forced=KB_MODE;
+    if(forced==='auto')return true;
+    if(forced==='manual')return false;
+    const ios=/iP(hone|ad|od)/.test(navigator.userAgent)
+      ||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+    return !ios;
   }
   function setupTerminalInput(){
     const field=$('terminal-input');
@@ -933,18 +944,22 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const on=!!sta
     });
     field.addEventListener('focus',()=>setComposing(true));
     field.addEventListener('blur',()=>setTimeout(()=>setComposing(keyboardWanted()),120));
-    // tapping the terminal brings up the keyboard (Termius behaviour); tap the keyboard button to hide it
+    // Tapping the terminal brings up the keyboard -- except on iOS, where the system keyboard drags
+    // along a native "↑ ↓ Done" accessory bar that no web page can remove (WKFormAccessoryView).
+    // There the keyboard is opt-in: tap the keyboard key in the bar when you want to type.
     // xterm stops propagation on its own element, so listen in the capture phase
     $('terminal-host')?.addEventListener('pointerdown',event=>{
       if(!isMobile())return;
       if(window.getSelection&&String(window.getSelection()))return;   // selecting text, don't fight it
       if(event.target.closest?.('#terminal-jump'))return;
+      if(!keyboardOnTerminalTap())return;
       field.focus({preventScroll:true});
     },true);
     // some engines deliver the touch before any pointer event; keep both paths
     $('terminal-host')?.addEventListener('touchstart',event=>{
       if(!isMobile()||event.touches.length!==1)return;
       if(window.getSelection&&String(window.getSelection()))return;
+      if(!keyboardOnTerminalTap())return;
       field.focus({preventScroll:true});
     },{capture:true,passive:true});
   }

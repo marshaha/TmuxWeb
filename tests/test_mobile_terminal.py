@@ -56,7 +56,7 @@ class MobileTerminalTests(unittest.TestCase):
         """iOS shows up/down/Done above the keyboard for form controls; contenteditable is not one."""
         self.assertIn("function useEditableCapture()", self.page)
         self.assertIn("setAttribute('contenteditable','true')", self.page)
-        self.assertIn("params.get('kb')==='input'", self.page)      # escape hatch
+        self.assertIn("KB_MODE==='input'", self.page)               # escape hatch (read once at boot)
         self.assertIn("field.isContentEditable", self.page)
         self.assertIn("inputType!=='deleteContentBackward'", self.page)   # backspace on empty
 
@@ -64,6 +64,14 @@ class MobileTerminalTests(unittest.TestCase):
         self.assertIn("setupTerminalZoom", self.page)
         self.assertIn("tmux-term-font", self.page)
         self.assertIn("setTerminalFont", self.page)
+
+    def test_ios_asks_before_summoning_the_system_keyboard(self):
+        """iOS puts an unremovable native bar above the keyboard, so there the keyboard is opt-in."""
+        self.assertIn("function keyboardOnTerminalTap()", self.page)
+        self.assertIn("if(!keyboardOnTerminalTap())return;", self.page)
+        self.assertIn("forced==='auto'", self.page)
+        self.assertIn("forced==='manual'", self.page)
+        self.assertIn("/iP(hone|ad|od)/.test(navigator.userAgent)", self.page)
 
     def test_a_deep_link_survives_a_slow_remote_scan(self):
         """?pane= used to be applied on the first /api/hosts reply, before remote panes existed."""
