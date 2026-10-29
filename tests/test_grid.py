@@ -94,6 +94,56 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("data.tmuxweb!=='visibility'", preview)
         self.assertIn("cellVisible?2000:15000", preview)
 
+    def test_a_window_can_be_chat_or_a_real_terminal(self):
+        page = self.client.get("/grid").text
+        self.assertIn('data-mode-toggle', page)
+        self.assertIn("/term?pane=", page)
+        self.assertIn("function setMode(", page)
+        self.assertIn("modes:state.modes", page)
+        # a shell has no transcript to chat with, so it opens as a terminal
+        self.assertIn("AGENTS.has", page)
+
+        term = self.client.get("/term?pane=%254")
+        self.assertEqual(term.status_code, 200)
+        for marker in ("/assets/xterm/xterm.js", "addon-fit.js", "/ws/terminal/",
+                       "{type:'resize'", "{type:'input'", "embed"):
+            self.assertIn(marker, term.text)
+
+    def test_the_terminal_page_needs_a_login(self):
+        anonymous = TestClient(create_app(
+            FakeTmux(), password=PASSWORD, session_secret="test-secret",
+            terminal_factory=FakeTerminalFactory(), share_db=":memory:", home_db=":memory:",
+            remote_store=FakeRemoteStore(), remote_runner_factory=FakeSSHRunner,
+        ))
+        response = anonymous.get("/term?pane=%254", follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/login?next=/term%3Fpane%3D%25254")
+
+    def test_double_click_maximises_a_window_without_reloading_it(self):
+        page = self.client.get("/grid").text
+        self.assertIn("maximized", page)
+        self.assertIn("addEventListener('dblclick'", page)
+        self.assertIn("toggleMax", page)
+        # maximise is a class toggle, not a re-render: re-rendering would drop a live terminal
+        self.assertIn("grid.classList.toggle('maximized'", page)
+
+    def test_arrangements_can_be_saved_as_presets(self):
+        page = self.client.get("/grid").text
+        for marker in ('id="preset-btn"', 'id="preset-save"', "tmux-grid-presets-v1",
+                       "data-apply", "state.presets[name]="):
+            self.assertIn(marker, page)
+
+    def test_polling_the_pane_list_does_not_rebuild_the_cells(self):
+        """loadMeta() runs every 30s; a full render there would reload every iframe."""
+        page = self.client.get("/grid").text
+        self.assertIn("if(!renamed){", page)
+        self.assertIn("state.titles.clear()", page)
+
+    def test_the_preview_page_can_send_its_pane_to_the_grid(self):
+        page = self.client.get("/preview?pane=%254").text
+        self.assertIn('id="open-grid"', page)
+        self.assertIn("'/grid?add='", page)
+
     def test_the_console_can_push_its_pane_into_the_grid(self):
         console = self.client.get("/").text
         self.assertIn('id="grid-add"', console)

@@ -25,7 +25,11 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Multi-window** (`/grid`): several conversations side by side on one page. Three layouts — **side by side** (draggable widths),
   **grid 2**, **grid 3** — and dragging a window's title bar reorders it; layout, order and widths live in localStorage. A window
   scrolled out of view drops to one request every 15s (and refreshes the moment it comes back), so four or five remote
-  conversations do not saturate anything. The console sidebar's «+» pushes the current pane straight in (`/grid?add=…`). Every window is its own widget (title, status dot,
+  conversations do not saturate anything. The console sidebar's «+» pushes the current pane straight in (`/grid?add=…`), and the full preview page has a
+  grid button of its own. Each window is **chat or a real terminal** (the second header button — a shell without a
+  transcript starts as a terminal), switching reloads only that window; double-clicking a title bar **maximises** one
+  window (Escape restores it, and it is a class toggle so a live terminal is never reconnected); **presets** name a whole
+  arrangement and bring it back later. Every window is its own widget (title, status dot,
   open-in-console, remove) whose body is the embedded conversation page (`/preview?pane=…&embed=1`) — you can keep typing into it.
   The separators between windows are draggable; widths are stored per pane in localStorage, and a newly added window takes a share of
   the leftover space. On a phone the windows stack full width. Linked from the console and board sidebars. Every page

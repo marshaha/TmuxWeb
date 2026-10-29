@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111111">
+  <title>终端 · TmuxWeb</title>
+  <link rel="icon" href="/assets/app-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/xterm/xterm.css?v=2">
+  <style>
+    html,body{height:100%}
+    body{margin:0;display:flex;flex-direction:column;background:#111;color:#e7e5df;
+      font:13px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif;overflow:hidden}
+    header{flex:none;display:flex;align-items:center;gap:8px;height:34px;padding:0 10px;
+      border-bottom:1px solid #2a2a2a;background:#181818}
+    body.embed header{display:none}
+    .dot{flex:none;width:7px;height:7px;border-radius:50%;background:#6b6b6b}
+    .dot.live{background:#4f9a65}
+    .title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:#d8d6cf}
+    .state{flex:none;color:#8d8d8d;font-size:11px}
+    .link{flex:none;display:grid;place-items:center;width:24px;height:24px;border-radius:6px;color:#9a9a9a;text-decoration:none}
+    .link:hover{background:#262626;color:#fff}
+    .link svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+    main{flex:1;min-height:0;padding:6px 4px 4px 8px;background:#111}
+    #host{width:100%;height:100%;overflow:hidden}
+    #host .xterm{height:100%;padding:0}
+    #host .xterm-viewport{overflow-y:auto!important}
+    .keys{flex:none;display:none;gap:6px;padding:6px;overflow-x:auto;background:#181818;border-top:1px solid #333;
+      scrollbar-width:none;overscroll-behavior-x:contain}
+    .keys::-webkit-scrollbar{display:none}
+    body.touch .keys{display:flex}
+    .keys button{flex:0 0 auto;min-width:42px;height:36px;padding:0 9px;border:1px solid #454545;border-radius:8px;
+      background:#292929;color:#eee;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;touch-action:manipulation}
+    .keys button:active{background:#6b3424;border-color:#c96442}
+    .keys .wide{min-width:64px}
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-console" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"></path></symbol>
+</defs></svg>
+<header>
+  <span class="dot" id="dot"></span>
+  <span class="title" id="title">终端</span>
+  <span class="state" id="state"></span>
+  <a class="link" id="console-link" href="/" title="在控制台打开"><svg><use href="#i-console"/></svg></a>
+</header>
+<main><div id="host"></div></main>
+<div class="keys" id="keys">
+  <button type="button" data-key="esc">Esc</button>
+  <button type="button" data-key="tab">Tab</button>
+  <button type="button" data-key="ctrlc">^C</button>
+  <button type="button" data-key="ctrld">^D</button>
+  <button type="button" data-key="enter" class="wide">Enter</button>
+  <button type="button" data-key="left">←</button>
+  <button type="button" data-key="down">↓</button>
+  <button type="button" data-key="up">↑</button>
+  <button type="button" data-key="right">→</button>
+</div>
+<script src="/assets/xterm/xterm.js?v=2"></script>
+<script src="/assets/xterm/addon-fit.js?v=2"></script>
+<script>
+(() => {
+  const $=id=>document.getElementById(id);
+  const params=new URLSearchParams(location.search);
+  const pane=params.get('pane')||'';
+  const embedded=params.get('embed')==='1';
+  if(embedded)document.body.classList.add('embed');
+  $('console-link').href='/?pane='+encodeURIComponent(pane);
+  document.title='终端 · '+pane;
+  $('title').textContent=pane;
+  if(matchMedia('(hover:none) and (pointer:coarse)').matches)document.body.classList.add('touch');
+
+  const term=new Terminal({
+    cursorBlink:true, disableStdin:false, convertEol:false, scrollback:10000, fontSize:13,
+    fontFamily:'ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',
+    theme:{background:'#111111',foreground:'#e7e5df',cursor:'#faf9f5',selectionBackground:'#5a574f88'}
+  });
+  const fit=new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open($('host'));
+  try{fit.fit();}catch{}
+
+  let socket=null, pending='', sentSize='', retry=0, retryTimer=null;
+
+  function setState(text, live){
+    $('state').textContent=text;
+    $('dot').className='dot'+(live?' live':'');
+  }
+  function send(message){
+    if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify(message));
+  }
+  function sendSize(){
+    const signature=`${term.cols}x${term.rows}`;
+    if(signature===sentSize)return;
+    sentSize=signature;
+    send({type:'resize',cols:term.cols,rows:term.rows});
+  }
+  function connect(){
+    clearTimeout(retryTimer);
+    const proto=location.protocol==='https:'?'wss':'ws';
+    setState('连接中…',false);
+    const ws=new WebSocket(`${proto}://${location.host}/ws/terminal/${encodeURIComponent(pane)}`+
+      `?cols=${term.cols}&rows=${term.rows}`);
+    socket=ws;
+    ws.binaryType='arraybuffer';
+    ws.onopen=()=>{
+      retry=0;
+      sentSize=`${term.cols}x${term.rows}`;
+      setState('已连接',true);
+      if(pending){ws.send(JSON.stringify({type:'input',data:pending}));pending='';}
+      try{fit.fit();}catch{}
+      sendSize();
+      if(!embedded)term.focus();
+    };
+    ws.onmessage=event=>{
+      term.write(typeof event.data==='string'?event.data:new TextDecoder().decode(event.data));
+    };
+    ws.onclose=()=>{
+      if(socket!==ws)return;
+      socket=null;
+      setState('已断开',false);
+      if(!document.hidden&&retry<5){
+        retry+=1;
+        retryTimer=setTimeout(connect,1200*retry);
+        setState(`重连中 ${retry}/5`,false);
+      }
+    };
+    ws.onerror=()=>{ setState('连接失败',false); };
+  }
+
+  term.onData(data=>{
+    if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'input',data}));
+    else pending+=data;               // typing before the socket is up must not vanish
+  });
+
+  // the pty only redraws when the size really changed; coalesce keyboard animations first
+  let fitTimer=null;
+  function scheduleFit(){
+    clearTimeout(fitTimer);
+    fitTimer=setTimeout(()=>{
+      const cols=term.cols, rows=term.rows;
+      try{fit.fit();}catch{}
+      if(term.cols!==cols||term.rows!==rows){
+        sendSize();
+        try{term.refresh(0,Math.max(0,term.rows-1));}catch{}
+      }
+    },120);
+  }
+  if(typeof ResizeObserver==='function')new ResizeObserver(scheduleFit).observe($('host'));
+  window.addEventListener('resize',scheduleFit);
+  if(window.visualViewport)window.visualViewport.addEventListener('resize',scheduleFit);
+
+  const KEYS={esc:'\u001b',tab:'\t',ctrlc:'\u0003',ctrld:'\u0004',enter:'\r',
+    up:'\u001b[A',down:'\u001b[B',right:'\u001b[C',left:'\u001b[D'};
+  for(const button of document.querySelectorAll('[data-key]')){
+    button.addEventListener('click',()=>{
+      const data=KEYS[button.dataset.key]||'';
+      if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'input',data}));
+      else pending+=data;
+    });
+  }
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden)return;
+    if(!socket)connect();
+    else{send({type:'resize',cols:term.cols,rows:term.rows});}
+  });
+  connect();
+})();
+</script>
+</body>
+</html>

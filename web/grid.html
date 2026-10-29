@@ -66,6 +66,19 @@
       gap:8px;padding:8px;overflow:auto;align-content:stretch}
     .grid.mode-grid .cell{margin:0;min-width:0;height:100%}
     .cell-head{cursor:grab}
+    .grid.maximized .cell:not(.max){display:none!important}
+    .grid.maximized .splitter{display:none}
+    .grid.maximized .cell.max{flex:1 1 auto!important;width:auto!important;height:100%;margin:8px}
+    .grid.mode-grid.maximized .cell.max{grid-column:1/-1;height:100%}
+    .presets{display:flex;flex-direction:column;gap:10px}
+    .presets .row{display:flex;gap:8px}
+    .presets .row input{flex:1;min-width:0;height:36px;padding:0 10px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font:13px inherit;outline:none}
+    .presets .row input:focus{border-color:var(--accent)}
+    .preset-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;overflow:hidden;max-height:46vh;overflow-y:auto}
+    .preset-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);background:#fff}
+    .preset-row:last-child{border-bottom:0}
+    .preset-row .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+    .preset-row .meta{color:var(--faint);font-size:11px;white-space:nowrap}
     .cell.dragging{opacity:.5}
     .cell.drop-target{outline:2px dashed var(--accent);outline-offset:-3px}
     body.moving{cursor:grabbing;user-select:none}
@@ -86,6 +99,11 @@
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"></path></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 15.5a2 2 0 0 1-2 2H8.6L5 20.4V6.5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2Z"/></symbol>
+  <symbol id="i-preset" viewBox="0 0 24 24"><path d="M6 4.6h9.4L19 8.2v11.2H6Z"/><path d="M9 4.6v5h6v-5M9 19.4v-4.6h6v4.6"/></symbol>
+  <symbol id="i-max" viewBox="0 0 24 24"><path d="M9 4.6H4.6V9M15 4.6h4.4V9M20 15v4.4h-4.4M9 19.4H4.6V15"></path></symbol>
+  <symbol id="i-restore" viewBox="0 0 24 24"><path d="M4.6 9.4h4.8V4.6M19.4 9.4h-4.8V4.6M19.4 14.6h-4.8v4.8M4.6 14.6h4.8v4.8"></path></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"></path></symbol>
   <symbol id="i-console" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"></path></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="M4.5 10.6 12 4.4l7.5 6.2V19a1.4 1.4 0 0 1-1.4 1.4H5.9A1.4 1.4 0 0 1 4.5 19Z"></path></symbol>
@@ -101,6 +119,7 @@
     <button type="button" data-layout="grid3">网格 3</button>
   </div>
   <button class="btn primary" id="add" type="button"><svg class="ico"><use href="#i-plus"/></svg>添加窗口</button>
+  <button class="btn" id="preset-btn" type="button" title="布局预设"><svg class="ico"><use href="#i-preset"/></svg>预设</button>
   <a class="btn" id="home" href="/home" title="返回主页"><svg class="ico"><use href="#i-home"/></svg>主页</a>
 </div>
 
@@ -115,13 +134,25 @@
   </form>
 </dialog>
 
+<dialog id="presets">
+  <form method="dialog" class="picker presets" id="preset-form">
+    <h2>布局预设</h2>
+    <div class="row">
+      <input id="preset-name" type="text" maxlength="40" placeholder="给当前布局起个名字" autocomplete="off">
+      <button class="btn primary" id="preset-save" type="button">保存当前</button>
+    </div>
+    <div class="preset-list" id="preset-list"></div>
+    <div class="picker-foot"><button class="btn" value="cancel" type="submit">关闭</button></div>
+  </form>
+</dialog>
 <script>
 (() => {
   const $=id=>document.getElementById(id);
   const KEY='tmux-grid-v1';
   // widths are keyed by pane id: unset columns share the leftover space equally, so adding or
   // removing a window never leaves a column pinned at the width it had when it was alone
-  const state={panes:[], widths:{}, layout:'strip', titles:new Map(), statuses:new Map(), hosts:null};
+  const state={panes:[], widths:{}, layout:'strip', modes:{}, max:null, presets:{}, titles:new Map(), statuses:new Map(), hosts:null};
+  const PRESET_KEY='tmux-grid-presets-v1';
   const LAYOUTS=['strip','grid2','grid3'];
   const MIN=260;
 
@@ -130,6 +161,10 @@
       const saved=JSON.parse(localStorage.getItem(KEY)||'{}');
       state.panes=Array.isArray(saved.panes)?saved.panes.filter(x=>typeof x==='string'):[];
       state.layout=LAYOUTS.includes(saved.layout)?saved.layout:'strip';
+      state.modes={};
+      for(const [pane,mode] of Object.entries(saved.modes||{})){
+        if(state.panes.includes(pane)&&(mode==='chat'||mode==='term'))state.modes[pane]=mode;
+      }
       state.widths={};
       for(const [pane,width] of Object.entries(saved.widths||{})){
         if(state.panes.includes(pane)&&Number.isFinite(width)&&width>=MIN)state.widths[pane]=Math.round(width);
@@ -137,7 +172,9 @@
     }catch{state.panes=[];state.widths={};}
   }
   function save(){
-    try{localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout}));}catch{}
+    try{
+      localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout,modes:state.modes}));
+    }catch{}
   }
   function widthOf(pane){
     const width=state.widths[pane];
@@ -160,6 +197,7 @@
     $('count').textContent=state.panes.length?`${state.panes.length} 个窗口`:'';
     const gridded=state.layout!=='strip';
     grid.classList.toggle('mode-grid',gridded);
+    grid.classList.toggle('maximized',!!state.max);
     if(gridded)grid.style.setProperty('--cols',state.layout==='grid3'?3:2);
     else grid.style.removeProperty('--cols');
     for(const button of document.querySelectorAll('[data-layout]')){
@@ -171,14 +209,19 @@
     }
     grid.innerHTML=state.panes.map((pane)=>{
       const status=state.statuses.get(pane)||'unknown';
-      return `<section class="cell" data-pane="${esc(pane)}" style="${gridded?'':cellStyle(pane)}">
+      const mode=state.modes[pane]==='term'?'term':'chat';
+      const src=mode==='term'
+        ?`/term?pane=${encodeURIComponent(pane)}&embed=1`
+        :`/preview?pane=${encodeURIComponent(pane)}&embed=1`;
+      return `<section class="cell${state.max===pane?' max':''}" data-pane="${esc(pane)}" data-mode="${mode}" style="${gridded?'':cellStyle(pane)}">
         <div class="cell-head">
           <span class="dot ${esc(status)}" data-dot="${esc(pane)}"></span>
           <span class="cell-title" title="${esc(pane)}">${esc(titleFor(pane))}</span>
+          <button class="cell-btn" type="button" data-mode-toggle="${esc(pane)}" title="${mode==='term'?'切到聊天':'切到终端'}" aria-label="${mode==='term'?'切到聊天':'切到终端'}"><svg class="ico"><use href="#${mode==='term'?'i-chat':'i-term'}"/></svg></button>
           <a class="cell-btn" href="/?pane=${encodeURIComponent(pane)}" target="_self" title="在控制台打开" aria-label="在控制台打开"><svg class="ico"><use href="#i-console"/></svg></a>
           <button class="cell-btn" type="button" data-remove="${esc(pane)}" title="移出多窗口" aria-label="移出多窗口"><svg class="ico"><use href="#i-close"/></svg></button>
         </div>
-        <iframe src="/preview?pane=${encodeURIComponent(pane)}&embed=1" title="${esc(pane)}" loading="lazy"></iframe>
+        <iframe src="${src}" title="${esc(pane)}" loading="lazy"></iframe>
       </section>`;
     }).join('') + (gridded?'':state.panes.slice(0,-1).map((_,index)=>`<div class="splitter" data-split="${index}"></div>`).join(''));
     // splitters have to sit between cells, not after them
@@ -229,7 +272,18 @@
           state.titles.set(pane.id,pane);
         }
       }
-      render();
+      // refresh titles in place: a full render() would throw away every iframe (and with it a
+      // live terminal connection) every 30 seconds
+      let renamed=false;
+      for(const cell of document.querySelectorAll('.cell')){
+        const label=cell.querySelector('.cell-title');
+        if(label)label.textContent=titleFor(cell.dataset.pane);
+        renamed=true;
+      }
+      if(!renamed){
+        render();
+      }
+      applyDefaultModes();
     }catch{}
   }
 
@@ -247,9 +301,29 @@
   }
 
   // ---- add / remove
+  const AGENTS=new Set(['claude','codex','hermes','kimi','gemini','qwen','aider','cursor']);
+  // once the pane list is known, any window that is still on chat but belongs to a shell gets
+  // switched to terminal (a shell has no structured transcript to chat with)
+  function applyDefaultModes(){
+    let changed=false;
+    for(const pane of state.panes){
+      if(state.modes[pane])continue;
+      const meta=state.titles.get(pane);
+      if(!meta)continue;
+      const cell=document.querySelector(`.cell[data-pane="${CSS.escape(pane)}"]`);
+      if(cell&&cell.dataset.mode!=='chat')continue;
+      if(meta.command&&!AGENTS.has(String(meta.command).toLowerCase())){state.modes[pane]='term';changed=true;}
+    }
+    if(!changed)return;
+    save();render();loadStatus();
+  }
   function addPane(paneId){
     if(!paneId||state.panes.includes(paneId))return;
     state.panes.push(paneId);
+    // a plain shell has no structured transcript, so open it as a terminal rather than as an
+    // empty chat with "not supported" in it
+    const meta=state.titles.get(paneId);
+    if(meta&&meta.command&&!AGENTS.has(String(meta.command).toLowerCase()))state.modes[paneId]='term';
     save();render();loadStatus();
   }
   function removePane(paneId){
@@ -266,6 +340,58 @@
     if(row){event.preventDefault();addPane(row.dataset.add);$('picker').close();return;}
     const layout=event.target.closest('[data-layout]');
     if(layout){event.preventDefault();state.layout=layout.dataset.layout;save();render();return;}
+    const toggle=event.target.closest('[data-mode-toggle]');
+    if(toggle){event.preventDefault();setMode(toggle.dataset.modeToggle);return;}
+  });
+
+  // ---- chat / terminal per window
+  function setMode(pane, mode){
+    const next=mode||(state.modes[pane]==='term'?'chat':'term');
+    if(next==='chat')delete state.modes[pane];
+    else state.modes[pane]=next;
+    const cell=document.querySelector(`.cell[data-pane="${CSS.escape(pane)}"]`);
+    if(!cell)return;
+    cell.dataset.mode=next;
+    const frame=cell.querySelector('iframe');
+    if(frame){
+      frame.src=next==='term'
+        ?`/term?pane=${encodeURIComponent(pane)}&embed=1`
+        :`/preview?pane=${encodeURIComponent(pane)}&embed=1`;
+    }
+    const button=cell.querySelector('[data-mode-toggle]');
+    if(button){
+      const label=next==='term'?'切到聊天':'切到终端';
+      button.title=label;
+      button.setAttribute('aria-label',label);
+      const use=button.querySelector('use');
+      if(use)use.setAttribute('href',next==='term'?'#i-chat':'#i-term');
+    }
+    save();
+  }
+
+  // ---- double-click a title bar to give one window the whole page
+  function toggleMax(pane){
+    state.max=state.max===pane?null:pane;
+    $('grid').classList.toggle('maximized',!!state.max);
+    for(const cell of document.querySelectorAll('.cell')){
+      cell.classList.toggle('max',cell.dataset.pane===state.max);
+    }
+    if(state.max){
+      for(const cell of document.querySelectorAll('.cell')){
+        if(cell.dataset.pane===state.max)cell.style.removeProperty('flex');
+        else cell.style.removeProperty('flex');
+      }
+    }
+    syncVisibility();
+  }
+  document.addEventListener('dblclick',event=>{
+    const head=event.target.closest('.cell-head');
+    if(!head||event.target.closest('.cell-btn'))return;
+    const cell=head.closest('.cell');
+    if(cell)toggleMax(cell.dataset.pane);
+  });
+  document.addEventListener('keydown',event=>{
+    if(event.key==='Escape'&&state.max){toggleMax(state.max);}
   });
   $('add').onclick=()=>{renderPicker('');$('pq').value='';$('picker').showModal();$('pq').focus();};
 
@@ -368,6 +494,58 @@
     save();render();loadStatus();
   });
 
+  // ---- presets: name the whole arrangement and bring it back later
+  function loadPresets(){
+    try{state.presets=JSON.parse(localStorage.getItem(PRESET_KEY)||'{}')||{};}catch{state.presets={};}
+  }
+  function savePresets(){
+    try{localStorage.setItem(PRESET_KEY,JSON.stringify(state.presets));}catch{}
+  }
+  function renderPresets(){
+    const names=Object.keys(state.presets).sort();
+    $('preset-list').innerHTML=names.length?names.map(name=>{
+      const preset=state.presets[name]||{};
+      return `<div class="preset-row" data-preset="${esc(name)}">
+        <span class="name">${esc(name)}</span>
+        <span class="meta">${(preset.panes||[]).length} 窗口 · ${preset.layout==='grid3'?'网格 3':preset.layout==='grid2'?'网格 2':'并排'}</span>
+        <button class="btn" type="button" data-apply="${esc(name)}">应用</button>
+        <button class="cell-btn" type="button" data-drop="${esc(name)}" title="删除"><svg class="ico"><use href="#i-close"/></svg></button>
+      </div>`;
+    }).join(''):'<div class="preset-row"><span class="name" style="color:var(--faint)">还没有预设：排好窗口后点「保存当前」</span></div>';
+  }
+  $('preset-btn').onclick=()=>{renderPresets();$('preset-name').value='';$('presets').showModal();};
+  $('preset-save').onclick=()=>{
+    const name=($('preset-name').value||'').trim();
+    if(!name){$('preset-name').focus();return;}
+    if(!state.panes.length)return;
+    state.presets[name]={panes:[...state.panes],widths:{...state.widths},layout:state.layout,modes:{...state.modes}};
+    savePresets();renderPresets();$('preset-name').value='';
+  };
+  document.addEventListener('click',event=>{
+    const apply=event.target.closest('[data-apply]');
+    if(apply){
+      const preset=state.presets[apply.dataset.apply];
+      if(!preset)return;
+      state.panes=Array.isArray(preset.panes)?preset.panes.filter(p=>typeof p==='string'):[];
+      state.widths={};
+      for(const [pane,width] of Object.entries(preset.widths||{})){
+        if(state.panes.includes(pane)&&Number.isFinite(width)&&width>=MIN)state.widths[pane]=Math.round(width);
+      }
+      state.layout=LAYOUTS.includes(preset.layout)?preset.layout:'strip';
+      state.modes={};
+      for(const [pane,mode] of Object.entries(preset.modes||{})){
+        if(state.panes.includes(pane)&&mode==='term')state.modes[pane]='term';
+      }
+      state.max=null;
+      save();render();loadStatus();
+      $('presets').close();
+      return;
+    }
+    const drop=event.target.closest('[data-drop]');
+    if(drop){delete state.presets[drop.dataset.drop];savePresets();renderPresets();}
+  });
+
+  loadPresets();
   load();
   const params=new URLSearchParams(location.search);
   const single=params.get('add');

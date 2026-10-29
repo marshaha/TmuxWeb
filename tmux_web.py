@@ -1104,6 +1104,14 @@ def create_app(
         return FileResponse(WEB_DIR / "home.html", media_type="text/html",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/term", response_class=HTMLResponse)
+    async def term_page(request: Request):
+        """One bare terminal (xterm + PTY), used as a /grid cell and on its own."""
+        if not authenticated(request):
+            return login_redirect(request)
+        return FileResponse(WEB_DIR / "term.html", media_type="text/html",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/grid", response_class=HTMLResponse)
     async def grid_page(request: Request):
         """Several conversations side by side; each cell is an embedded preview."""
