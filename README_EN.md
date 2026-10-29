@@ -54,7 +54,11 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
   new pane is expanded and selected afterwards, and a missing directory is rejected up front.
 - **Remote SSH**: password, private-key, or "local keys / SSH Agent" authentication (no credential at all when the remote already authorises your public key), pinned host-key fingerprints, and Fernet-encrypted credentials at rest.
 - **Conversation sharing**: slug, password, expiration, extension, password reset, stop, and delete controls, plus a **read-only vs. interactive** choice. **Any pane** can be shared: agent sessions render as messages, plain shell panes render as screen text and still accept input.
-- **Mobile/PWA support**: visual viewport and safe-area handling; sensitive API and transcript data are never Service Worker cached.
+- **Mobile/PWA support**: every page (console, board, grid, terminal, hosts, shares) ships `manifest`, `apple-touch-icon`,
+  `apple-mobile-web-app-*` and `theme-color`, so "add to home screen" opens a standalone window; the manifest carries
+  `shortcuts` for the board and the multi-window page. Above 760px — a desktop browser — the terminal has **no key bar**, the
+  whole area is terminal; the bar and the self-drawn keyboard only exist on narrow screens. Visual viewport and safe-area
+  handling throughout; API, transcript and login data are never Service Worker cached.
 - **Icons**: `web/app-icon.svg` is the single source (dark rounded tile, cream `>`, terracotta block cursor); `scripts/build_icons.py` renders the 32/180/192/512 PNGs plus a maskable variant. Every page — including login — links the favicon, and the manifest declares `any` and `maskable` separately so Android's circular crop never clips the mark.
 - **File panel**: the path bar is editable (absolute, or relative to the pane cwd — Enter navigates, Esc cancels, focus selects the whole path). the toolbar download button zips the current directory (or just the selection when there is one); every row carries a checkbox, `Ctrl/⌘+click` toggles one item and `Shift+click` selects a range (desktop conventions), and the footer offers 全选 / 清空 / 下载 zip (N) for files *and* whole directories can be zipped: local panes zip straight from disk, remote hosts only need `tar` (the bytes come back in one SSH call and are re-containered locally). Limits: `TMUX_WEB_ZIP_MAX` (128MB uncompressed) and `TMUX_WEB_ZIP_MAX_FILES` (1000).
 - **Optional MCP mailbox**: controlled text messaging among Claude Code, Codex, and Hermes without arbitrary shell or filesystem tools.

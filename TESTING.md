@@ -364,6 +364,8 @@ git grep -nE 'BEGIN (OPENSSH |RSA |EC |ENCRYPTED )?PRIVATE KEY|password\s*=|api[
 
 - iOS 键盘：在 iPhone Safari/主屏打开终端 → 点终端弹出**自绘键盘**（qwerty / shift / 123 / del 长按连删 / 空格 / ret），**系统键盘不弹、白条不出现**；用自绘键盘敲 `echo ok` + ret → pane 收到并执行；点 `系统键盘` → 系统键盘出现（白条也出现，那是 iOS 自身的），之后默认用系统键盘（`localStorage['tmux-kb-custom']='0'`）；`?kb=custom` 可强制回自绘；`?kb=auto` 应恢复「点终端即起键盘」。非 iOS（桌面/安卓）行为不变，点终端直接起键盘。
 - iOS 键盘助手条：iPhone 上用 Safari/添加到主屏打开终端并点终端起键盘 → 键盘上方**不应**出现「↑ ↓ ✓」那条白条（那是 WebKit 给表单控件的表单助手条）；若仍出现，访问 `/?pane=…&mode=terminal&kb=input` 对比，确认是 contenteditable 还是 input 触发的。
+- PWA 标签：`curl -s <host>/manifest.webmanifest | jq '{display,shortcuts}'` 应有 `standalone` 与两个快捷方式；`/`、`/home`、`/grid`、`/preview`、`/term`、`/hosts`、`/shares` 都带 `manifest.webmanifest`、`apple-touch-icon`、`apple-mobile-web-app-capable`、`theme-color`。iPhone Safari「分享 → 添加到主屏幕」后从图标打开应无地址栏。
+- 桌面终端：1440px 桌面浏览器进入终端 → 底部**没有**任何辅助键条，终端铺满（实测 1140×822、`display:none`）；窗口缩到 760px 以下才出现键条。
 - 手机终端（390×780）：进入终端 → 底部只有一行按键（shift tab / 粘贴 / ? / / / esc / tab / ctrl / alt / 方向键 / ^C，可横向滑动），右侧常驻「更多」和「键盘」图标；**页面上没有输入框**。点终端任意位置 → 隐藏输入框获得焦点（真机上软键盘弹出）、终端高度收缩而顶栏仍在。点 / 和字母 → pane 里出现对应字符；点 ctrl 再点 c → 发出 ^C（pane 里看到 C:130 之类的取消提示）。点「更多」→ 四列扩展键面板出现、系统键盘收起、终端仍在面板上方可见；再点一次收起并重新聚焦。
 - 手机终端缩放：双指捏合 → 字号变化（9–22px）、列数重排、`localStorage['tmux-term-font']` 记录；刷新后保持。
 - 深链竞态：远端主机还在扫描时访问 `/?pane=<远端 pane>&mode=terminal` → 扫描完成的那一刻自动选中该 pane 并进入终端（旧行为会退回到上次的 pane）。
