@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f7f7f5">
+  <title>多窗口 · TmuxWeb</title>
+  <link rel="icon" href="/assets/app-icon.svg" type="image/svg+xml">
+  <style>
+    :root{color-scheme:light;--page:#f7f7f5;--surface:#fff;--surface2:#f4f3ee;--ink:#242421;--muted:#73716b;--faint:#a09d95;--line:#dddcd5;--accent:#c96442;--green:#4f9a65;--amber:#d89a3c;--danger:#b34b43;--side-w:0px}
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;display:flex;flex-direction:column;background:var(--page);color:var(--ink);
+      font:14px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif;overflow:hidden}
+    .top{flex:none;display:flex;align-items:center;gap:8px;height:52px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--page)}
+    .top strong{font:500 15px Georgia,serif}
+    .top .count{color:var(--faint);font-size:11px}
+    .spacer{flex:1}
+    .btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 11px;border:1px solid var(--line);border-radius:9px;
+      background:#fff;color:var(--ink);font-size:12.5px;cursor:pointer;text-decoration:none;white-space:nowrap}
+    .btn:hover{border-color:#c8c5bc;background:var(--surface2)}
+    .btn.primary{border-color:#292825;background:#292825;color:#fff}
+    .btn.primary:hover{background:#3a3934}
+    .btn .ico{width:15px;height:15px}
+    .ico{fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+    .btn[hidden]{display:none}
+    .grid{flex:1;min-height:0;display:flex;overflow-x:auto;overscroll-behavior-x:contain;background:var(--page)}
+    .cell{position:relative;flex:0 0 auto;display:flex;flex-direction:column;min-width:240px;min-height:0;background:var(--surface);
+      border:1px solid var(--line);border-radius:12px;margin:8px 0 8px 8px;overflow:hidden}
+    .cell:last-of-type{margin-right:8px}
+    .cell-head{flex:none;display:flex;align-items:center;gap:7px;height:34px;padding:0 6px 0 10px;border-bottom:1px solid var(--line);background:var(--surface2)}
+    .cell-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600}
+    .dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--faint)}
+    .dot.idle{background:var(--green)}.dot.busy{background:var(--amber)}.dot.unknown{background:#cfccc4}
+    .cell-btn{flex:none;display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer;text-decoration:none}
+    .cell-btn:hover{background:#fff;color:var(--ink)}
+    .cell-btn .ico{width:13px;height:13px}
+    .cell iframe{flex:1;width:100%;min-height:0;border:0;background:var(--surface)}
+    .splitter{flex:0 0 6px;cursor:col-resize;touch-action:none;position:relative}
+    .splitter::after{content:'';position:absolute;inset:12px 2px;border-radius:3px;background:transparent;transition:background .12s}
+    .splitter:hover::after{background:#cbc8bf}
+    body.resizing{cursor:col-resize;user-select:none}
+    body.resizing iframe{pointer-events:none}
+    .empty{flex:1;display:grid;place-items:center;text-align:center;color:var(--muted);padding:24px}
+    .empty b{display:block;margin-bottom:6px;color:var(--ink);font:500 22px/1.2 Georgia,serif}
+    dialog{width:min(calc(100vw - 24px),560px);max-height:80vh;padding:0;border:1px solid var(--line);border-radius:16px;background:var(--surface);color:var(--ink)}
+    dialog::backdrop{background:#0006}
+    .picker{padding:16px}
+    .picker h2{margin:0 0 10px;font-size:16px}
+    .picker input{width:100%;height:38px;padding:0 11px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font:13px inherit;outline:none}
+    .picker input:focus{border-color:var(--accent)}
+    .plist{margin:10px 0 0;max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:10px}
+    .prow{display:flex;align-items:center;gap:9px;width:100%;padding:8px 10px;border:0;border-bottom:1px solid var(--line);background:#fff;color:var(--ink);text-align:left;cursor:pointer;font:inherit}
+    .prow:last-child{border-bottom:0}
+    .prow:hover{background:var(--surface2)}
+    .prow .meta{flex:1;min-width:0}
+    .prow .name{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .prow .sub{color:var(--faint);font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .prow.added{opacity:.45;cursor:default}
+    .picker-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+    @media(max-width:760px){
+      .grid{flex-direction:column;overflow-x:hidden;overflow-y:auto}
+      /* stored column widths are desktop-only: on a phone each window is a full-width card */
+      .cell{flex:0 0 auto!important;width:auto!important;height:min(72vh,560px);margin:8px 8px 0;min-width:0}
+      .cell:last-of-type{margin-bottom:8px}
+      .splitter{display:none}
+      .top{height:48px}
+    }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"></path></symbol>
+  <symbol id="i-console" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"></path></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M4.5 10.6 12 4.4l7.5 6.2V19a1.4 1.4 0 0 1-1.4 1.4H5.9A1.4 1.4 0 0 1 4.5 19Z"></path></symbol>
+</defs></svg>
+
+<div class="top">
+  <strong>多窗口</strong>
+  <span class="count" id="count"></span>
+  <span class="spacer"></span>
+  <button class="btn primary" id="add" type="button"><svg class="ico"><use href="#i-plus"/></svg>添加窗口</button>
+  <a class="btn" id="home" href="/home" title="返回主页"><svg class="ico"><use href="#i-home"/></svg>主页</a>
+</div>
+
+<div class="grid" id="grid"><div class="empty"><div><b>还没有窗口</b>点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。</div></div></div>
+
+<dialog id="picker">
+  <form method="dialog" class="picker" id="picker-form">
+    <h2>添加窗口</h2>
+    <input id="pq" type="search" placeholder="搜索服务器 / session / pane / 路径" autocomplete="off">
+    <div class="plist" id="plist"></div>
+    <div class="picker-foot"><button class="btn" value="cancel" type="submit">关闭</button></div>
+  </form>
+</dialog>
+
+<script>
+(() => {
+  const $=id=>document.getElementById(id);
+  const KEY='tmux-grid-v1';
+  // widths are keyed by pane id: unset columns share the leftover space equally, so adding or
+  // removing a window never leaves a column pinned at the width it had when it was alone
+  const state={panes:[], widths:{}, titles:new Map(), statuses:new Map(), hosts:null};
+  const MIN=260;
+
+  function load(){
+    try{
+      const saved=JSON.parse(localStorage.getItem(KEY)||'{}');
+      state.panes=Array.isArray(saved.panes)?saved.panes.filter(x=>typeof x==='string'):[];
+      state.widths={};
+      for(const [pane,width] of Object.entries(saved.widths||{})){
+        if(state.panes.includes(pane)&&Number.isFinite(width)&&width>=MIN)state.widths[pane]=Math.round(width);
+      }
+    }catch{state.panes=[];state.widths={};}
+  }
+  function save(){
+    try{localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths}));}catch{}
+  }
+  function widthOf(pane){
+    const width=state.widths[pane];
+    return Number.isFinite(width)&&width>=MIN?Math.round(width):0;
+  }
+  function cellStyle(pane){
+    const width=widthOf(pane);
+    return width?`flex:0 0 ${width}px;width:${width}px`:'flex:1 1 0;min-width:240px';
+  }
+  const esc=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+
+  function titleFor(paneId){
+    const meta=state.titles.get(paneId);
+    if(meta)return `${meta.session||paneId}${meta.window_name?':'+meta.window_name:''}${meta.command?' · '+meta.command:''}`;
+    return paneId;
+  }
+
+  function render(){
+    const grid=$('grid');
+    $('count').textContent=state.panes.length?`${state.panes.length} 个窗口`:'';
+    if(!state.panes.length){
+      grid.innerHTML='<div class="empty"><div><b>还没有窗口</b>点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。</div></div>';
+      return;
+    }
+    grid.innerHTML=state.panes.map((pane)=>{
+      const status=state.statuses.get(pane)||'unknown';
+      return `<section class="cell" data-pane="${esc(pane)}" style="${cellStyle(pane)}">
+        <div class="cell-head">
+          <span class="dot ${esc(status)}" data-dot="${esc(pane)}"></span>
+          <span class="cell-title" title="${esc(pane)}">${esc(titleFor(pane))}</span>
+          <a class="cell-btn" href="/?pane=${encodeURIComponent(pane)}" target="_self" title="在控制台打开" aria-label="在控制台打开"><svg class="ico"><use href="#i-console"/></svg></a>
+          <button class="cell-btn" type="button" data-remove="${esc(pane)}" title="移出多窗口" aria-label="移出多窗口"><svg class="ico"><use href="#i-close"/></svg></button>
+        </div>
+        <iframe src="/preview?pane=${encodeURIComponent(pane)}&embed=1" title="${esc(pane)}" loading="lazy"></iframe>
+      </section>`;
+    }).join('') + state.panes.slice(0,-1).map((_,index)=>`<div class="splitter" data-split="${index}"></div>`).join('');
+    // splitters have to sit between cells, not after them
+    const cells=[...grid.querySelectorAll('.cell')];
+    const splitters=[...grid.querySelectorAll('.splitter')];
+    splitters.forEach((splitter,index)=>{
+      const next=cells[index+1];
+      if(next)grid.insertBefore(splitter,next);
+    });
+  }
+
+  async function loadMeta(){
+    try{
+      const response=await fetch('/api/hosts',{headers:{'Accept':'application/json'}});
+      if(!response.ok)throw new Error('hosts');
+      const data=await response.json();
+      state.hosts=data.hosts||[];
+      state.titles.clear();
+      for(const host of state.hosts){
+        for(const pane of host.panes||[]){
+          state.titles.set(pane.id,pane);
+        }
+      }
+      render();
+    }catch{}
+  }
+
+  async function loadStatus(){
+    try{
+      const response=await fetch('/api/panes/status',{headers:{'Accept':'application/json'}});
+      if(!response.ok)return;
+      const data=await response.json();
+      state.statuses=new Map((data.panes||[]).map(item=>[item.id,item.status]));
+      for(const dot of document.querySelectorAll('[data-dot]')){
+        const status=state.statuses.get(dot.dataset.dot);
+        if(status)dot.className='dot '+status;
+      }
+    }catch{}
+  }
+
+  // ---- add / remove
+  function addPane(paneId){
+    if(!paneId||state.panes.includes(paneId))return;
+    state.panes.push(paneId);
+    save();render();loadStatus();
+  }
+  function removePane(paneId){
+    const index=state.panes.indexOf(paneId);
+    if(index<0)return;
+    state.panes.splice(index,1);
+    delete state.widths[paneId];
+    save();render();
+  }
+  document.addEventListener('click',event=>{
+    const remove=event.target.closest('[data-remove]');
+    if(remove){event.preventDefault();removePane(remove.dataset.remove);return;}
+    const row=event.target.closest('[data-add]');
+    if(row){event.preventDefault();addPane(row.dataset.add);$('picker').close();return;}
+  });
+  $('add').onclick=()=>{renderPicker('');$('pq').value='';$('picker').showModal();$('pq').focus();};
+
+  // ---- picker
+  function renderPicker(query){
+    const needle=(query||'').trim().toLowerCase();
+    const rows=[];
+    for(const host of state.hosts||[]){
+      for(const pane of host.panes||[]){
+        const haystack=`${host.name||host.id} ${pane.session} ${pane.window_name||''} ${pane.command} ${pane.title} ${pane.path}`.toLowerCase();
+        if(needle&&!haystack.includes(needle))continue;
+        rows.push(`<button class="prow ${state.panes.includes(pane.id)?'added':''}" type="button" data-add="${esc(pane.id)}">
+          <span class="meta"><span class="name">${esc(`${host.name||host.id} · ${pane.session}${pane.window_name?':'+pane.window_name:''} · ${pane.command}`)}</span>
+          <span class="sub">${esc(pane.title||pane.path||pane.id)}</span></span>
+          ${state.panes.includes(pane.id)?'<span class="sub">已在</span>':''}
+        </button>`);
+      }
+    }
+    $('plist').innerHTML=rows.length?rows.slice(0,300).join(''):'<div class="empty" style="padding:18px">没有匹配的会话</div>';
+  }
+  $('pq').addEventListener('input',event=>renderPicker(event.target.value));
+
+  // ---- resizable columns
+  let drag=null;
+  document.addEventListener('pointerdown',event=>{
+    const splitter=event.target.closest('[data-split]');
+    if(!splitter||window.innerWidth<=760)return;
+    event.preventDefault();
+    const index=Number(splitter.dataset.split);
+    const cells=[...document.querySelectorAll('.cell')];
+    const left=cells[index],right=cells[index+1];
+    if(!left||!right)return;
+    drag={index,startX:event.clientX,left:left.getBoundingClientRect().width,right:right.getBoundingClientRect().width,
+          leftPane:left.dataset.pane,rightPane:right.dataset.pane};
+    splitter.setPointerCapture(event.pointerId);
+    document.body.classList.add('resizing');
+  });
+  document.addEventListener('pointermove',event=>{
+    if(!drag)return;
+    const delta=event.clientX-drag.startX;
+    const leftWidth=Math.max(MIN,drag.left+delta);
+    const rightWidth=Math.max(MIN,drag.right-delta);
+    const cells=[...document.querySelectorAll('.cell')];
+    if(!cells[drag.index]||!cells[drag.index+1])return;
+    cells[drag.index].style.flex='0 0 '+leftWidth+'px';
+    cells[drag.index].style.width=leftWidth+'px';
+    cells[drag.index+1].style.flex='0 0 '+rightWidth+'px';
+    cells[drag.index+1].style.width=rightWidth+'px';
+    state.widths[drag.leftPane]=Math.round(leftWidth);
+    state.widths[drag.rightPane]=Math.round(rightWidth);
+  });
+  const endDrag=()=>{if(!drag)return;drag=null;document.body.classList.remove('resizing');save();};
+  document.addEventListener('pointerup',endDrag);
+  document.addEventListener('pointercancel',endDrag);
+
+  load();
+  if(!state.panes.length){
+    const wanted=new URLSearchParams(location.search).get('panes');
+    if(wanted)state.panes=wanted.split(',').map(item=>item.trim()).filter(Boolean).slice(0,6);
+  }
+  render();
+  loadMeta();
+  loadStatus();
+  setInterval(loadStatus,10000);
+  setInterval(loadMeta,30000);
+})();
+</script>
+</body>
+</html>

@@ -1084,15 +1084,32 @@ def create_app(
             raise HTTPException(status_code=409, detail="shared pane no longer points to the original session")
         return pane
 
+    def login_redirect(request: Request) -> RedirectResponse:
+        """Send an anonymous visitor to /login and come back to exactly this page."""
+        target = request.url.path + (("?" + request.url.query) if request.url.query else "")
+        return RedirectResponse(f"/login?next={quote(target, safe='/')}", status_code=303)
+
     @app.get("/preview", response_class=HTMLResponse)
-    async def preview_page() -> FileResponse:
+    async def preview_page(request: Request):
         """Full chat view for one pane; /home opens it in a drawer (desktop) or directly (mobile)."""
+        if not authenticated(request):
+            return login_redirect(request)
         return FileResponse(WEB_DIR / "preview.html", media_type="text/html",
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/home", response_class=HTMLResponse)
-    async def home_page() -> FileResponse:
+    async def home_page(request: Request):
+        if not authenticated(request):
+            return login_redirect(request)
         return FileResponse(WEB_DIR / "home.html", media_type="text/html",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/grid", response_class=HTMLResponse)
+    async def grid_page(request: Request):
+        """Several conversations side by side; each cell is an embedded preview."""
+        if not authenticated(request):
+            return login_redirect(request)
+        return FileResponse(WEB_DIR / "grid.html", media_type="text/html",
                             headers={"Cache-Control": "no-store"})
 
     def login_markup(target: str, error: str = "") -> str:
@@ -1148,13 +1165,13 @@ def create_app(
     @app.get("/shares")
     async def shares_page(request: Request):
         if not authenticated(request):
-            return RedirectResponse("/login?next=/shares", status_code=303)
+            return login_redirect(request)
         return FileResponse(WEB_DIR / "shares.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/hosts")
     async def hosts_page(request: Request):
         if not authenticated(request):
-            return RedirectResponse("/login?next=/hosts", status_code=303)
+            return login_redirect(request)
         return FileResponse(WEB_DIR / "hosts.html", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/shares", status_code=201)

@@ -23,6 +23,11 @@
   .state.idle{color:#3b7350;border-color:#d6e6da;background:#f2f8f3}.state.idle i{background:var(--green)}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
   main{flex:1;min-height:0;overflow-y:auto;padding:16px 14px 8px;scrollbar-gutter:stable}
+  /* embedded in /grid: the cell header carries the title and the actions */
+  body.embed header{display:none}
+  body.embed main{padding-top:8px}
+  body.embed .msg{margin-bottom:10px}
+  body.embed .body{font-size:13.5px}
   .msg{display:flex;margin:0 0 14px}
   .msg.user{justify-content:flex-end}
   .bubble{max-width:min(86%,720px);padding:10px 14px;border-radius:16px;background:#e9e7df;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -107,6 +112,7 @@ const scroll=$('scroll');
 function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 marked.use({renderer:{html(token){return esc(token&&(token.text!=null?token.text:token.raw));}}});
 const md=value=>marked.parse(String(value??''),{gfm:true,breaks:false,async:false});
+if(new URLSearchParams(location.search).get('embed')==='1')document.body.classList.add('embed');
 const favBtn=document.getElementById('fav');
 function paintFav(on){
   if(!favBtn)return;

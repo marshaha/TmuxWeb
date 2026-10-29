@@ -22,6 +22,11 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Remote rendering performance**: SSH connection multiplexing, remote content digests, idle backoff — and non-ASCII pane titles no longer arrive as `_`.
 - **File panel**: browse the selected pane's working directory in the sidebar (enter/leave folders, scroll), download with a click and upload by drag-and-drop, on localhost and over SSH alike.
 - **Message actions**: every message has a "复制全部" (copy all) button; each block inside a message (code / mermaid / table) has its own toolbar — copy the block (tables copy as TSV, mermaid copies the source) and, for tables and mermaid, flip between source and rendered. Mermaid is vendored locally and loaded lazily, only when a message actually contains a mermaid block.
+- **Multi-window** (`/grid`): several conversations side by side on one page. Every window is its own widget (title, status dot,
+  open-in-console, remove) whose body is the embedded conversation page (`/preview?pane=…&embed=1`) — you can keep typing into it.
+  The separators between windows are draggable; widths are stored per pane in localStorage, and a newly added window takes a share of
+  the leftover space. On a phone the windows stack full width. Linked from the console and board sidebars. Every page
+  (`/`, `/home`, `/preview`, `/grid`, `/hosts`, `/shares`) now requires a login and remembers where to return.
 - **Real terminal**: xterm.js over a PTY with input, resize, ANSI, and mobile shortcut controls.
 - **Literal input delivery**: messages use tmux buffers instead of shell interpolation and account for stale drafts and bracketed paste.
 - **New sessions**: the "+" next to a host row runs `tmux new-session -d` on that host (local or SSH), with a
