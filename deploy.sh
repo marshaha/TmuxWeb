@@ -4,6 +4,30 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
+usage() {
+  cat <<'EOF'
+Usage: ./deploy.sh [PUBLIC_BASE_URL]
+
+Fast-forward origin/main, restart tmux-web-console, and verify /login.
+PUBLIC_BASE_URL is optional; for example: https://example.com
+
+Environment overrides:
+  TMUX_WEB_DEPLOY_REMOTE  Git remote (default: origin)
+  TMUX_WEB_DEPLOY_BRANCH  Git branch (default: main)
+  TMUX_WEB_TMUX_SESSION   Service tmux session (default: tmux-web-console)
+  TMUX_WEB_PUBLIC_URL     Public base URL when no positional URL is supplied
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+if (( $# > 1 )); then
+  usage >&2
+  exit 2
+fi
+
 REMOTE="${TMUX_WEB_DEPLOY_REMOTE:-origin}"
 BRANCH="${TMUX_WEB_DEPLOY_BRANCH:-main}"
 SESSION="${TMUX_WEB_TMUX_SESSION:-tmux-web-console}"
