@@ -60,3 +60,5 @@ client/ios/Flutter/flutter_export_environment.sh
 
 # Test instance data
 .testdata/
+passwords.json
+passwords.json.tmp

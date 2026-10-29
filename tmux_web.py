@@ -17,6 +17,8 @@ import struct
 import subprocess
 import termios
 import sqlite3
+
+from auth_store import PasswordStore
 import time
 import threading
 from collections import defaultdict, deque
@@ -346,6 +348,14 @@ class SharePasswordRequest(BaseModel):
     password: str = Field(default="", max_length=256)
 
 
+class PasswordChangeRequest(BaseModel):
+    current: str = Field(default="")
+    new: str = Field(default="", alias="next")
+
+    class Config:
+        populate_by_name = True
+
+
 class SessionCreateRequest(BaseModel):
     host: str = Field(default="localhost", max_length=64)
     name: str = Field(min_length=1, max_length=64)
@@ -648,7 +658,22 @@ def create_app(
     if not configured_password:
         raise RuntimeError("TMUX_WEB_PASSWORD must be set")
     secret = session_secret or os.environ.get("TMUX_WEB_SESSION_SECRET") or secrets.token_hex(32)
-    expected_token = session_token(configured_password, secret)
+    # The password can be changed from the console's settings panel; the store keeps a hash and,
+    # once it exists, session tokens derive from that hash instead of the environment value.
+    password_store = PasswordStore(
+        os.environ.get("TMUX_WEB_PASSWORD_DB") or str(BASE_DIR / "passwords.json")
+    )
+
+    def check_password(candidate: str) -> bool:
+        if password_store.encoded():
+            return password_store.verify(candidate)
+        return hmac.compare_digest(candidate, configured_password)
+
+    def token_seed() -> str:
+        return password_store.material() or configured_password
+
+    def expected_token() -> str:
+        return session_token(token_seed(), secret)
     api_token = (os.environ.get("TMUX_WEB_API_TOKEN") or "").strip()
     # File transfers are buffered in memory, so both directions are capped.
     download_limit = int(os.environ.get("TMUX_WEB_FILE_DOWNLOAD_MAX", str(64 * 1024 * 1024)))
@@ -752,7 +777,7 @@ def create_app(
 
     def authenticated(request: Request) -> bool:
         token = request.cookies.get(COOKIE_NAME, "")
-        if token and hmac.compare_digest(token, expected_token):
+        if token and hmac.compare_digest(token, expected_token()):
             return True
         if not api_token:
             return False
@@ -1140,7 +1165,7 @@ def create_app(
         fields = parse_qs(body)
         supplied = fields.get("password", [""])[0]
         target = safe_next_url(fields.get("next", ["/"])[0])
-        if not hmac.compare_digest(supplied, configured_password):
+        if not check_password(supplied):
             login_limiter.fail(rate_key)
             return HTMLResponse(
                 login_markup(target, error="密码错误"), status_code=401
@@ -1149,7 +1174,42 @@ def create_app(
         response = RedirectResponse(target, status_code=303)
         response.set_cookie(
             COOKIE_NAME,
-            expected_token,
+            expected_token(),
+            httponly=True,
+            samesite="strict",
+            secure=secure_cookie(request),
+            max_age=60 * 60 * 24 * 7,
+            path="/",
+        )
+        return response
+
+    @app.get("/api/settings")
+    async def settings_info(request: Request):
+        require_auth(request)
+        return {
+            "password_source": "file" if password_store.encoded() else "env",
+            "hosts": len(remote_hosts.list_hosts()),
+            "api_token": bool(api_token),
+        }
+
+    @app.post("/api/settings/password")
+    async def change_password(request: Request, payload: PasswordChangeRequest):
+        """Rotate the console password. Sessions minted from the old one stop working."""
+        require_auth(request)
+        current = payload.current or ""
+        wanted = (payload.new or "").strip()
+        if not check_password(current):
+            raise HTTPException(status_code=403, detail="当前密码不正确")
+        if len(wanted) < 6:
+            raise HTTPException(status_code=400, detail="新密码至少 6 位")
+        if wanted == current:
+            raise HTTPException(status_code=400, detail="新密码不能和当前密码相同")
+        password_store.set(wanted)
+        response = JSONResponse({"ok": True, "password_source": "file"})
+        # keep this browser signed in; other devices have to log in again
+        response.set_cookie(
+            COOKIE_NAME,
+            expected_token(),
             httponly=True,
             samesite="strict",
             secure=secure_cookie(request),
@@ -2705,7 +2765,7 @@ def create_app(
     @app.websocket("/ws/panes/{pane_id}")
     async def stream_pane(websocket: WebSocket, pane_id: str):
         token = websocket.cookies.get(COOKIE_NAME, "")
-        if not hmac.compare_digest(token, expected_token):
+        if not hmac.compare_digest(token, expected_token()):
             await websocket.close(code=4401)
             return
         try:
@@ -2752,7 +2812,7 @@ def create_app(
     @app.websocket("/ws/terminal/{pane_id}")
     async def terminal_socket(websocket: WebSocket, pane_id: str, cols: int = 100, rows: int = 30):
         token = websocket.cookies.get(COOKIE_NAME, "")
-        if not hmac.compare_digest(token, expected_token):
+        if not hmac.compare_digest(token, expected_token()):
             await websocket.close(code=4401)
             return
         try:

@@ -65,6 +65,18 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **File panel**: the path bar is editable (absolute, or relative to the pane cwd — Enter navigates, Esc cancels, focus selects the whole path). the toolbar download button zips the current directory (or just the selection when there is one); every row carries a checkbox, `Ctrl/⌘+click` toggles one item and `Shift+click` selects a range (desktop conventions), and the footer offers 全选 / 清空 / 下载 zip (N) for files *and* whole directories can be zipped: local panes zip straight from disk, remote hosts only need `tar` (the bytes come back in one SSH call and are re-containered locally). Limits: `TMUX_WEB_ZIP_MAX` (128MB uncompressed) and `TMUX_WEB_ZIP_MAX_FILES` (1000).
 - **Optional MCP mailbox**: controlled text messaging among Claude Code, Codex, and Hermes without arbitrary shell or filesystem tools.
 
+
+## Settings panel
+
+The console's bottom-left "设置" (settings) button:
+
+- **Change the password** — current + new (6 chars or more). After the first change the password no
+  longer comes from the environment: a pbkdf2 hash is stored in `passwords.json` (mode 0600, path
+  via `TMUX_WEB_PASSWORD_DB`) and the browser that made the change stays signed in while every other
+  device has to log in again.
+- **Export configuration** — hosts (address, port, jump chain, tmux path), the multi-window layout and
+  presets, or both. The exported JSON never contains passwords, private keys or credentials.
+
 ## Design boundaries
 
 - Chat mode never keeps a `tmux attach` client alive, avoiding terminal-size interference between devices.
