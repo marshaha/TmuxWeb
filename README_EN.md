@@ -274,6 +274,12 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
 - **Terminal input on phones** — terminal mode has its own text field above the key bar. The soft keyboard targets it: characters go to the
   PTY as typed (so the echo is immediate), backspace sends `\x7f`, Enter sends `\r`, and an IME commits on `compositionend`.
   xterm's own textarea gets `inputmode=none`, so tapping the terminal dismisses the keyboard instead of triggering a redraw.
+- **No page zoom when a field is focused** — iOS zooms the whole page for an input under 16px and does not zoom back out on blur (it looks
+  like "the window grew and the terminal never recovered"). Every `input`/`textarea`/`select` is 16px at the phone breakpoint: console
+  composer, terminal field, board search, host admin, share and session dialogs.
+- **The terminal only shrinks when the keyboard opens** — terminal mode keeps its header while composing (the old composing rules gave
+  the terminal an extra 58px, which read as "the window got bigger"), and blur restores the visual height *and* refits, so the grid
+  comes back to its original rows/cols.
 - **No more "re-render" when the keyboard opens** — a `visualViewport` change fires continuously during the keyboard animation and the
   old code fitted plus `xterm.refresh(0, rows-1)` on each one, sending a PTY resize even when cols/rows were unchanged (tmux then
   repaints the whole screen). Now the layout follows the visual viewport immediately (`--visual-height` / `--visual-top`, i.e. it lifts),

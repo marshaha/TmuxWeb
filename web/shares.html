@@ -7,7 +7,10 @@
 .actions button,.actions a{width:100%;padding:0 6px;font-size:12px;white-space:normal;text-align:center}
 .modal-actions button{flex:1}.meta{display:grid;gap:4px}}
 @media(max-width:380px){.actions{grid-template-columns:minmax(0,1fr)}.actions button,.actions a{white-space:nowrap}}
-</style>
+
+    /* iOS zooms the page when a field under 16px takes focus and never zooms back out */
+    @media(max-width:760px){input,textarea,select{font-size:16px!important}}
+  </style>
 </head>
 <body>
 <header class="top"><strong>分享管理</strong><a href="/">← 返回控制台</a></header><main class="wrap"><div class="summary" id="summary">加载中…</div><section class="list" id="list"></section></main><div class="toast" id="toast"></div>

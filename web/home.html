@@ -185,7 +185,10 @@
     main{padding:12px}
     .grid{grid-template-columns:1fr}
   }
-</style>
+
+    /* iOS zooms the page when a field under 16px takes focus and never zooms back out */
+    @media(max-width:760px){input,textarea,select{font-size:16px!important}}
+  </style>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>

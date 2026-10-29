@@ -74,6 +74,8 @@
 - transcript 缓存 TTL：弱网主机连续刷新 → 首次十几秒，之后多次 0.3–2s；日志无异常。
 - 慢网络：打开 oracle 的 codex pane → 首次 ~30s 内出消息（或超时后显示「读取远端 transcript 超时（30s），可能是到这台主机的网络较慢」+ 自动重试），之后增量轮询明显更快；把 `TMUX_WEB_TRANSCRIPT_TIMEOUT` 设成 5 再打开 → 很快给出网络超时提示而不是转圈。单测：`tests/test_remote_hosts.py::test_a_stalled_transcript_blames_the_link`、`::test_the_transcript_timeout_is_configurable`。
 - macmini kimi pane：打开后应是聊天模式（气泡），不是原始屏幕；主线程 10 秒内 <0.1s；主页上该卡片有最后一条 agent 回复预览。把一个 agent 会话的消息清空/换到没有消息的 session → 聊天区出现「暂时没有可解析的对话」+「查看原始屏幕」，不再自动抓屏；点按钮才切终端。单测：`tests/test_tmux_web.py::test_kimi_picks_the_session_that_is_still_being_written`、`::test_an_agent_pane_does_not_fall_back_to_its_screen`。
+- iOS 放大：手机端聚焦输入框（终端输入框、聊天输入框、主页搜索、主机管理表单）→ 页面不应放大，失焦后不应残留缩放。
+- 键盘开合：终端模式聚焦输入框 → 顶栏仍在、终端只是变矮（不出现 58px 跳变）；收起键盘 → 终端行数/列数回到原值。
 - 手机终端输入：终端模式 → 点输入框弹键盘 → 逐字输入能立刻在终端看到 echo；退格/回车生效；中文输入法上屏后才发送；点终端空白处键盘收起、布局回满。
 - 键盘弹出/收起：终端区域高度跟随可视区（不是整屏重画），DevTools console 里 `state.termWs` 只在行列变化时收到一条 `{type:'resize'}`；滚动到中间不会跳回底部。
 - 深链登录：未登录打开 `/?pane=%25xx` → 登录后回到同一个 pane；把 `next` 改成 `//evil.example` → 登录后回 `/`。
