@@ -185,7 +185,14 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("get('embed')==='1'", page)
 
     def test_the_grid_is_linked_from_the_console_and_the_board(self):
-        self.assertIn('href="/grid"', self.client.get("/").text)
+        console = self.client.get("/").text
+        self.assertIn('href="/grid"', console)
+        self.assertIn('href="/home"', console)
+        # the grid sits next to the home icon in the console's sidebar header
+        self.assertIn('href="/grid" title="多窗口（几个会话并排）"', console)
+        self.assertIn('href="/home" title="主页（收藏与看板）"', console)
+        self.assertLess(console.index('href="/home" title="主页（收藏与看板）"'),
+                        console.index('href="/grid" title="多窗口（几个会话并排）"'))
         self.assertIn('href="/grid"', self.client.get("/home").text)
 
 

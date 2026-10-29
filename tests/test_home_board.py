@@ -130,6 +130,20 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("/api/hosts?refresh=1&host=", page)
         self.assertIn("/api/hosts?refresh=1&host=", console)
 
+    def test_the_board_sidebar_is_a_column_on_a_desktop_and_a_drawer_on_a_phone(self):
+        """The phone drawer rules must stay inside their media query."""
+        shell = self.client.get("/assets/shell.css").text
+        import re as _re
+        # every rule that turns the sidebar into an off-canvas drawer lives in the 860px query
+        media = _re.search(r'@media \(max-width:860px\)\{(.*?)\n\s*\}\n', shell, _re.S)
+        self.assertIsNotNone(media, "the drawer media query is missing")
+        self.assertIn("position:fixed", media.group(1))
+        self.assertIn("translateX(-100%)", media.group(1))
+        # and no page may carry those rules loose (that made the column vanish at 1440px)
+        for path in ("/home", "/grid"):
+            page = self.client.get(path).text
+            self.assertNotIn("position:fixed;top:0;left:0;z-index:20", page, path)
+
     def test_the_sidebar_width_is_draggable_and_remembered(self):
         home = self.client.get("/home")
         for marker in ('id="side-resizer"', "--side-w", "tmux-home-side-w"):
