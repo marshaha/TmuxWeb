@@ -469,6 +469,17 @@ def pane_metadata(pane: dict) -> dict:
 class TerminalSession:
     def __init__(self, pane_id: str, cols: int, rows: int):
         self.pane_id = pane_id
+        # Read the size BEFORE attaching: tmux resizes the window as soon as the client
+        # shows up (the pty starts at 0x0), so a later query would record the size we
+        # just imposed and "restoring" it would be a no-op.
+        self.previous_geometry = self._tmux_value(
+            "display", "-p", "-t", pane_id, "#{window_width}x#{window_height}")
+        # set-option is a session command: a pane target would not resolve, and the
+        # restored size would fall back to the global 80x24
+        self.session_name = self._tmux_value("display", "-p", "-t", pane_id, "#{session_name}")
+        self.previous_default_size = (
+            self._tmux_value("show-options", "-t", self.session_name, "-v", "default-size")
+            if self.session_name else "")
         self.master_fd, slave_fd = os.openpty()
         environment = os.environ.copy()
         environment["TERM"] = "xterm-256color"
@@ -484,6 +495,41 @@ class TerminalSession:
         os.close(slave_fd)
         self._closed = False
         self._set_size(cols, rows)
+
+    @staticmethod
+    def _tmux_value(*args: str) -> str:
+        """Best-effort tmux query: a terminal must still open when this fails."""
+        try:
+            result = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=4)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return result.stdout.strip()
+
+    def restore_geometry(self) -> None:
+        """Put the window size back after the last client leaves.
+
+        tmux derives a window's size from the clients still attached; when the phone is
+        the last one and detaches, the window keeps the 47x40 it was handed, so the pane
+        stays tiny for the next viewer. Restoring needs three steps: `resize-window`
+        sets the size but pins `window-size` to manual (the session then stops following
+        its clients), and unsetting it alone falls back to `default-size` (80x24), so the
+        session's default-size is temporarily pointed at the size we are restoring.
+        """
+        geometry = getattr(self, "previous_geometry", "")
+        if "x" not in geometry:
+            return
+        cols, _, rows = geometry.partition("x")
+        if not (cols.isdigit() and rows.isdigit()):
+            return
+        if self._tmux_value("list-clients", "-t", self.pane_id, "-F", "."):
+            return                      # someone is watching: their size wins
+        session = getattr(self, "session_name", "") or self.pane_id
+        self._tmux_value("set-option", "-t", session, "default-size", geometry)
+        self._tmux_value("resize-window", "-t", self.pane_id, "-x", cols, "-y", rows)
+        self._tmux_value("set-option", "-w", "-u", "-t", self.pane_id, "window-size")
+        previous = getattr(self, "previous_default_size", "")
+        if previous:
+            self._tmux_value("set-option", "-t", session, "default-size", previous)
 
     def _set_size(self, cols: int, rows: int) -> None:
         cols = max(20, min(int(cols), 500))
@@ -528,6 +574,7 @@ class TerminalSession:
             os.close(self.master_fd)
         except OSError:
             pass
+        await asyncio.to_thread(self.restore_geometry)
 
 
 def session_token(password: str, secret: str) -> str:

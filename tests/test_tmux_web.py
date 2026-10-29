@@ -819,6 +819,40 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(payload["type"], "capture")
         self.assertIn("\x1b[32mhello", payload["content"])
 
+    def test_the_window_size_is_restored_after_the_last_client_leaves(self):
+        """A phone attach at 47 columns must not leave the pane at 47 for everyone else."""
+        import tmux_web
+
+        calls = []
+        session = tmux_web.TerminalSession.__new__(tmux_web.TerminalSession)
+        session.pane_id = "%9"
+        session.previous_geometry = "179x51"
+        session.session_name = "twterm-test"
+        session.previous_default_size = "179x52"
+
+        def fake(*args):
+            calls.append(args)
+            return "" if args[0] == "list-clients" else ""
+
+        session._tmux_value = fake
+        session.restore_geometry()
+        self.assertIn(("resize-window", "-t", "%9", "-x", "179", "-y", "51"), calls)
+        # unsetting window-size alone falls back to default-size, so point it at the target
+        self.assertIn(("set-option", "-t", "twterm-test", "default-size", "179x51"), calls)
+        self.assertIn(("set-option", "-w", "-u", "-t", "%9", "window-size"), calls)
+        self.assertEqual(calls[-1], ("set-option", "-t", "twterm-test", "default-size", "179x52"))
+
+        # someone still watching: leave their size alone
+        calls.clear()
+
+        def watching(*args):
+            calls.append(args)
+            return "." if args[0] == "list-clients" else ""
+
+        session._tmux_value = watching
+        session.restore_geometry()
+        self.assertEqual(calls, [("list-clients", "-t", "%9", "-F", ".")])
+
     def test_a_pty_resize_also_signals_the_child(self):
         """The child inherits the pty, so the kernel sends it no SIGWINCH: tmux kept its old
         size and never repainted, which is why resizing a phone terminal did nothing."""

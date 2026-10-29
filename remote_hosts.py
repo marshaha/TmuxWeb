@@ -1663,7 +1663,27 @@ class RemoteTerminalSession:
             tmux_bin = runner.tmux_binary()
         except RuntimeError:
             tmux_bin = ""
-        remote_command = f"exec ${{TMUX_BIN:-tmux}} attach-session -t {shlex.quote(pane_id)}"
+        # A phone-sized attach leaves the window small once it detaches (with no client
+        # left tmux keeps the last size), which then breaks the next viewer. Remember the
+        # size here, attach, and put it back afterwards -- the remote shell keeps running
+        # because our ssh closing turns into EOF on the attached pty.
+        quoted = shlex.quote(pane_id)
+        marker = re.sub(r"[^0-9A-Za-z]", "", pane_id) or "pane"
+        remote_command = (
+            f"TM=${{TMUX_BIN:-tmux}}; S={quoted}; F=/tmp/.tmuxweb-geom-{marker}; "
+            f'prev=$($TM display -p -t "$S" "#{{window_width}}x#{{window_height}}" 2>/dev/null); '
+            f'SN=$($TM display -p -t "$S" "#{{session_name}}" 2>/dev/null); '
+            f'ds=$($TM show-options -t "$S" -v default-size 2>/dev/null); '
+            f'printf \'%s\\n%s\\n\' "$prev" "$ds" > "$F" 2>/dev/null; '
+            f'$TM attach-session -t "$S"; rc=$?; '
+            f'if [ -n "$prev" ] && [ -z "$($TM list-clients -t "$S" -F . 2>/dev/null)" ]; then '
+            f'[ -n "$SN" ] && $TM set-option -t "$SN" default-size "$prev" 2>/dev/null; '
+            f'$TM resize-window -t "$S" -x "${{prev%%x*}}" -y "${{prev##*x}}" 2>/dev/null; '
+            f'$TM set-option -w -u -t "$S" window-size 2>/dev/null; '
+            f'[ -n "$ds" ] && [ -n "$SN" ] && $TM set-option -t "$SN" default-size "$ds" 2>/dev/null; fi; '
+            f'rm -f "$F" 2>/dev/null; '
+            f'exit $rc'
+        )
         command, extra = runner.command(remote_command, tty=True, known_hosts=str(known_hosts),
                                         identity_file=identity_file, jump_proxy=jump_proxy,
                                         tmux_bin=tmux_bin or None)
@@ -1690,6 +1710,47 @@ class RemoteTerminalSession:
     async def resize(self, cols: int, rows: int):
         await asyncio.to_thread(self._set_size, cols, rows)
 
+    def restore_geometry(self):
+        """Undo the window size our client imposed, over a fresh connection.
+
+        Killing the ssh client can take the remote shell down before it reaches its own
+        restore step, so the attach also drops the original size into a marker file and
+        this runs the restore separately.
+        """
+        marker = re.sub(r"[^0-9A-Za-z]", "", self.pane_id) or "pane"
+        quoted = shlex.quote(self.pane_id)
+        script = (
+            f"TM=${{TMUX_BIN:-tmux}}; S={quoted}; F=/tmp/.tmuxweb-geom-{marker}; "
+            f'[ -f "$F" ] || exit 0; '
+            f'prev=$(sed -n 1p "$F" 2>/dev/null); ds=$(sed -n 2p "$F" 2>/dev/null); '
+            f'SN=$($TM display -p -t "$S" "#{{session_name}}" 2>/dev/null); '
+            f'if [ -n "$prev" ] && [ -n "$SN" ] && [ -z "$($TM list-clients -t "$S" -F . 2>/dev/null)" ]; then '
+            f'$TM set-option -t "$SN" default-size "$prev" 2>/dev/null; '
+            f'$TM resize-window -t "$S" -x "${{prev%%x*}}" -y "${{prev##*x}}" 2>/dev/null; '
+            f'$TM set-option -w -u -t "$S" window-size 2>/dev/null; '
+            f'[ -n "$ds" ] && $TM set-option -t "$SN" default-size "$ds" 2>/dev/null; fi; '
+            f'rm -f "$F" 2>/dev/null; exit 0'
+        )
+        try:
+            runner = SSHRunner(self.host)
+            directory = Path(self.tempdir.name)
+            known_hosts = runner._known_hosts(directory)
+            identity_file, password_file = runner._prepare_auth(self.host, directory, "")
+            jump_proxy, hop_passwords = runner.build_jump_proxy(directory)
+            environment = os.environ.copy()
+            if password_file or hop_passwords:
+                askpass = directory / "askpass.sh"
+                runner._write_askpass(directory, password_file, hop_passwords, askpass)
+                environment.update({"SSH_ASKPASS": str(askpass), "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": ":0"})
+            command, extra = runner.command(script, tty=False, known_hosts=str(known_hosts),
+                                            identity_file=identity_file, jump_proxy=jump_proxy,
+                                            tmux_bin=None)
+            environment.update(extra)
+            subprocess.run(command, capture_output=True, env=environment, timeout=20,
+                           stdin=subprocess.DEVNULL)
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            pass
+
     async def close(self):
         if self._closed: return
         self._closed = True
@@ -1700,4 +1761,5 @@ class RemoteTerminalSession:
                 self.process.kill(); await asyncio.to_thread(self.process.wait)
         try: os.close(self.master_fd)
         except OSError: pass
+        await asyncio.to_thread(self.restore_geometry)
         self.tempdir.cleanup()

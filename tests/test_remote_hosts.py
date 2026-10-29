@@ -774,8 +774,38 @@ class RemoteHostTests(unittest.TestCase):
             argv = popen.call_args[0][0]
             remote = argv[-1]
         self.assertIn("export TMUX_BIN=/opt/homebrew/bin/tmux", remote)
-        self.assertIn("attach-session -t %13", remote)
+        self.assertIn("S=%13", remote)
+        self.assertIn('$TM attach-session -t "$S"', remote)
+        # leaving a phone-sized window behind breaks the next viewer: restore the size,
+        # and drop the `window-size manual` that resize-window forces
+        self.assertIn("resize-window", remote)
+        self.assertIn('set-option -t "$SN" default-size "$prev"', remote)
+        self.assertIn('SN=$($TM display -p -t "$S" "#{session_name}"', remote)
+        self.assertIn("set-option -w -u", remote)
         self.assertEqual(session.pane_id, "%13")
+
+    def test_the_remote_attach_records_and_restores_the_window_size(self):
+        """A phone-sized attach must not leave the oracle window at 47 columns."""
+        host = dict(FAKE_SSH_HOST)
+        with mock.patch("subprocess.Popen") as popen, \
+                mock.patch.object(remote_hosts.SSHRunner, "tmux_binary", return_value="/usr/bin/tmux"), \
+                mock.patch("os.openpty", return_value=(9, 10)), \
+                mock.patch("os.close"), \
+                mock.patch.object(remote_hosts.RemoteTerminalSession, "_set_size"):
+            session = remote_hosts.RemoteTerminalSession(host, "%80", 80, 24)
+            remote = popen.call_args[0][0][-1]
+        self.assertIn("/tmp/.tmuxweb-geom-80", remote)                    # remembered across the attach
+        self.assertIn('printf', remote)
+        self.assertIn("resize-window", remote)
+        self.assertIn("set-option -w -u", remote)
+
+        with mock.patch("subprocess.run") as run, \
+                mock.patch.object(remote_hosts.SSHRunner, "tmux_binary", return_value="/usr/bin/tmux"):
+            session.restore_geometry()
+            command = run.call_args[0][0][-1]
+        self.assertIn("list-clients", command)                            # only when nobody is watching
+        self.assertIn("default-size", command)
+        self.assertIn("rm -f", command)
 
     def test_capture_many_batches_panes_into_one_call(self):
         """The status sweep must not spend one ssh round trip per pane."""

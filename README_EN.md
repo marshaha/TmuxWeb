@@ -279,6 +279,14 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   (`Ctrl` then `c` sends `\x03`), and real Ctrl/Alt combos typed on an external keyboard are translated too (`Ctrl+V` still pastes). — terminal mode has its own text field above the key bar. The soft keyboard targets it: characters go to the
   PTY as typed (so the echo is immediate), backspace sends `\x7f`, Enter sends `\r`, and an IME commits on `compositionend`.
   xterm's own textarea gets `inputmode=none`, so tapping the terminal dismisses the keyboard instead of triggering a redraw.
+- **A phone attach must not leave a small window behind** — `tmux attach` resizes the shared window to the client; when the phone is
+  the last client and detaches, tmux *keeps* that 47x40, so every later viewer (a desktop tmux, the next phone, even a transcript read)
+  sees a squashed 47-column pane. That is "I opened the terminal on my phone and oracle's window shrank". The original size is now
+  captured before the attach and restored after the last client leaves. The restore needs three steps: `resize-window` fixes the size
+  but pins `window-size` to manual (the session stops following its clients), while unsetting it alone falls back to the global
+  `default-size` (80x24) -- so the session's default-size is pointed at the target, then resized, unset, and default-size restored.
+  Remotely the same: the attach writes the original size to `/tmp/.tmuxweb-geom-<pane>` and, after the client is gone, the server opens
+  a fresh connection to restore it (killing ssh can take the remote shell down before it runs its own restore).
 - **A PTY resize must be signalled** — the terminal pty comes from `openpty()` and the child only inherits the fds (and
   `start_new_session` leaves it without a controlling terminal), so the kernel never delivers `SIGWINCH` after `TIOCSWINSZ`.
   `resize` used to set the size only: tmux kept its old size and never repainted, which on a phone meant the terminal showed
