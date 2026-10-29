@@ -34,7 +34,14 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
   The separators between windows are draggable; widths are stored per pane in localStorage, and a newly added window takes a share of
   the leftover space. On a phone the windows stack full width. Linked from the console and board sidebars. Every page
   (`/`, `/home`, `/preview`, `/grid`, `/hosts`, `/shares`) now requires a login and remembers where to return.
-- **Real terminal**: xterm.js over a PTY with input, resize, ANSI, and mobile shortcut controls.
+- **Real terminal**: xterm.js + PTY attach with input, resize and ANSI. On a phone it now works the way Termius does:
+  no visible input box (an invisible field captures the soft keyboard, tapping the terminal opens it, the keyboard
+  button hides it); one scrollable key row (`shift tab`, paste, `?`, `/`, `esc`, `tab`, `ctrl`, `alt`, arrows, `^C`) with
+  **more** and **keyboard** pinned on the right; `ctrl`/`alt` latch onto the next character; a four-column extended pad
+  (`^C ^D ^Z ^L …`, `| ~ - = : ; ! $ % ^ < > ( ) { } [ ]`, home/end/pgUp/pgDn, arrows, paste/del/@/&) that replaces the
+  system keyboard instead of squeezing the terminal; pinch to change the font size (9–22px, re-fitting the columns) and a
+  “back to bottom” pill when you scroll away. The keyboard only ever shrinks the terminal, and the PTY gets the new size.
+  `/term` (the grid's terminal cell) supports paste and pinch as well.: xterm.js over a PTY with input, resize, ANSI, and mobile shortcut controls.
 - **Literal input delivery**: messages use tmux buffers instead of shell interpolation and account for stale drafts and bracketed paste.
 - **New sessions**: the "+" next to a host row runs `tmux new-session -d` on that host (local or SSH), with a
   dialog for the session name (letters, digits, `.`, `-`, `_`, 1–64 chars) and an optional working directory; the

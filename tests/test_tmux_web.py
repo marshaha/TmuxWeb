@@ -273,8 +273,10 @@ class TmuxWebTests(unittest.TestCase):
         # sizing must not repaint the screen or notify the PTY when nothing changed
         self.assertIn("function fitTerminalNow", page)
         self.assertNotIn("state.xterm.refresh(0,", page)
-        # iOS zooms the page for a field under 16px and never zooms back out
-        self.assertIn(".terminal-input-row input{font-size:16px", page)
+        # the keyboard field is invisible now (the terminal itself shows the caret), and it must
+        # stay >=16px or iOS zooms the page in and never zooms back out
+        self.assertIn(".terminal-kb-input{position:fixed", page)
+        self.assertIn("font-size:16px;opacity:0", page)
         # the terminal view keeps its header row while composing, so the terminal shrinks
         # with the keyboard instead of growing by the 58px the header would give back
         self.assertIn(".app.terminal-view.mobile-composing .topbar{visibility:visible", page)

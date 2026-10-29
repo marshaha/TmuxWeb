@@ -361,3 +361,7 @@ git grep -nE 'BEGIN (OPENSSH |RSA |EC |ENCRYPTED )?PRIVATE KEY|password\s*=|api[
 - Cookie、日志和 capture
 - 真实公网 IP、域名、用户名
 - Claude/Codex/Hermes transcript
+
+- 手机终端（390×780）：进入终端 → 底部只有一行按键（shift tab / 粘贴 / ? / / / esc / tab / ctrl / alt / 方向键 / ^C，可横向滑动），右侧常驻「更多」和「键盘」图标；**页面上没有输入框**。点终端任意位置 → 隐藏输入框获得焦点（真机上软键盘弹出）、终端高度收缩而顶栏仍在。点 / 和字母 → pane 里出现对应字符；点 ctrl 再点 c → 发出 ^C（pane 里看到 C:130 之类的取消提示）。点「更多」→ 四列扩展键面板出现、系统键盘收起、终端仍在面板上方可见；再点一次收起并重新聚焦。
+- 手机终端缩放：双指捏合 → 字号变化（9–22px）、列数重排、`localStorage['tmux-term-font']` 记录；刷新后保持。
+- 深链竞态：远端主机还在扫描时访问 `/?pane=<远端 pane>&mode=terminal` → 扫描完成的那一刻自动选中该 pane 并进入终端（旧行为会退回到上次的 pane）。

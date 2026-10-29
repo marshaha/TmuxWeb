@@ -56,6 +56,7 @@
   <button type="button" data-key="down">↓</button>
   <button type="button" data-key="up">↑</button>
   <button type="button" data-key="right">→</button>
+  <button type="button" id="paste" class="wide">粘贴</button>
 </div>
 <script src="/assets/xterm/xterm.js?v=2"></script>
 <script src="/assets/xterm/addon-fit.js?v=2"></script>
@@ -71,8 +72,10 @@
   $('title').textContent=pane;
   if(matchMedia('(hover:none) and (pointer:coarse)').matches)document.body.classList.add('touch');
 
+  const savedFont=Number(localStorage.getItem('tmux-term-font'));
   const term=new Terminal({
-    cursorBlink:true, disableStdin:false, convertEol:false, scrollback:10000, fontSize:13,
+    cursorBlink:true, disableStdin:false, convertEol:false, scrollback:10000,
+    fontSize:savedFont>=9&&savedFont<=22?savedFont:13,
     fontFamily:'ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',
     theme:{background:'#111111',foreground:'#e7e5df',cursor:'#faf9f5',selectionBackground:'#5a574f88'}
   });
@@ -160,6 +163,38 @@
       else pending+=data;
     });
   }
+  // paste from the clipboard (a phone has no Ctrl+V)
+  $('paste').addEventListener('click',async()=>{
+    try{
+      const text=await navigator.clipboard.readText();
+      if(!text)return;
+      const data=text.replace(/\r?\n/g,'\r');
+      if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'input',data}));
+      else pending+=data;
+    }catch{setState('粘贴被浏览器拦截',false);}
+  });
+
+  // pinch to zoom, remembered like the console does
+  let pinchDistance=0,pinchFont=0;
+  const spread=touches=>Math.hypot(touches[0].clientX-touches[1].clientX,touches[0].clientY-touches[1].clientY);
+  $('host').addEventListener('touchstart',event=>{
+    if(event.touches.length!==2)return;
+    pinchDistance=spread(event.touches);
+    pinchFont=term.options.fontSize||13;
+  },{passive:true});
+  $('host').addEventListener('touchmove',event=>{
+    if(event.touches.length!==2||!pinchDistance)return;
+    const ratio=spread(event.touches)/pinchDistance;
+    if(Math.abs(ratio-1)<0.05)return;
+    const size=Math.max(9,Math.min(22,Math.round(pinchFont*ratio)));
+    if(size===term.options.fontSize)return;
+    term.options.fontSize=size;
+    localStorage.setItem('tmux-term-font',String(size));
+    try{fit.fit();}catch{}
+    sendSize();
+  },{passive:true});
+  $('host').addEventListener('touchend',()=>{pinchDistance=0;},{passive:true});
+
   document.addEventListener('visibilitychange',()=>{
     if(document.hidden)return;
     if(!socket)connect();
