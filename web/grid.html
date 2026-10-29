@@ -96,6 +96,8 @@
     .preset-row .meta{color:var(--faint);font-size:11px;white-space:nowrap}
     .cell.dragging{opacity:.5}
     .cell.drop-target{outline:2px dashed var(--accent);outline-offset:-3px}
+    .cell.flash{animation:cellFlash .9s ease}
+    @keyframes cellFlash{0%{box-shadow:0 0 0 0 rgba(201,100,66,.55)}60%{box-shadow:0 0 0 7px rgba(201,100,66,0)}100%{box-shadow:0 0 0 0 rgba(201,100,66,0)}}
     body.moving{cursor:grabbing;user-select:none}
     body.moving iframe{pointer-events:none}
     @media(max-width:760px){
@@ -286,6 +288,7 @@
       if(next)grid.insertBefore(splitter,next);
     });
     syncVisibility();
+    syncTreeMarks();
   }
 
   // ---- tell each cell whether it is on screen, so hidden windows stop polling.
@@ -397,6 +400,25 @@
     const toggle=event.target.closest('[data-mode-toggle]');
     if(toggle){event.preventDefault();setMode(toggle.dataset.modeToggle);return;}
   });
+
+  // ---------------------------------------------------------------- keep the tree in step
+  function syncTreeMarks(){
+    if(window.TmuxShell&&TmuxShell.markActive)TmuxShell.markActive(state.panes);
+  }
+  function flashPane(paneId){
+    const cell=document.querySelector(`.cell[data-pane="${CSS.escape(paneId)}"]`);
+    if(!cell)return;
+    cell.scrollIntoView({block:'nearest',inline:'nearest',behavior:'smooth'});
+    cell.classList.remove('flash');
+    void cell.offsetWidth;                 // restart the animation
+    cell.classList.add('flash');
+    setTimeout(()=>cell.classList.remove('flash'),900);
+  }
+  function openPane(paneId){
+    if(state.panes.includes(paneId)){flashPane(paneId);return;}   // already a window: point at it
+    addPane(paneId);
+    flashPane(paneId);
+  }
 
   // ---- chat / terminal per window
   function setMode(pane, mode){
@@ -614,7 +636,7 @@
   // the sidebar owns /api/hosts now: reuse its pane metadata instead of polling twice
   if(window.TmuxShell){
     TmuxShell.mount({
-      onPane: paneId => addPane(paneId),
+      onPane: paneId => openPane(paneId),
       onHosts: hosts => {
         state.titles.clear();
         for(const host of hosts||[]){
@@ -627,6 +649,7 @@
           if(label)label.textContent=titleFor(cell.dataset.pane);
         }
         applyDefaultModes();
+        syncTreeMarks();            // the tree is only in the DOM once the shell has loaded
       },
     });
   }else{

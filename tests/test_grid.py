@@ -162,6 +162,17 @@ class GridPageTests(unittest.TestCase):
                        "api/home/favorites", "/api/panes/status"):
             self.assertIn(marker, shell)
 
+    def test_the_tree_shows_which_sessions_are_already_windows(self):
+        page = self.client.get("/grid").text
+        for marker in ("function syncTreeMarks()", "TmuxShell.markActive(state.panes)",
+                       "function openPane(paneId)", "function flashPane(paneId)", "cell.flash"):
+            self.assertIn(marker, page)
+        shell = self.client.get("/assets/shell.js").text
+        self.assertIn("markActive", shell)
+        self.assertIn(".tpane.in-grid", self.client.get("/assets/shell.css").text)
+        # clicking a row that is already a window must not add it twice
+        self.assertIn("if(state.panes.includes(paneId)){flashPane(paneId);return;}", page)
+
     def test_the_console_can_push_its_pane_into_the_grid(self):
         console = self.client.get("/").text
         self.assertIn('id="grid-add"', console)

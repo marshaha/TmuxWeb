@@ -71,3 +71,7 @@ body.resizing .app,body.resizing .shell{transition:none}
     .shell.mobile-open .sidebar{transform:none}
     .shell.mobile-open .backdrop{display:block}
   }
+
+/* a page that keeps some panes on screen marks those rows */
+.tpane.in-grid{background:rgba(201,100,66,.09);box-shadow:inset 2px 0 0 var(--accent)}
+.tpane.in-grid .tname{color:var(--ink)}

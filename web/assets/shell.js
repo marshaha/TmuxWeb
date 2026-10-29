@@ -276,7 +276,17 @@
     }
   }
 
+  // A page may own some of these panes (the multi-window page does); mark those rows so the tree
+  // says what is already on screen.
+  function markActive(paneIds) {
+    const wanted = new Set(paneIds || []);
+    for (const row of document.querySelectorAll('#tree [data-pane]')) {
+      row.classList.toggle('in-grid', wanted.has(row.dataset.pane));
+    }
+  }
+
   window.TmuxShell = {
+    markActive,
     mount(hooks = {}) {
       state.hooks = hooks;
       loadOpen();
