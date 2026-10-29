@@ -151,6 +151,26 @@ class HomeBoardTests(unittest.TestCase):
             self.assertIn("flex-wrap:wrap;row-gap:", page)
             self.assertIn("initIconRowScroll", page)
 
+    def test_the_tree_starts_collapsed_and_has_expand_buttons(self):
+        """Clicking a server must not dump the whole tree open; the toolbar does that."""
+        page = self.client.get("/home").text
+        self.assertIn('id="tree-expand"', page)
+        self.assertIn('id="tree-collapse"', page)
+        self.assertIn("tmux-home-tree-open", page)          # the choice is remembered
+        self.assertIn("state.treeOpen.has(key)", page)      # collapsed by default
+        self.assertNotIn("state.treeOpen.size?state.treeOpen.has(key):true", page)
+
+        console = self.client.get("/").text
+        self.assertIn('id="tree-expand"', console)
+        self.assertIn('id="tree-collapse"', console)
+        self.assertIn("function treeKeys()", console)
+
+    def test_a_phone_tap_opens_the_conversation_instead_of_the_hover_panel(self):
+        """Touch fires mouseover first, so the preview panel used to swallow the tap."""
+        page = self.client.get("/home").text
+        self.assertIn("canHover=matchMedia('(hover:hover) and (pointer:fine)')", page)
+        self.assertIn("if(!canHover)return;", page)
+
     def test_the_full_preview_page_is_served_and_wired_to_the_board(self):
         preview = self.client.get("/preview")
         self.assertEqual(preview.status_code, 200)

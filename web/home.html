@@ -27,6 +27,11 @@
     overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain}
   .side-actions::-webkit-scrollbar{display:none}
   .side-actions>*{flex:none}
+  .tree-tools{display:flex;align-items:center;gap:6px;padding:2px 10px 4px}
+  .tree-tools-label{flex:1;min-width:0;color:var(--faint);font-size:11px;letter-spacing:.06em}
+  .tree-tool{display:grid;place-items:center;width:24px;height:24px;padding:0;border:1px solid var(--line);border-radius:7px;background:rgba(255,255,255,.6);color:var(--muted);cursor:pointer}
+  .tree-tool:hover{background:#fff;color:var(--ink)}
+  .tree-tool .ico{width:14px;height:14px}
   .tree{flex:1;min-height:0;overflow:auto;padding:0 8px 20px;-webkit-overflow-scrolling:touch;scroll-padding-bottom:24px}
   .tree details{border-radius:9px}
   .tree summary{display:flex;align-items:center;gap:6px;padding:6px 7px;border-radius:8px;color:var(--muted);font-size:12.5px;cursor:pointer;list-style:none;user-select:none}
@@ -201,6 +206,8 @@
   <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="6.2" rx="1.8"/><rect x="3.5" y="13.3" width="17" height="6.2" rx="1.8"/><path d="M7.2 7.6h.01M7.2 16.4h.01"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5.5 7.5h13M9.5 7.5V5.6h5v1.9M7.4 7.5l.8 11.1h7.6l.8-11.1"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-tree-open" viewBox="0 0 24 24"><path d="m7 6 5 4 5-4M7 13l5 4 5-4"></path></symbol>
+  <symbol id="i-tree-close" viewBox="0 0 24 24"><path d="m7 11 5-4 5 4M7 18l5-4 5 4"></path></symbol>
   <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14.5 4.5H19.5v5M9.5 19.5H4.5v-5M19.5 4.5l-6 6M4.5 19.5l6-6"/></symbol>
   <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4.6 19.4h3.2l9.4-9.4-3.2-3.2-9.4 9.4z"/><path d="m15.4 4.6 3.2 3.2"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
@@ -218,6 +225,11 @@
         <button class="icon-btn" id="reload" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
         <button class="icon-btn" id="side-collapse" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-collapse"/></svg></button>
       </div>
+    </div>
+    <div class="tree-tools">
+      <span class="tree-tools-label">会话</span>
+      <button class="tree-tool" id="tree-expand" type="button" title="展开全部" aria-label="展开全部"><svg class="ico"><use href="#i-tree-open"/></svg></button>
+      <button class="tree-tool" id="tree-collapse" type="button" title="折叠全部" aria-label="折叠全部"><svg class="ico"><use href="#i-tree-close"/></svg></button>
     </div>
     <nav class="tree" id="tree" aria-label="会话树"></nav>
     <div class="side-resizer" id="side-resizer" title="拖动调整侧边栏宽度（双击恢复默认）"></div>
@@ -334,7 +346,7 @@
   }
 
   function treeDetails(key,label,children,count,pad,tail){
-    const open=(state.treeOpen.size?state.treeOpen.has(key):true)?' open':'';
+    const open=state.treeOpen.has(key)?' open':'';      // collapsed unless the user opened it
     return `<details data-tree="${esc(key)}"${open}><summary><span class="caret">▶</span>`
       +`<span class="tree-label" style="padding-left:${pad}px">${esc(label)}</span>`
       +`<span class="tree-count">${count}</span>${tail||''}</summary><div class="tree-children">${children}</div></details>`;
@@ -739,13 +751,18 @@
 
   function hideHover(){hoverBox.hidden=true;hoverPane=null;}
 
+  // Phones emulate a mouse: a tap fired mouseover first, the preview panel appeared over
+  // the card and swallowed the click, so cards could only ever "preview" and never open.
+  const canHover=matchMedia('(hover:hover) and (pointer:fine)').matches;
   document.addEventListener('mouseover',event=>{
+    if(!canHover)return;
     const card=event.target.closest('.card[data-open]');
     if(!card||!agentPreview(card.dataset.open))return;
     if(hoverPane===card.dataset.open&&!hoverBox.hidden)return;
     showHover(card,card.dataset.open);
   });
   document.addEventListener('mouseout',event=>{
+    if(!canHover)return;
     const card=event.target.closest('.card[data-open]');
     if(!card)return;
     if(event.relatedTarget&&(card.contains(event.relatedTarget)||hoverBox.contains(event.relatedTarget)))return;
@@ -758,11 +775,30 @@
   window.addEventListener('resize',hideHover);
 
   // remember which tree branches are open
+  const TREE_KEY='tmux-home-tree-open';
+  try{const saved=JSON.parse(localStorage.getItem(TREE_KEY)||'[]');if(Array.isArray(saved))state.treeOpen=new Set(saved.filter(key=>typeof key==='string'));}catch{}
+  function saveTree(){try{localStorage.setItem(TREE_KEY,JSON.stringify([...state.treeOpen]));}catch{}}
   $('tree').addEventListener('toggle',event=>{
     const details=event.target.closest('details[data-tree]');
     if(!details)return;
     details.open?state.treeOpen.add(details.dataset.tree):state.treeOpen.delete(details.dataset.tree);
+    saveTree();
   },true);
+  function treeKeys(){          // every key renderTree() can emit
+    const keys=[];
+    for(const host of state.hosts||[]){
+      keys.push(host.id||host);
+      for(const pane of host.panes||[]){
+        const session=pane.session||'default';
+        const wkey=`${pane.window}:${pane.window_name||''}`;
+        keys.push(`${host.id}/${session}`);
+        keys.push(`${host.id}/${session}/${wkey}`);
+      }
+    }
+    return keys;
+  }
+  $('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();loadTree();};
+  $('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();loadTree();};
 
   $('side-collapse').onclick=()=>{
     if(isNarrow()){$('shell').classList.remove('mobile-open');return;}

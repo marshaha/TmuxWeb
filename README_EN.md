@@ -271,6 +271,12 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   `显示缓存，正在更新…`) and swaps in fresh data when it lands; without a snapshot it shows a skeleton (stats, cards and tree
   placeholders) instead of a blank page. On the server `/api/home` waits at most 1.2s because each favourite's live half needs an
   SSH round trip: slow panes come back as placeholders (`pending`) and fill in from a 25s cache on the next poll.
+- **The session tree starts collapsed** — both the console and the board remember which branches you opened instead of rendering
+  everything open, and a small **expand all / collapse all** pair sits above the tree. Clicking one server opens only that server.
+- **A phone tap opens the conversation** — touch fires `mouseover` first, so the hover preview appeared over the card and swallowed
+  the tap: cards could only ever "preview". The hover panel is now limited to devices with a real pointer
+  (`(hover:hover) and (pointer:fine)`); on a phone a tap enters the console, the ⤢ button opens the full preview page, and that page
+  has its own chat/terminal entries.
 - **Chat/terminal switch lives in the header** — the two view buttons moved out of the sidebar into the header icon row, right next
   to the star (stop / chat / terminal / star / share / fullscreen). They are icon-only (bubble, terminal box) with `aria-pressed`, and
   fit on one row at 390px. `/preview` has the same two entries (chat / terminal), replacing the old "open in console" button that
