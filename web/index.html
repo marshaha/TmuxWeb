@@ -43,7 +43,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 .table-holder{padding:8px 10px;overflow:auto;background:#fff}
 .chat-user-wrap{display:flex;max-width:min(78%,720px);flex-direction:column;align-items:flex-end}.chat-user-wrap .chat-bubble{max-width:100%}.chat-bubble{max-width:min(78%,720px);padding:12px 16px;border-radius:18px;background:#e9e7df;color:var(--ink);white-space:pre-wrap}.message-delivery{display:flex;align-items:center;gap:5px;min-height:17px;margin:3px 7px 0;color:var(--faint);font-size:10px}.message-delivery.sent{color:var(--green)}.message-delivery.failed{color:var(--danger)}.pending-wave{display:inline-flex;gap:2px}.pending-wave i{width:3px;height:3px;border-radius:50%;background:currentColor;animation:pendingWave .9s infinite ease-in-out}.pending-wave i:nth-child(2){animation-delay:.13s}.pending-wave i:nth-child(3){animation-delay:.26s}@keyframes pendingWave{0%,60%,100%{transform:translateY(0);opacity:.35}30%{transform:translateY(-3px);opacity:1}}.assistant-body{width:fit-content;max-width:min(92%,820px);min-width:0;padding:14px 17px;border:1px solid #e1dfd7;border-radius:18px;background:#fff;color:var(--ink);font-size:15px;line-height:1.65;box-shadow:0 1px 2px rgba(25,24,21,.035);overflow-wrap:anywhere}.assistant-body>*:first-child{margin-top:0}.assistant-body>*:last-child{margin-bottom:0}.assistant-body pre{overflow:auto;padding:14px;border-radius:10px;background:#272622;color:#f5f4ed}.assistant-body code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.assistant-body :not(pre)>code{padding:2px 5px;border-radius:5px;background:#eceae3}.assistant-body table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:14px 0;font-size:13px}.assistant-body th,.assistant-body td{padding:8px 11px;border:1px solid #d1cfc6;text-align:left;vertical-align:top;white-space:normal}.assistant-body th{background:#eceae3;font-weight:600}.assistant-body blockquote{margin-left:0;padding-left:14px;border-left:3px solid #c96442;color:var(--muted)}.empty{display:grid;min-height:55vh;place-items:center;text-align:center;color:var(--muted)}.empty strong{display:block;margin-bottom:6px;color:var(--ink);font:500 25px/1.2 Georgia,serif}.jump{position:absolute;z-index:2;right:24px;bottom:14px;display:none;padding:8px 13px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--muted);box-shadow:var(--shadow);cursor:pointer}
     .composer{grid-row:3;position:relative;z-index:5;min-height:132px;padding:10px 18px 18px;border-top:1px solid rgba(221,220,213,.8);background:var(--page)}.composer-inner{width:min(100%,820px);margin:auto}.composer-card{position:relative;padding:10px 12px 9px;border:1px solid #cbc9c0;border-radius:18px;background:#fff;box-shadow:var(--shadow)}.composer textarea{display:block;width:100%;min-height:72px;max-height:82px;padding:3px 50px 3px 3px;border:0;resize:none;background:transparent;color:var(--ink);outline:0;line-height:1.5}.composer textarea::placeholder{color:#9c9991}.composer textarea:disabled{opacity:.55}.send{position:absolute;right:11px;bottom:11px;width:38px;height:38px;border:0;border-radius:50%;background:#292825;color:white;font-size:18px;cursor:pointer}.send:hover{background:var(--accent)}.send:disabled{background:#c8c5bd;cursor:not-allowed}.send.stop{background:#b34b43}.send.stop:hover{background:#9c3f38}.composer-foot{display:flex;justify-content:space-between;align-items:center;padding:7px 5px 0;color:var(--muted);font-size:11px}.submit-option{display:flex;align-items:center;gap:5px}.send-state{min-height:17px;color:var(--green)}
-    .terminal-mode{display:none;position:absolute;inset:0;padding:10px;background:#111}.terminal-host{width:100%;height:100%;min-width:0;min-height:0;overflow:hidden}.terminal-host .xterm{height:100%;padding:0}.terminal-host .xterm-viewport{overflow-y:auto!important}.terminal-keys{display:none;min-width:0;background:#181818;border-top:1px solid #333}.terminal-input-row{display:none;padding:7px 8px 0}.terminal-input-row input{width:100%;box-sizing:border-box;height:38px;padding:0 11px;border:1px solid #454545;border-radius:9px;background:#232323;color:#eaeaea;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;caret-color:#c96442}.terminal-input-row input::placeholder{color:#7d7d7d}.terminal-input-row input:focus{border-color:#c96442;background:#2a2624}.terminal-keys{display:flex;flex-direction:column}.terminal-key-row{display:flex;align-items:stretch}.terminal-key-scroll{display:flex;flex:1;min-width:0;gap:5px;overflow-x:auto;padding:6px 4px 6px 8px;overscroll-behavior-x:contain;scrollbar-width:none}.terminal-key-pinned{display:flex;flex:none;gap:5px;padding:6px 8px 6px 4px}.terminal-key-pinned .terminal-key{min-width:44px}.terminal-key.wide{min-width:66px}.terminal-key.icon-key .ico{width:16px;height:16px}.terminal-ext{display:none;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;padding:0 8px 6px;max-height:46vh;overflow-y:auto;overscroll-behavior-y:contain}.terminal-keys.ext-open .terminal-ext{display:grid}.terminal-ext .terminal-key{height:34px;font-size:11.5px}.terminal-key-scroll::-webkit-scrollbar{display:none}.terminal-key{flex:0 0 auto;min-width:43px;height:38px;padding:0 10px;border:1px solid #454545;border-radius:8px;background:#292929;color:#eee;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;touch-action:manipulation}.terminal-key.active{border-color:#c96442;background:#6b3424;color:#fff}.terminal-kb-input{position:fixed;left:-9999px;top:0;width:1px;height:1px;padding:0;border:0;font-size:16px;opacity:0;pointer-events:none;overflow:hidden;white-space:pre;outline:none;-webkit-user-select:text;user-select:text}.terminal-jump{position:absolute;right:12px;bottom:64px;z-index:5;padding:6px 12px;border:1px solid #4a4a4a;border-radius:999px;background:#2a2a2a;color:#e8e6e0;font-size:12px;cursor:pointer}.terminal-jump[hidden]{display:none}.terminal-pad{position:relative;display:grid;place-items:center;flex-basis:62px;min-width:62px;color:#aaa}.terminal-pad::after{content:'↕↔';font-size:16px}.terminal-pad.holding{border-color:#4f9a65;background:#24452d;color:#fff}.app.terminal-view .scroll,.app.terminal-view .jump{display:none}.app.terminal-view .terminal-mode{display:grid;grid-template-rows:minmax(0,1fr) auto}.app.terminal-view .conversation{background:#111}.app.terminal-view .main{grid-template-rows:58px minmax(0,1fr) 0}.app.terminal-view .composer{display:none;min-height:0;padding:0;border:0;overflow:hidden}
+    .terminal-mode{display:none;position:absolute;inset:0;padding:10px;background:#111}.terminal-host{width:100%;height:100%;min-width:0;min-height:0;overflow:hidden}.terminal-host .xterm{height:100%;padding:0}.terminal-host .xterm-viewport{overflow-y:auto!important}.terminal-keys{display:none;min-width:0;background:#181818;border-top:1px solid #333}.terminal-input-row{display:none;padding:7px 8px 0}.terminal-input-row input{width:100%;box-sizing:border-box;height:38px;padding:0 11px;border:1px solid #454545;border-radius:9px;background:#232323;color:#eaeaea;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;caret-color:#c96442}.terminal-input-row input::placeholder{color:#7d7d7d}.terminal-input-row input:focus{border-color:#c96442;background:#2a2624}.terminal-keys{display:flex;flex-direction:column}.terminal-key-row{display:flex;align-items:stretch}.terminal-key-scroll{display:flex;flex:1;min-width:0;gap:5px;overflow-x:auto;padding:6px 4px 6px 8px;overscroll-behavior-x:contain;scrollbar-width:none}.terminal-key-pinned{display:flex;flex:none;gap:5px;padding:6px 8px 6px 4px}.terminal-key-pinned .terminal-key{min-width:44px}.terminal-key.wide{min-width:66px}.terminal-key.icon-key .ico{width:16px;height:16px}.terminal-ext{display:none;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;padding:0 8px 6px;max-height:46vh;overflow-y:auto;overscroll-behavior-y:contain}.terminal-type{display:none;flex-direction:column;gap:5px;padding:6px 6px 6px;background:#1b1b1b;border-top:1px solid #333}.terminal-keys.type-open .terminal-type{display:flex}.tk-row{display:flex;gap:5px}.tk-row .terminal-key{flex:1 1 0;min-width:0;height:40px;padding:0;font-size:15px;background:#2b2b2b}.tk-row .terminal-key.grow{flex:2.6 1 0}.tk-row .terminal-key.wide{flex:1.7 1 0;font-size:12px}.tk-row .terminal-key.action{background:#232323;color:#b9b6ae;font-size:11.5px}.tk-row .terminal-key.on{background:#6b3424;border-color:#c96442;color:#fff}.terminal-keys.ext-open .terminal-ext{display:grid}.terminal-ext .terminal-key{height:34px;font-size:11.5px}.terminal-key-scroll::-webkit-scrollbar{display:none}.terminal-key{flex:0 0 auto;min-width:38px;height:38px;padding:0 7px;border:1px solid #454545;border-radius:8px;background:#292929;color:#eee;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;touch-action:manipulation}.terminal-key.active{border-color:#c96442;background:#6b3424;color:#fff}.terminal-kb-input{position:fixed;left:-9999px;top:0;width:1px;height:1px;padding:0;border:0;font-size:16px;opacity:0;pointer-events:none;overflow:hidden;white-space:pre;outline:none;-webkit-user-select:text;user-select:text}.terminal-jump{position:absolute;right:12px;bottom:64px;z-index:5;padding:6px 12px;border:1px solid #4a4a4a;border-radius:999px;background:#2a2a2a;color:#e8e6e0;font-size:12px;cursor:pointer}.terminal-jump[hidden]{display:none}.terminal-pad{position:relative;display:grid;place-items:center;flex-basis:62px;min-width:62px;color:#aaa}.terminal-pad::after{content:'↕↔';font-size:16px}.terminal-pad.holding{border-color:#4f9a65;background:#24452d;color:#fff}.app.terminal-view .scroll,.app.terminal-view .jump{display:none}.app.terminal-view .terminal-mode{display:grid;grid-template-rows:minmax(0,1fr) auto}.app.terminal-view .conversation{background:#111}.app.terminal-view .main{grid-template-rows:58px minmax(0,1fr) 0}.app.terminal-view .composer{display:none;min-height:0;padding:0;border:0;overflow:hidden}
     .main:fullscreen,.main.fullscreen-fallback{width:100vw;height:100vh;background:var(--page)}.main:fullscreen .topbar,.main.fullscreen-fallback .topbar{padding-left:20px}.app.fullscreen-fallback{display:block}.app.fullscreen-fallback .sidebar{display:none}.app.fullscreen-fallback .main{position:fixed;z-index:100;inset:0}.main:fullscreen .fullscreen-btn,.main.fullscreen-fallback .fullscreen-btn{background:#292825;color:#fff;border-color:#292825}
     /* the icon row must never lose buttons when the sidebar is dragged narrow:
        wrap it onto its own line, and let it scroll when one line is still not enough */
@@ -190,7 +190,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     <header class="topbar"><div style="display:flex;align-items:center;min-width:0"><button class="icon-btn sidebar-open" id="menu" title="展开侧边栏" aria-label="展开侧边栏"><svg class="ico"><use href="#i-menu"/></svg></button><div class="session"><div class="session-title" id="selected-title">选择一个会话</div><div class="session-sub" id="selected-sub">从左侧选择 tmux pane</div></div></div><div class="top-actions"><div class="status"><span class="status-dot" id="status-dot"></span><span class="status-text" id="status-text">未连接</span></div><button class="share-btn icon-only" id="live-toggle" title="暂停实时刷新" aria-label="暂停实时刷新" disabled><svg class="ico"><use href="#i-pause"/></svg></button><div class="mode-switch" role="group" aria-label="视图切换"><button class="mode-btn active" id="chat-mode" title="聊天视图" aria-label="聊天视图" aria-pressed="true"><svg class="ico"><use href="#i-chat"/></svg></button><button class="mode-btn" id="terminal-mode-button" title="终端视图" aria-label="终端视图" aria-pressed="false"><svg class="ico"><use href="#i-terminal"/></svg></button></div><button class="share-btn icon-only" id="fav-toggle" disabled title="收藏到主页" aria-label="收藏到主页" aria-pressed="false"><svg class="ico"><use href="#i-star"/></svg></button><button class="share-btn icon-only" id="share-button" disabled title="分享" aria-label="分享"><svg class="ico"><use href="#i-external"/></svg></button><button class="fullscreen-btn" id="fullscreen" title="全屏显示当前窗口"><svg class="ico"><use href="#i-fullscreen"/></svg><span>对话全屏</span></button></div></header>
     <div class="error-banner" id="error"></div>
     <section class="conversation"><div class="scroll" id="scroll"><div class="empty" id="empty"><div><strong>选择一个 tmux 会话</strong>实时查看内容，并在下方继续输入</div></div><div class="earlier-bar" id="earlier-bar" hidden><button class="earlier-btn" id="load-earlier" type="button">加载更早的消息</button></div><div class="transcript" id="transcript"></div><div class="message-shell" id="message-shell" hidden><div class="agent-label"><span class="agent-mark" id="agent-mark">T</span><span id="agent-name">tmux</span></div><div class="terminal-frame"><pre class="capture-output" id="terminal"></pre></div></div></div><div class="agent-progress" id="agent-progress"><span class="pending-wave" id="agent-progress-wave"><i></i><i></i><i></i></span><span id="agent-progress-label">idle</span><span class="elapsed" id="agent-progress-elapsed"></span></div><button class="jump" id="jump">回到最新 ↓</button>
-<div class="terminal-mode" id="terminal-mode"><div class="terminal-host" id="terminal-host"></div><button class="terminal-jump" id="terminal-jump" type="button" hidden>回到底部</button><div class="terminal-keys" id="terminal-keys"><input id="terminal-input" class="terminal-kb-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" tabindex="-1" aria-hidden="true"><div class="terminal-key-row"><div class="terminal-key-scroll"><button class="terminal-key wide" data-key="BackTab">shift tab</button><button class="terminal-key icon-key" id="terminal-paste" type="button" title="粘贴" aria-label="粘贴"><svg class="ico"><use href="#i-paste"/></svg></button><button class="terminal-key" data-text="?">?</button><button class="terminal-key" data-text="/">/</button><button class="terminal-key" data-key="Escape">esc</button><button class="terminal-key" data-key="Tab">tab</button><button class="terminal-key" data-mod="ctrl">ctrl</button><button class="terminal-key" data-mod="alt">alt</button><button class="terminal-key" data-key="ArrowLeft">←</button><button class="terminal-key" data-key="ArrowUp">↑</button><button class="terminal-key" data-key="ArrowDown">↓</button><button class="terminal-key" data-key="ArrowRight">→</button><button class="terminal-key" data-ctrl-key="c">^C</button></div><div class="terminal-key-pinned"><button class="terminal-key icon-key" id="terminal-more" type="button" title="更多按键" aria-label="更多按键" aria-pressed="false"><svg class="ico"><use href="#i-grid"/></svg></button><button class="terminal-key icon-key" id="terminal-kb" type="button" title="显示或隐藏键盘" aria-label="显示或隐藏键盘" aria-pressed="false"><svg class="ico"><use href="#i-keyboard"/></svg></button></div></div><div class="terminal-ext" id="terminal-ext"><button class="terminal-key" data-key="Escape">esc</button><button class="terminal-key" data-key="Tab">tab</button><button class="terminal-key" data-mod="ctrl">ctrl</button><button class="terminal-key" data-mod="alt">alt</button><button class="terminal-key" data-ctrl-key="c">^C</button><button class="terminal-key" data-ctrl-key="d">^D</button><button class="terminal-key" data-ctrl-key="z">^Z</button><button class="terminal-key" data-ctrl-key="l">^L</button><button class="terminal-key" data-ctrl-key="r">^R</button><button class="terminal-key" data-ctrl-key="u">^U</button><button class="terminal-key" data-ctrl-key="k">^K</button><button class="terminal-key" data-ctrl-key="w">^W</button><button class="terminal-key" data-text="|">|</button><button class="terminal-key" data-text="~">~</button><button class="terminal-key" data-text="-">-</button><button class="terminal-key" data-text="=">=</button><button class="terminal-key" data-text=":">:</button><button class="terminal-key" data-text=";">;</button><button class="terminal-key" data-text="!">!</button><button class="terminal-key" data-text="$">$</button><button class="terminal-key" data-text="%">%</button><button class="terminal-key" data-text="^">^</button><button class="terminal-key" data-text="&lt;">&lt;</button><button class="terminal-key" data-text="&gt;">&gt;</button><button class="terminal-key" data-text="(">(</button><button class="terminal-key" data-text=")">)</button><button class="terminal-key" data-text="{">{</button><button class="terminal-key" data-text="}">}</button><button class="terminal-key" data-text="[">[</button><button class="terminal-key" data-text="]">]</button><button class="terminal-key" data-text="/">/</button><button class="terminal-key" data-text="?">?</button><button class="terminal-key" data-key="Home">home</button><button class="terminal-key" data-key="End">end</button><button class="terminal-key" data-key="PageUp">pgUp</button><button class="terminal-key" data-key="PageDown">pgDn</button><button class="terminal-key" data-key="ArrowLeft">←</button><button class="terminal-key" data-key="ArrowUp">↑</button><button class="terminal-key" data-key="ArrowDown">↓</button><button class="terminal-key" data-key="ArrowRight">→</button><button class="terminal-key" data-paste="1">paste</button><button class="terminal-key" data-key="Delete">del</button><button class="terminal-key" data-text="@">@</button><button class="terminal-key" data-text="&amp;">&amp;</button></div></div></div></section>
+<div class="terminal-mode" id="terminal-mode"><div class="terminal-host" id="terminal-host"></div><button class="terminal-jump" id="terminal-jump" type="button" hidden>回到底部</button><div class="terminal-keys" id="terminal-keys"><input id="terminal-input" class="terminal-kb-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" tabindex="-1" aria-hidden="true"><div class="terminal-key-row"><div class="terminal-key-scroll"><button class="terminal-key" data-key="Escape">esc</button><button class="terminal-key" data-key="Tab">tab</button><button class="terminal-key" data-mod="ctrl">ctrl</button><button class="terminal-key" data-mod="alt">alt</button><button class="terminal-key" data-ctrl-key="c">^C</button><button class="terminal-key" data-key="ArrowLeft">←</button><button class="terminal-key" data-key="ArrowUp">↑</button><button class="terminal-key" data-key="ArrowDown">↓</button><button class="terminal-key" data-key="ArrowRight">→</button><button class="terminal-key icon-key" id="terminal-paste" type="button" title="粘贴" aria-label="粘贴"><svg class="ico"><use href="#i-paste"/></svg></button><button class="terminal-key wide" data-key="BackTab">shift tab</button></div><div class="terminal-key-pinned"><button class="terminal-key icon-key" id="terminal-more" type="button" title="更多按键" aria-label="更多按键" aria-pressed="false"><svg class="ico"><use href="#i-grid"/></svg></button><button class="terminal-key icon-key" id="terminal-kb" type="button" title="显示或隐藏键盘" aria-label="显示或隐藏键盘" aria-pressed="false"><svg class="ico"><use href="#i-keyboard"/></svg></button></div></div><div class="terminal-type" id="terminal-type"></div><div class="terminal-ext" id="terminal-ext"><button class="terminal-key" data-key="Escape">esc</button><button class="terminal-key" data-key="Tab">tab</button><button class="terminal-key" data-mod="ctrl">ctrl</button><button class="terminal-key" data-mod="alt">alt</button><button class="terminal-key" data-ctrl-key="c">^C</button><button class="terminal-key" data-ctrl-key="d">^D</button><button class="terminal-key" data-ctrl-key="z">^Z</button><button class="terminal-key" data-ctrl-key="l">^L</button><button class="terminal-key" data-ctrl-key="r">^R</button><button class="terminal-key" data-ctrl-key="u">^U</button><button class="terminal-key" data-ctrl-key="k">^K</button><button class="terminal-key" data-ctrl-key="w">^W</button><button class="terminal-key" data-text="|">|</button><button class="terminal-key" data-text="~">~</button><button class="terminal-key" data-text="-">-</button><button class="terminal-key" data-text="=">=</button><button class="terminal-key" data-text=":">:</button><button class="terminal-key" data-text=";">;</button><button class="terminal-key" data-text="!">!</button><button class="terminal-key" data-text="$">$</button><button class="terminal-key" data-text="%">%</button><button class="terminal-key" data-text="^">^</button><button class="terminal-key" data-text="&lt;">&lt;</button><button class="terminal-key" data-text="&gt;">&gt;</button><button class="terminal-key" data-text="(">(</button><button class="terminal-key" data-text=")">)</button><button class="terminal-key" data-text="{">{</button><button class="terminal-key" data-text="}">}</button><button class="terminal-key" data-text="[">[</button><button class="terminal-key" data-text="]">]</button><button class="terminal-key" data-text="/">/</button><button class="terminal-key" data-text="?">?</button><button class="terminal-key" data-key="Home">home</button><button class="terminal-key" data-key="End">end</button><button class="terminal-key" data-key="PageUp">pgUp</button><button class="terminal-key" data-key="PageDown">pgDn</button><button class="terminal-key" data-key="ArrowLeft">←</button><button class="terminal-key" data-key="ArrowUp">↑</button><button class="terminal-key" data-key="ArrowDown">↓</button><button class="terminal-key" data-key="ArrowRight">→</button><button class="terminal-key" data-paste="1">paste</button><button class="terminal-key" data-key="Delete">del</button><button class="terminal-key" data-text="@">@</button><button class="terminal-key" data-text="&amp;">&amp;</button></div></div></div></section>
     <dialog class="session-dialog" id="session-dialog" aria-labelledby="session-dialog-title">
     <form id="session-form">
       <h2 id="session-dialog-title">新建 tmux 会话</h2>
@@ -222,7 +222,7 @@ import {AnsiUp} from '/assets/ansi_up.js';
 import {marked} from '/assets/marked.esm.js';
 (() => {
   const ansi=new AnsiUp();
-  const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,restored:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0};
+  const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},kbShift:false,kbSymbols:false,viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,restored:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0};
   const $=id=>document.getElementById(id),list=$('pane-list'),term=$('terminal'),scroll=$('scroll'),input=$('input'),send=$('send');
   try{const saved=JSON.parse(localStorage.getItem('tmux-tree-open')||'[]');if(Array.isArray(saved))state.treeOpen=new Set(saved.filter(key=>typeof key==='string'));}catch{localStorage.removeItem('tmux-tree-open');}
   function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -952,14 +952,22 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const on=!!sta
       if(!isMobile())return;
       if(window.getSelection&&String(window.getSelection()))return;   // selecting text, don't fight it
       if(event.target.closest?.('#terminal-jump'))return;
-      if(!keyboardOnTerminalTap())return;
+      if(!keyboardOnTerminalTap()){
+        if(kbCustom())toggleTypePad(true);
+        else field.focus({preventScroll:true});
+        return;
+      }
       field.focus({preventScroll:true});
     },true);
     // some engines deliver the touch before any pointer event; keep both paths
     $('terminal-host')?.addEventListener('touchstart',event=>{
       if(!isMobile()||event.touches.length!==1)return;
       if(window.getSelection&&String(window.getSelection()))return;
-      if(!keyboardOnTerminalTap())return;
+      if(!keyboardOnTerminalTap()){
+        if(kbCustom())toggleTypePad(true);
+        else field.focus({preventScroll:true});
+        return;
+      }
       field.focus({preventScroll:true});
     },{capture:true,passive:true});
   }
@@ -967,12 +975,118 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const on=!!sta
   // the browser sends 'Backspace' for both; DEL and BS are different keys to a terminal
   function updateTerminalMods(){document.querySelectorAll('[data-mod]').forEach(button=>button.classList.toggle('active',!!state.terminalMods[button.dataset.mod]));}
   function sendTerminalKey(key){if(state.mode!=='terminal'||state.termWs?.readyState!==WebSocket.OPEN)return;let data=terminalSequences[key]||key;if(state.terminalMods.ctrl&&key.length===1)data=String.fromCharCode(key.toUpperCase().charCodeAt(0)&31);if(state.terminalMods.alt)data='\x1b'+data;state.termWs.send(JSON.stringify({type:'input',data}));state.terminalMods.ctrl=false;state.terminalMods.alt=false;updateTerminalMods();}
+  // ---- our own keyboard: the system one brings iOS' "up/down/Done" bar along, this does not.
+  const KEY_LAYOUTS={
+    lower:[['q','w','e','r','t','y','u','i','o','p'],
+           ['a','s','d','f','g','h','j','k','l'],
+           ['z','x','c','v','b','n','m']],
+    upper:[['Q','W','E','R','T','Y','U','I','O','P'],
+           ['A','S','D','F','G','H','J','K','L'],
+           ['Z','X','C','V','B','N','M']],
+    symbols:[['1','2','3','4','5','6','7','8','9','0'],
+             ['-','/',':',';','(',')','$','&','@','%'],
+             ['.',',','?','!','#','*','+','=','_','~']]
+  };
+  function kbCustom(){
+    const forced=KB_MODE;
+    if(forced==='custom')return true;
+    if(forced==='system')return false;
+    try{
+      const saved=localStorage.getItem('tmux-kb-custom');
+      if(saved==='1')return true;
+      if(saved==='0')return false;
+    }catch{}
+    const ios=/iP(hone|ad|od)/.test(navigator.userAgent)
+      ||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+    return ios;
+  }
+  function renderTypePad(){
+    const pad=$('terminal-type');
+    if(!pad)return;
+    const layout=state.kbShift?'upper':(state.kbSymbols?'symbols':'lower');
+    const rows=KEY_LAYOUTS[layout];
+    let html='';
+    rows.forEach((row,index)=>{
+      html+='<div class="tk-row">';
+      if(index===2)html+='<button class="terminal-key action wide" type="button" data-type-key="shift">shift</button>';
+      for(const character of row){
+        const escaped=character.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        html+=`<button class="terminal-key" type="button" data-type-char="${escaped}">${escaped}</button>`;
+      }
+      if(index===2)html+='<button class="terminal-key action wide" type="button" data-type-key="back">del</button>';
+      html+='</div>';
+    });
+    html+='<div class="tk-row">'
+      + `<button class="terminal-key action" type="button" data-type-key="digits">${state.kbSymbols?'abc':'123'}</button>`
+      + '<button class="terminal-key grow" type="button" data-type-key="space">空格</button>'
+      + '<button class="terminal-key action" type="button" data-type-key="enter">ret</button>'
+      + '<button class="terminal-key action wide" type="button" data-type-key="system">系统键盘</button>'
+      + '</div>';
+    pad.innerHTML=html;
+  }
+  function typePadSend(text){
+    if(!text)return;
+    sendTerminalData(withMods(text));
+  }
+  function toggleTypePad(open){
+    const keys=$('terminal-keys');
+    if(!keys)return;
+    const wanted=open===undefined?!keys.classList.contains('type-open'):!!open;
+    keys.classList.toggle('type-open',wanted);
+    keys.classList.remove('ext-open');                 // one pad at a time
+    if(wanted){
+      $('terminal-input')?.blur();                     // never both keyboards at once
+      renderTypePad();
+    }
+    scheduleTerminalFit();
+  }
+  function setupTypePad(){
+    const pad=$('terminal-type');
+    if(!pad)return;
+    let repeatTimer=null,repeatDelay=null;
+    const stopRepeat=()=>{clearTimeout(repeatDelay);clearInterval(repeatTimer);repeatDelay=null;repeatTimer=null;};
+    pad.addEventListener('pointerdown',event=>{
+      const key=event.target.closest('[data-type-key],[data-type-char]');
+      if(!key)return;
+      event.preventDefault();
+      const character=key.dataset.typeChar;
+      if(character!==undefined){
+        typePadSend(character);
+        if(state.kbShift&&!state.kbSymbols){state.kbShift=false;renderTypePad();}
+        return;
+      }
+      switch(key.dataset.typeKey){
+        case 'shift':state.kbShift=!state.kbShift;renderTypePad();break;
+        case 'digits':state.kbSymbols=!state.kbSymbols;renderTypePad();break;
+        case 'space':typePadSend(' ');break;
+        case 'enter':typePadSend('\r');break;
+        case 'back':
+          typePadSend('\x7f');
+          clearTimeout(repeatDelay);clearInterval(repeatTimer);
+          repeatDelay=setTimeout(()=>{repeatTimer=setInterval(()=>typePadSend('\x7f'),70);},380);
+          break;
+        case 'system':
+          try{localStorage.setItem('tmux-kb-custom','0');}catch{}
+          toggleTypePad(false);
+          $('terminal-input')?.focus({preventScroll:true});
+          break;
+      }
+    });
+    pad.addEventListener('pointerup',stopRepeat);
+    pad.addEventListener('pointercancel',stopRepeat);
+    pad.addEventListener('pointerleave',stopRepeat);
+  }
   function setupTerminalKeyboardButton(){
     const button=$('terminal-kb'),field=$('terminal-input');
     if(!button||!field)return;
     const sync=()=>button.setAttribute('aria-pressed',String(document.activeElement===field));
     button.addEventListener('pointerdown',event=>{
       event.preventDefault();
+      if(kbCustom()){
+        toggleTypePad();
+        setTimeout(sync,60);
+        return;
+      }
       if(document.activeElement===field)field.blur();
       else field.focus({preventScroll:true});
       setTimeout(sync,60);
@@ -1023,6 +1137,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const on=!!sta
       else if(button.dataset.key)sendTerminalKey(button.dataset.key);
     });
     setupTerminalKeyboardButton();
+    setupTypePad();
     setupTerminalZoom();
     setupTerminalJump();
     if(!pad)return;let holdTimer=null,holding=false,lastDirection='',origin=null;const stop=()=>{clearTimeout(holdTimer);holdTimer=null;holding=false;lastDirection='';origin=null;pad.classList.remove('holding');};pad.addEventListener('pointerdown',e=>{e.preventDefault();origin={x:e.clientX,y:e.clientY};pad.setPointerCapture(e.pointerId);holdTimer=setTimeout(()=>{holding=true;pad.classList.add('holding');navigator.vibrate?.(20);},280);});pad.addEventListener('pointermove',e=>{if(!holding||!origin)return;const dx=e.clientX-origin.x,dy=e.clientY-origin.y;if(Math.max(Math.abs(dx),Math.abs(dy))<16)return;const direction=Math.abs(dx)>Math.abs(dy)?(dx>0?'ArrowRight':'ArrowLeft'):(dy>0?'ArrowDown':'ArrowUp');if(direction!==lastDirection){sendTerminalKey(direction);lastDirection=direction;origin={x:e.clientX,y:e.clientY};}});pad.addEventListener('pointerup',stop);pad.addEventListener('pointercancel',stop);}
@@ -1070,7 +1185,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const on=!!sta
     });
     setInterval(sync,700);
   }
-  function setMode(mode){if(state.mode===mode)return;state.mode=mode;document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&!isMobile())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal')$('terminal-input')?.blur();}
+  function setMode(mode){if(state.mode===mode)return;state.mode=mode;document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&!isMobile())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
   function isFullscreen(){return document.fullscreenElement===$('main')||$('main').classList.contains('fullscreen-fallback');}
   function syncFullscreen(){const active=isFullscreen();const label=$('fullscreen').querySelector('span');if(label)label.textContent=active?'退出全屏':(state.mode==='terminal'?'终端全屏':'对话全屏');setTimeout(()=>{if(state.fit&&state.termWs?.readyState===WebSocket.OPEN){state.fit.fit();state.termWs.send(JSON.stringify({type:'resize',cols:state.xterm.cols,rows:state.xterm.rows}));}},80);}
   async function toggleFullscreen(){const main=$('main'),app=document.querySelector('.app');if(isFullscreen()){if(document.fullscreenElement)await document.exitFullscreen();main.classList.remove('fullscreen-fallback');app.classList.remove('fullscreen-fallback');}else if(main.requestFullscreen){try{await main.requestFullscreen();}catch{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}}else{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}syncFullscreen();}

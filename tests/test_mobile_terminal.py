@@ -65,13 +65,20 @@ class MobileTerminalTests(unittest.TestCase):
         self.assertIn("tmux-term-font", self.page)
         self.assertIn("setTerminalFont", self.page)
 
-    def test_ios_asks_before_summoning_the_system_keyboard(self):
-        """iOS puts an unremovable native bar above the keyboard, so there the keyboard is opt-in."""
+    def test_ios_gets_a_self_drawn_keyboard_instead_of_the_system_one(self):
+        """WKWebView hangs an unremovable bar off any focused editable, so iOS types on our own pad."""
         self.assertIn("function keyboardOnTerminalTap()", self.page)
-        self.assertIn("if(!keyboardOnTerminalTap())return;", self.page)
-        self.assertIn("forced==='auto'", self.page)
-        self.assertIn("forced==='manual'", self.page)
+        self.assertIn("function kbCustom()", self.page)
+        self.assertIn("id=\"terminal-type\"", self.page)
+        self.assertIn("KEY_LAYOUTS", self.page)
+        for marker in ("data-type-key=\"shift\"".replace('\\"','"'), 'data-type-key="digits"',
+                       'data-type-key="space"', 'data-type-key="enter"', 'data-type-key="system"'):
+            self.assertIn(marker, self.page)
+        # tapping the terminal opens the pad, and choosing the system keyboard is remembered
+        self.assertIn("if(kbCustom())toggleTypePad(true);", self.page)
+        self.assertIn("localStorage.setItem('tmux-kb-custom','0')", self.page)
         self.assertIn("/iP(hone|ad|od)/.test(navigator.userAgent)", self.page)
+        self.assertIn("forced==='custom'", self.page)     # ?kb=custom forces the pad
 
     def test_a_deep_link_survives_a_slow_remote_scan(self):
         """?pane= used to be applied on the first /api/hosts reply, before remote panes existed."""
