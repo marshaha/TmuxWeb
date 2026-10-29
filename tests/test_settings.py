@@ -192,11 +192,18 @@ class SettingsPageWiringTests(unittest.TestCase):
         self.assertIn("resendPending", self.page)
         self.assertIn(".retry-send{", self.page)
 
-    def test_the_password_change_is_a_collapsed_row(self):
-        self.assertIn('id="pw-toggle"', self.page)
-        self.assertIn('aria-controls="pw-panel"', self.page)
-        self.assertIn('id="pw-panel" hidden', self.page)
+    def test_the_settings_rows_collapse_and_only_one_opens_at_a_time(self):
+        for toggle, panel in (("pw", "pw-panel"), ("export", "export-panel"), ("import", "import-panel")):
+            self.assertIn(f'id="{toggle}-toggle"', self.page)
+            self.assertIn(f'aria-controls="{panel}"', self.page)
+            self.assertIn(f'id="{panel}" hidden', self.page)
         self.assertIn(".settings-panel[hidden]{display:none}", self.page)
+        self.assertIn("settingsSections", self.page)
+        self.assertIn("toggleSection", self.page)
+        # the file picker is ours, not the browser's English "Choose File"
+        self.assertIn('id="import-pick"', self.page)
+        self.assertIn('id="import-file" type="file"', self.page)
+        self.assertIn("未选择文件", self.page)
 
     def test_the_export_needs_a_password_and_the_import_checks_it(self):
         for marker in ('id="export-password"', 'id="import-file"', 'id="import-password"',

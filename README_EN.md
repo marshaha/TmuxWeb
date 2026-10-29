@@ -68,9 +68,9 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 
 ## Settings panel
 
-The console's bottom-left "设置" (settings) button:
+The console's bottom-left "设置" (settings) button opens three collapsible rows (one open at a time):
 
-- **Change the password** — collapsed until you click the row: current + new (6 chars or more). After
+- **Change the password** — click the row: current + new (6 chars or more). After
   the first change the password no longer comes from the environment; a pbkdf2 hash lives in
   `passwords.json` (0600, path via `TMUX_WEB_PASSWORD_DB`), the browser that made the change stays
   signed in and every other device has to log in again.
