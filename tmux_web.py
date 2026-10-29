@@ -477,9 +477,12 @@ class TerminalSession:
         # set-option is a session command: a pane target would not resolve, and the
         # restored size would fall back to the global 80x24
         self.session_name = self._tmux_value("display", "-p", "-t", pane_id, "#{session_name}")
-        self.previous_default_size = (
-            self._tmux_value("show-options", "-t", self.session_name, "-v", "default-size")
-            if self.session_name else "")
+        # how this window decides its size: "latest"/"largest"/... or manual. Restoring
+        # the size leaves the window on `manual` (resize-window forces it), which stops it
+        # following clients, so the mode has to come back too.
+        own_mode = self._tmux_value("show-options", "-w", "-v", "-t", pane_id, "window-size")
+        self.window_size_mode = own_mode or self._tmux_value(
+            "show-options", "-g", "-v", "window-size") or "latest"
         self.master_fd, slave_fd = os.openpty()
         environment = os.environ.copy()
         environment["TERM"] = "xterm-256color"
@@ -524,12 +527,11 @@ class TerminalSession:
         if self._tmux_value("list-clients", "-t", self.pane_id, "-F", "."):
             return                      # someone is watching: their size wins
         session = getattr(self, "session_name", "") or self.pane_id
-        self._tmux_value("set-option", "-t", session, "default-size", geometry)
+        # Only this window is touched: other windows of the same session and other
+        # sessions keep their own size, which is what a viewer expects.
         self._tmux_value("resize-window", "-t", self.pane_id, "-x", cols, "-y", rows)
-        self._tmux_value("set-option", "-w", "-u", "-t", self.pane_id, "window-size")
-        previous = getattr(self, "previous_default_size", "")
-        if previous:
-            self._tmux_value("set-option", "-t", session, "default-size", previous)
+        mode = getattr(self, "window_size_mode", "") or "latest"
+        self._tmux_value("set-option", "-w", "-t", self.pane_id, "window-size", mode)
 
     def _set_size(self, cols: int, rows: int) -> None:
         cols = max(20, min(int(cols), 500))

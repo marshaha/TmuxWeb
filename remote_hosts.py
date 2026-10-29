@@ -1672,15 +1672,13 @@ class RemoteTerminalSession:
         remote_command = (
             f"TM=${{TMUX_BIN:-tmux}}; S={quoted}; F=/tmp/.tmuxweb-geom-{marker}; "
             f'prev=$($TM display -p -t "$S" "#{{window_width}}x#{{window_height}}" 2>/dev/null); '
-            f'SN=$($TM display -p -t "$S" "#{{session_name}}" 2>/dev/null); '
-            f'ds=$($TM show-options -t "$S" -v default-size 2>/dev/null); '
-            f'printf \'%s\\n%s\\n\' "$prev" "$ds" > "$F" 2>/dev/null; '
+            f'wm=$($TM show-options -w -v -t "$S" window-size 2>/dev/null); '
+            f'wm=${{wm:-$($TM show-options -g -v window-size 2>/dev/null)}}; wm=${{wm:-latest}}; '
+            f'printf \'%s\\n%s\\n\' "$prev" "$wm" > "$F" 2>/dev/null; '
             f'$TM attach-session -t "$S"; rc=$?; '
             f'if [ -n "$prev" ] && [ -z "$($TM list-clients -t "$S" -F . 2>/dev/null)" ]; then '
-            f'[ -n "$SN" ] && $TM set-option -t "$SN" default-size "$prev" 2>/dev/null; '
             f'$TM resize-window -t "$S" -x "${{prev%%x*}}" -y "${{prev##*x}}" 2>/dev/null; '
-            f'$TM set-option -w -u -t "$S" window-size 2>/dev/null; '
-            f'[ -n "$ds" ] && [ -n "$SN" ] && $TM set-option -t "$SN" default-size "$ds" 2>/dev/null; fi; '
+            f'$TM set-option -w -t "$S" window-size "${{wm:-latest}}" 2>/dev/null; fi; '
             f'rm -f "$F" 2>/dev/null; '
             f'exit $rc'
         )
@@ -1722,13 +1720,10 @@ class RemoteTerminalSession:
         script = (
             f"TM=${{TMUX_BIN:-tmux}}; S={quoted}; F=/tmp/.tmuxweb-geom-{marker}; "
             f'[ -f "$F" ] || exit 0; '
-            f'prev=$(sed -n 1p "$F" 2>/dev/null); ds=$(sed -n 2p "$F" 2>/dev/null); '
-            f'SN=$($TM display -p -t "$S" "#{{session_name}}" 2>/dev/null); '
-            f'if [ -n "$prev" ] && [ -n "$SN" ] && [ -z "$($TM list-clients -t "$S" -F . 2>/dev/null)" ]; then '
-            f'$TM set-option -t "$SN" default-size "$prev" 2>/dev/null; '
+            f'prev=$(sed -n 1p "$F" 2>/dev/null); wm=$(sed -n 2p "$F" 2>/dev/null); '
+            f'if [ -n "$prev" ] && [ -z "$($TM list-clients -t "$S" -F . 2>/dev/null)" ]; then '
             f'$TM resize-window -t "$S" -x "${{prev%%x*}}" -y "${{prev##*x}}" 2>/dev/null; '
-            f'$TM set-option -w -u -t "$S" window-size 2>/dev/null; '
-            f'[ -n "$ds" ] && $TM set-option -t "$SN" default-size "$ds" 2>/dev/null; fi; '
+            f'$TM set-option -w -t "$S" window-size "${{wm:-latest}}" 2>/dev/null; fi; '
             f'rm -f "$F" 2>/dev/null; exit 0'
         )
         try:

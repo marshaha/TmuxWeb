@@ -279,14 +279,15 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   (`Ctrl` then `c` sends `\x03`), and real Ctrl/Alt combos typed on an external keyboard are translated too (`Ctrl+V` still pastes). — terminal mode has its own text field above the key bar. The soft keyboard targets it: characters go to the
   PTY as typed (so the echo is immediate), backspace sends `\x7f`, Enter sends `\r`, and an IME commits on `compositionend`.
   xterm's own textarea gets `inputmode=none`, so tapping the terminal dismisses the keyboard instead of triggering a redraw.
-- **A phone attach must not leave a small window behind** — `tmux attach` resizes the shared window to the client; when the phone is
-  the last client and detaches, tmux *keeps* that 47x40, so every later viewer (a desktop tmux, the next phone, even a transcript read)
-  sees a squashed 47-column pane. That is "I opened the terminal on my phone and oracle's window shrank". The original size is now
-  captured before the attach and restored after the last client leaves. The restore needs three steps: `resize-window` fixes the size
-  but pins `window-size` to manual (the session stops following its clients), while unsetting it alone falls back to the global
-  `default-size` (80x24) -- so the session's default-size is pointed at the target, then resized, unset, and default-size restored.
-  Remotely the same: the attach writes the original size to `/tmp/.tmuxweb-geom-<pane>` and, after the client is gone, the server opens
-  a fresh connection to restore it (killing ssh can take the remote shell down before it runs its own restore).
+- **Blast radius is one window** — tmux remembers sizes per *window*. Opening a pane's terminal from the phone resizes exactly that
+  window; other windows of the same session, other sessions and other servers keep their size (measured with a 3-window session plus
+  a second session: only the opened one went 179x51 -> 47x39).
+- **No small window left behind** — when the phone is the last client, tmux *keeps* the 47x40 after it detaches, so the next viewer
+  (desktop tmux, next phone, a transcript read) sees a squashed pane. The size is captured before the attach and restored after the
+  last client leaves, touching only that window: `resize-window -x/-y` writes the size back (which also flips `window-size` to
+  `manual`) and the window's `window-size` mode is put back to what it was (usually `latest`, so it follows clients again). No
+  session-level `default-size` is touched, so other windows cannot be affected. Remotely the attach records the size and mode in
+  `/tmp/.tmuxweb-geom-<pane>` and the server restores over a fresh connection after the client is gone.
 - **A PTY resize must be signalled** — the terminal pty comes from `openpty()` and the child only inherits the fds (and
   `start_new_session` leaves it without a controlling terminal), so the kernel never delivers `SIGWINCH` after `TIOCSWINSZ`.
   `resize` used to set the size only: tmux kept its old size and never repainted, which on a phone meant the terminal showed

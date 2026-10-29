@@ -779,9 +779,9 @@ class RemoteHostTests(unittest.TestCase):
         # leaving a phone-sized window behind breaks the next viewer: restore the size,
         # and drop the `window-size manual` that resize-window forces
         self.assertIn("resize-window", remote)
-        self.assertIn('set-option -t "$SN" default-size "$prev"', remote)
-        self.assertIn('SN=$($TM display -p -t "$S" "#{session_name}"', remote)
-        self.assertIn("set-option -w -u", remote)
+        self.assertIn("show-options -w -v", remote)          # the window's own size mode
+        self.assertIn('set-option -w -t "$S" window-size', remote)
+        self.assertIn('set-option -w -t "$S" window-size', remote)
         self.assertEqual(session.pane_id, "%13")
 
     def test_the_remote_attach_records_and_restores_the_window_size(self):
@@ -797,14 +797,14 @@ class RemoteHostTests(unittest.TestCase):
         self.assertIn("/tmp/.tmuxweb-geom-80", remote)                    # remembered across the attach
         self.assertIn('printf', remote)
         self.assertIn("resize-window", remote)
-        self.assertIn("set-option -w -u", remote)
+        self.assertIn('set-option -w -t "$S" window-size', remote)
 
         with mock.patch("subprocess.run") as run, \
                 mock.patch.object(remote_hosts.SSHRunner, "tmux_binary", return_value="/usr/bin/tmux"):
             session.restore_geometry()
             command = run.call_args[0][0][-1]
         self.assertIn("list-clients", command)                            # only when nobody is watching
-        self.assertIn("default-size", command)
+        self.assertIn("resize-window", command)
         self.assertIn("rm -f", command)
 
     def test_capture_many_batches_panes_into_one_call(self):

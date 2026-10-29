@@ -74,7 +74,7 @@
 - transcript 缓存 TTL：弱网主机连续刷新 → 首次十几秒，之后多次 0.3–2s；日志无异常。
 - 慢网络：打开 oracle 的 codex pane → 首次 ~30s 内出消息（或超时后显示「读取远端 transcript 超时（30s），可能是到这台主机的网络较慢」+ 自动重试），之后增量轮询明显更快；把 `TMUX_WEB_TRANSCRIPT_TIMEOUT` 设成 5 再打开 → 很快给出网络超时提示而不是转圈。单测：`tests/test_remote_hosts.py::test_a_stalled_transcript_blames_the_link`、`::test_the_transcript_timeout_is_configurable`。
 - macmini kimi pane：打开后应是聊天模式（气泡），不是原始屏幕；主线程 10 秒内 <0.1s；主页上该卡片有最后一条 agent 回复预览。把一个 agent 会话的消息清空/换到没有消息的 session → 聊天区出现「暂时没有可解析的对话」+「查看原始屏幕」，不再自动抓屏；点按钮才切终端。单测：`tests/test_tmux_web.py::test_kimi_picks_the_session_that_is_still_being_written`、`::test_an_agent_pane_does_not_fall_back_to_its_screen`。
-- 不影响别人：把某台远端 pane 调成 200×50 → 手机进它的终端（pane 变成 47×39）→ 回聊天模式 → 远端 `tmux list-panes -t <session> -F '#{pane_width}x#{pane_height}'` 应回到 200×50，且 `tmux show-options -w -v window-size` 为空（没有被钉成 manual）。本地 pane 同理。
+- 影响范围：建一个 3 window 的 session（都 179×51）+ 另一个 session；手机打开第一个 window 的某个 pane 进终端 → 只有它变成 47×39，其他 window 和另一个 session 不变；回聊天模式 → 它回到 179×51，`tmux show-options -w -v window-size` 回到 `latest`（没有被钉成 manual）。远端同理（200×50 的两窗口 session 实测）。
 - 终端改尺寸：桌面端拖动窗口大小、手机端键盘开合后，终端内容都必须完整（第一行是内容开头、底部有 tmux 状态栏），不能只留下最后几行。
   单测：`tests/test_tmux_web.py::test_a_pty_resize_also_signals_the_child`（断言 winsize 生效且子进程收到 SIGWINCH）。
 - iOS 放大：手机端聚焦输入框（终端输入框、聊天输入框、主页搜索、主机管理表单）→ 页面不应放大，失焦后不应残留缩放。

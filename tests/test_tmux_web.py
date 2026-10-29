@@ -827,8 +827,7 @@ class TmuxWebTests(unittest.TestCase):
         session = tmux_web.TerminalSession.__new__(tmux_web.TerminalSession)
         session.pane_id = "%9"
         session.previous_geometry = "179x51"
-        session.session_name = "twterm-test"
-        session.previous_default_size = "179x52"
+        session.window_size_mode = "latest"
 
         def fake(*args):
             calls.append(args)
@@ -837,10 +836,11 @@ class TmuxWebTests(unittest.TestCase):
         session._tmux_value = fake
         session.restore_geometry()
         self.assertIn(("resize-window", "-t", "%9", "-x", "179", "-y", "51"), calls)
-        # unsetting window-size alone falls back to default-size, so point it at the target
-        self.assertIn(("set-option", "-t", "twterm-test", "default-size", "179x51"), calls)
-        self.assertIn(("set-option", "-w", "-u", "-t", "%9", "window-size"), calls)
-        self.assertEqual(calls[-1], ("set-option", "-t", "twterm-test", "default-size", "179x52"))
+        # resize-window forces window-size=manual; putting the mode back is what lets the
+        # window follow its clients again. Only this window is touched.
+        self.assertIn(("set-option", "-w", "-t", "%9", "window-size", "latest"), calls)
+        self.assertFalse([call for call in calls if "default-size" in call])
+        self.assertEqual(len(calls), 3)
 
         # someone still watching: leave their size alone
         calls.clear()
