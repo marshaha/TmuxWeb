@@ -271,7 +271,12 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   `显示缓存，正在更新…`) and swaps in fresh data when it lands; without a snapshot it shows a skeleton (stats, cards and tree
   placeholders) instead of a blank page. On the server `/api/home` waits at most 1.2s because each favourite's live half needs an
   SSH round trip: slow panes come back as placeholders (`pending`) and fill in from a 25s cache on the next poll.
-- **Terminal input on phones** — terminal mode has its own text field above the key bar. The soft keyboard targets it: characters go to the
+- **Terminal input on phones** — the field above the key bar is a keyboard *proxy*, not a buffer: every character goes to the PTY and
+  the field is cleared straight away. Editing therefore cannot duplicate text ("cursor left, type" used to re-send the whole line).
+  Backspace sends `\x7f`, Enter `\r`, an IME commits on `compositionend`, and arrows/Tab/Esc/Home/End/Delete go to the PTY as real
+  keys. Bytes typed before the socket is open are queued until it connects.
+- **Modifier keys** — a phone keyboard has no Ctrl/Alt: the key bar's `Ctrl`/`Alt` act as a one-shot prefix for the next character
+  (`Ctrl` then `c` sends `\x03`), and real Ctrl/Alt combos typed on an external keyboard are translated too (`Ctrl+V` still pastes). — terminal mode has its own text field above the key bar. The soft keyboard targets it: characters go to the
   PTY as typed (so the echo is immediate), backspace sends `\x7f`, Enter sends `\r`, and an IME commits on `compositionend`.
   xterm's own textarea gets `inputmode=none`, so tapping the terminal dismisses the keyboard instead of triggering a redraw.
 - **A PTY resize must be signalled** — the terminal pty comes from `openpty()` and the child only inherits the fds (and

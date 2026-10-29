@@ -344,7 +344,7 @@ import {marked} from '/assets/marked.esm.js';
   function resumeLive(){if(!state.livePaused)return;state.livePaused=false;syncLiveButton();if(!state.selected)return;
     $('status-text').textContent='连接中…';
     if(state.mode==='terminal'){const mode=state.mode;state.mode='chat';setMode(mode);}else{connectTranscript(state.selected,true);}}
-  function closeConnections(){state.viewportFitTimers.forEach(clearTimeout);state.viewportFitTimers=[];if(state.ws){state.ws.close();state.ws=null;}if(state.termWs){state.termWs.close();state.termWs=null;}if(state.transcriptTimer){clearTimeout(state.transcriptTimer);state.transcriptTimer=null;}if(state.resizeObserver){state.resizeObserver.disconnect();state.resizeObserver=null;}if(state.xterm){state.xterm.dispose();state.xterm=null;state.fit=null;$('terminal-host').innerHTML='';}}
+  function closeConnections(){state.termPending='';state.viewportFitTimers.forEach(clearTimeout);state.viewportFitTimers=[];if(state.ws){state.ws.close();state.ws=null;}if(state.termWs){state.termWs.close();state.termWs=null;}if(state.transcriptTimer){clearTimeout(state.transcriptTimer);state.transcriptTimer=null;}if(state.resizeObserver){state.resizeObserver.disconnect();state.resizeObserver=null;}if(state.xterm){state.xterm.dispose();state.xterm=null;state.fit=null;$('terminal-host').innerHTML='';}}
   function openSessionDialog(hostId,path){const host=state.hosts.find(item=>item.id===hostId);
     $('session-host-label').textContent=`主机：${host?host.name:hostId}`;$('session-name').value='';$('session-path').value=path||'';
     $('session-status').textContent='';$('session-create').disabled=false;
@@ -825,42 +825,67 @@ import {marked} from '/assets/marked.esm.js';
     // coalesce: a keyboard transition produces a frame-by-frame stream of size changes
     state.resizeObserver=new ResizeObserver(()=>{clearTimeout(state.termFitTimer);state.termFitTimer=setTimeout(()=>requestAnimationFrame(resize),90);});
     state.resizeObserver.observe($('terminal-host'));
-    ws.onopen=()=>{showError('');$('status-dot').className='status-dot live';$('status-text').textContent='终端已连接';requestAnimationFrame(()=>requestAnimationFrame(resize));if(!isMobile())xterm.focus();scheduleTerminalFit();};
+    ws.onopen=()=>{showError('');$('status-dot').className='status-dot live';$('status-text').textContent='终端已连接';flushTerminalPending();requestAnimationFrame(()=>requestAnimationFrame(resize));if(!isMobile())xterm.focus();scheduleTerminalFit();};
     ws.onmessage=e=>pushTerminal(xterm,typeof e.data==='string'?e.data:new TextDecoder().decode(e.data));
     ws.onclose=()=>{if(state.selected===id){$('status-dot').className='status-dot';$('status-text').textContent='显示已断开';}};
     ws.onerror=()=>showError('终端连接失败');xterm.onData(data=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'input',data}));});
   }
-  // One text field for the whole soft keyboard: characters are sent as they are
-  // typed (so the terminal echoes them), backspace sends DEL, Enter sends CR.
+  // The terminal field is a keyboard proxy, not a local buffer: whatever appears in it is
+  // sent immediately and the field is emptied again. That is the only model that survives
+  // editing: a mirrored buffer cannot express "cursor moved left, typed a letter" and used
+  // to re-send the whole line. Backspace on the empty field sends DEL, Enter sends CR, and
+  // the Ctrl/Alt keys of the key bar apply to the next character typed (Ctrl then c = ^C).
+  // Typing can start before the socket is open (mode switch, reconnect): hold the bytes
+  // rather than dropping them, otherwise the first character of a command vanishes.
   function sendTerminalData(data){
-    if(!data||state.mode!=='terminal'||state.termWs?.readyState!==WebSocket.OPEN)return;
+    if(!data)return;
+    if(state.termWs?.readyState!==WebSocket.OPEN){state.termPending=(state.termPending||'')+data;return;}
     state.termWs.send(JSON.stringify({type:'input',data}));
+  }
+  function flushTerminalPending(){
+    const pending=state.termPending||'';state.termPending='';
+    if(pending&&state.termWs?.readyState===WebSocket.OPEN)state.termWs.send(JSON.stringify({type:'input',data:pending}));
+  }
+  function withMods(text){
+    let data=text;
+    const ctrl=state.terminalMods.ctrl,alt=state.terminalMods.alt;
+    if(ctrl&&text.length===1&&/[a-zA-Z]/.test(text))data=String.fromCharCode(text.toUpperCase().charCodeAt(0)&31);
+    else if(ctrl&&text.length===1&&/[\[\\\]^_]/.test(text))data=String.fromCharCode(text.charCodeAt(0)&31);
+    if(alt)data='\x1b'+data;
+    if(ctrl||alt){state.terminalMods.ctrl=false;state.terminalMods.alt=false;updateTerminalMods();}
+    return data;
   }
   function setupTerminalInput(){
     const field=$('terminal-input');
     if(!field)return;
-    let sent='',composing=false;
-    const sync=()=>{
+    let composing=false;
+    const flush=()=>{                       // send what the keyboard produced, then empty the box
       const value=field.value;
-      if(value.startsWith(sent)){sendTerminalData(value.slice(sent.length));}
-      else if(sent.startsWith(value)){sendTerminalData('\x7f'.repeat(sent.length-value.length));}
-      else {sendTerminalData(value);}
-      sent=value;
+      if(!value)return;
+      field.value='';
+      sendTerminalData(withMods(value));
     };
     field.addEventListener('compositionstart',()=>{composing=true;});
-    field.addEventListener('compositionend',()=>{composing=false;sync();});
-    field.addEventListener('input',()=>{if(!composing)sync();});
+    field.addEventListener('compositionend',()=>{composing=false;flush();});
+    field.addEventListener('input',()=>{if(!composing)flush();});
     field.addEventListener('keydown',event=>{
-      if(event.key==='Enter'){event.preventDefault();sendTerminalData('\r');field.value='';sent='';}
-      else if(event.key==='Backspace'&&!field.value){event.preventDefault();sendTerminalData('\x7f');}
-      else if(event.key==='Escape'){event.preventDefault();sendTerminalData('\x1b');}
+      if(event.isComposing||composing)return;
+      const meta=event.metaKey,ctrl=event.ctrlKey||state.terminalMods.ctrl,alt=event.altKey||state.terminalMods.alt;
+      const named=terminalSequences[event.key];
+      if(meta)return;                                   // leave Cmd/Ctrl shortcuts alone
+      if(ctrl&&(event.key==='v'||event.key==='V'))return; // paste: the input event delivers it
+      if(event.key==='Enter'){event.preventDefault();field.value='';sendTerminalData(withMods('\r'));return;}
+      if(event.key==='Backspace'){if(!field.value){event.preventDefault();sendTerminalData(withMods('\x7f'));}return;}
+      if(named&&!ctrl&&!alt){event.preventDefault();sendTerminalData(withMods(named));return;}   // arrows, Tab, Esc, PgUp/PgDn, Home/End
+      if((ctrl||alt)&&event.key.length===1){event.preventDefault();sendTerminalData(withMods(event.key));return;}
     });
     field.addEventListener('focus',()=>setComposing(true));
     field.addEventListener('blur',()=>setTimeout(()=>setComposing(keyboardWanted()),120));
     // a tap on the terminal should not pop the keyboard and scroll the viewport
     $('terminal-host')?.addEventListener('pointerdown',()=>{if(isMobile())field.blur();});
   }
-  const terminalSequences={Escape:'\x1b',Tab:'\t',Enter:'\r',ArrowUp:'\x1b[A',ArrowDown:'\x1b[B',ArrowRight:'\x1b[C',ArrowLeft:'\x1b[D',PageUp:'\x1b[5~',PageDown:'\x1b[6~',Home:'\x1b[H',End:'\x1b[F'};
+  const terminalSequences={Escape:'\x1b',Tab:'\t',Enter:'\r',ArrowUp:'\x1b[A',ArrowDown:'\x1b[B',ArrowRight:'\x1b[C',ArrowLeft:'\x1b[D',PageUp:'\x1b[5~',PageDown:'\x1b[6~',Home:'\x1b[H',End:'\x1b[F',Delete:'\x1b[3~'};
+  // the browser sends 'Backspace' for both; DEL and BS are different keys to a terminal
   function updateTerminalMods(){document.querySelectorAll('[data-mod]').forEach(button=>button.classList.toggle('active',!!state.terminalMods[button.dataset.mod]));}
   function sendTerminalKey(key){if(state.mode!=='terminal'||state.termWs?.readyState!==WebSocket.OPEN)return;let data=terminalSequences[key]||key;if(state.terminalMods.ctrl&&key.length===1)data=String.fromCharCode(key.toUpperCase().charCodeAt(0)&31);if(state.terminalMods.alt)data='\x1b'+data;state.termWs.send(JSON.stringify({type:'input',data}));state.terminalMods.ctrl=false;state.terminalMods.alt=false;updateTerminalMods();}
   function setupTerminalControls(){const keys=$('terminal-keys'),pad=$('terminal-pad');keys.addEventListener('pointerdown',e=>{const button=e.target.closest('.terminal-key');if(!button||button===pad)return;e.preventDefault();if(button.dataset.mod){const mod=button.dataset.mod;state.terminalMods[mod]=!state.terminalMods[mod];updateTerminalMods();}else if(button.dataset.key)sendTerminalKey(button.dataset.key);});let holdTimer=null,holding=false,lastDirection='',origin=null;const stop=()=>{clearTimeout(holdTimer);holdTimer=null;holding=false;lastDirection='';origin=null;pad.classList.remove('holding');};pad.addEventListener('pointerdown',e=>{e.preventDefault();origin={x:e.clientX,y:e.clientY};pad.setPointerCapture(e.pointerId);holdTimer=setTimeout(()=>{holding=true;pad.classList.add('holding');navigator.vibrate?.(20);},280);});pad.addEventListener('pointermove',e=>{if(!holding||!origin)return;const dx=e.clientX-origin.x,dy=e.clientY-origin.y;if(Math.max(Math.abs(dx),Math.abs(dy))<16)return;const direction=Math.abs(dx)>Math.abs(dy)?(dx>0?'ArrowRight':'ArrowLeft'):(dy>0?'ArrowDown':'ArrowUp');if(direction!==lastDirection){sendTerminalKey(direction);lastDirection=direction;origin={x:e.clientX,y:e.clientY};}});pad.addEventListener('pointerup',stop);pad.addEventListener('pointercancel',stop);}

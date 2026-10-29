@@ -283,6 +283,16 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("function settleViewport", page)
         self.assertIn("settleViewport();", page)
 
+    def test_the_terminal_input_is_a_keyboard_proxy(self):
+        """A mirrored buffer cannot express "cursor left, then type" and re-sent whole lines."""
+        self.login()
+        page = self.client.get("/").text
+        for marker in ("function withMods", "field.value=''", "flushTerminalPending",
+                       "state.termPending", "Delete:'\\x1b[3~'"):
+            self.assertIn(marker, page)
+        # the old mirror compared the whole value and re-sent it when the cursor moved
+        self.assertNotIn("value.startsWith(sent)", page)
+
     def test_lists_panes(self):
         self.login()
         response = self.client.get("/api/panes")
