@@ -151,6 +151,16 @@ class HomeBoardTests(unittest.TestCase):
             self.assertIn("flex-wrap:wrap;row-gap:", page)
             self.assertIn("initIconRowScroll", page)
 
+    def test_a_card_previews_first_and_the_panel_holds_the_ways_in(self):
+        """Cards preview; the panel offers full preview / chat / close."""
+        page = self.client.get("/home").text
+        for marker in ('id="hp-full"', 'id="hp-chat"', 'id="hp-close"', 'data-hp="full"',
+                       'data-hp="chat"', 'data-hp="close"'):
+            self.assertIn(marker, page)
+        self.assertIn("showHover(cardEl,open.dataset.open,true)", page)   # click opens the panel
+        self.assertNotIn('data-full=', page)                              # no per-card shortcut left
+        self.assertIn("function cardPreview", page)                       # even a bare card opens something
+
     def test_the_tree_starts_collapsed_and_has_expand_buttons(self):
         """Clicking a server must not dump the whole tree open; the toolbar does that."""
         page = self.client.get("/home").text
@@ -185,7 +195,7 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("mode=terminal", preview.text)
 
         page = self.client.get("/home").text
-        for marker in ('data-full=', 'id="preview-drawer"', 'id="pd-frame"', "PREVIEW_WIDE",
+        for marker in ('id="preview-drawer"', 'id="pd-frame"', "PREVIEW_WIDE",
                        "openFullPreview", "closeFullPreview"):
             self.assertIn(marker, page)
         # the hover panel has to accept the pointer, otherwise it cannot be scrolled

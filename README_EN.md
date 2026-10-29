@@ -273,6 +273,9 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   SSH round trip: slow panes come back as placeholders (`pending`) and fill in from a 25s cache on the next poll.
 - **The session tree starts collapsed** — both the console and the board remember which branches you opened instead of rendering
   everything open, and a small **expand all / collapse all** pair sits above the tree. Clicking one server opens only that server.
+- **A card always previews; the panel holds the exits** — tapping any card (favourite, recent, board) opens the preview next to it
+  (a bottom sheet on a phone) with three buttons: **full preview / chat / close**; tapping outside or Escape closes it too. The old
+  per-card ⤢ shortcut is gone because the panel's "full preview" does the same thing.
 - **A phone tap opens the conversation** — touch fires `mouseover` first, so the hover preview appeared over the card and swallowed
   the tap: cards could only ever "preview". The hover panel is now limited to devices with a real pointer
   (`(hover:hover) and (pointer:fine)`); on a phone a tap enters the console, the ⤢ button opens the full preview page, and that page

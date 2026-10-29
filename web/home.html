@@ -132,8 +132,17 @@
   .hover-preview{pointer-events:auto;overscroll-behavior:contain;scrollbar-width:thin;position:fixed;z-index:30;width:min(520px,calc(100vw - 24px));max-height:min(62vh,520px);display:flex;flex-direction:column;
     padding:11px 13px;border:1px solid var(--line);border-radius:13px;background:#fff;box-shadow:0 16px 44px rgba(32,31,28,.18)}
   .hover-preview[hidden]{display:none}
+  @media(max-width:760px){.hover-preview{left:10px!important;right:10px;top:auto!important;bottom:calc(10px + env(safe-area-inset-bottom));width:auto!important;max-height:min(70vh,520px);padding:12px 13px calc(11px + env(safe-area-inset-bottom))}}
   .hp-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px;color:var(--faint)}
   .hp-head #hp-role{padding:1px 7px;border-radius:20px;border:1px solid var(--line);background:var(--surface);color:var(--muted);font-size:10.5px}
+  .hp-head .hp-x{margin-left:auto;display:grid;place-items:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer}
+  .hp-head .hp-x:hover{background:var(--surface2);color:var(--ink)}
+  .hp-head .hp-x .ico{width:12px;height:12px}
+  .hp-actions{display:flex;gap:6px;margin-top:9px;padding-top:8px;border-top:1px solid var(--line)}
+  .hp-btn{flex:1;height:30px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);font-size:12px;cursor:pointer}
+  .hp-btn:hover{border-color:#c8c5bc;background:var(--surface2)}
+  .hp-btn.primary{border-color:#292825;background:#292825;color:#fff}
+  .hp-btn.primary:hover{background:#3a3934}
   .hp-body{overflow:auto;min-height:0;font-size:12.5px;line-height:1.55;color:var(--ink);white-space:pre-wrap;word-break:break-word;overscroll-behavior:contain}
   .preview-drawer{position:fixed;top:0;right:0;bottom:0;z-index:40;display:flex;flex-direction:column;width:min(760px,56vw);
     min-width:360px;border-left:1px solid var(--line);background:var(--bg);box-shadow:-16px 0 48px rgba(32,31,28,.16);
@@ -280,8 +289,16 @@
 </aside>
 <div class="pd-backdrop" id="pd-backdrop" hidden></div>
 <div class="hover-preview" id="hover-preview" hidden>
-  <div class="hp-head"><span id="hp-role">agent</span><span id="hp-time"></span></div>
+  <div class="hp-head"><span id="hp-role">agent</span><span id="hp-time"></span>
+    <button class="hp-x" id="hp-x" type="button" title="关闭预览" aria-label="关闭预览"><svg class="ico"><use href="#i-close"/></svg></button>
+  </div>
   <div class="hp-body" id="hp-body"></div>
+  <!-- the card only ever previews; every way out of the preview lives here -->
+  <div class="hp-actions">
+    <button class="hp-btn" id="hp-full" type="button" data-hp="full">完整预览</button>
+    <button class="hp-btn primary" id="hp-chat" type="button" data-hp="chat">聊天</button>
+    <button class="hp-btn" id="hp-close" type="button" data-hp="close">关闭</button>
+  </div>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -518,7 +535,6 @@
       <div class="card-top">${stateBadge(favorite.status,favorite.waiting)}
         ${favorite.provider?`<span class="kind">${esc(favorite.provider)}</span>`:''}
         <span class="card-meta" style="margin-left:auto">${esc(ago(favorite.preview&&favorite.preview.timestamp))}</span>
-        <button class="card-btn" data-full="${esc(pane)}" title="完整预览对话" aria-label="完整预览对话"><svg class="ico"><use href="#i-expand"/></svg></button>
         <button class="card-btn" data-rename="${esc(pane)}" title="修改卡片名" aria-label="修改卡片名"><svg class="ico"><use href="#i-pencil"/></svg></button>
         <button class="card-btn star" data-unfav="${esc(pane)}" title="取消收藏" aria-label="取消收藏"><svg class="ico"><use href="#i-star"/></svg></button>
       </div>
@@ -643,12 +659,24 @@
     }
     const rename=event.target.closest('[data-rename]');
     if(rename){event.preventDefault();event.stopPropagation();openRename(rename.dataset.rename);return;}
-    const full=event.target.closest('[data-full]');
-    if(full){event.preventDefault();event.stopPropagation();openFullPreview(full.dataset.full);return;}
     const pane=event.target.closest('[data-pane]');
     if(pane){location=consoleUrl(pane.dataset.pane);return;}
+    const action=event.target.closest('[data-hp]');
+    if(action){event.preventDefault();event.stopPropagation();
+      const paneId=hoverPane;
+      if(!paneId)return;
+      if(action.dataset.hp==='chat')location=consoleUrl(paneId);
+      else if(action.dataset.hp==='full')openFullPreview(paneId);
+      else hideHover();
+      return;}
+    if(event.target.closest('#hp-x')){event.preventDefault();hideHover();return;}
     const open=event.target.closest('[data-open]');
-    if(open){location=consoleUrl(open.dataset.open);}
+    if(open){
+      // a card previews, it never navigates: the panel holds the ways in
+      const cardEl=open.closest('.card');
+      if(cardEl){event.preventDefault();showHover(cardEl,open.dataset.open,true);return;}
+      location=consoleUrl(open.dataset.open);
+    }
   });
 
   // ---------------------------------------------------------------- full preview
@@ -718,8 +746,19 @@
     const favorite=(state.board&&state.board.favorites||[]).find(item=>item.pane===paneId);
     return favorite&&favorite.agent_preview?favorite.agent_preview:null;
   }
+  // every card must open something: fall back to the last message, then to a hint, so a
+  // click never does nothing (the panel's buttons are the way in)
+  function cardPreview(paneId){
+    const favorite=agentPreview(paneId);
+    if(favorite)return favorite;
+    const entries=[...(state.board&&state.board.favorites||[]),...(state.board&&state.board.recent||[])];
+    const entry=entries.find(item=>item.pane===paneId);
+    if(entry&&entry.preview)return entry.preview;
+    return {role:entry&&entry.provider||'pane',text:'这个会话暂时没有可预览的内容。',timestamp:null};
+  }
 
   function placeHover(card){
+    if(isNarrow()){hoverBox.style.left='';hoverBox.style.top='';hoverBox.style.width='';return;}  // CSS sheet
     const rect=card.getBoundingClientRect();
     const viewportW=window.innerWidth, viewportH=window.innerHeight;
     const width=Math.min(520,viewportW-24);
@@ -734,13 +773,17 @@
   }
 
   let hoverHideTimer=null;
-  function scheduleHideHover(){clearTimeout(hoverHideTimer);hoverHideTimer=setTimeout(hideHover,260);}
+  function scheduleHideHover(){
+    if(hoverSticky)return;               // a tap-opened panel is dismissed explicitly
+    clearTimeout(hoverHideTimer);hoverHideTimer=setTimeout(hideHover,260);}
   function cancelHideHover(){clearTimeout(hoverHideTimer);hoverHideTimer=null;}
 
-  function showHover(card,paneId){
-    const preview=agentPreview(paneId);
+  let hoverSticky=false;                 // opened by a click: stays until closed
+  function showHover(card,paneId,sticky=false){
+    const preview=cardPreview(paneId);
     if(!preview)return;
     cancelHideHover();
+    hoverSticky=sticky||hoverSticky;
     hoverPane=paneId;
     $('hp-role').textContent=preview.role==='assistant'?'agent 回复':preview.role;
     $('hp-time').textContent=[ago(preview.timestamp),preview.truncated?'已截断':''].filter(Boolean).join(' · ');
@@ -749,7 +792,7 @@
     placeHover(card);
   }
 
-  function hideHover(){hoverBox.hidden=true;hoverPane=null;}
+  function hideHover(){hoverBox.hidden=true;hoverPane=null;hoverSticky=false;}
 
   // Phones emulate a mouse: a tap fired mouseover first, the preview panel appeared over
   // the card and swallowed the click, so cards could only ever "preview" and never open.
@@ -772,6 +815,12 @@
   hoverBox.addEventListener('mouseenter',cancelHideHover);
   hoverBox.addEventListener('mouseleave',scheduleHideHover);
   window.addEventListener('scroll',event=>{if(!hoverBox.contains(event.target))hideHover();},{passive:true});
+  document.addEventListener('click',event=>{
+    if(hoverBox.hidden||!hoverSticky)return;
+    if(hoverBox.contains(event.target)||event.target.closest('.card'))return;
+    hideHover();
+  });
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!hoverBox.hidden)hideHover();});
   window.addEventListener('resize',hideHover);
 
   // remember which tree branches are open
