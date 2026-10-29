@@ -70,12 +70,17 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 
 The console's bottom-left "设置" (settings) button:
 
-- **Change the password** — current + new (6 chars or more). After the first change the password no
-  longer comes from the environment: a pbkdf2 hash is stored in `passwords.json` (mode 0600, path
-  via `TMUX_WEB_PASSWORD_DB`) and the browser that made the change stays signed in while every other
-  device has to log in again.
-- **Export configuration** — hosts (address, port, jump chain, tmux path), the multi-window layout and
-  presets, or both. The exported JSON never contains passwords, private keys or credentials.
+- **Change the password** — collapsed until you click the row: current + new (6 chars or more). After
+  the first change the password no longer comes from the environment; a pbkdf2 hash lives in
+  `passwords.json` (0600, path via `TMUX_WEB_PASSWORD_DB`), the browser that made the change stays
+  signed in and every other device has to log in again.
+- **Export** — set an export password first (6 chars or more), then export hosts, the multi-window
+  layout, or both. The file is encrypted in the browser with PBKDF2(SHA-256, 250k) + AES-GCM before it
+  is written; **the password never reaches the server**. It does contain credentials (passwords, private
+  keys) plus jump chains, tmux paths, layout and presets — treat it as a key file.
+- **Import** — pick the file and type the password it was exported with. A wrong password fails at the
+  AES-GCM tag; existing hosts (same host/port/user) are skipped, jump hops are relinked by name, and the
+  layout and presets replace the local ones.
 
 ## Design boundaries
 

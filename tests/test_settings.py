@@ -108,6 +108,40 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual(other.get("/api/panes").status_code, 200)
         self.assertEqual(other.get("/api/settings").json()["password_source"], "file")
 
+    def test_a_failed_edit_restores_the_jump_hop_too(self):
+        """A broken credential must not leave a host half-edited (the hop used to survive the rollback)."""
+        first = self.client.post("/api/remote-hosts", json={
+            "name": "hop", "hostname": "10.7.7.1", "username": "root", "auth_type": "agent",
+            "verify": False}).json()
+        second = self.client.post("/api/remote-hosts", json={
+            "name": "target", "hostname": "10.7.7.2", "username": "root", "auth_type": "agent",
+            "verify": False}).json()
+        with patch.object(FakeSSHRunner, "check", side_effect=RuntimeError("unreachable")):
+            failed = self.client.put(f"/api/remote-hosts/{second['id']}",
+                                     json={"jump_host_id": first["id"]})
+        self.assertEqual(failed.status_code, 424)
+        stored = [host for host in self.client.get("/api/remote-hosts").json()["hosts"]
+                  if host["id"] == second["id"]][0]
+        self.assertEqual(stored.get("jump_host_id", ""), "")
+        self.assertEqual(stored.get("jump_path", ""), "")
+
+    def test_the_encrypted_export_carries_the_credentials(self):
+        created = self.client.post("/api/remote-hosts", json={
+            "name": "export-target", "hostname": "10.9.9.9", "username": "root",
+            "port": 22, "auth_type": "password", "credential": "host-secret-value",
+            "verify": False,
+        })
+        self.assertEqual(created.status_code, 201, created.text)
+        response = self.client.get("/api/settings/export")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("cache-control"), "no-store")
+        hosts = response.json()["hosts"]
+        self.assertEqual(len(hosts), 1)
+        self.assertEqual(hosts[0]["credential"], "host-secret-value")
+        self.assertIn("jump_name", hosts[0])
+        anon = self.make_app()
+        self.assertEqual(anon.get("/api/settings/export").status_code, 401)
+
     def test_the_export_material_carries_no_credentials(self):
         created = self.client.post("/api/remote-hosts", json={
             "name": "export-target", "hostname": "10.9.9.9", "username": "root",
@@ -157,6 +191,20 @@ class SettingsPageWiringTests(unittest.TestCase):
         self.assertIn("重发", self.page)
         self.assertIn("resendPending", self.page)
         self.assertIn(".retry-send{", self.page)
+
+    def test_the_password_change_is_a_collapsed_row(self):
+        self.assertIn('id="pw-toggle"', self.page)
+        self.assertIn('aria-controls="pw-panel"', self.page)
+        self.assertIn('id="pw-panel" hidden', self.page)
+        self.assertIn(".settings-panel[hidden]{display:none}", self.page)
+
+    def test_the_export_needs_a_password_and_the_import_checks_it(self):
+        for marker in ('id="export-password"', 'id="import-file"', 'id="import-password"',
+                       'id="import-run"', "encryptBundle", "decryptBundle", "PBKDF2",
+                       "AES-GCM", "/api/settings/export"):
+            self.assertIn(marker, self.page)
+        self.assertIn("导出密码至少 6 位", self.page)
+        self.assertIn("密码不对，或者文件被改过", self.page)
 
     def test_the_settings_panel_can_change_the_password_and_export(self):
         for marker in ('id="settings-open"', 'id="settings-dialog"', 'id="pw-current"',

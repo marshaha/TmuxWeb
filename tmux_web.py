@@ -1192,6 +1192,36 @@ def create_app(
             "api_token": bool(api_token),
         }
 
+    @app.get("/api/settings/export")
+    async def export_settings(request: Request):
+        """Everything needed to rebuild this console on another machine, credentials included.
+
+        The browser encrypts this before it reaches disk, so the password never reaches us; the
+        response is marked no-store so a shared machine does not keep plaintext secrets in cache.
+        """
+        require_auth(request)
+        fields = ("name", "hostname", "port", "username", "auth_type", "credential", "host_key",
+                  "fingerprint", "jump_host_id", "jump_spec", "tmux_path", "position", "enabled")
+        hosts = []
+        names = {}
+        for host in remote_hosts.list_hosts():
+            full = remote_hosts.get_host(host["id"], include_credential=True) or {}
+            names[host["id"]] = full.get("name") or host["id"]
+            hosts.append({key: full.get(key, "") for key in fields})
+        for entry in hosts:
+            # ids are local, names are not: an import relinks the hop by name
+            entry["jump_name"] = names.get(entry.get("jump_host_id") or "", "")
+        board = {}
+        try:
+            board = {"favorites": home.favorites()} if hasattr(home, "favorites") else {}
+        except Exception:  # a missing board must not block an export
+            board = {}
+        return JSONResponse(
+            {"app": "TmuxWeb", "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "hosts": hosts,
+             "board": board},
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.post("/api/settings/password")
     async def change_password(request: Request, payload: PasswordChangeRequest):
         """Rotate the console password. Sessions minted from the old one stop working."""
@@ -1933,7 +1963,8 @@ def create_app(
                 host_id, name=previous["name"], hostname=previous["hostname"], port=previous["port"],
                 username=previous["username"], auth_type=previous["auth_type"],
                 credential=previous["credential"], host_key=previous["host_key"],
-                fingerprint=previous["fingerprint"],
+                fingerprint=previous["fingerprint"], jump_host_id=previous.get("jump_host_id", ""),
+                jump_spec=previous.get("jump_spec", ""), tmux_path=previous.get("tmux_path", ""),
             )
             raise HTTPException(status_code=424, detail=str(exc)) from exc
         return host
