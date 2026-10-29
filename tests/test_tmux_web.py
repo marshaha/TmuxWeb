@@ -225,6 +225,26 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertNotIn("unit-test-admin-password", response.text)
 
+    def test_login_keeps_the_deep_link(self):
+        """A shared ?pane= link must survive the login round trip."""
+        redirect = self.client.get("/?pane=%2561", follow_redirects=False)
+        self.assertEqual(redirect.status_code, 303)
+        self.assertIn("/login?next=", redirect.headers["location"])
+        page = self.client.get(redirect.headers["location"])
+        self.assertIn('name="next"', page.text)
+        self.assertIn("/?pane=%2561", page.text)
+        signed_in = self.client.post("/login", data={"password": "unit-test-admin-password", "next": "/?pane=%2561"},
+                                     follow_redirects=False)
+        self.assertEqual(signed_in.status_code, 303)
+        self.assertEqual(signed_in.headers["location"], "/?pane=%2561")
+
+    def test_login_refuses_to_bounce_off_site(self):
+        for hostile in ("//evil.example", "https://evil.example", "/\\evil"):
+            response = self.client.post("/login", data={"password": "unit-test-admin-password", "next": hostile},
+                                        follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(response.headers["location"], "/", hostile)
+
     def test_admin_login_is_rate_limited(self):
         client = TestClient(create_app(self.tmux, password="rate-limit-password", session_secret="test-secret",
                                        terminal_factory=self.terminals, share_db=":memory:",
@@ -242,6 +262,17 @@ class TmuxWebTests(unittest.TestCase):
                             base_url="https://testserver")
         response = client.post("/login", data={"password": "https-password"}, follow_redirects=False)
         self.assertIn("Secure", response.headers["set-cookie"])
+
+    def test_the_mobile_terminal_has_its_own_input_row(self):
+        """The soft keyboard needs a real field: xterm's textarea must not summon it."""
+        self.login()
+        page = self.client.get("/").text
+        for marker in ('id="terminal-input"', 'enterkeyhint="send"', "setupTerminalInput",
+                       "setAttribute('inputmode','none')", "compositionstart"):
+            self.assertIn(marker, page)
+        # sizing must not repaint the screen or notify the PTY when nothing changed
+        self.assertIn("function fitTerminalNow", page)
+        self.assertNotIn("state.xterm.refresh(0,", page)
 
     def test_lists_panes(self):
         self.login()

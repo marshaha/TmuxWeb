@@ -273,6 +273,9 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 - **agent 会话不会退化成刷屏终端**：transcript 读不到内容时（会话刚开、或解析不出来），聊天区显示说明 + 「查看原始屏幕」按钮并自动重试，不再自动切去流式抓屏（Kimi/Claude 这类全屏 TUI 每秒重绘整屏，600 行 × 7000 个节点会把浏览器卡死）。shell pane 仍然照旧显示屏幕。
 - **Kimi 会话挑选**：同一个目录/标题可能有多个 kimi session，只挑 `updatedAt` 最新的那个（旧的往往是中断的回合，里面没有消息）。
 - **切回主页不等待**：`/home` 先用 `localStorage` 里的上一份看板（标「显示缓存，正在更新…」）立刻画出卡片和会话树，再拉最新数据替换；没有缓存就显示骨架屏（统计/卡片/树的占位），不会空白。接口侧 `/api/home` 最多等 1.2 秒——收藏卡片的实时状态和最后一条消息要按 pane 走 SSH，慢的话先返回占位（`pending`），后台读完写进 25 秒缓存，下一次轮询补上。
+- **手机终端输入**：终端模式在手机上有一条自己的输入框（按键条上方）。软键盘只认这个输入框：逐字发送到 PTY（能立刻看到 echo），退格发 `\x7f`，回车发 `\r`，中文输入法按 `compositionend` 提交，不会被 xterm 的隐藏 textarea 吃掉。xterm 自己的 textarea 被设成 `inputmode=none`，点终端只会收起键盘、不会误触发重绘
+- **键盘弹出不再"重新渲染"**：以前 `visualViewport` 变化（键盘动画期间会连续触发）+ `ResizeObserver` 每帧都 `fit()` 一次并 `xterm.refresh(0, rows-1)` 全屏重绘，每次 `fit()` 还会无条件给 PTY 发 `resize` —— tmux 收到行列变化就整屏重画。现在改成：布局立刻跟随可视高度（`--visual-height`/`--visual-top`，所以是"抬高"而不是重画），`fit` 只在行列真的变了才做一次并通知 PTY，`ResizeObserver` 合并成 90ms 一次，滚到中间的读者位置不被打断。实测键盘弹出/收起各只发 1 条 `resize`（`rows 41→20`）
+- **登录保留深链**：未登录访问 `/?pane=...`、`/preview?pane=...` 会跳 `?next=`，登录后回到原地址（`next` 只接受站内路径，`//evil` 之类直接回 `/`）
 - **进入首页**：没有 `?pane=` 也没有「上次打开的 pane」时，`/` 自动跳到 `/home`（有上次 pane 时仍直接恢复到那个会话，刷新不会把你踢回首页）
 - **最近访问**：主页在「收藏」下面列出**最近打开的 4 个 pane**（点一下就回控制台）。记录来自控制台的选中动作（`POST /api/home/recent`），标题/主机/session 取自 `/api/hosts` 快照，状态取自状态扫描，所以这一段自己不读 transcript、几乎瞬时
 - **busy/idle 怎么判**：控制台和主页的状态都来自 `relay.classify()` 对 pane 末 14 行的判断——

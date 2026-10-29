@@ -22,6 +22,7 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
+from html import escape
 from urllib.parse import parse_qs, quote
 
 import uvicorn
@@ -41,6 +42,16 @@ LOGGER = logging.getLogger("tmux_web")
 
 PANE_RE = re.compile(r"^%[0-9]+$")
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+def safe_next_url(value: str, default: str = "/") -> str:
+    """Only a same-origin path may be used as a post-login target."""
+    candidate = (value or "").strip()
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        return default
+    if any(char in candidate for char in ("\\", "\r", "\n", "\t")):
+        return default
+    return candidate
+
+
 COOKIE_NAME = "tmux_web_session"
 SHARE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,47}$")
 BASE_DIR = Path(__file__).resolve().parent
@@ -949,26 +960,33 @@ def create_app(
         return FileResponse(WEB_DIR / "home.html", media_type="text/html",
                             headers={"Cache-Control": "no-store"})
 
+    def login_markup(target: str, error: str = "") -> str:
+        markup = (WEB_DIR / "login.html").read_text()
+        markup = markup.replace("<!--NEXT-->", f'<input type="hidden" name="next" value="{escape(target, quote=True)}">')
+        return markup.replace("<!--ERROR-->", f'<p class="error" role="alert">{error}</p>' if error else "")
+
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
+        target = safe_next_url(request.query_params.get("next", "/"))
         if authenticated(request):
-            return RedirectResponse("/", status_code=303)
-        return FileResponse(WEB_DIR / "login.html", headers={"Cache-Control": "no-store"})
+            return RedirectResponse(target, status_code=303)
+        return HTMLResponse(login_markup(target), headers={"Cache-Control": "no-store"})
 
     @app.post("/login")
     async def login(request: Request):
         rate_key = login_key(request, "admin")
         login_limiter.check(rate_key)
         body = (await request.body()).decode(errors="replace")
-        supplied = parse_qs(body).get("password", [""])[0]
+        fields = parse_qs(body)
+        supplied = fields.get("password", [""])[0]
+        target = safe_next_url(fields.get("next", ["/"])[0])
         if not hmac.compare_digest(supplied, configured_password):
             login_limiter.fail(rate_key)
-            html = (WEB_DIR / "login.html").read_text().replace(
-                "<!--ERROR-->", '<p class="error" role="alert">密码错误</p>'
+            return HTMLResponse(
+                login_markup(target, error="密码错误"), status_code=401
             )
-            return HTMLResponse(html, status_code=401)
         login_limiter.success(rate_key)
-        response = RedirectResponse("/", status_code=303)
+        response = RedirectResponse(target, status_code=303)
         response.set_cookie(
             COOKIE_NAME,
             expected_token,
@@ -989,19 +1007,19 @@ def create_app(
     @app.get("/")
     async def index(request: Request):
         if not authenticated(request):
-            return RedirectResponse("/login", status_code=303)
+            return RedirectResponse(f"/login?next={quote(request.url.path + ('?' + request.url.query if request.url.query else ''))}", status_code=303)
         return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/shares")
     async def shares_page(request: Request):
         if not authenticated(request):
-            return RedirectResponse("/login", status_code=303)
+            return RedirectResponse("/login?next=/shares", status_code=303)
         return FileResponse(WEB_DIR / "shares.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/hosts")
     async def hosts_page(request: Request):
         if not authenticated(request):
-            return RedirectResponse("/login", status_code=303)
+            return RedirectResponse("/login?next=/hosts", status_code=303)
         return FileResponse(WEB_DIR / "hosts.html", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/shares", status_code=201)

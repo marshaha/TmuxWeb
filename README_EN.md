@@ -271,6 +271,16 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   `显示缓存，正在更新…`) and swaps in fresh data when it lands; without a snapshot it shows a skeleton (stats, cards and tree
   placeholders) instead of a blank page. On the server `/api/home` waits at most 1.2s because each favourite's live half needs an
   SSH round trip: slow panes come back as placeholders (`pending`) and fill in from a 25s cache on the next poll.
+- **Terminal input on phones** — terminal mode has its own text field above the key bar. The soft keyboard targets it: characters go to the
+  PTY as typed (so the echo is immediate), backspace sends `\x7f`, Enter sends `\r`, and an IME commits on `compositionend`.
+  xterm's own textarea gets `inputmode=none`, so tapping the terminal dismisses the keyboard instead of triggering a redraw.
+- **No more "re-render" when the keyboard opens** — a `visualViewport` change fires continuously during the keyboard animation and the
+  old code fitted plus `xterm.refresh(0, rows-1)` on each one, sending a PTY resize even when cols/rows were unchanged (tmux then
+  repaints the whole screen). Now the layout follows the visual viewport immediately (`--visual-height` / `--visual-top`, i.e. it lifts),
+  the fit only runs when cols/rows actually changed, the ResizeObserver is coalesced to 90ms, and a reader scrolled into the scrollback
+  keeps their place. Measured: one `resize` (`rows 41→20`) per keyboard transition.
+- **Login keeps deep links** — an unauthenticated `/?pane=...` redirects to `?next=` and comes back after signing in (only same-origin
+  paths are accepted; `//evil` falls back to `/`).
 - **Landing** — `/` redirects to `/home` when there is neither a `?pane=` nor a remembered pane; with a remembered pane the
   console restores it, so refreshing the console does not eject you.
 - **Recent visits** — the board lists the four panes you opened last (one click back to the console). Visits are recorded by the
