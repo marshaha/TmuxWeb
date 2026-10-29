@@ -113,6 +113,19 @@ function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;'
 marked.use({renderer:{html(token){return esc(token&&(token.text!=null?token.text:token.raw));}}});
 const md=value=>marked.parse(String(value??''),{gfm:true,breaks:false,async:false});
 if(new URLSearchParams(location.search).get('embed')==='1')document.body.classList.add('embed');
+// /grid tells each cell whether it is on screen; offscreen cells back off to one request per 15s
+let cellVisible=true;
+document.body.dataset.cellVisible='true';
+window.addEventListener('message',event=>{
+  if(event.origin!==location.origin)return;
+  const data=event.data;
+  if(!data||data.tmuxweb!=='visibility')return;
+  const visible=!!data.visible;
+  if(visible===cellVisible)return;
+  cellVisible=visible;
+  document.body.dataset.cellVisible=String(visible);   // lets /grid and tests confirm the handshake
+  if(cellVisible){clearTimeout(state.timer);load(false);}
+});
 const favBtn=document.getElementById('fav');
 function paintFav(on){
   if(!favBtn)return;
@@ -190,7 +203,8 @@ async function load(info=false){
     if(!state.messages.length)$('messages').innerHTML=`<div class="empty">${esc(error.message)}</div>`;
   }finally{
     clearTimeout(state.timer);
-    state.timer=setTimeout(()=>load(false),2000);
+    // a window scrolled out of /grid slows right down instead of polling in the background
+    state.timer=setTimeout(()=>load(false),cellVisible?2000:15000);
   }
 }
 

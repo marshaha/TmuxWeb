@@ -58,11 +58,26 @@
     .prow .sub{color:var(--faint);font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .prow.added{opacity:.45;cursor:default}
     .picker-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+    .seg{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:#fff}
+    .seg button{height:26px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:var(--muted);font:12px inherit;cursor:pointer}
+    .seg button:hover{color:var(--ink)}
+    .seg button.active{background:#292825;color:#fff}
+    .grid.mode-grid{display:grid;grid-template-columns:repeat(var(--cols,2),minmax(0,1fr));grid-auto-rows:minmax(240px,1fr);
+      gap:8px;padding:8px;overflow:auto;align-content:stretch}
+    .grid.mode-grid .cell{margin:0;min-width:0;height:100%}
+    .cell-head{cursor:grab}
+    .cell.dragging{opacity:.5}
+    .cell.drop-target{outline:2px dashed var(--accent);outline-offset:-3px}
+    body.moving{cursor:grabbing;user-select:none}
+    body.moving iframe{pointer-events:none}
     @media(max-width:760px){
       .grid{flex-direction:column;overflow-x:hidden;overflow-y:auto}
       /* stored column widths are desktop-only: on a phone each window is a full-width card */
       .cell{flex:0 0 auto!important;width:auto!important;height:min(72vh,560px);margin:8px 8px 0;min-width:0}
       .cell:last-of-type{margin-bottom:8px}
+      /* a phone never gets a 2- or 3-column grid: one window per row */
+      .grid.mode-grid{grid-template-columns:minmax(0,1fr)!important;grid-auto-rows:auto;overflow-y:auto}
+      .grid.mode-grid .cell{height:min(72vh,560px)}
       .splitter{display:none}
       .top{height:48px}
     }
@@ -80,6 +95,11 @@
   <strong>多窗口</strong>
   <span class="count" id="count"></span>
   <span class="spacer"></span>
+  <div class="seg" id="layout" role="group" aria-label="布局">
+    <button type="button" data-layout="strip">并排</button>
+    <button type="button" data-layout="grid2">网格 2</button>
+    <button type="button" data-layout="grid3">网格 3</button>
+  </div>
   <button class="btn primary" id="add" type="button"><svg class="ico"><use href="#i-plus"/></svg>添加窗口</button>
   <a class="btn" id="home" href="/home" title="返回主页"><svg class="ico"><use href="#i-home"/></svg>主页</a>
 </div>
@@ -101,13 +121,15 @@
   const KEY='tmux-grid-v1';
   // widths are keyed by pane id: unset columns share the leftover space equally, so adding or
   // removing a window never leaves a column pinned at the width it had when it was alone
-  const state={panes:[], widths:{}, titles:new Map(), statuses:new Map(), hosts:null};
+  const state={panes:[], widths:{}, layout:'strip', titles:new Map(), statuses:new Map(), hosts:null};
+  const LAYOUTS=['strip','grid2','grid3'];
   const MIN=260;
 
   function load(){
     try{
       const saved=JSON.parse(localStorage.getItem(KEY)||'{}');
       state.panes=Array.isArray(saved.panes)?saved.panes.filter(x=>typeof x==='string'):[];
+      state.layout=LAYOUTS.includes(saved.layout)?saved.layout:'strip';
       state.widths={};
       for(const [pane,width] of Object.entries(saved.widths||{})){
         if(state.panes.includes(pane)&&Number.isFinite(width)&&width>=MIN)state.widths[pane]=Math.round(width);
@@ -115,7 +137,7 @@
     }catch{state.panes=[];state.widths={};}
   }
   function save(){
-    try{localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths}));}catch{}
+    try{localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout}));}catch{}
   }
   function widthOf(pane){
     const width=state.widths[pane];
@@ -136,13 +158,20 @@
   function render(){
     const grid=$('grid');
     $('count').textContent=state.panes.length?`${state.panes.length} 个窗口`:'';
+    const gridded=state.layout!=='strip';
+    grid.classList.toggle('mode-grid',gridded);
+    if(gridded)grid.style.setProperty('--cols',state.layout==='grid3'?3:2);
+    else grid.style.removeProperty('--cols');
+    for(const button of document.querySelectorAll('[data-layout]')){
+      button.classList.toggle('active',button.dataset.layout===state.layout);
+    }
     if(!state.panes.length){
       grid.innerHTML='<div class="empty"><div><b>还没有窗口</b>点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。</div></div>';
       return;
     }
     grid.innerHTML=state.panes.map((pane)=>{
       const status=state.statuses.get(pane)||'unknown';
-      return `<section class="cell" data-pane="${esc(pane)}" style="${cellStyle(pane)}">
+      return `<section class="cell" data-pane="${esc(pane)}" style="${gridded?'':cellStyle(pane)}">
         <div class="cell-head">
           <span class="dot ${esc(status)}" data-dot="${esc(pane)}"></span>
           <span class="cell-title" title="${esc(pane)}">${esc(titleFor(pane))}</span>
@@ -151,7 +180,7 @@
         </div>
         <iframe src="/preview?pane=${encodeURIComponent(pane)}&embed=1" title="${esc(pane)}" loading="lazy"></iframe>
       </section>`;
-    }).join('') + state.panes.slice(0,-1).map((_,index)=>`<div class="splitter" data-split="${index}"></div>`).join('');
+    }).join('') + (gridded?'':state.panes.slice(0,-1).map((_,index)=>`<div class="splitter" data-split="${index}"></div>`).join(''));
     // splitters have to sit between cells, not after them
     const cells=[...grid.querySelectorAll('.cell')];
     const splitters=[...grid.querySelectorAll('.splitter')];
@@ -159,7 +188,34 @@
       const next=cells[index+1];
       if(next)grid.insertBefore(splitter,next);
     });
+    syncVisibility();
   }
+
+  // ---- tell each cell whether it is on screen, so hidden windows stop polling.
+  //      Plain geometry beats IntersectionObserver here: it has to be re-run on every scroll,
+  //      re-render and resize anyway, and it behaves the same in every engine.
+  function syncVisibility(){
+    const grid=$('grid');
+    if(!grid)return;
+    const bounds=grid.getBoundingClientRect();
+    for(const frame of document.querySelectorAll('.cell iframe')){
+      const rect=frame.getBoundingClientRect();
+      const visible=rect.right>bounds.left+8&&rect.left<bounds.right-8
+        &&rect.bottom>bounds.top+8&&rect.top<bounds.bottom-8;
+      try{frame.contentWindow.postMessage({tmuxweb:'visibility',visible},location.origin);}catch{}
+    }
+  }
+  // throttle on the clock, not on requestAnimationFrame: a hidden or non-painting tab must still
+  // get the handshake, and scroll fires far more often than we need
+  let lastVisibility=0;
+  function queueVisibility(){
+    const now=Date.now();
+    if(now-lastVisibility<120)return;
+    lastVisibility=now;
+    syncVisibility();
+  }
+  $('grid').addEventListener('scroll',queueVisibility,{passive:true});
+  window.addEventListener('resize',queueVisibility);
 
   async function loadMeta(){
     try{
@@ -208,6 +264,8 @@
     if(remove){event.preventDefault();removePane(remove.dataset.remove);return;}
     const row=event.target.closest('[data-add]');
     if(row){event.preventDefault();addPane(row.dataset.add);$('picker').close();return;}
+    const layout=event.target.closest('[data-layout]');
+    if(layout){event.preventDefault();state.layout=layout.dataset.layout;save();render();return;}
   });
   $('add').onclick=()=>{renderPicker('');$('pq').value='';$('picker').showModal();$('pq').focus();};
 
@@ -263,9 +321,59 @@
   document.addEventListener('pointerup',endDrag);
   document.addEventListener('pointercancel',endDrag);
 
+  // ---- drag a window by its header to reorder it (iframes must not swallow the pointer)
+  let mover=null;
+  function cellUnder(x,y){
+    for(const cell of document.querySelectorAll('.cell')){
+      const rect=cell.getBoundingClientRect();
+      if(x>=rect.left&&x<=rect.right&&y>=rect.top&&y<=rect.bottom)return cell;
+    }
+    return null;
+  }
+  document.addEventListener('pointerdown',event=>{
+    const head=event.target.closest('.cell-head');
+    if(!head||event.target.closest('.cell-btn'))return;
+    const cell=head.closest('.cell');
+    if(!cell)return;
+    mover={pane:cell.dataset.pane,startX:event.clientX,startY:event.clientY,active:false};
+  });
+  document.addEventListener('pointermove',event=>{
+    if(!mover)return;
+    if(!mover.active){
+      if(Math.hypot(event.clientX-mover.startX,event.clientY-mover.startY)<8)return;
+      mover.active=true;
+      document.body.classList.add('moving');
+      const cell=document.querySelector(`.cell[data-pane="${CSS.escape(mover.pane)}"]`);
+      if(cell)cell.classList.add('dragging');
+    }
+    const target=cellUnder(event.clientX,event.clientY);
+    for(const cell of document.querySelectorAll('.cell.drop-target')){
+      if(cell!==target)cell.classList.remove('drop-target');
+    }
+    if(target&&target.dataset.pane!==mover.pane)target.classList.add('drop-target');
+  });
+  document.addEventListener('pointerup',event=>{
+    if(!mover)return;
+    const active=mover.active,pane=mover.pane;
+    mover=null;
+    document.body.classList.remove('moving');
+    for(const cell of document.querySelectorAll('.cell'))cell.classList.remove('dragging','drop-target');
+    if(!active)return;
+    const target=cellUnder(event.clientX,event.clientY);
+    if(!target||target.dataset.pane===pane)return;
+    const from=state.panes.indexOf(pane),to=state.panes.indexOf(target.dataset.pane);
+    if(from<0||to<0)return;
+    state.panes.splice(from,1);
+    state.panes.splice(to,0,pane);
+    save();render();loadStatus();
+  });
+
   load();
+  const params=new URLSearchParams(location.search);
+  const single=params.get('add');
+  if(single&&!state.panes.includes(single)){state.panes.push(single);save();}
   if(!state.panes.length){
-    const wanted=new URLSearchParams(location.search).get('panes');
+    const wanted=params.get('panes');
     if(wanted)state.panes=wanted.split(',').map(item=>item.trim()).filter(Boolean).slice(0,6);
   }
   render();
@@ -273,6 +381,7 @@
   loadStatus();
   setInterval(loadStatus,10000);
   setInterval(loadMeta,30000);
+  setInterval(syncVisibility,5000);      // safety net while a window is still loading
 })();
 </script>
 </body>

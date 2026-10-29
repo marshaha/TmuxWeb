@@ -69,6 +69,37 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("delete state.widths[paneId]", page)
         self.assertIn("flex:1 1 0;min-width:240px", page)   # unset columns share the space
 
+    def test_the_layout_can_be_switched_between_one_row_and_a_grid(self):
+        page = self.client.get("/grid").text
+        for mode in ("strip", "grid2", "grid3"):
+            self.assertIn(f'data-layout="{mode}"', page)
+        self.assertIn("mode-grid", page)
+        self.assertIn("--cols", page)
+        self.assertIn("state.layout=layout.dataset.layout", page)
+        self.assertIn("layout:state.layout", page)          # the choice is remembered
+
+    def test_a_window_can_be_dragged_to_a_new_position(self):
+        page = self.client.get("/grid").text
+        self.assertIn("body.moving iframe{pointer-events:none}", page)   # iframes must not eat the drag
+        self.assertIn("drop-target", page)
+        self.assertIn("state.panes.splice(to,0,pane)", page)
+
+    def test_offscreen_windows_back_off_and_resume(self):
+        """A window scrolled out of the grid must stop polling every 2 seconds."""
+        page = self.client.get("/grid").text
+        self.assertIn("tmuxweb:'visibility'", page)
+        self.assertIn("addEventListener('scroll',queueVisibility", page)
+
+        preview = self.client.get("/preview?pane=%254").text
+        self.assertIn("data.tmuxweb!=='visibility'", preview)
+        self.assertIn("cellVisible?2000:15000", preview)
+
+    def test_the_console_can_push_its_pane_into_the_grid(self):
+        console = self.client.get("/").text
+        self.assertIn('id="grid-add"', console)
+        self.assertIn("location='/grid?add='", console)
+        self.assertIn("params.get('add')", self.client.get("/grid").text)
+
     def test_the_preview_page_can_be_embedded(self):
         page = self.client.get("/preview?pane=%254").text
         self.assertIn("body.embed header{display:none}", page)
