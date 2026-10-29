@@ -12,6 +12,7 @@ import os
 import fcntl
 import re
 import secrets
+import signal
 import struct
 import subprocess
 import termios
@@ -488,6 +489,16 @@ class TerminalSession:
         cols = max(20, min(int(cols), 500))
         rows = max(5, min(int(rows), 300))
         fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        # The child inherits the pty instead of opening it (start_new_session + inherited
+        # fds), so it never becomes this tty's controlling terminal and the kernel does not
+        # deliver SIGWINCH. Without this signal tmux keeps its old size and never repaints:
+        # resizing a phone terminal did nothing at all.
+        process = getattr(self, "process", None)
+        if process is not None and process.poll() is None:
+            try:
+                os.kill(process.pid, signal.SIGWINCH)
+            except (ProcessLookupError, PermissionError):
+                pass
 
     async def read(self) -> bytes:
         try:

@@ -280,7 +280,8 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".app.terminal-view.mobile-composing .topbar{visibility:visible", page)
         self.assertIn(".app.terminal-view.mobile-composing .main{grid-template-rows:58px", page)
         # dismissing the keyboard must refit even when visualViewport stays quiet
-        self.assertIn("scheduleTerminalFit();fitCapture();", page)
+        self.assertIn("function settleViewport", page)
+        self.assertIn("settleViewport();", page)
 
     def test_lists_panes(self):
         self.login()
@@ -807,6 +808,32 @@ class TmuxWebTests(unittest.TestCase):
             payload = websocket.receive_json()
         self.assertEqual(payload["type"], "capture")
         self.assertIn("\x1b[32mhello", payload["content"])
+
+    def test_a_pty_resize_also_signals_the_child(self):
+        """The child inherits the pty, so the kernel sends it no SIGWINCH: tmux kept its old
+        size and never repainted, which is why resizing a phone terminal did nothing."""
+        import fcntl, pty, signal, struct, termios
+        from unittest import mock
+        import tmux_web
+
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+
+        class Process:
+            pid = 4242
+            def poll(self):
+                return None
+
+        session = tmux_web.TerminalSession.__new__(tmux_web.TerminalSession)
+        session.master_fd = master
+        session.process = Process()
+        kills = []
+        with mock.patch("os.kill", side_effect=lambda pid, sig: kills.append((pid, sig))):
+            session._set_size(120, 40)
+        self.assertEqual(kills, [(4242, signal.SIGWINCH)])
+        rows, cols = struct.unpack("HHHH", fcntl.ioctl(master, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+        self.assertEqual((rows, cols), (40, 120))
 
     def test_terminal_websocket_is_bidirectional_and_resizable(self):
         self.login()

@@ -274,6 +274,11 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
 - **Terminal input on phones** — terminal mode has its own text field above the key bar. The soft keyboard targets it: characters go to the
   PTY as typed (so the echo is immediate), backspace sends `\x7f`, Enter sends `\r`, and an IME commits on `compositionend`.
   xterm's own textarea gets `inputmode=none`, so tapping the terminal dismisses the keyboard instead of triggering a redraw.
+- **A PTY resize must be signalled** — the terminal pty comes from `openpty()` and the child only inherits the fds (and
+  `start_new_session` leaves it without a controlling terminal), so the kernel never delivers `SIGWINCH` after `TIOCSWINSZ`.
+  `resize` used to set the size only: tmux kept its old size and never repainted, which on a phone meant the terminal showed
+  the few rows it already had (or just the status bar) after the keyboard closed. It now sends `SIGWINCH` to the child explicitly
+  and tmux repaints at the new size. Resizing the desktop window was broken the same way.
 - **No page zoom when a field is focused** — iOS zooms the whole page for an input under 16px and does not zoom back out on blur (it looks
   like "the window grew and the terminal never recovered"). Every `input`/`textarea`/`select` is 16px at the phone breakpoint: console
   composer, terminal field, board search, host admin, share and session dialogs.

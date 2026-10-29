@@ -274,6 +274,7 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 - **Kimi 会话挑选**：同一个目录/标题可能有多个 kimi session，只挑 `updatedAt` 最新的那个（旧的往往是中断的回合，里面没有消息）。
 - **切回主页不等待**：`/home` 先用 `localStorage` 里的上一份看板（标「显示缓存，正在更新…」）立刻画出卡片和会话树，再拉最新数据替换；没有缓存就显示骨架屏（统计/卡片/树的占位），不会空白。接口侧 `/api/home` 最多等 1.2 秒——收藏卡片的实时状态和最后一条消息要按 pane 走 SSH，慢的话先返回占位（`pending`），后台读完写进 25 秒缓存，下一次轮询补上。
 - **手机终端输入**：终端模式在手机上有一条自己的输入框（按键条上方）。软键盘只认这个输入框：逐字发送到 PTY（能立刻看到 echo），退格发 `\x7f`，回车发 `\r`，中文输入法按 `compositionend` 提交，不会被 xterm 的隐藏 textarea 吃掉。xterm 自己的 textarea 被设成 `inputmode=none`，点终端只会收起键盘、不会误触发重绘
+- **改了尺寸，tmux 必须收到 SIGWINCH**：终端 PTY 是 `openpty()` 建的，子进程只是继承 fd（`start_new_session` 也没有取得控制终端），所以内核**不会**因为 `TIOCSWINSZ` 给它发 SIGWINCH。以前 `resize` 只改 winsize，tmux 一直以为自己是旧尺寸、也就从不重画——手机上收起键盘后终端只剩原有那几行（或干脆只剩状态栏）。现在设完 winsize 会显式 `os.kill(pid, SIGWINCH)`，tmux 立刻按新尺寸重画整屏。桌面端改窗口大小也一并修好了
 - **手机聚焦输入框不再整页放大**：iOS 会给 `font-size` 小于 16px 的输入框自动放大整页，而且失焦后不会缩回去（看起来就是"窗口变大了、终端没复原"）。现在手机断点下所有 `input/textarea/select` 都是 16px（控制台输入框、终端输入框、主页搜索、主机管理、分享/会话弹窗都覆盖）
 - **键盘弹出时终端只收缩、不跳变**：终端模式的顶栏在输入时不隐藏（旧行为会让终端多出 58px，看起来像整体变大），关闭键盘（失焦）时除了恢复可视高度还会重新 `fit` 一次，行列随即复原
 - **键盘弹出不再"重新渲染"**：以前 `visualViewport` 变化（键盘动画期间会连续触发）+ `ResizeObserver` 每帧都 `fit()` 一次并 `xterm.refresh(0, rows-1)` 全屏重绘，每次 `fit()` 还会无条件给 PTY 发 `resize` —— tmux 收到行列变化就整屏重画。现在改成：布局立刻跟随可视高度（`--visual-height`/`--visual-top`，所以是"抬高"而不是重画），`fit` 只在行列真的变了才做一次并通知 PTY，`ResizeObserver` 合并成 90ms 一次，滚到中间的读者位置不被打断。实测键盘弹出/收起各只发 1 条 `resize`（`rows 41→20`）

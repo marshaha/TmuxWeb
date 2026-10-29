@@ -228,23 +228,49 @@ import {marked} from '/assets/marked.esm.js';
   // repaint six times, each fit sending a new rows/cols to the PTY (tmux then redraws the whole screen).
   // Now: fit once now (so the box lifts with the keyboard), once when it settles, and only notify the PTY
   // when cols/rows actually changed.
+  let termSizeTimer=null,termSizeSent='';
+  function notifyTermSize(){
+    clearTimeout(termSizeTimer);
+    termSizeTimer=setTimeout(()=>{
+      if(state.mode!=='terminal'||!state.xterm||state.termWs?.readyState!==WebSocket.OPEN)return;
+      const xterm=state.xterm,signature=`${xterm.cols}x${xterm.rows}`;
+      if(signature===termSizeSent)return;
+      termSizeSent=signature;
+      state.termWs.send(JSON.stringify({type:'resize',cols:xterm.cols,rows:xterm.rows}));
+      // the repaint lands at the final size: show its last rows
+      setTimeout(()=>{try{xterm.scrollToBottom();}catch{};try{xterm.refresh(0,Math.max(0,xterm.rows-1));}catch{}},120);
+    },250);
+  }
   function fitTerminalNow(){
     if(state.mode!=='terminal'||!state.fit||!state.xterm||document.hidden)return;
     const xterm=state.xterm,cols=xterm.cols,rows=xterm.rows;
     const viewport=xterm.element?.querySelector('.xterm-viewport');
     const atBottom=!viewport||viewport.scrollTop+viewport.clientHeight>=viewport.scrollHeight-8,scrollTop=viewport?viewport.scrollTop:0;
     try{state.fit.fit();}catch{return;}
-    if(xterm.cols===cols&&xterm.rows===rows)return;
-    if(!atBottom&&viewport)viewport.scrollTop=scrollTop;
-    if(state.termWs?.readyState===WebSocket.OPEN)state.termWs.send(JSON.stringify({type:'resize',cols:xterm.cols,rows:xterm.rows}));
+    // Repaint every row on each settle fit. The grid often keeps its cols/rows while the
+    // canvas was resized under it (keyboard animations move the box by fractions of a cell),
+    // and then only the rows tmux happened to redraw came back -- on a phone that looked like
+    // "only the last line survived". This runs a handful of times per transition, not per frame.
+    try{xterm.refresh(0,Math.max(0,xterm.rows-1));}catch{}
+    if(xterm.cols===cols&&xterm.rows===rows){notifyTermSize();return;}
+    if(!atBottom&&viewport)viewport.scrollTop=scrollTop;else if(viewport)viewport.scrollTop=viewport.scrollHeight;
+    // Tell the PTY once, after the size settles. Sending every intermediate size made tmux paint
+    // at e.g. 28 rows while the box was still animating, so the rows of the final repaint were
+    // written into an xterm that had already scrolled them away -- the phone then showed a screen
+    // that started eleven lines late with a black hole below.
+    notifyTermSize();
   }
   function scheduleTerminalFit(){if(state.mode!=='terminal'||!state.fit||!state.xterm)return;state.viewportFitTimers.forEach(clearTimeout);state.viewportFitTimers=[0,300].map(delay=>setTimeout(()=>requestAnimationFrame(fitTerminalNow),delay));}
   function syncVisualViewport(){const viewport=window.visualViewport,height=viewport?viewport.height:window.innerHeight;document.documentElement.style.setProperty('--visual-height',`${Math.round(height)}px`);document.documentElement.style.setProperty('--visual-top',`${Math.round(viewport?.offsetTop||0)}px`);}
   function handleVisualViewportChange(){syncVisualViewport();scheduleTerminalFit();}
   // The composer and the terminal's input row both want the keyboard-open layout;
   // decide from the focused element so one field's blur cannot cancel the other.
+  // The keyboard's final height can arrive well after blur (iOS reports it late), so re-apply the
+  // layout a few times; the fit itself is a no-op unless cols/rows really changed.
+  function settleViewport(){syncVisualViewport();fitCapture();scheduleTerminalFit();
+    [140,400,800].forEach(delay=>setTimeout(()=>{syncVisualViewport();fitCapture();scheduleTerminalFit();},delay));}
   function keyboardWanted(){const a=document.activeElement;return !!(a&&(a.id==='terminal-input'||a.closest?.('.composer')));}
-  function setComposing(active){if(!isMobile())return;document.querySelector('.app').classList.toggle('mobile-composing',active);syncVisualViewport();scheduleTerminalFit();fitCapture();if(active)setTimeout(()=>{input.scrollIntoView({block:'nearest'});input.setSelectionRange(input.value.length,input.value.length);},60);}
+  function setComposing(active){if(!isMobile())return;document.querySelector('.app').classList.toggle('mobile-composing',active);settleViewport();if(active)setTimeout(()=>{input.scrollIntoView({block:'nearest'});input.setSelectionRange(input.value.length,input.value.length);},60);}
   async function api(url,opts={}){const r=await fetch(url,opts);if(r.status===401){location='/login';throw new Error('登录已失效');}if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||`HTTP ${r.status}`);}return r.json();}
   async function refreshHost(hostId,button){
     if(!hostId)return;
@@ -793,6 +819,7 @@ import {marked} from '/assets/marked.esm.js';
     if(isMobile())xterm.textarea?.setAttribute('inputmode','none');
     try{fit.fit();}catch{}
 
+    termSizeSent=`${xterm.cols}x${xterm.rows}`;
     const proto=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(`${proto}://${location.host}/ws/terminal/${encodeURIComponent(id)}?cols=${xterm.cols}&rows=${xterm.rows}`);state.termWs=ws;ws.binaryType='arraybuffer';
     const resize=()=>{if(!state.fit||state.xterm!==xterm)return;fitTerminalNow();};
     // coalesce: a keyboard transition produces a frame-by-frame stream of size changes
