@@ -23,6 +23,7 @@ plugins/
    entry = "plugin.py"
    description = "一句话说明，会出现在 /api/plugins"
    default_enabled = false     # 只有第一方插件才设为 true
+   permissions = ["ui", "mcp", "assets"]   # 只声明你要用的；见下
    ```
 
 2. `plugin.py` 里给一个 `Plugin` 子类，类名随意（也可以导出一个叫 `PLUGIN` 的实例/类）：
@@ -92,6 +93,27 @@ plugins/
 | `ctx.static_url` | 本插件 `static/` 的地址（`/plugin-assets/<名字>`，需登录；拒绝 `..` 越界） |
 
 这三样都只在插件启用时可见：关掉插件，按钮消失、工具从 `tools/list` 里消失、静态文件 404。
+
+## 权限与隔离
+
+`permissions` 目前能强制的是三个「对外暴露」的能力，**没声明就用不了**（用了会加载失败并在 `/api/plugins`
+里报错）：
+
+| 权限 | 允许什么 |
+|---|---|
+| `ui` | `ctx.add_sidebar_button()` 往侧栏加按钮 |
+| `mcp` | `ctx.add_mcp_tool()` 往 `/mcp` 注册工具 |
+| `assets` | 通过 `/plugin-assets/<名字>/` 提供 `static/` 里的文件 |
+
+**做不到的部分要说清楚**：插件和主进程在同一个 Python 解释器里，`permissions` 挡不住它直接
+`open()` 读文件、`socket` 连外网、`subprocess` 起进程——声明只是「它需要什么」的可见记录，不是内核级沙箱。
+
+所以在信任边界上：
+
+1. **只装你读过的代码**。默认只启用第一方插件，第三方要显式打开，这就是这条策略的落点。
+2. 要跑不受信的插件，**把整个服务放进容器/受限用户**里跑（只挂载需要的目录、限制出网），而不是指望
+   进程内的 `permissions`。
+3. 真正的进程内插件沙箱（子进程 + JSON-RPC，插件只能拿到被代理的能力）是下一步的设计方向，尚未实现。
 
 ## 两个容易踩的坑
 

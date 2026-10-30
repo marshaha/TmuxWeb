@@ -58,9 +58,17 @@ from fastapi import Request      # module level: ``from __future__ import annota
 
 API_VERSION = 1
 
+# What a plugin may ask for in its manifest. Only these three are enforced here: everything else a plugin
+# can do comes from being *in the same process* as the server, which is why plugins are opt-in.
+PERMISSIONS = ("ui", "mcp", "assets")
+
 
 class PluginError(RuntimeError):
     """A plugin could not be loaded; recorded and reported, never fatal."""
+
+
+class PluginPermissionError(PluginError):
+    """The plugin used something it did not declare in `permissions`."""
 
 
 # --------------------------------------------------------------------------- context
@@ -155,6 +163,7 @@ class PluginSpec:
     entry: str = "plugin.py"
     description: str = ""
     default_enabled: bool = False
+    permissions: tuple[str, ...] = ()
     error: str = ""
 
     @property
@@ -180,6 +189,8 @@ def read_manifest(directory: Path) -> PluginSpec:
     spec.entry = str(data.get("entry") or "plugin.py")
     spec.description = str(data.get("description") or "")
     spec.default_enabled = bool(data.get("default_enabled", False))
+    declared = data.get("permissions") or []
+    spec.permissions = tuple(str(item) for item in declared) if isinstance(declared, list) else ()
     if spec.name != directory.name:
         spec.error = f"manifest name {spec.name!r} does not match directory {directory.name!r}"
     elif spec.api > API_VERSION:
@@ -365,12 +376,24 @@ class PluginManager:
         self.log.info("plugin %s %s loaded", spec.name, spec.version)
 
     # -- things plugins register -------------------------------------------
+    def permissions_of(self, name: str) -> tuple[str, ...]:
+        spec = next((item for item in self.specs if item.name == name), None)
+        return spec.permissions if spec else ()
+
+    def require_permission(self, owner: str, permission: str) -> None:
+        if permission not in self.permissions_of(owner):
+            raise PluginPermissionError(
+                f"plugin {owner!r} did not declare the {permission!r} permission "
+                f"(add permissions = [\"{permission}\"] to plugin.toml)")
+
     def add_tool(self, owner: str, name: str, description: str, schema: dict, handler: Callable) -> None:
+        self.require_permission(owner, "mcp")
         if name in self.tools and self.tools[name]["owner"] != owner:
             raise PluginError(f"mcp tool {name!r} is already provided by {self.tools[name]['owner']}")
         self.tools[name] = {"owner": owner, "description": description, "schema": schema, "handler": handler}
 
     def add_button(self, owner: str, *, label: str, href: str, icon: str, title: str) -> None:
+        self.require_permission(owner, "ui")
         self.buttons = [item for item in self.buttons if not (item["owner"] == owner and item["href"] == href)]
         self.buttons.append({"owner": owner, "label": label, "href": href, "icon": icon, "title": title})
 
@@ -399,6 +422,8 @@ class PluginManager:
         spec = next((item for item in self.specs if item.name == plugin), None)
         if spec is None:
             raise KeyError(plugin)
+        if "assets" not in spec.permissions:
+            raise PluginPermissionError(f"plugin {plugin!r} did not declare the 'assets' permission")
         root = (spec.directory / "static").resolve()
         target = (root / path).resolve()
         if root != target and root not in target.parents:
@@ -454,6 +479,7 @@ class PluginManager:
             "loaded": spec.name in self.loaded,
             "first_party": spec.default_enabled,
             "error": self.errors.get(spec.name, spec.error),
+            "permissions": list(spec.permissions),
             "tools": [name for name, tool in self.tools.items() if tool["owner"] == spec.name],
             "buttons": [item["href"] for item in self.buttons if item["owner"] == spec.name],
         }
@@ -507,6 +533,8 @@ def install_routes(app, manager: PluginManager, require_auth: Callable[[Any], No
             target = manager.resolve_static(plugin, path)
         except KeyError:
             return JSONResponse({"detail": "no such plugin"}, status_code=404)
+        except PluginPermissionError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=403)
         except PluginError as exc:
             return JSONResponse({"detail": str(exc)}, status_code=400)
         except FileNotFoundError:

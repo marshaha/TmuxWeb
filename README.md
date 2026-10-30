@@ -130,7 +130,9 @@ attach 会整屏重绘一次），所以在慢链路上点继续也是「旧的�
 **设置 → 插件**里可以逐个开关（即时生效，选择存在 `plugins.json`），`TMUX_WEB_PLUGINS` 是环境变量层面
 的默认值；`GET /api/plugins` 列出装了哪些、哪些启用、哪些加载失败。
 **跨服务器通信（relay）已经是插件**：它的四个 HTTP 端点就在 `plugins/relay/`，关掉就没有这些接口。
-插件还能往侧栏加按钮、往 `/mcp` 注册工具、提供自己的静态页面（`/plugin-assets/<名字>/`，需登录）。
+插件还能往侧栏加按钮、往 `/mcp` 注册工具、提供自己的静态页面（`/plugin-assets/<名字>/`，需登录）；
+这三样要在 `plugin.toml` 里用 `permissions = ["ui","mcp","assets"]` 显式声明。插件与主进程**同一解释器**，
+声明只约束这三类对外能力，不是内核沙箱——不受信的插件请整机容器化运行。
 写法和 API 见 [`plugins/README.md`](plugins/README.md)。
 
 

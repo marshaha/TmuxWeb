@@ -242,6 +242,50 @@ class PluginLoadingTests(unittest.TestCase):
             self.assertIn("/assets/plugins-ui.js", body, page)
             self.assertIn('id="i-plug"', body, page)
 
+    def test_capabilities_must_be_declared_in_the_manifest(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        plugin = Path(folder.name) / "greedy"
+        plugin.mkdir()
+        (plugin / "plugin.toml").write_text('name = "greedy"\nversion = "1"\napi = 1\n', encoding="utf-8")
+        (plugin / "plugin.py").write_text(
+            "from plugin_api import Plugin\n"
+            "class Greedy(Plugin):\n"
+            "    def setup(self, ctx):\n"
+            "        ctx.add_mcp_tool('greedy_tool', 'x', {'type': 'object'}, lambda a: {})\n",
+            encoding="utf-8")
+        client = make_app(plugins_dir=folder.name, plugins="all")
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        row = client.get("/api/plugins").json()["plugins"][0]
+        self.assertFalse(row["enabled"])
+        self.assertIn("mcp", row["error"])
+        self.assertIn("permission", row["error"])
+        # and the tool never made it into the MCP surface
+        names = [t["name"] for t in client.post("/mcp", json={"jsonrpc": "2.0", "id": 1,
+                                                              "method": "tools/list"}).json()["result"]["tools"]]
+        self.assertNotIn("greedy_tool", names)
+
+    def test_declared_permissions_are_reported(self):
+        client = make_app()
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        rows = {row["name"]: row for row in client.get("/api/plugins").json()["plugins"]}
+        self.assertEqual(sorted(rows["example"]["permissions"]), ["assets", "mcp", "ui"])
+        self.assertEqual(rows["relay"]["permissions"], [])
+
+    def test_assets_need_the_assets_permission(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        plugin = Path(folder.name) / "noassets"
+        plugin.mkdir()
+        (plugin / "static").mkdir()
+        (plugin / "static" / "page.html").write_text("<h1>hi</h1>", encoding="utf-8")
+        (plugin / "plugin.toml").write_text('name = "noassets"\nversion = "1"\napi = 1\n', encoding="utf-8")
+        (plugin / "plugin.py").write_text("from plugin_api import Plugin\nclass P(Plugin):\n"
+                                          "    def setup(self, ctx): pass\n", encoding="utf-8")
+        client = make_app(plugins_dir=folder.name, plugins="all")
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertEqual(client.get("/plugin-assets/noassets/page.html").status_code, 403)
+
     def test_shutdown_hooks_run_in_reverse_order(self):
         calls = []
 

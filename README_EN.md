@@ -177,7 +177,10 @@ A feature can live in `plugins/<name>/` (a `plugin.toml` plus a Python module). 
 by default; `TMUX_WEB_PLUGINS` turns others on, and `GET /api/plugins` reports what is installed, enabled and
 broken. **The cross-server relay is one**: its four HTTP endpoints now live in `plugins/relay/`, switch the
 plugin off and they are gone. A plugin can also add a sidebar button, register an `/mcp` tool and serve its own static page
-(`/plugin-assets/<name>/`, login required). See [`plugins/README.md`](plugins/README.md) for the API.
+(`/plugin-assets/<name>/`, login required) — each of those must be declared as `permissions = ["ui","mcp","assets"]`
+in its manifest. Plugins share the server's interpreter: the declaration constrains those three outward-facing
+capabilities, it is not a kernel sandbox, so run untrusted plugins inside a container. See
+[`plugins/README.md`](plugins/README.md).
 
 
 ## Design boundaries
