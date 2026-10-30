@@ -115,8 +115,9 @@ preview header says so; if something was read before, the last cached answer sta
 
 The ⏸ button in the header only stops the stream: in terminal mode the screen stays exactly as it was (no
 black screen, nothing cleared), in chat mode the rendered messages just sit there, the status dot goes grey
-and the label reads 已暂停实时刷新（点 ▶ 继续）. ▶ re-attaches the terminal (the server repaints the whole
-screen) or refetches the transcript; typing is dropped while paused.
+and the label reads 已暂停实时刷新（点 ▶ 继续）. ▶ re-attaches into the same canvas: the frozen screen stays
+put until the new attach actually starts sending, and only then is it cleared and repainted, so even on a
+slow link you see the old frame turn straight into the current one — no black gap. Typing is dropped while paused.
 
 ### Send failures and retry
 

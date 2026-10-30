@@ -672,8 +672,16 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("function closeConnections(keepTerminal){", page)
         self.assertIn("if(!keepTerminal&&state.xterm){state.xterm.dispose();", page)
         self.assertIn("state.livePaused=true;closeConnections(true);", page)
-        # resuming re-attaches instead of flipping modes to force a redraw
-        self.assertIn("if(state.mode==='terminal'){closeConnections();connectTerminal(state.selected);}", page)
+        # resuming re-attaches into the canvas that is already on screen, so there is no black gap
+        self.assertIn("function connectTerminal(id,reuse){", page)
+        self.assertIn("if(state.mode==='terminal')connectTerminal(state.selected,true);", page)
+        # the frozen screen is only cleared once the new attach actually sends something
+        self.assertIn("let fresh=reused;", page)
+        self.assertIn("if(fresh){fresh=false;", page)
+        self.assertIn("try{xterm.reset();}catch{}", page)
+        # one input binding per terminal: rebinding on every (re)connect doubled every keystroke
+        self.assertIn("xterm.onData(data=>{const live=state.termWs;", page)
+        self.assertNotIn("state.termDataSub", page)
         # the paused label survives the ws close event and the progress ticker
         self.assertIn("if(state.livePaused){$('status-dot').className='status-dot paused';$('status-text').textContent='已暂停实时刷新（点 ▶ 继续）';return;}", page)
         self.assertIn(".status-dot.paused{background:var(--faint)}", page)

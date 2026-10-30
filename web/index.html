@@ -368,9 +368,8 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     $('status-dot').className='status-dot paused';$('status-text').textContent='已暂停实时刷新（点 ▶ 继续）';syncLiveButton();}
   function resumeLive(){if(!state.livePaused)return;state.livePaused=false;syncLiveButton();if(!state.selected)return;
     $('status-text').textContent='连接中…';
-    // the frozen terminal is still on screen: throw the stale canvas away and re-attach, the server
-    // repaints the whole screen on attach
-    if(state.mode==='terminal'){closeConnections();connectTerminal(state.selected);}
+    // keep the frozen screen: the new attach repaints into it, so there is no black gap while connecting
+    if(state.mode==='terminal')connectTerminal(state.selected,true);
     else connectTranscript(state.selected,true);}
   function closeConnections(keepTerminal){state.termPending='';state.viewportFitTimers.forEach(clearTimeout);state.viewportFitTimers=[];if(state.ws){state.ws.close();state.ws=null;}if(state.termWs){state.termWs.close();state.termWs=null;}if(state.transcriptTimer){clearTimeout(state.transcriptTimer);state.transcriptTimer=null;}if(state.resizeObserver){state.resizeObserver.disconnect();state.resizeObserver=null;}if(!keepTerminal&&state.xterm){state.xterm.dispose();state.xterm=null;state.fit=null;$('terminal-host').innerHTML='';}}
   function openSessionDialog(hostId,path){const host=state.hosts.find(item=>item.id===hostId);
@@ -847,14 +846,24 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(q.scheduled)return;q.scheduled=true;
     requestAnimationFrame(()=>{q.scheduled=false;if(!q.parts.length)return;const text=q.parts.join('');q.parts=[];q.bytes=0;
       if(state.xterm!==xterm)return;try{xterm.write(text);}catch{}});}
-  function connectTerminal(id){
-    const xterm=new Terminal({cursorBlink:true,disableStdin:false,convertEol:false,scrollback:10000,fontSize:13,fontFamily:'ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',theme:{background:'#111111',foreground:'#e7e5df',cursor:'#faf9f5',selectionBackground:'#5a574f88'}}),fit=new FitAddon.FitAddon();
-    state.xterm=xterm;state.fit=fit;xterm.loadAddon(fit);
-    xterm.options.fontSize=terminalFont();
-    xterm.open($('terminal-host'));
-    // the row above the key bar is the soft-keyboard target; xterm's textarea only serves hardware keys
-    if(isMobile())xterm.textarea?.setAttribute('inputmode','none');
-    try{fit.fit();}catch{}
+  function connectTerminal(id,reuse){
+    // reuse keeps the canvas that is already on screen (pause → resume): the old screen stays visible
+    // until the new attach actually starts sending, and only then is it cleared and redrawn — no black gap
+    let xterm,fit,reused=false;
+    if(reuse&&state.xterm&&state.fit){xterm=state.xterm;fit=state.fit;reused=true;try{fit.fit();}catch{}}
+    else{
+      xterm=new Terminal({cursorBlink:true,disableStdin:false,convertEol:false,scrollback:10000,fontSize:13,fontFamily:'ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',theme:{background:'#111111',foreground:'#e7e5df',cursor:'#faf9f5',selectionBackground:'#5a574f88'}});
+      fit=new FitAddon.FitAddon();
+      state.xterm=xterm;state.fit=fit;xterm.loadAddon(fit);
+      xterm.options.fontSize=terminalFont();
+      xterm.open($('terminal-host'));
+      // the row above the key bar is the soft-keyboard target; xterm's textarea only serves hardware keys
+      if(isMobile())xterm.textarea?.setAttribute('inputmode','none');
+      try{fit.fit();}catch{}
+      // bound once per terminal, routed to whichever socket is current: rebinding on every (re)connect
+      // used to stack a second handler on a reused terminal and double every keystroke
+      xterm.onData(data=>{const live=state.termWs;if(live&&live.readyState===WebSocket.OPEN)live.send(JSON.stringify({type:'input',data}));});
+    }
 
     termSizeSent=`${xterm.cols}x${xterm.rows}`;
     const proto=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(`${proto}://${location.host}/ws/terminal/${encodeURIComponent(id)}?cols=${xterm.cols}&rows=${xterm.rows}`);state.termWs=ws;ws.binaryType='arraybuffer';
@@ -862,10 +871,15 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     // coalesce: a keyboard transition produces a frame-by-frame stream of size changes
     state.resizeObserver=new ResizeObserver(()=>{clearTimeout(state.termFitTimer);state.termFitTimer=setTimeout(()=>requestAnimationFrame(resize),90);});
     state.resizeObserver.observe($('terminal-host'));
+    let fresh=reused;   // drop the frozen screen on the first frame of the new attach, not before
     ws.onopen=()=>{showError('');$('status-dot').className='status-dot live';$('status-text').textContent='终端已连接';flushTerminalPending();requestAnimationFrame(()=>requestAnimationFrame(resize));if(!isMobile())xterm.focus();scheduleTerminalFit();};
-    ws.onmessage=e=>pushTerminal(xterm,typeof e.data==='string'?e.data:new TextDecoder().decode(e.data));
+    ws.onmessage=e=>{
+      const text=typeof e.data==='string'?e.data:new TextDecoder().decode(e.data);
+      if(fresh){fresh=false;const q=termQueues.get(xterm);if(q){q.parts.length=0;q.bytes=0;}try{xterm.reset();}catch{}}
+      pushTerminal(xterm,text);};
     ws.onclose=()=>{if(state.selected!==id)return;if(state.livePaused){$('status-dot').className='status-dot paused';$('status-text').textContent='已暂停实时刷新（点 ▶ 继续）';return;}$('status-dot').className='status-dot';$('status-text').textContent='显示已断开';};
-    ws.onerror=()=>showError('终端连接失败');xterm.onData(data=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'input',data}));});
+    ws.onerror=()=>showError('终端连接失败');
+
   }
   // The terminal field is a keyboard proxy, not a local buffer: whatever appears in it is
   // sent immediately and the field is emptied again. That is the only model that survives
