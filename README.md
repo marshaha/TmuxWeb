@@ -37,6 +37,27 @@ TmuxWeb 是一个自托管的 tmux 与 AI CLI 会话管理中心。它把本机�
 - **受控 MCP 邮箱**：可选的 Claude Code、Codex、Hermes 文本消息中继，不开放任意 shell/文件能力。
 
 
+## 守护与故障排查
+
+`tmux kill-session`、`exec` 断链、进程被杀都会让"会话整个消失"——因为 tmux 在窗格进程退出时就关掉会话，
+看起来像服务自己不见了。所以线上用 `scripts/run_service.sh` 起服务，而不是直接 `exec uvicorn`：
+
+```
+tmux new-session -d -s tmuxweb -c ~/workspace/TmuxWeb './scripts/run_service.sh'
+```
+
+- 进程退出后 2 秒自动重启（tmux 会话不会因为一次崩溃而消失）。
+- 每次退出都记一行 `logs/service-exit.log`，退出码说明死因：`129`=SIGHUP（会话被 kill-session 销毁）、
+  `130`=SIGINT、`137`=SIGKILL（`kill -9`）、`143`=SIGTERM、`139`=段错误。访问日志在 `logs/service.log`。
+- 想抓"谁杀的"：`tmux set-hook -g session-closed 'run-shell "date >> /tmp/tmux-session-closed.log"'`
+  记录会话关闭时间；再看 `./.venv/bin/python scripts/tmux_watch.py --seconds 1800` 记录的 tmux 客户端命令
+  （`kill-session` 只活几毫秒，只能这样抓）。`logs/` 不入库。
+
+排查结论（2026-10-30）：`tmuxweb` 两次消失时，内核 `kern.log` 无 OOM、无 segfault，`systemd-oomd` 无 kill
+记录（`user@1002.service` 虽然是 `ManagedOOMMemoryPressure=kill`），apport 无崩溃报告，`destroy-unattached=off`，
+tmux server 未重启——即会话不是被 tmux 自己回收的，而是窗格里的进程被外部信号终止（无 shutdown 日志 ⇒
+SIGKILL/SIGHUP），随后 tmux 关闭了会话。想精确定位需要 auditd（当前未安装），现在有上面三层记录 + 自动重启兜底。
+
 ## 设置面板
 
 控制台左下角「设置」。面板是三行折叠清单（同一时间只展开一行）：

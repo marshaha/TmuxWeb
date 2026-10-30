@@ -66,6 +66,31 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Optional MCP mailbox**: controlled text messaging among Claude Code, Codex, and Hermes without arbitrary shell or filesystem tools.
 
 
+## Supervision and chasing a disappearing session
+
+`tmux kill-session`, a broken `exec` chain or a stray `kill` all look the same: the whole session
+vanishes, because tmux closes it the moment its pane process exits. So run the console through
+`scripts/run_service.sh` instead of `exec uvicorn`:
+
+```
+tmux new-session -d -s tmuxweb -c ~/workspace/TmuxWeb './scripts/run_service.sh'
+```
+
+- the service is restarted 2 seconds after any exit, so one crash no longer means an outage;
+- every exit is appended to `logs/service-exit.log` with the code: `129`=SIGHUP (session destroyed by
+  kill-session), `130`=SIGINT, `137`=SIGKILL, `143`=SIGTERM, `139`=segfault. Access logs go to
+  `logs/service.log`. `logs/` is not committed;
+- to catch the culprit: the `session-closed` tmux hook records when a session closes, and
+  `./.venv/bin/python scripts/tmux_watch.py --seconds 1800` records tmux client commands (a
+  `kill-session` client only lives a few milliseconds, which is why polling is the only way).
+
+What the 2026-10-30 investigation ruled out: no kernel OOM, no segfault, no `systemd-oomd` kill (although
+`user@1002.service` does have `ManagedOOMMemoryPressure=kill`), no apport crash report, `destroy-unattached=off`
+and no tmux server restart. In other words the session was not recycled by tmux itself: the process inside the
+pane was terminated by an external signal (no shutdown log ⇒ SIGKILL/SIGHUP) and tmux then closed the session.
+Pinpointing the sender needs auditd (not installed); the three recorders above plus the auto-restart now make
+both the outage and the blind spot go away.
+
 ## Settings panel
 
 The console's bottom-left "设置" (settings) button opens three collapsible rows (one open at a time):
