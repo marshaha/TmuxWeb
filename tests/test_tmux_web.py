@@ -673,12 +673,15 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".msg-actions .msg-time{", page)
         # transcripts hand out ISO strings as well as epoch numbers
         self.assertIn("new Date(ts)", page)
+        # the row centres its items: a stretch alignment put the time above the button
+        self.assertIn(".msg-actions{display:flex;align-items:center;", page)
         self.assertIn("d.toDateString()===now.toDateString()", page)
 
         preview = self.client.get("/preview?pane=%254").text
         self.assertIn("const clockTime=ts=>", preview)
         self.assertIn('<span class="msg-time">', preview)
         self.assertIn(".msg-tools .msg-time{", preview)
+        self.assertIn(".msg-tools{display:flex;align-items:center;", preview)
 
     def test_an_agent_pane_does_not_fall_back_to_its_screen(self):
         """Streaming a full-screen TUI is what used to lock up the browser."""
