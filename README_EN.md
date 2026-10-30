@@ -111,6 +111,12 @@ When the host or pane behind a favourite is unreachable the card's status dot re
 preview header says so; if something was read before, the last cached answer stays on screen
 ("离线 · 缓存 · 10 分钟前") instead of going blank. The cache lives in memory only.
 
+### Send failures and retry
+
+The status line under the composer is grey by default; a successful send shows a green 已发送 ✓ that clears
+after ~1.4 s, a failure shows a **red** 发送失败 and stays put (with a 重发 button on the bubble). Retrying
+shows 重发中…, then the same green confirmation — the stale failure text no longer lingers in the corner.
+
 ### A narrow sidebar
 
 The icon row at the top of the sidebar always stays on one line: the title yields width first (96 px floor)

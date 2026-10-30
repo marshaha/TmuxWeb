@@ -664,6 +664,23 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(result["session_id"], "session_live")
         self.assertEqual([item["text"] for item in result["messages"]], ["最新回答"])
 
+    def test_the_send_status_line_reports_failure_and_clears_after_a_retry(self):
+        """The composer's status line is neutral by default, red on failure, and a retry must reset it."""
+        self.login()
+        page = self.client.get("/?pane=%254").text
+        self.assertIn(".send-state{min-height:17px;color:var(--muted)}", page)
+        self.assertIn(".send-state.ok{color:var(--green)}", page)
+        self.assertIn(".send-state.bad{color:var(--danger)}", page)
+        self.assertIn("function setSendState(text,kind){", page)
+        self.assertIn("setSendState('发送失败','bad');", page)
+        # the bug: a failed send left 发送失败 on screen (in green) even after the retry worked
+        resend = page[page.index("async function resendPending(localId){"):]
+        resend = resend[:resend.index("async function sendInput(")]
+        self.assertIn("setSendState('重发中…')", resend)
+        self.assertIn("setSendState('已发送 ✓','ok')", resend)
+        # nothing writes the status line directly any more, so stale text cannot survive
+        self.assertNotIn("$('send-state').textContent", page)
+
     def test_message_rows_show_the_time_next_to_the_copy_button(self):
         """Each bubble's action row carries the message timestamp on the left."""
         self.login()
