@@ -652,6 +652,7 @@ def create_app(
     home_db: str | None = None,
     remote_store=None,
     remote_runner_factory=None,
+    password_db: str | None = None,
 ) -> FastAPI:
     tmux = backend or TmuxBackend()
     configured_password = password if password is not None else os.environ.get("TMUX_WEB_PASSWORD")
@@ -660,8 +661,13 @@ def create_app(
     secret = session_secret or os.environ.get("TMUX_WEB_SESSION_SECRET") or secrets.token_hex(32)
     # The password can be changed from the console's settings panel; the store keeps a hash and,
     # once it exists, session tokens derive from that hash instead of the environment value.
+    # A caller that passes `password` explicitly (the tests do) means "use exactly this": such an app must
+    # not pick up the deployment's passwords.json, or a password changed from the UI would break every test.
     password_store = PasswordStore(
-        os.environ.get("TMUX_WEB_PASSWORD_DB") or str(BASE_DIR / "passwords.json")
+        password_db
+        if password_db is not None
+        else os.environ.get("TMUX_WEB_PASSWORD_DB")
+        or (None if password is not None else str(BASE_DIR / "passwords.json"))
     )
 
     def check_password(candidate: str) -> bool:

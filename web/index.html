@@ -61,27 +61,23 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     .send-state.ok{color:var(--green)}.send-state.bad{color:var(--danger)}
     .terminal-mode{display:none;position:absolute;inset:0;padding:10px;background:#111}.terminal-host{width:100%;height:100%;min-width:0;min-height:0;overflow:hidden}.terminal-host .xterm{height:100%;padding:0}.terminal-host .xterm-viewport{overflow-y:auto!important}.terminal-keys{display:none;min-width:0;background:#181818;border-top:1px solid #333}.terminal-input-row{display:none;padding:7px 8px 0}.terminal-input-row input{width:100%;box-sizing:border-box;height:38px;padding:0 11px;border:1px solid #454545;border-radius:9px;background:#232323;color:#eaeaea;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;caret-color:#c96442}.terminal-input-row input::placeholder{color:#7d7d7d}.terminal-input-row input:focus{border-color:#c96442;background:#2a2624}.terminal-keys{display:none;flex-direction:column}.terminal-key-row{display:flex;align-items:stretch}.terminal-key-scroll{display:flex;flex:1;min-width:0;gap:5px;overflow-x:auto;padding:6px 4px 6px 8px;overscroll-behavior-x:contain;scrollbar-width:none}.terminal-key-pinned{display:flex;flex:none;gap:5px;padding:6px 8px 6px 4px}.terminal-key-pinned .terminal-key{min-width:44px}.terminal-key.wide{min-width:66px}.terminal-key.icon-key .ico{width:16px;height:16px}.terminal-ext{display:none;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;padding:0 8px 6px;max-height:46vh;overflow-y:auto;overscroll-behavior-y:contain}.terminal-type{display:none;flex-direction:column;gap:5px;padding:6px 6px 6px;background:#1b1b1b;border-top:1px solid #333}.terminal-keys.type-open .terminal-type{display:flex}.tk-row{display:flex;gap:5px}.tk-row .terminal-key{flex:1 1 0;min-width:0;height:40px;padding:0;font-size:15px;background:#2b2b2b}.tk-row .terminal-key.grow{flex:2.6 1 0}.tk-row .terminal-key.wide{flex:1.7 1 0;font-size:12px}.tk-row .terminal-key.action{background:#232323;color:#b9b6ae;font-size:11.5px}.tk-row .terminal-key.on{background:#6b3424;border-color:#c96442;color:#fff}.terminal-keys.ext-open .terminal-ext{display:grid}.terminal-ext .terminal-key{height:34px;font-size:11.5px}.terminal-key-scroll::-webkit-scrollbar{display:none}.terminal-key{flex:0 0 auto;min-width:38px;height:38px;padding:0 7px;border:1px solid #454545;border-radius:8px;background:#292929;color:#eee;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;touch-action:manipulation}.terminal-key.active{border-color:#c96442;background:#6b3424;color:#fff}.terminal-kb-input{position:fixed;left:-9999px;top:0;width:1px;height:1px;padding:0;border:0;font-size:16px;opacity:0;pointer-events:none;overflow:hidden;white-space:pre;outline:none;-webkit-user-select:text;user-select:text}.terminal-jump{position:absolute;right:12px;bottom:64px;z-index:5;padding:6px 12px;border:1px solid #4a4a4a;border-radius:999px;background:#2a2a2a;color:#e8e6e0;font-size:12px;cursor:pointer}.terminal-jump[hidden]{display:none}.terminal-pad{position:relative;display:grid;place-items:center;flex-basis:62px;min-width:62px;color:#aaa}.terminal-pad::after{content:'↕↔';font-size:16px}.terminal-pad.holding{border-color:#4f9a65;background:#24452d;color:#fff}.app.terminal-view .scroll,.app.terminal-view .jump{display:none}.app.terminal-view .terminal-mode{display:grid;grid-template-rows:minmax(0,1fr) auto}.app.terminal-view .conversation{background:#111}.app.terminal-view .main{grid-template-rows:58px minmax(0,1fr) 0}.app.terminal-view .composer{display:none;min-height:0;padding:0;border:0;overflow:hidden}
     .main:fullscreen,.main.fullscreen-fallback{width:100vw;height:100vh;background:var(--page)}.main:fullscreen .topbar,.main.fullscreen-fallback .topbar{padding-left:20px}.app.fullscreen-fallback{display:block}.app.fullscreen-fallback .sidebar{display:none}.app.fullscreen-fallback .main{position:fixed;z-index:100;inset:0}.main:fullscreen .fullscreen-btn,.main.fullscreen-fallback .fullscreen-btn{background:#292825;color:#fff;border-color:#292825}
-    /* the icon row must never lose buttons when the sidebar is dragged narrow: keep it on one line and
-       scroll it sideways, with the title giving up its space first (but never below ~96px) */
     /* title on its own line, the icons get the whole width underneath */
     .brand{position:relative;flex-direction:column;align-items:stretch;gap:9px;padding:15px 14px 10px}
     .brand>div:first-child{min-width:0;overflow:hidden}
-    .brand-actions{display:flex;gap:6px;justify-content:space-between;flex:1 1 auto;min-width:0;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
-      padding-right:18px;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
-    /* "there is more to the right": the sidebar colour fades in over the last 22px. Over the empty right
-       padding it is invisible, so it only ever shows up when an icon is sliding under it */
-    .brand::after{content:'';position:absolute;right:14px;bottom:10px;width:22px;height:36px;pointer-events:none;
-      background:linear-gradient(to right,rgba(238,237,232,0),var(--sidebar,#eeeDE8))}
-    .brand-actions::-webkit-scrollbar{display:none}
-    /* a mouse cannot swipe, so on a PC the buttons simply share the row: they always all fit, however
-       narrow the sidebar gets (they only get smaller) */
-    /* room to spare: fixed-size buttons spread across the row; too narrow: they shrink — never scroll,
-       because a mouse cannot swipe */
-    .brand-actions>*{flex:0 1 auto;min-width:0;max-width:40px}
-    .brand-actions .icon-btn{width:36px;min-width:0;max-width:40px}
-    @media (pointer:coarse){.brand-actions{justify-content:flex-start}
-      .brand-actions>*{flex:0 0 auto;min-width:40px;max-width:40px}
-      .brand-actions .icon-btn{width:40px;min-width:40px;max-width:40px;height:40px}}
+    .brand-actions{display:flex;gap:5px 6px;flex:1 1 auto;min-width:0;flex-wrap:wrap;overflow:hidden;padding-right:2px}
+    .brand-actions>*{flex:0 0 auto}
+    .brand-actions .icon-btn{width:30px;min-width:30px;max-width:30px;height:30px}
+    /* a mouse cannot swipe: on a PC the row wraps instead of shrinking or hiding buttons, so every icon is
+       one click away and nothing has to be scrolled sideways */
+    @media (pointer:coarse){
+      /* a phone gets one row plus a swipe, with the sidebar colour fading in over the edge as the hint */
+      .brand-actions{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;justify-content:flex-start;padding-right:18px;
+        scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+      .brand-actions::-webkit-scrollbar{display:none}
+      .brand-actions .icon-btn{width:40px;min-width:40px;max-width:40px;height:40px}
+      .brand::after{content:'';position:absolute;right:14px;bottom:10px;width:22px;height:40px;pointer-events:none;
+        background:linear-gradient(to right,rgba(238,237,232,0),var(--sidebar,#eeeDE8))}
+    }
     .transcript-empty{margin:28px auto;max-width:520px;padding:22px 24px;border:1px dashed var(--line);border-radius:16px;
       background:rgba(255,255,255,.55);color:var(--muted);font-size:13px;line-height:1.6}
     .transcript-empty b{display:block;margin-bottom:6px;color:var(--ink);font-size:14px;font-weight:600}

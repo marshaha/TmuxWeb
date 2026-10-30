@@ -127,13 +127,14 @@ shows 重发中…, then the same green confirmation — the stale failure text 
 
 ### A narrow sidebar
 
-The sidebar header is two stacked rows now: the title on top, the icons on a full-width row underneath, and the
-icon row never wraps:
+The sidebar header is two stacked rows: the title on top, the icons on a full-width row underneath.
 
-- **Desktop (mouse, no touch)**: the buttons share the row and shrink to fit, so even a 200 px sidebar shows
-  **all of them** with no scrolling — sideways scrolling with a mouse is unpleasant, so this is deliberate.
-- **Phone / touch**: the buttons keep a 40 px target and the row scrolls when it has to; the right edge carries a
-  fade in the sidebar's own colour that only shows once an icon slides under it — the "there is more" hint.
+- **Desktop (mouse, no touch)**: icons stay 30 px and **wrap onto a second line** when the row is full
+  (left aligned, even gaps) — so even a 200 px sidebar shows all of them and nothing needs sideways
+  scrolling, which is unpleasant with a mouse.
+- **Phone / touch**: icons are 40 px targets, the row swipes sideways when it has to, and the right edge
+  carries a fade in the sidebar's own colour (only visible once an icon slides under it) — the "there is
+  more" hint.
 
 Identical on the console, the board and the multi-window page (the latter two share `shell.css`).
 

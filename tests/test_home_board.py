@@ -193,15 +193,16 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn(".side-head{position:relative;flex-direction:column;", shell)
         self.assertIn(".side-head::after{", shell)                       # background-colour fade
         self.assertIn("linear-gradient(to right,rgba(255,255,255,0),var(--surface,#fff))", shell)
-        self.assertIn("justify-content:space-between", shell)            # spread when there is room
+        self.assertIn("flex-wrap:wrap", shell)                           # a PC wraps instead of scrolling
         # a desktop has no touch: no scrolling, the buttons shrink instead
-        self.assertIn("@media (pointer:coarse){.side-actions{justify-content:flex-start}", shell)
+        self.assertIn("@media (pointer:coarse){\n  .side-actions{flex-wrap:nowrap", shell)
 
         console = self.client.get("/?pane=%254").text
         self.assertIn(".brand{position:relative;flex-direction:column;", console)
         self.assertIn(".brand::after{", console)
         self.assertIn("linear-gradient(to right,rgba(238,237,232,0),var(--sidebar,#eeeDE8))", console)
-        self.assertIn("@media (pointer:coarse){.brand-actions{justify-content:flex-start}", console)
+        self.assertIn("@media (pointer:coarse){", console)
+        self.assertIn(".brand-actions{flex-wrap:nowrap;overflow-x:auto;", console)   # phone: swipe
 
     def test_a_card_previews_first_and_the_panel_holds_the_ways_in(self):
         """Cards preview; the panel offers full preview / chat / close."""
