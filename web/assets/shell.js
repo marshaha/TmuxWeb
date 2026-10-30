@@ -130,17 +130,23 @@
     } catch {}
   }
 
+  // /api/home/favorites returns plain pane ids, not {pane} objects (the board's
+  // /api/home does return objects) — accept both, or every star reads as unstarred.
+  function setFavorites(list) {
+    state.favorites = new Set((list || []).map(item => typeof item === 'string' ? item : item.pane).filter(Boolean));
+    for (const star of document.querySelectorAll('#tree [data-star]')) {
+      const on = state.favorites.has(star.dataset.star);
+      star.classList.toggle('on', on);
+      star.title = on ? '取消收藏' : '收藏到主页';
+      const use = star.querySelector('use');
+      if (use) use.setAttribute('href', on ? '#i-star-fill' : '#i-star');
+    }
+  }
+
   async function loadFavorites() {
     try {
       const data = await api('/api/home/favorites');
-      state.favorites = new Set((data.favorites || []).map(item => item.pane));
-      for (const star of document.querySelectorAll('#tree [data-star]')) {
-        const on = state.favorites.has(star.dataset.star);
-        star.classList.toggle('on', on);
-        star.title = on ? '取消收藏' : '收藏到主页';
-        const use = star.querySelector('use');
-        if (use) use.setAttribute('href', on ? '#i-star-fill' : '#i-star');
-      }
+      setFavorites(data.favorites || []);
     } catch {}
   }
 
@@ -157,6 +163,7 @@
         state.favorites.add(paneId);
       }
       await loadFavorites();
+      if (state.hooks.onStar) state.hooks.onStar(paneId, !on);
     } catch (error) {
       toast(error.message);
     }
@@ -278,6 +285,13 @@
     }
   }
 
+  // First paint from a page's own snapshot (the board caches hosts): render it now,
+  // the live /api/hosts answer replaces it a moment later.
+  function setHosts(hosts) {
+    state.hosts = hosts || [];
+    renderTree();
+  }
+
   // A page may own some of these panes (the multi-window page does); mark those rows so the tree
   // says what is already on screen.
   function markActive(paneIds) {
@@ -298,7 +312,7 @@
       loadHosts();
       setInterval(() => { if (!document.hidden) loadHosts(); }, 20000);
       setInterval(() => { if (!document.hidden) refreshStates(); }, 10000);
-      return {hosts: () => state.hosts, reload: loadHosts, toast};
+      return {hosts: () => state.hosts, reload: loadHosts, toast, setHosts, setFavorites};
     },
   };
 })();

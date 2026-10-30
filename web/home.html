@@ -253,7 +253,7 @@
     <nav class="tree" id="tree" aria-label="会话树"></nav>
     <div class="side-resizer" id="side-resizer" title="拖动调整侧边栏宽度（双击恢复默认）"></div>
   </aside>
-  <div class="backdrop" id="backdrop"></div>
+  <div class="backdrop" id="drawer-backdrop"></div>
 
   <div class="content">
 <header class="top">
@@ -310,11 +310,12 @@
     <button class="hp-btn" id="hp-close" type="button" data-hp="close">关闭</button>
   </div>
 </div>
-<div class="toast" id="toast"></div>
+<div class="toast shell-toast" id="toast"></div>
 
+<script src="/assets/shell.js"></script>
 <script>
   const $=id=>document.getElementById(id);
-  const state={board:null,favorites:new Set(),query:'',timer:null,seq:0,hosts:[],states:new Map(),treeOpen:new Set(),treeReady:false,stale:false};
+  const state={board:null,favorites:new Set(),query:'',timer:null,seq:0,hosts:[],states:new Map(),stale:false};
   // The board is painted from this snapshot on the way back from the console, so
   // navigation feels instant; the live answer replaces it a moment later.
   const CACHE_KEY='tmux-home-cache-v1';
@@ -353,33 +354,7 @@
   }
   function consoleUrl(pane){return `/?pane=${encodeURIComponent(pane)}`;}
 
-  // ---------------------------------------------------------------- sidebar
   const isNarrow=()=>window.matchMedia('(max-width:860px)').matches;
-  // same key and meaning as shell.js (which owns the sidebar on /grid): '1' means collapsed, so the
-  // state survives a jump between the board and the multi-window page
-  const SIDEBAR_KEY='tmux-sidebar-collapsed';
-  function applySidebar(){
-    const shell=$('shell');
-    const collapsed=localStorage.getItem(SIDEBAR_KEY)==='1';
-    shell.classList.toggle('collapsed',collapsed);
-    shell.classList.remove('mobile-open');
-    $('side-open').hidden=!(collapsed||isNarrow());
-  }
-  function toggleSidebar(){
-    const shell=$('shell');
-    if(isNarrow()){shell.classList.toggle('mobile-open');return;}
-    const collapsed=!shell.classList.contains('collapsed');
-    shell.classList.toggle('collapsed',collapsed);
-    localStorage.setItem(SIDEBAR_KEY,collapsed?'1':'0');
-    $('side-open').hidden=!collapsed;
-  }
-  function treeDetails(key,label,children,count,pad,tail){
-    const open=state.treeOpen.has(key)?' open':'';      // collapsed unless the user opened it
-    return `<details data-tree="${esc(key)}"${open}><summary><span class="caret">▶</span>`
-      +`<span class="tree-label" style="padding-left:${pad}px">${esc(label)}</span>`
-      +`<span class="tree-count">${count}</span>${tail||''}</summary><div class="tree-children">${children}</div></details>`;
-  }
-
   /** Reflect the favourite set on the existing rows without re-rendering the
    *  tree: a background refresh that replaces the DOM swallows clicks and
    *  resets the scroll position. */
@@ -395,112 +370,13 @@
     });
   }
 
-  function paneRow(pane){
-    const status=state.states.get(pane.id)||'unknown';
-    const starred=state.favorites.has(pane.id);
-    const name=pane.title||`pane ${pane.index??''} · ${pane.command||''}`;
-    return `<button class="tpane" data-pane="${esc(pane.id)}" title="${esc(pane.path||'')}">`
-      +`<span class="trow"><span class="tstate ${esc(status)}"></span><span class="tname">${esc(name)}</span>`
-      +`<span class="tstar ${starred?'on':''}" data-star="${esc(pane.id)}" role="button" tabindex="-1" title="${starred?'取消收藏':'收藏到主页'}">`
-      +`<svg class="ico"><use href="#i-${starred?'star-fill':'star'}"/></svg></span></span>`
-      +`<span class="tmeta">${esc([pane.command,pane.session].filter(Boolean).join(' · '))}</span></button>`;
-  }
-
-  function renderTree(){
-    const tree=$('tree');
-    if(!state.hosts.length){tree.innerHTML='<div class="empty" style="margin:10px;padding:14px;font-size:12px">还没有会话</div>';return;}
-    tree.innerHTML=state.hosts.map(host=>{
-      const sessions=new Map();
-      for(const pane of host.panes||[]){
-        const skey=pane.session||'default';
-        if(!sessions.has(skey))sessions.set(skey,new Map());
-        const windows=sessions.get(skey),wkey=`${pane.window}:${pane.window_name||''}`;
-        if(!windows.has(wkey))windows.set(wkey,[]);
-        windows.get(wkey).push(pane);
-      }
-      const sessionHtml=[...sessions].map(([session,windows])=>{
-        const windowHtml=[...windows].map(([wkey,panes])=>{
-          const first=panes[0];
-          const label=`${first.window??''}${first.window_name?': '+first.window_name:''}`;
-          return treeDetails(`${host.id}/${session}/${wkey}`,label,panes.map(paneRow).join(''),panes.length,8);
-        }).join('');
-        return treeDetails(`${host.id}/${session}`,session,windowHtml,`${windows.size}`,4);
-      }).join('');
-      const tail=`<button class="trefresh" type="button" data-refresh-host="${esc(host.id)}"`
-        +` title="刷新这台主机" aria-label="刷新主机"><svg class="ico"><use href="#i-refresh"/></svg></button>`;
-      return treeDetails(host.id,host.name||host.id,sessionHtml,(host.panes||[]).length,0,tail);
-    }).join('');
-    const panes=state.hosts.reduce((total,host)=>total+(host.panes||[]).length,0);
-    $('side-count').textContent=`${panes} panes`;
-    $('side-count').title=`${state.hosts.length} 台主机 · ${panes} 个 pane`;
-  }
-
-  async function refreshOneHost(hostId,button){
-    if(!hostId)return;
-    if(button)button.classList.add('busy');
-    try{
-      const data=await api(`/api/hosts?refresh=1&host=${encodeURIComponent(hostId)}`,{cache:'no-store'});
-      state.hosts=data.hosts||[];
-      renderTree();
-      writeCache();
-      const host=state.hosts.find(item=>item.id===hostId);
-      if(host&&host.error)toast(`${host.name||hostId}: ${host.error}`);else toast('已刷新');
-    }catch(err){toast(err.message);}
-    finally{if(button)button.classList.remove('busy');}
-  }
-
-  async function loadTree(){
-    try{
-      const data=await api('/api/hosts');
-      state.hosts=data.hosts||[];
-      renderTree();
-      writeCache();
-      loadFavorites().catch(()=>{});
-      refreshStates().catch(()=>{});
-    }catch(err){toast(err.message);}
-  }
-
-  async function refreshStates(){
-    try{
-      const data=await api('/api/panes/status');
-      state.states=new Map((data.panes||[]).map(item=>[item.id,item.status]));
-      document.querySelectorAll('#tree [data-pane]').forEach(button=>{
-        const dot=button.querySelector('.tstate');
-        if(dot)dot.className='tstate '+(state.states.get(button.dataset.pane)||'unknown');
-      });
-    }catch{}
-  }
-
-  async function loadFavorites(){
-    try{
-      const data=await api('/api/home/favorites');
-      state.favorites=new Set(data.favorites||[]);
-      if(state.treeReady)syncStars();
-    }catch{}
-  }
-
-  async function toggleFavorite(paneId){
-    const starred=state.favorites.has(paneId);
-    try{
-      if(starred){
-        await api(`/api/home/favorites/${encodeURIComponent(paneId)}`,{method:'DELETE'});
-        state.favorites.delete(paneId);
-      }else{
-        await api('/api/home/favorites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane:paneId})});
-        state.favorites.add(paneId);
-      }
-      syncStars();
-      toast(starred?'已取消收藏':'已收藏到主页');
-      await load();
-    }catch(err){toast(err.message);}
-  }
-
   async function load(){
     try{
       const board=await api('/api/home');
       state.board=board;
       state.favorites=new Set((board.favorites||[]).map(f=>f.pane));
-      if(state.treeReady)syncStars();
+      syncStars();
+      if(shell) shell.setFavorites([...state.favorites]);
       state.stale=false;
       render();
       writeCache();
@@ -535,7 +411,6 @@
     const cards=board.cards||[];
     $('card-count').textContent=`${cards.length}`;
     $('cards').innerHTML=cards.length?cards.map(cardHtml).join(''):'<div class="empty"><b>看板是空的</b>在任意 agent pane 里让模型调用 MCP 工具 publish_home_card，就能把结论贴到这里。</div>';
-    state.treeReady=true;
   }
 
   function card(favorite){
@@ -644,10 +519,6 @@
   }
 
   document.addEventListener('click',async event=>{
-    const refreshHost=event.target.closest('[data-refresh-host]');
-    if(refreshHost){event.preventDefault();event.stopPropagation();refreshOneHost(refreshHost.dataset.refreshHost,refreshHost);return;}
-    const star=event.target.closest('[data-star]');
-    if(star){event.preventDefault();event.stopPropagation();toggleFavorite(star.dataset.star);return;}
     const unfav=event.target.closest('[data-unfav]');
     if(unfav){
       event.preventDefault();event.stopPropagation();
@@ -670,8 +541,6 @@
     }
     const rename=event.target.closest('[data-rename]');
     if(rename){event.preventDefault();event.stopPropagation();openRename(rename.dataset.rename);return;}
-    const pane=event.target.closest('[data-pane]');
-    if(pane){location=consoleUrl(pane.dataset.pane);return;}
     const action=event.target.closest('[data-hp]');
     if(action){event.preventDefault();event.stopPropagation();
       const paneId=hoverPane;
@@ -842,51 +711,13 @@
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!hoverBox.hidden)hideHover();});
   window.addEventListener('resize',hideHover);
 
-  // remember which tree branches are open
-  const TREE_KEY='tmux-home-tree-open';
-  try{const saved=JSON.parse(localStorage.getItem(TREE_KEY)||'[]');if(Array.isArray(saved))state.treeOpen=new Set(saved.filter(key=>typeof key==='string'));}catch{}
-  function saveTree(){try{localStorage.setItem(TREE_KEY,JSON.stringify([...state.treeOpen]));}catch{}}
-  $('tree').addEventListener('toggle',event=>{
-    const details=event.target.closest('details[data-tree]');
-    if(!details)return;
-    details.open?state.treeOpen.add(details.dataset.tree):state.treeOpen.delete(details.dataset.tree);
-    saveTree();
-  },true);
-  function treeKeys(){          // every key renderTree() can emit
-    const keys=[];
-    for(const host of state.hosts||[]){
-      keys.push(host.id||host);
-      for(const pane of host.panes||[]){
-        const session=pane.session||'default';
-        const wkey=`${pane.window}:${pane.window_name||''}`;
-        keys.push(`${host.id}/${session}`);
-        keys.push(`${host.id}/${session}/${wkey}`);
-      }
-    }
-    return keys;
-  }
-  $('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();loadTree();};
-  $('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();loadTree();};
-
-  $('side-collapse').onclick=()=>{
-    if(isNarrow()){$('shell').classList.remove('mobile-open');return;}
-    toggleSidebar();
-  };
-  $('side-open').onclick=toggleSidebar;
-  applySidebar();
-  $('backdrop').onclick=()=>$('shell').classList.remove('mobile-open');
-  window.addEventListener('resize',()=>{
-    if(!isNarrow())$('shell').classList.remove('mobile-open');
-    $('side-open').hidden=!($('shell').classList.contains('collapsed')||isNarrow());
-  });
-
   $('q').addEventListener('input',event=>{
     state.query=event.target.value;
     clearTimeout(state.timer);
     state.timer=setTimeout(search,280);
   });
   $('q').addEventListener('keydown',event=>{if(event.key==='Escape'){event.target.value='';state.query='';search();}});
-  $('reload').onclick=()=>{load();loadTree();if(state.query.trim())search();};
+  $('reload').onclick=()=>{load();if(state.query.trim())search();};
 
   function skeleton(){
     $('stats').innerHTML='<div class="skel skel-stat"></div>'.repeat(5);
@@ -897,6 +728,16 @@
     $('tree').innerHTML='<div class="skel-line" style="width:70%"></div>'.repeat(8);
   }
 
+  // The session tree, collapse and resize now live in shell.js (same as /grid):
+  // this page only owns the board, and feeds the shell its pane clicks, host
+  // snapshots and star changes. Without the shell the board still loads; only
+  // the tree stays empty, exactly like /grid's fallback.
+  const shell=window.TmuxShell?TmuxShell.mount({
+    onPane:paneId=>{location=consoleUrl(paneId);},
+    onHosts:hosts=>{state.hosts=hosts||[];writeCache();},
+    onStar:(paneId,on)=>{toast(on?'已收藏到主页':'已取消收藏');load();},
+  }):null;
+
   const cached=readCache();
   if(cached){
     // paint first, ask the server second
@@ -904,56 +745,14 @@
     state.hosts=cached.hosts||[];
     state.favorites=new Set((cached.board.favorites||[]).map(item=>item.pane));
     state.stale=true;
-    renderTree();
+    if(shell){shell.setHosts(state.hosts);shell.setFavorites([...state.favorites]);}
     render();
   }else{
     skeleton();
   }
 
-  loadTree();
   load();
-  setInterval(()=>{if(document.hidden)return;load();refreshStates();},15000);
-(function initSidebarResize(){
-  const KEY = 'tmux-home-side-w', DEFAULT = 268, MIN = 200;
-  const handle = document.getElementById('side-resizer');
-  const bar = document.getElementById('sidebar');
-  if(!handle || !bar) return;
-  const root = document.documentElement;
-  const clamp = width => Math.max(MIN, Math.min(Math.min(640, Math.round(window.innerWidth * 0.6)), Math.round(width)));
-  const apply = (width, save) => {
-    const value = clamp(width);
-    root.style.setProperty('--side-w', value + 'px');
-    if(save){try{localStorage.setItem(KEY, String(value));}catch{}}
-  };
-  let saved = 0;
-  try{saved = parseInt(localStorage.getItem(KEY) || '', 10);}catch{}
-  if(saved) apply(saved, false);
-  let dragging = false, startX = 0, startWidth = 0;
-  handle.addEventListener('pointerdown', event => {
-    if(event.button !== 0) return;
-    event.preventDefault();
-    dragging = true;
-    startX = event.clientX;
-    startWidth = bar.getBoundingClientRect().width;
-    handle.setPointerCapture(event.pointerId);
-    document.body.classList.add('resizing');
-  });
-  handle.addEventListener('pointermove', event => {
-    if(dragging) apply(startWidth + (event.clientX - startX), false);
-  });
-  const finish = event => {
-    if(!dragging) return;
-    dragging = false;
-    if(event && event.pointerId != null && handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
-    document.body.classList.remove('resizing');
-    apply(bar.getBoundingClientRect().width, true);
-  };
-  handle.addEventListener('pointerup', finish);
-  handle.addEventListener('pointercancel', finish);
-  handle.addEventListener('dblclick', () => apply(DEFAULT, true));
-  window.addEventListener('resize', () => apply(bar.getBoundingClientRect().width, false));
-})();
-
+  setInterval(()=>{if(document.hidden)return;load();},15000);
 (function initIconRowScroll(){
   document.querySelectorAll('.brand-actions,.side-actions').forEach(row => {
     row.addEventListener('wheel', event => {
@@ -966,5 +765,6 @@
 })();
 
 </script>
+<script>if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));</script>
 </body>
 </html>
