@@ -52,6 +52,12 @@
   .body blockquote{margin-left:0;padding-left:12px;border-left:3px solid var(--accent);color:var(--muted)}
   .body a{color:var(--accent)}
   .msg-tools{display:flex;justify-content:flex-end;margin-top:6px;opacity:.5}
+  .ico-mask{display:inline-block;width:1em;height:1em;background:currentColor;vertical-align:-.12em;
+    -webkit-mask-position:center;-webkit-mask-repeat:no-repeat;-webkit-mask-size:contain;
+    mask-position:center;mask-repeat:no-repeat;mask-size:contain}
+  .ico-copy{-webkit-mask-image:url(/assets/ic-copy.png);mask-image:url(/assets/ic-copy.png);width:.95em;height:.95em}
+  .ico-share{-webkit-mask-image:url(/assets/ic-share.png);mask-image:url(/assets/ic-share.png);width:1.1em;height:.95em}
+  .copy .ico-mask{width:11px;height:11px;margin-right:4px;vertical-align:-1px}
   .msg:hover .msg-tools{opacity:1}
   .copy{height:22px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.8);color:var(--muted);font-size:11px;cursor:pointer}
   .copy:hover{background:#fff;color:var(--ink)}
@@ -201,9 +207,9 @@ function render(){
   const host=$('messages');
   host.innerHTML=state.messages.length?state.messages.map(message=>message.role==='user'
     ?`<article class="msg user"><div><div class="bubble">${esc(message.text)}</div>
-        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}">复制</button></div></div></article>`
+        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}"><span class="ico-mask ico-copy"></span>复制</button></div></div></article>`
     :`<article class="msg assistant"><div><div class="body">${md(message.text)}</div>
-        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}">复制</button></div></div></article>`).join('')
+        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}"><span class="ico-mask ico-copy"></span>复制</button></div></div></article>`).join('')
     :'<div class="empty">这个会话还没有消息</div>';
   if(state.stick)requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;});
 }

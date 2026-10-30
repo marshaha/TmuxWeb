@@ -107,6 +107,13 @@ When the host or pane behind a favourite is unreachable the card's status dot re
 preview header says so; if something was read before, the last cached answer stays on screen
 ("离线 · 缓存 · 10 分钟前") instead of going blank. The cache lives in memory only.
 
+### Icons
+
+UI icons are an inline SVG sprite (`<use href="#i-...">`). The two exceptions are the copy and share glyphs,
+which are cut straight out of `icon.png` (`scripts/extract_icons.py` → `web/assets/ic-copy.png` / `ic-share.png`)
+and painted with `.ico-mask` (the PNG's alpha is the mask, `background: currentColor` is the paint), so they
+inherit the button colour and hover states. Re-run the script after replacing `icon.png`.
+
 ## Settings panel
 
 Bottom-left "设置" in the console (and at the bottom of the sidebar on `/grid`; the panel itself comes from
@@ -138,6 +145,13 @@ Bottom-left "设置" in the console (and at the bottom of the sidebar on `/grid`
 When the host or pane behind a favourite is unreachable the card's status dot reads 离线 (offline) and the
 preview header says so; if something was read before, the last cached answer stays on screen
 ("离线 · 缓存 · 10 分钟前") instead of going blank. The cache lives in memory only.
+
+### Icons
+
+UI icons are an inline SVG sprite (`<use href="#i-...">`). The two exceptions are the copy and share glyphs,
+which are cut straight out of `icon.png` (`scripts/extract_icons.py` → `web/assets/ic-copy.png` / `ic-share.png`)
+and painted with `.ico-mask` (the PNG's alpha is the mask, `background: currentColor` is the paint), so they
+inherit the button colour and hover states. Re-run the script after replacing `icon.png`.
 
 ## Settings panel
 

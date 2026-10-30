@@ -192,6 +192,25 @@ class SettingsPageWiringTests(unittest.TestCase):
         self.assertIn("resendPending", self.page)
         self.assertIn(".retry-send{", self.page)
 
+    def test_the_copy_and_share_glyphs_come_from_the_icon_sheet(self):
+        for name in ("copy", "share"):
+            response = self.client.get(f"/assets/ic-{name}.png")
+            self.assertEqual(response.status_code, 200, name)
+            self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertEqual(self.client.get("/assets/ic-nope.png").status_code, 404)
+        # the pages tint the masks with currentColor instead of shipping fixed-colour images
+        css = self.client.get("/assets/shell.css").text
+        self.assertIn(".ico-copy{", css)
+        self.assertIn("mask-image:url(/assets/ic-copy.png)", css)
+        self.assertIn("background:currentColor", css)
+        page = self.client.get("/?pane=%251").text
+        self.assertIn('<span class="ico-mask ico-share"></span>', page)
+        self.assertIn('<span class="ico-mask ico-copy"></span>复制全部', page)
+        for path in ("/home", "/grid"):
+            other = self.client.get(path).text
+            self.assertIn('ico-mask ico-share', other, path)
+            self.assertNotIn('href="/shares" title="管理分享" aria-label="管理分享"><svg', other, path)
+
     def test_the_panel_script_is_shared_and_carries_the_markup(self):
         """The panel lives in /assets/settings.js so the console and /grid share one copy."""
         script = self.client.get("/assets/settings.js").text

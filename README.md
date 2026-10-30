@@ -70,6 +70,13 @@ SIGKILL/SIGHUP），随后 tmux 关闭了会话。想精确定位需要 auditd�
 就继续显示最后一次缓存（标题栏写「离线 · 缓存 · 10 分钟前」），不会变成一片空白。缓存只存在内存里
 （`TMUX_WEB_HOME_ENTRY_SECONDS` 之外仍然保留最后一份），不会写入磁盘。
 
+### 图标
+
+界面图标是内联 SVG sprite（`<use href="#i-...">`），唯一例外是「复制」「分享」两个字形：它们直接从
+`icon.png` 抠出来（`scripts/extract_icons.py` → `web/assets/ic-copy.png` / `ic-share.png`），页面上用
+`.ico-mask` 把 PNG 的 alpha 当遮罩、`background: currentColor` 上色，所以颜色跟着按钮走、hover 也能变。
+换 `icon.png` 后重跑 `./.venv/bin/python scripts/extract_icons.py` 即可。
+
 ## 设置面板
 
 控制台左下角（`/grid` 侧边栏底部也有同一个入口，「设置」面板由 `/assets/settings.js` 提供、各页面共用）：
@@ -96,6 +103,13 @@ SIGKILL/SIGHUP），随后 tmux 关闭了会话。想精确定位需要 auditd�
 收藏的会话所在主机/窗格掉线时，卡片的状态点显示「离线」，预览面板标题栏写「离线」；如果之前读到过内容，
 就继续显示最后一次缓存（标题栏写「离线 · 缓存 · 10 分钟前」），不会变成一片空白。缓存只存在内存里
 （`TMUX_WEB_HOME_ENTRY_SECONDS` 之外仍然保留最后一份），不会写入磁盘。
+
+### 图标
+
+界面图标是内联 SVG sprite（`<use href="#i-...">`），唯一例外是「复制」「分享」两个字形：它们直接从
+`icon.png` 抠出来（`scripts/extract_icons.py` → `web/assets/ic-copy.png` / `ic-share.png`），页面上用
+`.ico-mask` 把 PNG 的 alpha 当遮罩、`background: currentColor` 上色，所以颜色跟着按钮走、hover 也能变。
+换 `icon.png` 后重跑 `./.venv/bin/python scripts/extract_icons.py` 即可。
 
 ## 设置面板
 
