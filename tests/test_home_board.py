@@ -49,12 +49,16 @@ class HomeBoardTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
         for marker in ("收藏", "看板卡片", "/api/home/search", "publish_home_card"):
             self.assertIn(marker, response.text)
-        # the board keeps a collapsible sidebar with the same tree as the console
-        for marker in ('id="tree"', 'id="side-collapse"', 'id="side-open"', 'data-star=',
-                       'data-pane=', "loadTree",
+        # the board keeps a collapsible sidebar with the same tree as the console;
+        # the tree itself now lives in shell.js (shared with /grid), not in the page
+        for marker in ('id="tree"', 'id="side-collapse"', 'id="side-open"',
+                       'src="/assets/shell.js"', "TmuxShell.mount(",
                        'data-rename=', 'id="rename-dialog"', "openRename",
                        'id="hover-preview"', 'agent_preview', "showHover"):
             self.assertIn(marker, response.text)
+        shell = self.client.get("/assets/shell.js").text
+        for marker in ('data-star=', 'data-pane=', "function loadHosts", "function renderTree"):
+            self.assertIn(marker, shell)
         # one storage key for the collapsed sidebar on every page (shell.js owns it)
         self.assertIn("tmux-sidebar-collapsed", self.client.get("/assets/shell.js").text)
         self.assertIn("collapse(on) { syncCollapsed(!!on); },", self.client.get("/assets/shell.js").text)
@@ -124,13 +128,18 @@ class HomeBoardTests(unittest.TestCase):
 
     def test_every_host_row_offers_a_refresh(self):
         page = self.client.get("/home").text
-        for marker in ("data-refresh-host", "refreshOneHost", "class=\"trefresh\""):
-            self.assertIn(marker, page)
+        # the refresh button now comes from the shared shell, like /grid's
+        self.assertIn('src="/assets/shell.js"', page)
+        self.assertIn("TmuxShell.mount(", page)
+        shell = self.client.get("/assets/shell.js").text
+        for marker in ("data-refresh-host", "refreshHost", "class=\"trefresh\""):
+            self.assertIn(marker, shell)
         console = self.client.get("/").text
         for marker in ("data-refresh-host", "refreshHost", "class=\"host-refresh\""):
             self.assertIn(marker, console)
         # both use the cheap per-host endpoint instead of a full re-probe
-        self.assertIn("/api/hosts?refresh=1&host=", page)
+        # (the board's copy lives in shell.js now, the console's in its own page)
+        self.assertIn("/api/hosts?refresh=1&host=", shell)
         self.assertIn("/api/hosts?refresh=1&host=", console)
 
     def test_the_board_sidebar_is_a_column_on_a_desktop_and_a_drawer_on_a_phone(self):
@@ -149,8 +158,10 @@ class HomeBoardTests(unittest.TestCase):
 
     def test_the_sidebar_width_is_draggable_and_remembered(self):
         home = self.client.get("/home")
-        for marker in ('id="side-resizer"', "--side-w", "tmux-home-side-w"):
+        for marker in ('id="side-resizer"', "--side-w", 'src="/assets/shell.js"'):
             self.assertIn(marker, home.text)
+        # the width key is now the shared one (was home-only tmux-home-side-w)
+        self.assertIn("tmux-side-w", self.client.get("/assets/shell.js").text)
         # the drag styles live in the shared sidebar stylesheet now (board + grid)
         shell = self.client.get("/assets/shell.css").text
         for marker in ("col-resize", "width:min(86vw,320px)"):
@@ -190,8 +201,11 @@ class HomeBoardTests(unittest.TestCase):
         page = self.client.get("/home").text
         self.assertIn('id="tree-expand"', page)
         self.assertIn('id="tree-collapse"', page)
-        self.assertIn("tmux-home-tree-open", page)          # the choice is remembered
-        self.assertIn("state.treeOpen.has(key)", page)      # collapsed by default
+        # the open-branch choice is remembered by the shared shell now
+        # (was home-only tmux-home-tree-open / state.treeOpen)
+        shell = self.client.get("/assets/shell.js").text
+        self.assertIn("tmux-tree-open", shell)              # the choice is remembered
+        self.assertIn("state.open.has(key)", shell)        # collapsed by default
         self.assertNotIn("state.treeOpen.size?state.treeOpen.has(key):true", page)
 
         console = self.client.get("/").text
