@@ -186,6 +186,23 @@ class HomeBoardTests(unittest.TestCase):
         self.assertNotIn("flex-wrap:wrap;row-gap:", console.text)
         self.assertIn("initIconRowScroll", console.text)
 
+    def test_the_title_and_the_icon_row_are_stacked(self):
+        """Title on its own line, the icons in one row underneath, with a fade as the "it scrolls" hint."""
+        home = self.client.get("/home").text
+        shell = self.client.get("/assets/shell.css").text
+        self.assertIn(".side-head{position:relative;flex-direction:column;", shell)
+        self.assertIn(".side-head::after{", shell)                       # background-colour fade
+        self.assertIn("linear-gradient(to right,rgba(255,255,255,0),var(--surface,#fff))", shell)
+        self.assertIn("justify-content:space-between", shell)            # spread when there is room
+        # a desktop has no touch: no scrolling, the buttons shrink instead
+        self.assertIn("@media (pointer:coarse){.side-actions{justify-content:flex-start}", shell)
+
+        console = self.client.get("/?pane=%254").text
+        self.assertIn(".brand{position:relative;flex-direction:column;", console)
+        self.assertIn(".brand::after{", console)
+        self.assertIn("linear-gradient(to right,rgba(238,237,232,0),var(--sidebar,#eeeDE8))", console)
+        self.assertIn("@media (pointer:coarse){.brand-actions{justify-content:flex-start}", console)
+
     def test_a_card_previews_first_and_the_panel_holds_the_ways_in(self):
         """Cards preview; the panel offers full preview / chat / close."""
         page = self.client.get("/home").text

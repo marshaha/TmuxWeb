@@ -127,11 +127,15 @@ shows 重发中…, then the same green confirmation — the stale failure text 
 
 ### A narrow sidebar
 
-The icon row at the top of the sidebar always stays on one line: the title yields width first (96 px floor)
-and, if that is still not enough, the row scrolls sideways (wheel or touch) instead of dropping icons onto a
-second row or clipping them. Same `shell.css` rules on the console, the board and the multi-window page, and
-one shared `tmux-sidebar-collapsed` key (`1` = collapsed) so collapsing on the board also collapses it on
-`/grid`.
+The sidebar header is two stacked rows now: the title on top, the icons on a full-width row underneath, and the
+icon row never wraps:
+
+- **Desktop (mouse, no touch)**: the buttons share the row and shrink to fit, so even a 200 px sidebar shows
+  **all of them** with no scrolling — sideways scrolling with a mouse is unpleasant, so this is deliberate.
+- **Phone / touch**: the buttons keep a 40 px target and the row scrolls when it has to; the right edge carries a
+  fade in the sidebar's own colour that only shows once an icon slides under it — the "there is more" hint.
+
+Identical on the console, the board and the multi-window page (the latter two share `shell.css`).
 
 ### Message time
 

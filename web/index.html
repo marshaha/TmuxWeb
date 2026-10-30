@@ -63,11 +63,25 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     .main:fullscreen,.main.fullscreen-fallback{width:100vw;height:100vh;background:var(--page)}.main:fullscreen .topbar,.main.fullscreen-fallback .topbar{padding-left:20px}.app.fullscreen-fallback{display:block}.app.fullscreen-fallback .sidebar{display:none}.app.fullscreen-fallback .main{position:fixed;z-index:100;inset:0}.main:fullscreen .fullscreen-btn,.main.fullscreen-fallback .fullscreen-btn{background:#292825;color:#fff;border-color:#292825}
     /* the icon row must never lose buttons when the sidebar is dragged narrow: keep it on one line and
        scroll it sideways, with the title giving up its space first (but never below ~96px) */
-    .brand{flex-wrap:nowrap;gap:8px;align-items:center;overflow:hidden}
-    .brand>div:first-child{min-width:96px;overflow:hidden}
-    .brand-actions{display:flex;gap:6px;flex:0 1 auto;min-width:0;justify-content:flex-start;margin-left:auto;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+    /* title on its own line, the icons get the whole width underneath */
+    .brand{position:relative;flex-direction:column;align-items:stretch;gap:9px;padding:15px 14px 10px}
+    .brand>div:first-child{min-width:0;overflow:hidden}
+    .brand-actions{display:flex;gap:6px;justify-content:space-between;flex:1 1 auto;min-width:0;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+      padding-right:18px;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+    /* "there is more to the right": the sidebar colour fades in over the last 22px. Over the empty right
+       padding it is invisible, so it only ever shows up when an icon is sliding under it */
+    .brand::after{content:'';position:absolute;right:14px;bottom:10px;width:22px;height:36px;pointer-events:none;
+      background:linear-gradient(to right,rgba(238,237,232,0),var(--sidebar,#eeeDE8))}
     .brand-actions::-webkit-scrollbar{display:none}
-    .brand-actions>*{flex:none}
+    /* a mouse cannot swipe, so on a PC the buttons simply share the row: they always all fit, however
+       narrow the sidebar gets (they only get smaller) */
+    /* room to spare: fixed-size buttons spread across the row; too narrow: they shrink — never scroll,
+       because a mouse cannot swipe */
+    .brand-actions>*{flex:0 1 auto;min-width:0;max-width:40px}
+    .brand-actions .icon-btn{width:36px;min-width:0;max-width:40px}
+    @media (pointer:coarse){.brand-actions{justify-content:flex-start}
+      .brand-actions>*{flex:0 0 auto;min-width:40px;max-width:40px}
+      .brand-actions .icon-btn{width:40px;min-width:40px;max-width:40px;height:40px}}
     .transcript-empty{margin:28px auto;max-width:520px;padding:22px 24px;border:1px dashed var(--line);border-radius:16px;
       background:rgba(255,255,255,.55);color:var(--muted);font-size:13px;line-height:1.6}
     .transcript-empty b{display:block;margin-bottom:6px;color:var(--ink);font-size:14px;font-weight:600}
