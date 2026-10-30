@@ -27,8 +27,25 @@ while true; do
   ./.venv/bin/python -m uvicorn tmux_web:create_app --factory \
     --host 0.0.0.0 --port "${TMUX_WEB_PORT:-8787}" >>"$LOGDIR/service.log" 2>&1 &
   child=$!
+  # The password (and the other settings) are read from .env only at startup, so editing .env while the
+  # service runs used to leave the old value in memory — the new password simply would not log in.
+  # Watch the file and recycle the child; the loop restarts it immediately.
+  (
+    stamp=$(stat -c %Y ./.env 2>/dev/null || echo 0)
+    while kill -0 "$child" 2>/dev/null; do
+      sleep 2
+      now=$(stat -c %Y ./.env 2>/dev/null || echo 0)
+      if [ "$now" != "$stamp" ]; then
+        echo "[$(date -Is)] .env changed, restarting uvicorn pid=$child" >>"$LOGDIR/service.log"
+        kill -TERM "$child" 2>/dev/null
+        break
+      fi
+    done
+  ) &
+  watcher=$!
   wait "$child"
   code=$?
+  kill "$watcher" 2>/dev/null || true
   # 137 = SIGKILL (someone/kernel), 143 = SIGTERM, 130 = SIGINT, 129 = SIGHUP, 139 = segfault
   echo "[$(date -Is)] uvicorn pid=$child exited code=$code (started $started)" >>"$PORT_FILE"
   echo "[$(date -Is)] uvicorn pid=$child exited code=$code (started $started)" >>"$LOGDIR/service.log"
