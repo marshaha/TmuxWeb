@@ -144,6 +144,7 @@
   <symbol id="i-tree-close" viewBox="0 0 24 24"><path d="m7 11 5-4 5 4M7 18l5-4 5 4"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"></path></symbol>
   <symbol id="i-console" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"></path></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.6v2.2M12 18.2v2.2M4.6 12h2.2M17.2 12h2.2M6.9 6.9l1.6 1.6M15.5 15.5l1.6 1.6M17.1 6.9l-1.6 1.6M8.5 15.5l-1.6 1.6"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="M4.5 10.6 12 4.4l7.5 6.2V19a1.4 1.4 0 0 1-1.4 1.4H5.9A1.4 1.4 0 0 1 4.5 19Z"></path></symbol>
 </defs></svg>
 
@@ -167,7 +168,7 @@
   </div>
   <nav class="tree" id="tree" aria-label="Tmux 会话"></nav>
   <div class="side-resizer" id="side-resizer"></div>
-  <footer class="side-foot"><span class="side-hint">点会话即加入窗口</span><form method="post" action="/logout"><button class="logout">退出</button></form></footer>
+  <footer class="side-foot"><span class="side-hint">点会话即加入窗口</span><button class="chip-btn" id="settings-open" type="button" title="设置：改密码、导入导出、退出登录"><svg class="ico"><use href="#i-gear"/></svg>设置</button></footer>
 </aside>
 <div class="backdrop" id="drawer-backdrop"></div>
 <main class="main">
@@ -684,5 +685,6 @@
   setInterval(syncVisibility,5000);      // safety net while a window is still loading
 })();
 </script>
+<script src="/assets/settings.js"></script>
 </body>
 </html>

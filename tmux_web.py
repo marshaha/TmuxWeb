@@ -1465,6 +1465,12 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / f"shell.{kind}", media_type=media,
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/settings.js")
+    async def settings_asset() -> FileResponse:
+        """The settings panel shared by the console and /grid."""
+        return FileResponse(WEB_DIR / "assets" / "settings.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/app-icon.svg")
     async def app_icon_svg() -> FileResponse:
         return FileResponse(WEB_DIR / "app-icon.svg", media_type="image/svg+xml")

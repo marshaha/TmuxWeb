@@ -109,6 +109,38 @@ preview header says so; if something was read before, the last cached answer sta
 
 ## Settings panel
 
+Bottom-left "设置" in the console (and at the bottom of the sidebar on `/grid`; the panel itself comes from
+`/assets/settings.js` and is shared by both pages):
+
+- **Change the password** — click the row: current + new (6 chars or more). After the first change the password
+  no longer comes from the environment; a pbkdf2 hash lives in `passwords.json` (0600, path via
+  `TMUX_WEB_PASSWORD_DB`), the browser that made the change stays signed in and every other device has to log in
+  again.
+- **Import / export** — one row with an export/import tab inside:
+  - export asks for an export password (6 chars or more) and encrypts in the browser with
+    PBKDF2(SHA-256, 250k) + AES-GCM before writing; **the password never reaches the server**. It contains
+    credentials, jump chains, tmux paths, layout and presets — treat it as a key file;
+  - import takes the file and that password; a wrong password fails at the AES-GCM tag, existing hosts (same
+    host/port/user) are skipped, jump hops are relinked by name, layout and presets replace the local ones.
+- **Log out** — bottom-left of the panel. The sidebar no longer has its own 退出 button.
+
+### Multi-window on a phone
+
+- The toolbar slims down to icons (add / presets / home) and the layout switch disappears: a phone is always
+  one column.
+- Every window is a full-height card, one per screen, with scroll snapping.
+- Windows open as **chat**; a plain shell has no transcript, so its card shows the current screen (read-only,
+  refreshed every 5s) plus a "switch to terminal" button instead of an empty box. A terminal opened on purpose
+  through the header toggle is remembered.
+
+### A card whose pane dropped
+
+When the host or pane behind a favourite is unreachable the card's status dot reads 离线 (offline) and the
+preview header says so; if something was read before, the last cached answer stays on screen
+("离线 · 缓存 · 10 分钟前") instead of going blank. The cache lives in memory only.
+
+## Settings panel
+
 The console's bottom-left "设置" (settings) button opens three collapsible rows (one open at a time):
 
 - **Change the password** — click the row: current + new (6 chars or more). After

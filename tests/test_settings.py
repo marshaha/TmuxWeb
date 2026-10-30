@@ -192,36 +192,35 @@ class SettingsPageWiringTests(unittest.TestCase):
         self.assertIn("resendPending", self.page)
         self.assertIn(".retry-send{", self.page)
 
-    def test_the_settings_rows_collapse_and_only_one_opens_at_a_time(self):
-        for toggle, panel in (("pw", "pw-panel"), ("export", "export-panel"), ("import", "import-panel")):
-            self.assertIn(f'id="{toggle}-toggle"', self.page)
-            self.assertIn(f'aria-controls="{panel}"', self.page)
-            self.assertIn(f'id="{panel}" hidden', self.page)
-        self.assertIn(".settings-panel[hidden]{display:none}", self.page)
-        self.assertIn("settingsSections", self.page)
-        self.assertIn("toggleSection", self.page)
-        # the file picker is ours, not the browser's English "Choose File"
-        self.assertIn('id="import-pick"', self.page)
-        self.assertIn('id="import-file" type="file"', self.page)
-        self.assertIn("未选择文件", self.page)
+    def test_the_panel_script_is_shared_and_carries_the_markup(self):
+        """The panel lives in /assets/settings.js so the console and /grid share one copy."""
+        script = self.client.get("/assets/settings.js").text
+        for marker in ("修改密码", "导入 / 导出", "退出登录", "/api/settings/password",
+                       "/api/settings/export", "encryptBundle", "decryptBundle", "PBKDF2", "AES-GCM",
+                       "导出密码至少 6 位", "密码不对，或者文件被改过"):
+            self.assertIn(marker, script)
+        # one section with two tabs, not two separate rows
+        self.assertEqual(script.count('class="ts-row"'), 2)
+        self.assertIn("data-ts-tab=\"export\"", script)
+        self.assertIn("data-ts-tab=\"import\"", script)
+        self.assertIn('id="ts-import-file" type="file"', script)
+        self.assertIn("未选择文件", script)
 
-    def test_the_export_needs_a_password_and_the_import_checks_it(self):
-        for marker in ('id="export-password"', 'id="import-file"', 'id="import-password"',
-                       'id="import-run"', "encryptBundle", "decryptBundle", "PBKDF2",
-                       "AES-GCM", "/api/settings/export"):
-            self.assertIn(marker, self.page)
-        self.assertIn("导出密码至少 6 位", self.page)
-        self.assertIn("密码不对，或者文件被改过", self.page)
+    def test_every_page_with_a_settings_button_loads_it(self):
+        for path in ("/", "/grid"):
+            page = self.client.get(path).text
+            self.assertIn('/assets/settings.js', page, path)
+            self.assertIn('id="settings-open"', page, path)
+            self.assertNotIn('action="/logout"', page, path)   # logging out moved into the panel
 
-    def test_the_settings_panel_can_change_the_password_and_export(self):
-        for marker in ('id="settings-open"', 'id="settings-dialog"', 'id="pw-current"',
-                       'id="pw-new"', 'id="pw-confirm"', 'data-export="hosts"',
-                       'data-export="grid"', 'data-export="all"',
-                       "/api/settings/password"):
-            self.assertIn(marker, self.page)
-        self.assertIn("设置", self.page)
-        # the console footer keeps the settings entry next to logout
-        footer = self.page[self.page.index('<footer class="side-foot">'):]
+    def test_the_settings_panel_can_change_the_password_and_log_out(self):
+        script = self.client.get("/assets/settings.js").text
+        for marker in ("'ts-dialog'", 'id="ts-pw-current"', 'id="ts-pw-new"',
+                       'id="ts-pw-confirm"', 'data-ts-export', 'id="ts-logout"',
+                       "fetch('/logout'", "location.href = '/login'"):
+            self.assertIn(marker, script)
+        page = self.client.get("/").text
+        footer = page[page.index('<footer class="side-foot">'):]
         self.assertIn("settings-open", footer[:footer.index("</footer>")])
 
 if __name__ == "__main__":
