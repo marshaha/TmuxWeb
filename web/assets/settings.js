@@ -21,6 +21,15 @@
   .ts-row{display:flex;width:100%;align-items:center;justify-content:space-between;padding:10px 0 8px;
     border:0;border-bottom:1px solid var(--line,#dddcd5);background:none;color:inherit;font:600 13px/1.4 inherit;cursor:pointer}
   .ts-row:hover{color:var(--accent,#c96442)}
+  /* rows can be links (server / share management): same look, no underline, a chevron instead of a caret */
+  .ts-row.ts-link{text-decoration:none}
+  .ts-go{flex:none;width:7px;height:7px;border-top:1.6px solid currentColor;border-right:1.6px solid currentColor;
+    transform:rotate(45deg)}
+  /* the panel focus goes to the dialog itself, so nothing is ringed when it opens; keyboard users still
+     get a brand-coloured ring instead of the browser's blue one */
+  .ts-dialog{outline:none}
+  .ts-dialog:focus{outline:none}
+  .ts-dialog button:focus-visible,.ts-dialog a:focus-visible{outline:2px solid var(--accent,#c96442);outline-offset:2px;border-radius:6px}
   .ts-caret{width:7px;height:7px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;
     transform:rotate(45deg);transition:transform .15s}
   .ts-row[aria-expanded="true"] .ts-caret{transform:rotate(-135deg)}
@@ -64,6 +73,11 @@
   const MARKUP = `
   <form class="ts-form" id="ts-form">
     <h2>设置</h2>
+
+    <section class="ts-block">
+      <a class="ts-row ts-link" href="/hosts"><span>服务器管理</span><span class="ts-go" aria-hidden="true"></span></a>
+      <a class="ts-row ts-link" href="/shares"><span>分享管理</span><span class="ts-go" aria-hidden="true"></span></a>
+    </section>
 
     <section class="ts-block">
       <button class="ts-row" type="button" id="ts-pw-toggle" aria-expanded="false" aria-controls="ts-pw-panel">
@@ -362,6 +376,13 @@
     $('ts-import-name').classList.remove('picked');
     $('ts-pw-source').textContent = '读取中…';
     dialog.showModal();
+    // Chrome/Firefox auto-focus the first control, Safari draws its blue ring on it: park the focus on
+    // the dialog instead, so opening 设置 never comes with a highlighted row
+    for (const element of dialog.querySelectorAll('.ts-row, .ts-btn, a, button, input')) {
+      if (document.activeElement === element) element.blur();
+    }
+    dialog.tabIndex = -1;
+    dialog.focus({ preventScroll: true });
     try {
       const info = await api('/api/settings');
       $('ts-pw-source').textContent = info.password_source === 'file'

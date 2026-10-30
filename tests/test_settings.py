@@ -207,6 +207,26 @@ class SettingsPageWiringTests(unittest.TestCase):
         self.assertIn('<symbol id="i-copy"', preview)
         self.assertIn('use href="#i-copy"', preview)
 
+    def test_the_panel_offers_server_and_share_management(self):
+        script = self.client.get("/assets/settings.js").text
+        self.assertIn('<a class="ts-row ts-link" href="/hosts"><span>服务器管理</span>', script)
+        self.assertIn('<a class="ts-row ts-link" href="/shares"><span>分享管理</span>', script)
+        self.assertIn(".ts-row.ts-link{text-decoration:none}", script)
+        # both target pages exist
+        for path in ("/hosts", "/shares"):
+            self.assertEqual(self.client.get(path, follow_redirects=False).status_code, 200, path)
+
+    def test_opening_the_panel_never_leaves_a_focus_ring_on_a_row(self):
+        script = self.client.get("/assets/settings.js").text
+        # the panel takes the focus itself, so no row is highlighted when it opens
+        self.assertIn("dialog.tabIndex = -1;", script)
+        self.assertIn("dialog.focus({ preventScroll: true });", script)
+        self.assertIn("element.blur();", script)
+        self.assertIn(".ts-dialog{outline:none}", script)
+        # keyboard users get the accent ring, not the browser's blue one
+        self.assertIn(".ts-dialog button:focus-visible,.ts-dialog a:focus-visible{outline:2px solid var(--accent", script)
+        self.assertNotIn("autofocus", script)
+
     def test_the_panel_script_is_shared_and_carries_the_markup(self):
         """The panel lives in /assets/settings.js so the console and /grid share one copy."""
         script = self.client.get("/assets/settings.js").text

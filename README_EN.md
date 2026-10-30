@@ -126,6 +126,11 @@ in the console and each page's own `#i-share` in the sidebars.
 Bottom-left "设置" in the console (and at the bottom of the sidebar on `/grid`; the panel itself comes from
 `/assets/settings.js` and is shared by both pages):
 
+The panel takes the focus itself when it opens, so no row is ringed (Chrome, Firefox and Safari all
+highlight the first control otherwise); only Tab brings up the accent-coloured ring.
+
+- **Servers / Shares** — two rows that jump straight to `/hosts` and `/shares`, no need to hunt for the
+  little sidebar icons.
 - **Change the password** — click the row: current + new (6 chars or more). After the first change the password
   no longer comes from the environment; a pbkdf2 hash lives in `passwords.json` (0600, path via
   `TMUX_WEB_PASSWORD_DB`), the browser that made the change stays signed in and every other device has to log in
@@ -137,50 +142,6 @@ Bottom-left "设置" in the console (and at the bottom of the sidebar on `/grid`
   - import takes the file and that password; a wrong password fails at the AES-GCM tag, existing hosts (same
     host/port/user) are skipped, jump hops are relinked by name, layout and presets replace the local ones.
 - **Log out** — bottom-left of the panel. The sidebar no longer has its own 退出 button.
-
-### Multi-window on a phone
-
-- The toolbar slims down to icons (add / presets / home) and the layout switch disappears: a phone is always
-  one column.
-- Every window is a full-height card, one per screen, with scroll snapping.
-- Windows open as **chat**; a plain shell has no transcript, so its card shows the current screen (read-only,
-  refreshed every 5s) plus a "switch to terminal" button instead of an empty box. A terminal opened on purpose
-  through the header toggle is remembered.
-
-### A card whose pane dropped
-
-When the host or pane behind a favourite is unreachable the card's status dot reads 离线 (offline) and the
-preview header says so; if something was read before, the last cached answer stays on screen
-("离线 · 缓存 · 10 分钟前") instead of going blank. The cache lives in memory only.
-
-### Message time
-
-The row under each bubble (which used to hold only 复制全部 / copy) now starts with the message time:
-`HH:MM` for today and `MM-DD HH:MM` for older messages, in a faint tabular-numeral font; the copy button
-stays on the right. User bubbles, agent bubbles and the embedded `/grid` + `/preview` views all match.
-
-### Icons
-
-UI icons are an inline SVG sprite (`<use href="#i-...">`). The two exceptions are the copy and share glyphs,
-which are cut straight out of `icon.png` (`scripts/extract_icons.py` → `web/assets/ic-copy.png` / `ic-share.png`)
-and painted with `.ico-mask` (the PNG's alpha is the mask, `background: currentColor` is the paint), so they
-inherit the button colour and hover states. Re-run the script after replacing `icon.png`.
-
-## Settings panel
-
-The console's bottom-left "设置" (settings) button opens three collapsible rows (one open at a time):
-
-- **Change the password** — click the row: current + new (6 chars or more). After
-  the first change the password no longer comes from the environment; a pbkdf2 hash lives in
-  `passwords.json` (0600, path via `TMUX_WEB_PASSWORD_DB`), the browser that made the change stays
-  signed in and every other device has to log in again.
-- **Export** — set an export password first (6 chars or more), then export hosts, the multi-window
-  layout, or both. The file is encrypted in the browser with PBKDF2(SHA-256, 250k) + AES-GCM before it
-  is written; **the password never reaches the server**. It does contain credentials (passwords, private
-  keys) plus jump chains, tmux paths, layout and presets — treat it as a key file.
-- **Import** — pick the file and type the password it was exported with. A wrong password fails at the
-  AES-GCM tag; existing hosts (same host/port/user) are skipped, jump hops are relinked by name, and the
-  layout and presets replace the local ones.
 
 ## Design boundaries
 
