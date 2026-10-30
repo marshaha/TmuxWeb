@@ -72,9 +72,9 @@ SIGKILL/SIGHUP），随后 tmux 关闭了会话。想精确定位需要 auditd�
 
 ### 图标
 
-界面图标是内联 SVG sprite（`<use href="#i-...">`）。「复制」「分享」两个字形照 `icon.png` 里的样子
-重画成了 sprite 里的 `#i-copy` / `#i-share`（描边 1.7、`currentColor`），所以和其余图标一样锐利、
-悬停会跟着变色——没有用位图，3x 屏上也不会糊。
+界面图标是内联 SVG sprite（`<use href="#i-...">`）。「复制」字形照 `icon.png` 里的两个叠放圆角矩形画成了
+`#i-copy`（描边 1.7、`currentColor`）；「分享」沿用原来的箭头（控制台是 `#i-external`，主页/多窗口侧栏是
+各自的 `#i-share`），没有再换成 icon.png 里那个粗轮廓箭头。
 
 ## 设置面板
 

@@ -192,23 +192,20 @@ class SettingsPageWiringTests(unittest.TestCase):
         self.assertIn("resendPending", self.page)
         self.assertIn(".retry-send{", self.page)
 
-    def test_the_copy_and_share_glyphs_are_inline_vectors(self):
-        """The two glyphs are redrawn from icon.png as sprite symbols, not shipped as bitmaps."""
+    def test_the_copy_glyph_is_the_one_from_the_icon_sheet(self):
+        """#i-copy comes from icon.png (two sheets, back one clipped); the share arrow stays as it was."""
         page = self.client.get("/?pane=%251").text
-        for name in ("copy", "share"):
-            self.assertIn(f'<symbol id="i-{name}" viewBox="0 0 24 24">', page)
-        self.assertIn('<svg class="ico"><use href="#i-share"/></svg>', page)
+        self.assertIn('<symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7"', page)
+        self.assertIn('rect x="1.9" y="5.7"', page)
         self.assertIn('<svg class="ico"><use href="#i-copy"/></svg>复制全部', page)
+        # the share button keeps the original out-of-a-box arrow
+        self.assertIn('<use href="#i-external"/>', page)
+        self.assertNotIn('<use href="#i-share"/>', page)
         self.assertNotIn("ico-mask", page)
-        self.assertNotIn("/assets/ic-", page)
         self.assertEqual(self.client.get("/assets/ic-copy.png").status_code, 404)
-        for path in ("/home", "/grid", "/preview?pane=%254"):
-            other = self.client.get(path).text
-            self.assertIn('<symbol id="i-copy"', other, path)
-            self.assertIn('<symbol id="i-share"', other, path)
-        # the pages that actually offer a share action use it
-        for path in ("/", "/home", "/grid"):
-            self.assertIn('use href="#i-share"', self.client.get(path).text, path)
+        preview = self.client.get("/preview?pane=%254").text
+        self.assertIn('<symbol id="i-copy"', preview)
+        self.assertIn('use href="#i-copy"', preview)
 
     def test_the_panel_script_is_shared_and_carries_the_markup(self):
         """The panel lives in /assets/settings.js so the console and /grid share one copy."""

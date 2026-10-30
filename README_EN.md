@@ -109,9 +109,9 @@ preview header says so; if something was read before, the last cached answer sta
 
 ### Icons
 
-UI icons are an inline SVG sprite (`<use href="#i-...">`). The copy and share glyphs are redrawn from
-`icon.png` as `#i-copy` / `#i-share` (1.7 stroke, `currentColor`), so they stay as sharp as the rest of the
-sprite and follow hover colours — no bitmaps, nothing soft on a 3x phone screen.
+UI icons are an inline SVG sprite (`<use href="#i-...">`). The copy glyph follows `icon.png` (two stacked
+rounded sheets, `#i-copy`, 1.7 stroke, `currentColor`); the share icon stays the original arrow — `#i-external`
+in the console and each page's own `#i-share` in the sidebars.
 
 ## Settings panel
 
