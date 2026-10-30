@@ -1465,14 +1465,6 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / f"shell.{kind}", media_type=media,
                             headers={"Cache-Control": "no-store"})
 
-    @app.get("/assets/ic-{name}.png")
-    async def icon_mask(name: str) -> FileResponse:
-        """Copy / share glyphs cut out of the user's icon.png (see scripts/extract_icons.py)."""
-        if name not in {"copy", "share"}:
-            raise HTTPException(status_code=404, detail="icon not found")
-        return FileResponse(WEB_DIR / "assets" / f"ic-{name}.png", media_type="image/png",
-                            headers={"Cache-Control": "max-age=86400"})
-
     @app.get("/assets/settings.js")
     async def settings_asset() -> FileResponse:
         """The settings panel shared by the console and /grid."""

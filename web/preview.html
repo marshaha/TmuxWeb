@@ -52,12 +52,7 @@
   .body blockquote{margin-left:0;padding-left:12px;border-left:3px solid var(--accent);color:var(--muted)}
   .body a{color:var(--accent)}
   .msg-tools{display:flex;justify-content:flex-end;margin-top:6px;opacity:.5}
-  .ico-mask{display:inline-block;width:1em;height:1em;background:currentColor;vertical-align:-.12em;
-    -webkit-mask-position:center;-webkit-mask-repeat:no-repeat;-webkit-mask-size:contain;
-    mask-position:center;mask-repeat:no-repeat;mask-size:contain}
-  .ico-copy{-webkit-mask-image:url(/assets/ic-copy.png);mask-image:url(/assets/ic-copy.png);width:.95em;height:.95em}
-  .ico-share{-webkit-mask-image:url(/assets/ic-share.png);mask-image:url(/assets/ic-share.png);width:1.1em;height:.95em}
-  .copy .ico-mask{width:11px;height:11px;margin-right:4px;vertical-align:-1px}
+  .copy
   .msg:hover .msg-tools{opacity:1}
   .copy{height:22px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.8);color:var(--muted);font-size:11px;cursor:pointer}
   .copy:hover{background:#fff;color:var(--ink)}
@@ -98,6 +93,8 @@
   <symbol id="i-star-fill" viewBox="0 0 24 24"><path d="m12 4.6 2.4 5 5.5.8-4 3.9.9 5.5-4.8-2.6-4.8 2.6.9-5.5-4-3.9 5.5-.8z" fill="currentColor"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h13M12 5.5 18.5 12 12 18.5"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2.2"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="1.9" y="5.7" width="14.6" height="17.1" rx="2.7"/><path d="M8.4 5.7V3.9A2.7 2.7 0 0 1 11.1 1.2h8.4a2.7 2.7 0 0 1 2.7 2.7v11.3a2.7 2.7 0 0 1-2.7 2.7h-3.3"/></g></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 11.9 11.9 3.3v18.2Z"/><path d="M11.9 14.4c-3.5.5-6.2 2.6-7.9 6-.3.7 0 1.1.6.9 2.1-.9 4.2-1.4 6.5-1.4h.8"/></g></symbol>
 </defs></svg>
 
 <header>
@@ -207,9 +204,9 @@ function render(){
   const host=$('messages');
   host.innerHTML=state.messages.length?state.messages.map(message=>message.role==='user'
     ?`<article class="msg user"><div><div class="bubble">${esc(message.text)}</div>
-        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}"><span class="ico-mask ico-copy"></span>复制</button></div></div></article>`
+        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}"><svg class="ico"><use href="#i-copy"/></svg>复制</button></div></div></article>`
     :`<article class="msg assistant"><div><div class="body">${md(message.text)}</div>
-        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}"><span class="ico-mask ico-copy"></span>复制</button></div></div></article>`).join('')
+        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}"><svg class="ico"><use href="#i-copy"/></svg>复制</button></div></div></article>`).join('')
     :'<div class="empty">这个会话还没有消息</div>';
   if(state.stick)requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;});
 }

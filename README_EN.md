@@ -109,10 +109,9 @@ preview header says so; if something was read before, the last cached answer sta
 
 ### Icons
 
-UI icons are an inline SVG sprite (`<use href="#i-...">`). The two exceptions are the copy and share glyphs,
-which are cut straight out of `icon.png` (`scripts/extract_icons.py` → `web/assets/ic-copy.png` / `ic-share.png`)
-and painted with `.ico-mask` (the PNG's alpha is the mask, `background: currentColor` is the paint), so they
-inherit the button colour and hover states. Re-run the script after replacing `icon.png`.
+UI icons are an inline SVG sprite (`<use href="#i-...">`). The copy and share glyphs are redrawn from
+`icon.png` as `#i-copy` / `#i-share` (1.7 stroke, `currentColor`), so they stay as sharp as the rest of the
+sprite and follow hover colours — no bitmaps, nothing soft on a 3x phone screen.
 
 ## Settings panel
 

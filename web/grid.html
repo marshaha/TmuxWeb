@@ -137,7 +137,7 @@
   <symbol id="i-star-fill" viewBox="0 0 24 24"><path d="m12 4.6 2.3 4.9 5.3.7-3.9 3.7 1 5.3-4.7-2.6-4.7 2.6 1-5.3L4.4 10.2l5.3-.7z" fill="currentColor"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.2v4.4h-4.4"/></symbol>
   <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="6" rx="1.8"/><rect x="3.4" y="13.4" width="17.2" height="6" rx="1.8"/><path d="M7 7.6h.01M7 16.4h.01"/></symbol>
-  <symbol id="i-share" viewBox="0 0 24 24"><circle cx="17.4" cy="6" r="2.4"/><circle cx="6.6" cy="12" r="2.4"/><circle cx="17.4" cy="18" r="2.4"/><path d="m8.8 10.8 6.4-3.6M8.8 13.2l6.4 3.6"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 11.9 11.9 3.3v18.2Z"/><path d="M11.9 14.4c-3.5.5-6.2 2.6-7.9 6-.3.7 0 1.1.6.9 2.1-.9 4.2-1.4 6.5-1.4h.8"/></g></symbol>
   <symbol id="i-collapse" viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
   <symbol id="i-tree-open" viewBox="0 0 24 24"><path d="m7 6 5 4 5-4M7 13l5 4 5-4"/></symbol>
@@ -146,6 +146,8 @@
   <symbol id="i-console" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"></path></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.6v2.2M12 18.2v2.2M4.6 12h2.2M17.2 12h2.2M6.9 6.9l1.6 1.6M15.5 15.5l1.6 1.6M17.1 6.9l-1.6 1.6M8.5 15.5l-1.6 1.6"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="M4.5 10.6 12 4.4l7.5 6.2V19a1.4 1.4 0 0 1-1.4 1.4H5.9A1.4 1.4 0 0 1 4.5 19Z"></path></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="1.9" y="5.7" width="14.6" height="17.1" rx="2.7"/><path d="M8.4 5.7V3.9A2.7 2.7 0 0 1 11.1 1.2h8.4a2.7 2.7 0 0 1 2.7 2.7v11.3a2.7 2.7 0 0 1-2.7 2.7h-3.3"/></g></symbol>
+  
 </defs></svg>
 
 <div class="shell" id="shell">
@@ -156,7 +158,7 @@
       <a class="icon-btn" href="/" title="控制台" aria-label="控制台"><svg class="ico"><use href="#i-console"/></svg></a>
       <a class="icon-btn" href="/home" title="主页" aria-label="主页"><svg class="ico"><use href="#i-home"/></svg></a>
       <a class="icon-btn" href="/hosts" title="远程主机" aria-label="远程主机"><svg class="ico"><use href="#i-server"/></svg></a>
-      <a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享"><span class="ico-mask ico-share"></span></a>
+      <a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享"><svg class="ico"><use href="#i-share"/></svg></a>
       <button class="icon-btn" id="reload" type="button" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
       <button class="icon-btn" id="side-collapse" type="button" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-collapse"/></svg></button>
     </div>

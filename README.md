@@ -72,10 +72,9 @@ SIGKILL/SIGHUP），随后 tmux 关闭了会话。想精确定位需要 auditd�
 
 ### 图标
 
-界面图标是内联 SVG sprite（`<use href="#i-...">`），唯一例外是「复制」「分享」两个字形：它们直接从
-`icon.png` 抠出来（`scripts/extract_icons.py` → `web/assets/ic-copy.png` / `ic-share.png`），页面上用
-`.ico-mask` 把 PNG 的 alpha 当遮罩、`background: currentColor` 上色，所以颜色跟着按钮走、hover 也能变。
-换 `icon.png` 后重跑 `./.venv/bin/python scripts/extract_icons.py` 即可。
+界面图标是内联 SVG sprite（`<use href="#i-...">`）。「复制」「分享」两个字形照 `icon.png` 里的样子
+重画成了 sprite 里的 `#i-copy` / `#i-share`（描边 1.7、`currentColor`），所以和其余图标一样锐利、
+悬停会跟着变色——没有用位图，3x 屏上也不会糊。
 
 ## 设置面板
 

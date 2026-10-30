@@ -81,9 +81,4 @@ body.resizing .app,body.resizing .shell{transition:none}
 .tpane.in-grid{background:rgba(201,100,66,.09);box-shadow:inset 2px 0 0 var(--accent)}
 .tpane.in-grid .tname{color:var(--ink)}
 
-/* copy / share glyphs sliced from icon.png: the alpha is the ink, currentColor is the paint */
-.ico-mask{display:inline-block;width:1em;height:1em;background:currentColor;vertical-align:-.12em;
-  -webkit-mask-position:center;-webkit-mask-repeat:no-repeat;-webkit-mask-size:contain;
-  mask-position:center;mask-repeat:no-repeat;mask-size:contain}
-.ico-copy{-webkit-mask-image:url(/assets/ic-copy.png);mask-image:url(/assets/ic-copy.png);width:.95em;height:.95em}
-.ico-share{-webkit-mask-image:url(/assets/ic-share.png);mask-image:url(/assets/ic-share.png);width:1.1em;height:.95em}
+
