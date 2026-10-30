@@ -749,7 +749,8 @@
     const name=($('preset-name').value||'').trim();
     if(!name){$('preset-name').focus();return;}
     if(!state.panes.length)return;
-    state.presets[name]={panes:[...state.panes],widths:{...state.widths},layout:state.layout,modes:{...state.modes}};
+    state.presets[name]={panes:[...state.panes],widths:{...state.widths},layout:state.layout,
+      cols:state.cols,rows:state.rows,colFr:[...state.colFr],rowFr:[...state.rowFr],modes:{...state.modes}};
     savePresets();renderPresets();$('preset-name').value='';
   };
   document.addEventListener('click',event=>{
@@ -763,6 +764,11 @@
         if(state.panes.includes(pane)&&Number.isFinite(width)&&width>=MIN)state.widths[pane]=Math.round(width);
       }
       state.layout=LAYOUTS.includes(preset.layout)?preset.layout:'strip';
+      if(Number.isFinite(preset.cols))state.cols=preset.cols;
+      if(Number.isFinite(preset.rows))state.rows=preset.rows;
+      if(Array.isArray(preset.colFr))state.colFr=[...preset.colFr];
+      if(Array.isArray(preset.rowFr))state.rowFr=[...preset.rowFr];
+      applyGridShape();
       state.modes={};
       state.explicit={};
       for(const [pane,mode] of Object.entries(preset.modes||{})){
