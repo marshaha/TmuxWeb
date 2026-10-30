@@ -52,6 +52,13 @@
   .ts-file-name{color:var(--muted,#73716b);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ts-file-name.picked{color:inherit}
   .ts-actions{display:flex;justify-content:space-between;gap:8px;padding:14px 20px 18px}
+  /* fingers need bigger targets than a mouse pointer */
+  @media (pointer:coarse){
+    .ts-row{padding:13px 0 11px}
+    .ts-tabs button{height:32px}
+    .ts-btn{height:38px;padding:0 14px;font-size:13px}
+    .ts-field input{height:42px;font-size:16px}
+  }
   `;
 
   const MARKUP = `
