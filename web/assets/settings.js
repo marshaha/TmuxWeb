@@ -60,6 +60,26 @@
     border-radius:10px;background:#faf9f6}
   .ts-file-name{color:var(--muted,#73716b);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ts-file-name.picked{color:inherit}
+  /* plugin manager */
+  .ts-plugins{display:flex;flex-direction:column;gap:8px;padding:10px 0 4px}
+  .ts-subhead{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 0 8px;
+    border-bottom:1px solid var(--line,#dddcd5);font:600 13px/1.4 inherit}
+  .ts-subhead .ts-hint{margin:0}
+  .ts-plugin{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line,#dddcd5);
+    border-radius:12px;background:#faf9f6}
+  .ts-plugin.off{background:#f6f5f1}
+  .ts-plugin-main{flex:1;min-width:0}
+  .ts-plugin-name{font-weight:650;font-size:13px}
+  .ts-plugin-ver{margin-left:6px;color:var(--faint,#a09d95);font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .ts-plugin .ts-hint{margin:3px 0 0;font-size:11.5px}
+  .ts-plugin .ts-state{margin:3px 0 0;min-height:0;font-size:11.5px}
+  .ts-switch{flex:none;position:relative;width:42px;height:24px;margin-top:2px;padding:0;border:1px solid var(--line,#dddcd5);
+    border-radius:999px;background:#e6e4dd;cursor:pointer;transition:background .15s,border-color .15s}
+  .ts-switch::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;
+    background:#fff;box-shadow:0 1px 2px #0002;transition:transform .15s}
+  .ts-switch[aria-checked="true"]{background:#4f9a65;border-color:#4f9a65}
+  .ts-switch[aria-checked="true"]::after{transform:translateX(18px)}
+  .ts-switch:disabled{opacity:.5;cursor:default}
   .ts-actions{display:flex;justify-content:space-between;gap:8px;padding:14px 20px 18px}
   /* fingers need bigger targets than a mouse pointer */
   @media (pointer:coarse){
@@ -126,6 +146,11 @@
           <p class="ts-state" id="ts-import-state" role="status"></p>
         </div>
       </div>
+    </section>
+
+    <section class="ts-block">
+      <div class="ts-subhead"><span>插件</span><span class="ts-hint" id="ts-plugins-count"></span></div>
+      <div class="ts-plugins" id="ts-plugins"><p class="ts-hint">读取中…</p></div>
     </section>
 
     <div class="ts-actions">
@@ -366,6 +391,61 @@
     $('ts-import').hidden = name !== 'import';
   }
 
+  // ---------------------------------------------------------------- plugins
+  const esc = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function renderPlugins(list) {
+    const box = $('ts-plugins');
+    if (!box) return;
+    const count = $('ts-plugins-count');
+    if (count) {
+      const on = list.filter(row => row.enabled).length;
+      count.textContent = list.length ? `${on} / ${list.length} 已启用` : '没有安装插件';
+    }
+    if (!list.length) {
+      box.innerHTML = '<p class="ts-hint">把插件放到 plugins/&lt;名字&gt;/ 里，重启后就能在这里开关。</p>';
+      return;
+    }
+    box.innerHTML = list.map(row => `
+      <div class="ts-plugin${row.enabled ? '' : ' off'}" data-plugin="${esc(row.name)}">
+        <div class="ts-plugin-main">
+          <span class="ts-plugin-name">${esc(row.name)}</span><span class="ts-plugin-ver">${esc(row.version)}</span>
+          ${row.description ? `<p class="ts-hint">${esc(row.description)}</p>` : ''}
+          ${row.error ? `<p class="ts-state bad">${esc(row.error)}</p>` : ''}
+        </div>
+        <button class="ts-switch" type="button" role="switch" data-toggle="${esc(row.name)}"
+          aria-checked="${row.enabled ? 'true' : 'false'}"
+          title="${row.enabled ? '停用' : '启用'}" aria-label="${row.enabled ? '停用' : '启用'} ${esc(row.name)}"
+          ${row.error && !row.loaded ? 'disabled' : ''}></button>
+      </div>`).join('');
+  }
+
+  async function loadPlugins() {
+    const box = $('ts-plugins');
+    if (!box) return;
+    try {
+      const data = await api('/api/plugins');
+      renderPlugins(data.plugins || []);
+    } catch (error) {
+      box.innerHTML = `<p class="ts-state bad">读取插件失败：${esc(error.message)}</p>`;
+    }
+  }
+
+  async function togglePlugin(name, button) {
+    const wanted = button.getAttribute('aria-checked') !== 'true';
+    button.disabled = true;
+    try {
+      await api(`/api/plugins/${encodeURIComponent(name)}/${wanted ? 'enable' : 'disable'}`, { method: 'POST' });
+      await loadPlugins();
+    } catch (error) {
+      button.disabled = false;
+      const row = button.closest('.ts-plugin');
+      const note = row && row.querySelector('.ts-state');
+      if (note) { note.textContent = error.message; note.className = 'ts-state bad'; }
+      else if (row) row.insertAdjacentHTML('beforeend', `<p class="ts-state bad">${esc(error.message)}</p>`);
+    }
+  }
+
   async function open() {
     if (!dialog) return;
     sections.forEach(([id]) => toggleSection(id, false));
@@ -376,6 +456,7 @@
     $('ts-import-name').classList.remove('picked');
     $('ts-pw-source').textContent = '读取中…';
     dialog.showModal();
+    loadPlugins();
     // Chrome/Firefox auto-focus the first control, Safari draws its blue ring on it: park the focus on
     // the dialog instead, so opening 设置 never comes with a highlighted row
     for (const element of dialog.querySelectorAll('.ts-row, .ts-btn, a, button, input')) {
@@ -422,6 +503,10 @@
     }
     for (const button of buttons) button.onclick = () => open();
     $('ts-close').onclick = () => dialog.close();
+    $('ts-plugins').addEventListener('click', event => {
+      const button = event.target.closest('[data-toggle]');
+      if (button) togglePlugin(button.dataset.toggle, button);
+    });
     $('ts-logout').onclick = async () => {
       try { await fetch('/logout', { method: 'POST' }); } catch { /* the redirect decides */ }
       location.href = '/login';

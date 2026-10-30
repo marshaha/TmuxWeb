@@ -19,7 +19,7 @@ import termios
 import sqlite3
 
 from auth_store import PasswordStore
-from plugin_api import PluginManager, PluginServices, install_status_route
+from plugin_api import PluginManager, PluginServices, install_routes
 import time
 import threading
 from collections import defaultdict, deque
@@ -656,6 +656,7 @@ def create_app(
     password_db: str | None = None,
     plugins_dir: str | None = None,
     plugins: str | None = None,
+    plugin_state: str | None = None,
 ) -> FastAPI:
     tmux = backend or TmuxBackend()
     configured_password = password if password is not None else os.environ.get("TMUX_WEB_PASSWORD")
@@ -2932,9 +2933,9 @@ def create_app(
         version=os.environ.get("TMUX_WEB_VERSION", ""),
     )
     manager = PluginManager(app, plugin_services, directory=plugins_dir, enabled=plugins,
-                            logger=logging.getLogger("tmuxweb.plugins"))
+                            state_path=plugin_state, logger=logging.getLogger("tmuxweb.plugins"))
     manager.load_all()
-    install_status_route(app, manager, require_auth)
+    install_routes(app, manager, require_auth)
     app.state.plugins = manager
     app.router.add_event_handler("shutdown", manager.shutdown)
 

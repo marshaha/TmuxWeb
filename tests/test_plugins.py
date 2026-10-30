@@ -23,7 +23,9 @@ PLUGINS_DIR = Path(__file__).resolve().parent.parent / "plugins"
 def make_app(**kwargs):
     options = dict(password=PASSWORD, session_secret="test-secret", terminal_factory=FakeTerminalFactory(),
                    share_db=":memory:", home_db=":memory:", remote_store=FakeRemoteStore(),
-                   remote_runner_factory=FakeSSHRunner)
+                   remote_runner_factory=FakeSSHRunner,
+                   # never touch the deployment's plugins.json from a test
+                   plugin_state=str(Path(tempfile.mkdtemp()) / "plugins.json"))
     options.update(kwargs)
     return TestClient(create_app(FakeTmux(), **options))
 
@@ -145,6 +147,56 @@ class PluginLoadingTests(unittest.TestCase):
         row = client.get("/api/plugins").json()["plugins"][0]
         self.assertFalse(row["enabled"])
         self.assertIn("api", row["error"].lower())
+
+    def test_plugins_can_be_switched_at_runtime(self):
+        client = make_app()
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertEqual(client.get("/api/relay/log").status_code, 200)
+
+        off = client.post("/api/plugins/relay/disable").json()["plugin"]
+        self.assertFalse(off["enabled"])
+        self.assertEqual(client.get("/api/relay/log").status_code, 404)     # guarded, not unmounted
+        self.assertEqual(client.get("/").status_code, 200)                 # everything else keeps working
+
+        on = client.post("/api/plugins/relay/enable").json()["plugin"]
+        self.assertTrue(on["enabled"])
+        self.assertEqual(client.get("/api/relay/log").status_code, 200)
+
+    def test_a_plugin_can_be_enabled_for_the_first_time_at_runtime(self):
+        client = make_app()
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertEqual(client.get("/api/example/ping").status_code, 404)
+        self.assertTrue(client.post("/api/plugins/example/enable").json()["plugin"]["enabled"])
+        self.assertEqual(client.get("/api/example/ping").status_code, 200)
+        self.assertTrue(client.post("/api/plugins/example/disable").json()["plugin"]["enabled"] is False)
+        self.assertEqual(client.get("/api/example/ping").status_code, 404)
+
+    def test_the_switch_persists_across_restarts(self):
+        state = str(Path(tempfile.mkdtemp()) / "plugins.json")
+        first = make_app(plugin_state=state)
+        first.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        first.post("/api/plugins/relay/disable")
+        self.assertIn('"relay": false', Path(state).read_text())
+
+        second = make_app(plugin_state=state)
+        second.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertEqual(second.get("/api/relay/log").status_code, 404)
+
+    def test_switching_needs_a_login_and_an_existing_plugin(self):
+        client = make_app()
+        self.assertEqual(client.post("/api/plugins/relay/disable").status_code, 401)
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertEqual(client.post("/api/plugins/nope/enable").status_code, 404)
+
+    def test_the_settings_panel_carries_the_plugin_manager(self):
+        script = self.client_public().get("/assets/settings.js").text
+        self.assertIn('id="ts-plugins"', script)
+        self.assertIn("function renderPlugins(", script)
+        self.assertIn("/api/plugins/${encodeURIComponent(name)}/${wanted ? 'enable' : 'disable'}", script)
+        self.assertIn("role=\"switch\"", script)
+
+    def client_public(self):
+        return make_app()
 
     def test_shutdown_hooks_run_in_reverse_order(self):
         calls = []

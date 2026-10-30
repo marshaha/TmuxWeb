@@ -127,7 +127,8 @@ attach 会整屏重绘一次），所以在慢链路上点继续也是「旧的�
 ## 插件
 
 功能可以做成插件放在 `plugins/<名字>/`（一个 `plugin.toml` + 一段 Python），默认只加载第一方插件，
-`TMUX_WEB_PLUGINS` 控制开关；`GET /api/plugins` 列出装了哪些、哪些启用、哪些加载失败。
+**设置 → 插件**里可以逐个开关（即时生效，选择存在 `plugins.json`），`TMUX_WEB_PLUGINS` 是环境变量层面
+的默认值；`GET /api/plugins` 列出装了哪些、哪些启用、哪些加载失败。
 **跨服务器通信（relay）已经是插件**：它的四个 HTTP 端点就在 `plugins/relay/`，关掉就没有这些接口。
 写法和 API 见 [`plugins/README.md`](plugins/README.md)。
 

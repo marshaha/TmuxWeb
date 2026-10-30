@@ -62,4 +62,6 @@ client/ios/Flutter/flutter_export_environment.sh
 .testdata/
 passwords.json
 passwords.json.tmp
+plugins.json
+plugins.json.tmp
 logs/

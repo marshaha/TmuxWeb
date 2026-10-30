@@ -222,16 +222,40 @@ class PluginManager:
     """Finds, loads and reports plugins. One per application."""
 
     def __init__(self, app, services, *, directory: str | Path | None = None,
-                 enabled: str | None = None, logger: logging.Logger | None = None) -> None:
+                 enabled: str | None = None, logger: logging.Logger | None = None,
+                 state_path: str | Path | None = None) -> None:
         self.app = app
         self.services = services
         self.directory = Path(directory) if directory else Path(services.plugins_root)
         self.log = logger or logging.getLogger("tmuxweb.plugins")
         self.enabled_raw = enabled if enabled is not None else os.environ.get("TMUX_WEB_PLUGINS", "")
+        self.state_path = Path(state_path) if state_path else Path(services.data_root) / "plugins.json"
+        self.state: dict[str, bool] = self._read_state()   # what the settings panel decided
         self.specs: list[PluginSpec] = []
         self.loaded: dict[str, Plugin] = {}
         self.contexts: dict[str, PluginContext] = {}
         self.errors: dict[str, str] = {}
+        self.paths: dict[str, str] = {}                    # route path -> plugin name
+
+    # -- persisted decisions ----------------------------------------------
+    def _read_state(self) -> dict[str, bool]:
+        try:
+            loaded = json.loads(self.state_path.read_text())
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(loaded, dict):
+            return {}
+        return {str(k): bool(v) for k, v in loaded.items()}
+
+    def _write_state(self) -> None:
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
+            temporary.write_text(json.dumps(self.state, indent=2, sort_keys=True))
+            temporary.chmod(0o600)
+            os.replace(temporary, self.state_path)
+        except OSError as exc:                             # a read-only checkout still works, just not sticky
+            self.log.warning("cannot save plugin state: %s", exc)
 
     # -- discovery --------------------------------------------------------
     def discover(self) -> list[PluginSpec]:
@@ -247,6 +271,8 @@ class PluginManager:
         return found
 
     def _wanted(self, spec: PluginSpec) -> bool:
+        if spec.name in self.state:            # the settings panel wins over the environment
+            return self.state[spec.name]
         on, off, load_all = parse_enabled(self.enabled_raw)
         if "*" in off or spec.name in off:
             return False
@@ -304,26 +330,68 @@ class PluginManager:
         context = PluginContext(app=self.app, name=spec.name, version=spec.version,
                                 directory=spec.directory, config=_plugin_config(spec.directory, spec.name),
                                 services=self.services, log=self.log.getChild(spec.name))
+        before = {getattr(route, "path", "") for route in self.app.router.routes} if self.app else set()
         instance.setup(context)
+        if self.app:
+            for route in self.app.router.routes:
+                path = getattr(route, "path", "")
+                if path and path not in before:
+                    self.paths[path] = spec.name
         self.loaded[spec.name] = instance
         self.contexts[spec.name] = context
         self.log.info("plugin %s %s loaded", spec.name, spec.version)
 
+    # -- runtime switching -------------------------------------------------
+    def is_enabled(self, name: str) -> bool:
+        return name in self.loaded and not self._blocked(name)
+
+    def _blocked(self, name: str) -> bool:
+        """Disabled at runtime: the module stays imported, its endpoints answer 404."""
+        return self.state.get(name) is False
+
+    def enable(self, name: str) -> dict:
+        spec = next((item for item in self.specs if item.name == name), None)
+        if spec is None:
+            raise KeyError(name)
+        if spec.error:
+            raise PluginError(spec.error)
+        if name not in self.loaded:
+            self._load(spec)                 # first time: import + setup now
+        self.state[name] = True
+        self.errors.pop(name, None)
+        self._write_state()
+        self.log.info("plugin %s enabled", name)
+        return self.row(name)
+
+    def disable(self, name: str) -> dict:
+        if name not in {item.name for item in self.specs}:
+            raise KeyError(name)
+        self.state[name] = False
+        self._write_state()
+        self.log.info("plugin %s disabled", name)
+        return self.row(name)
+
+    def guard(self, path: str) -> bool:
+        """False when the request should be answered with 404 (its plugin is switched off)."""
+        owner = self.paths.get(path)
+        return not (owner and self._blocked(owner))
+
     # -- reporting --------------------------------------------------------
+    def row(self, name: str) -> dict:
+        spec = next(item for item in self.specs if item.name == name)
+        return {
+            "name": spec.name,
+            "version": spec.version,
+            "description": spec.description,
+            "api": spec.api,
+            "enabled": self.is_enabled(spec.name),
+            "loaded": spec.name in self.loaded,
+            "first_party": spec.default_enabled,
+            "error": self.errors.get(spec.name, spec.error),
+        }
+
     def status(self) -> list[dict]:
-        rows = []
-        for spec in self.specs:
-            error = self.errors.get(spec.name, "")
-            rows.append({
-                "name": spec.name,
-                "version": spec.version,
-                "description": spec.description,
-                "api": spec.api,
-                "enabled": spec.name in self.loaded,
-                "first_party": spec.default_enabled,
-                "error": error,
-            })
-        return rows
+        return [self.row(spec.name) for spec in self.specs if spec.name in {item.name for item in self.specs}]
 
     def shutdown(self) -> None:
         for name, context in list(self.contexts.items()):
@@ -335,10 +403,41 @@ class PluginManager:
                 self.log.exception("plugin %s: shutdown failed", name)
 
 
-def install_status_route(app, manager: PluginManager, require_auth: Callable[[Any], None]) -> None:
-    """``GET /api/plugins`` — what is installed, what is loaded, what broke."""
+def install_routes(app, manager: PluginManager, require_auth: Callable[[Any], None]) -> None:
+    """``GET /api/plugins`` plus the runtime switches, and a guard that 404s a disabled plugin's paths."""
+    from fastapi.responses import JSONResponse
 
     @app.get("/api/plugins")
     async def list_plugins(request: Request):
         require_auth(request)
         return {"api": API_VERSION, "plugins": manager.status()}
+
+    @app.post("/api/plugins/{name}/enable")
+    async def enable_plugin(request: Request, name: str):
+        require_auth(request)
+        try:
+            return {"plugin": manager.enable(name)}
+        except KeyError:
+            return JSONResponse({"detail": f"no plugin named {name}"}, status_code=404)
+        except PluginError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=400)
+
+    @app.post("/api/plugins/{name}/disable")
+    async def disable_plugin(request: Request, name: str):
+        require_auth(request)
+        try:
+            return {"plugin": manager.disable(name)}
+        except KeyError:
+            return JSONResponse({"detail": f"no plugin named {name}"}, status_code=404)
+
+    @app.middleware("http")
+    async def plugin_guard(request, call_next):
+        # Disabling cannot unmount an already-registered route, so the switch is enforced here: the
+        # module stays imported (nothing is re-executed later), its endpoints just stop answering.
+        if not manager.guard(request.url.path):
+            return JSONResponse({"detail": "plugin is disabled"}, status_code=404)
+        return await call_next(request)
+
+
+# kept for callers written against the old name
+install_status_route = install_routes
