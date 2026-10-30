@@ -9,11 +9,15 @@
 .side-head .brand b{font-size:14px;font-weight:650}
 .side-head .brand span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .side-head .icon-btn{width:26px;height:26px}
-/* keep every header button reachable at any sidebar width */
-  .side-head{flex-wrap:wrap;row-gap:4px}
-.side-head .brand{flex:1 1 auto;min-width:52px}
-.side-actions{display:flex;gap:5px;flex:1 1 auto;min-width:0;justify-content:flex-end;margin-left:auto;flex-wrap:wrap;row-gap:5px;
-    overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain}
+/* keep every header button reachable at any sidebar width: the icons stay on one line and the row
+   scrolls sideways instead of wrapping onto a second row */
+.side-head{flex-wrap:nowrap;overflow:hidden}
+.side-head .brand{flex:0 1 auto;min-width:0}
+/* the icon row keeps its natural width and shrinks last; when even that is not enough it scrolls
+   sideways instead of dropping icons onto a second row */
+.side-actions{display:flex;gap:5px;flex:0 1 auto;min-width:0;justify-content:flex-start;margin-left:auto;flex-wrap:nowrap;
+    overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain;
+    -webkit-overflow-scrolling:touch}
 .side-actions::-webkit-scrollbar{display:none}
 .side-actions>*{flex:none}
 .tree-tools{display:flex;align-items:center;gap:6px;padding:2px 10px 4px}

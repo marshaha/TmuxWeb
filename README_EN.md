@@ -109,6 +109,14 @@ When the host or pane behind a favourite is unreachable the card's status dot re
 preview header says so; if something was read before, the last cached answer stays on screen
 ("离线 · 缓存 · 10 分钟前") instead of going blank. The cache lives in memory only.
 
+### A narrow sidebar
+
+The icon row at the top of the sidebar always stays on one line: the title yields width first (96 px floor)
+and, if that is still not enough, the row scrolls sideways (wheel or touch) instead of dropping icons onto a
+second row or clipping them. Same `shell.css` rules on the console, the board and the multi-window page, and
+one shared `tmux-sidebar-collapsed` key (`1` = collapsed) so collapsing on the board also collapses it on
+`/grid`.
+
 ### Message time
 
 The row under each bubble (which used to hold only 复制全部 / copy) now starts with the message time:

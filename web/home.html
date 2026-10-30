@@ -315,7 +315,6 @@
 <script>
   const $=id=>document.getElementById(id);
   const state={board:null,favorites:new Set(),query:'',timer:null,seq:0,hosts:[],states:new Map(),treeOpen:new Set(),treeReady:false,stale:false};
-  const SIDEBAR_KEY='tmux-home-sidebar';
   // The board is painted from this snapshot on the way back from the console, so
   // navigation feels instant; the live answer replaces it a moment later.
   const CACHE_KEY='tmux-home-cache-v1';
@@ -356,9 +355,12 @@
 
   // ---------------------------------------------------------------- sidebar
   const isNarrow=()=>window.matchMedia('(max-width:860px)').matches;
+  // same key and meaning as shell.js (which owns the sidebar on /grid): '1' means collapsed, so the
+  // state survives a jump between the board and the multi-window page
+  const SIDEBAR_KEY='tmux-sidebar-collapsed';
   function applySidebar(){
     const shell=$('shell');
-    const collapsed=localStorage.getItem(SIDEBAR_KEY)==='0';
+    const collapsed=localStorage.getItem(SIDEBAR_KEY)==='1';
     shell.classList.toggle('collapsed',collapsed);
     shell.classList.remove('mobile-open');
     $('side-open').hidden=!(collapsed||isNarrow());
@@ -368,10 +370,9 @@
     if(isNarrow()){shell.classList.toggle('mobile-open');return;}
     const collapsed=!shell.classList.contains('collapsed');
     shell.classList.toggle('collapsed',collapsed);
-    localStorage.setItem(SIDEBAR_KEY,collapsed?'0':'1');
+    localStorage.setItem(SIDEBAR_KEY,collapsed?'1':'0');
     $('side-open').hidden=!collapsed;
   }
-
   function treeDetails(key,label,children,count,pad,tail){
     const open=state.treeOpen.has(key)?' open':'';      // collapsed unless the user opened it
     return `<details data-tree="${esc(key)}"${open}><summary><span class="caret">▶</span>`
@@ -872,6 +873,7 @@
     toggleSidebar();
   };
   $('side-open').onclick=toggleSidebar;
+  applySidebar();
   $('backdrop').onclick=()=>$('shell').classList.remove('mobile-open');
   window.addEventListener('resize',()=>{
     if(!isNarrow())$('shell').classList.remove('mobile-open');
@@ -908,7 +910,6 @@
     skeleton();
   }
 
-  applySidebar();
   loadTree();
   load();
   setInterval(()=>{if(document.hidden)return;load();refreshStates();},15000);

@@ -186,6 +186,8 @@
         shell.classList.remove('mobile-open');
       }
     }
+    const open = document.getElementById('side-open');
+    if (open) open.hidden = !(collapsed || narrow());
     try { localStorage.setItem('tmux-sidebar-collapsed', collapsed ? '1' : '0'); } catch {}
   }
 
@@ -287,6 +289,8 @@
 
   window.TmuxShell = {
     markActive,
+    // pages used to juggle the collapse themselves with their own storage key, which fought this one
+    collapse(on) { syncCollapsed(!!on); },
     mount(hooks = {}) {
       state.hooks = hooks;
       loadOpen();

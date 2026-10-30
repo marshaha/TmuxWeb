@@ -51,10 +51,13 @@ class HomeBoardTests(unittest.TestCase):
             self.assertIn(marker, response.text)
         # the board keeps a collapsible sidebar with the same tree as the console
         for marker in ('id="tree"', 'id="side-collapse"', 'id="side-open"', 'data-star=',
-                       'data-pane=', "tmux-home-sidebar", "loadTree",
+                       'data-pane=', "loadTree",
                        'data-rename=', 'id="rename-dialog"', "openRename",
                        'id="hover-preview"', 'agent_preview', "showHover"):
             self.assertIn(marker, response.text)
+        # one storage key for the collapsed sidebar on every page (shell.js owns it)
+        self.assertIn("tmux-sidebar-collapsed", self.client.get("/assets/shell.js").text)
+        self.assertIn("collapse(on) { syncCollapsed(!!on); },", self.client.get("/assets/shell.js").text)
         # cards live in a responsive grid: main must stretch inside the flex column,
         # otherwise `margin:0 auto` shrinks it and only one card fits per row
         self.assertIn("main{width:100%;padding:16px;max-width:1240px;margin:0 auto}", response.text)
@@ -160,13 +163,16 @@ class HomeBoardTests(unittest.TestCase):
         # collapsing must still win over the stored width
         self.assertIn(".app.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}", console.text)
 
-        # a narrow sidebar must not lose its action buttons: the row wraps
-        # instead of pushing the last icon under the clipped edge
+        # a narrow sidebar must not lose its action buttons: the row stays on one line and scrolls
+        # sideways instead of dropping icons onto a second row
         self.assertIn('<div class="side-actions">', home.text)
-        # the board's sidebar lives in the shared stylesheet now
-        self.assertIn("flex-wrap:wrap;row-gap:", self.client.get("/assets/shell.css").text)
-        self.assertIn("initIconRowScroll", home.text)
-        self.assertIn("flex-wrap:wrap;row-gap:", console.text)
+        shell_css = self.client.get("/assets/shell.css").text
+        self.assertIn("flex-wrap:nowrap", shell_css)
+        self.assertIn("overflow-x:auto", shell_css)
+        self.assertNotIn("flex-wrap:wrap;row-gap:", shell_css)
+        self.assertIn("initIconRowScroll", home.text)     # wheel scrolls the row sideways
+        self.assertIn("flex-wrap:nowrap", console.text)
+        self.assertNotIn("flex-wrap:wrap;row-gap:", console.text)
         self.assertIn("initIconRowScroll", console.text)
 
     def test_a_card_previews_first_and_the_panel_holds_the_ways_in(self):
