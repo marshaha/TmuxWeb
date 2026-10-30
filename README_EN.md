@@ -107,6 +107,12 @@ When the host or pane behind a favourite is unreachable the card's status dot re
 preview header says so; if something was read before, the last cached answer stays on screen
 ("离线 · 缓存 · 10 分钟前") instead of going blank. The cache lives in memory only.
 
+### Message time
+
+The row under each bubble (which used to hold only 复制全部 / copy) now starts with the message time:
+`HH:MM` for today and `MM-DD HH:MM` for older messages, in a faint tabular-numeral font; the copy button
+stays on the right. User bubbles, agent bubbles and the embedded `/grid` + `/preview` views all match.
+
 ### Icons
 
 UI icons are an inline SVG sprite (`<use href="#i-...">`). The copy glyph follows `icon.png` (two stacked
@@ -144,6 +150,12 @@ Bottom-left "设置" in the console (and at the bottom of the sidebar on `/grid`
 When the host or pane behind a favourite is unreachable the card's status dot reads 离线 (offline) and the
 preview header says so; if something was read before, the last cached answer stays on screen
 ("离线 · 缓存 · 10 分钟前") instead of going blank. The cache lives in memory only.
+
+### Message time
+
+The row under each bubble (which used to hold only 复制全部 / copy) now starts with the message time:
+`HH:MM` for today and `MM-DD HH:MM` for older messages, in a faint tabular-numeral font; the copy button
+stays on the right. User bubbles, agent bubbles and the embedded `/grid` + `/preview` views all match.
 
 ### Icons
 

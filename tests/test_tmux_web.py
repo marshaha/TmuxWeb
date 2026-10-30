@@ -664,6 +664,22 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(result["session_id"], "session_live")
         self.assertEqual([item["text"] for item in result["messages"]], ["最新回答"])
 
+    def test_message_rows_show_the_time_next_to_the_copy_button(self):
+        """Each bubble's action row carries the message timestamp on the left."""
+        self.login()
+        page = self.client.get("/?pane=%254").text
+        self.assertIn("clockTime=ts=>", page)
+        self.assertIn('<span class="msg-time">', page)
+        self.assertIn(".msg-actions .msg-time{", page)
+        # transcripts hand out ISO strings as well as epoch numbers
+        self.assertIn("new Date(ts)", page)
+        self.assertIn("d.toDateString()===now.toDateString()", page)
+
+        preview = self.client.get("/preview?pane=%254").text
+        self.assertIn("const clockTime=ts=>", preview)
+        self.assertIn('<span class="msg-time">', preview)
+        self.assertIn(".msg-tools .msg-time{", preview)
+
     def test_an_agent_pane_does_not_fall_back_to_its_screen(self):
         """Streaming a full-screen TUI is what used to lock up the browser."""
         self.login()

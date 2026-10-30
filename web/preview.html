@@ -52,6 +52,7 @@
   .body blockquote{margin-left:0;padding-left:12px;border-left:3px solid var(--accent);color:var(--muted)}
   .body a{color:var(--accent)}
   .msg-tools{display:flex;justify-content:flex-end;margin-top:6px;opacity:.5}
+  .msg-tools .msg-time{margin-right:auto;color:var(--faint);font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;letter-spacing:.02em}
   .copy
   .msg:hover .msg-tools{opacity:1}
   .copy{height:22px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.8);color:var(--muted);font-size:11px;cursor:pointer}
@@ -200,13 +201,14 @@ function syncSend(){
   button.querySelector('use').setAttribute('href',working?'#i-stop':'#i-send');
 }
 
+const clockTime=ts=>{if(ts===null||ts===undefined||ts==='')return '';const numeric=typeof ts==='number'||/^\d+(\.\d+)?$/.test(String(ts).trim());const d=numeric?new Date(Number(ts)>1e12?Number(ts):Number(ts)*1000):new Date(ts);if(Number.isNaN(d.getTime()))return '';const pad=v=>String(v).padStart(2,'0'),now=new Date();return (d.toDateString()===now.toDateString()?'':`${pad(d.getMonth()+1)}-${pad(d.getDate())} `)+`${pad(d.getHours())}:${pad(d.getMinutes())}`;};
 function render(){
   const host=$('messages');
   host.innerHTML=state.messages.length?state.messages.map(message=>message.role==='user'
     ?`<article class="msg user"><div><div class="bubble">${esc(message.text)}</div>
-        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}"><svg class="ico"><use href="#i-copy"/></svg>复制</button></div></div></article>`
+        <div class="msg-tools">${clockTime(message.timestamp)?`<span class="msg-time">${clockTime(message.timestamp)}</span>`:''}<button class="copy" data-copy="${esc(message.id)}"><svg class="ico"><use href="#i-copy"/></svg>复制</button></div></div></article>`
     :`<article class="msg assistant"><div><div class="body">${md(message.text)}</div>
-        <div class="msg-tools"><button class="copy" data-copy="${esc(message.id)}"><svg class="ico"><use href="#i-copy"/></svg>复制</button></div></div></article>`).join('')
+        <div class="msg-tools">${clockTime(message.timestamp)?`<span class="msg-time">${clockTime(message.timestamp)}</span>`:''}<button class="copy" data-copy="${esc(message.id)}"><svg class="ico"><use href="#i-copy"/></svg>复制</button></div></div></article>`).join('')
     :'<div class="empty">这个会话还没有消息</div>';
   if(state.stick)requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;});
 }
