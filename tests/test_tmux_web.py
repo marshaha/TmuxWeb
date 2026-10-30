@@ -664,6 +664,20 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(result["session_id"], "session_live")
         self.assertEqual([item["text"] for item in result["messages"]], ["最新回答"])
 
+    def test_pausing_keeps_the_terminal_on_screen(self):
+        """Pausing stops the stream; it must not dispose the xterm and leave a black screen."""
+        self.login()
+        page = self.client.get("/?pane=%254").text
+        # closeConnections() takes a flag: pause keeps the canvas, everything else tears it down
+        self.assertIn("function closeConnections(keepTerminal){", page)
+        self.assertIn("if(!keepTerminal&&state.xterm){state.xterm.dispose();", page)
+        self.assertIn("state.livePaused=true;closeConnections(true);", page)
+        # resuming re-attaches instead of flipping modes to force a redraw
+        self.assertIn("if(state.mode==='terminal'){closeConnections();connectTerminal(state.selected);}", page)
+        # the paused label survives the ws close event and the progress ticker
+        self.assertIn("if(state.livePaused){$('status-dot').className='status-dot paused';$('status-text').textContent='已暂停实时刷新（点 ▶ 继续）';return;}", page)
+        self.assertIn(".status-dot.paused{background:var(--faint)}", page)
+
     def test_the_send_status_line_reports_failure_and_clears_after_a_retry(self):
         """The composer's status line is neutral by default, red on failure, and a retry must reset it."""
         self.login()

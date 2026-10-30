@@ -111,6 +111,13 @@ When the host or pane behind a favourite is unreachable the card's status dot re
 preview header says so; if something was read before, the last cached answer stays on screen
 ("离线 · 缓存 · 10 分钟前") instead of going blank. The cache lives in memory only.
 
+### Pausing live updates
+
+The ⏸ button in the header only stops the stream: in terminal mode the screen stays exactly as it was (no
+black screen, nothing cleared), in chat mode the rendered messages just sit there, the status dot goes grey
+and the label reads 已暂停实时刷新（点 ▶ 继续）. ▶ re-attaches the terminal (the server repaints the whole
+screen) or refetches the transcript; typing is dropped while paused.
+
 ### Send failures and retry
 
 The status line under the composer is grey by default; a successful send shows a green 已发送 ✓ that clears
