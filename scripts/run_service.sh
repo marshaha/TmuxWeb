@@ -14,6 +14,12 @@ set -a
 . ./.env
 set +a
 
+# Record every session closure: "#{session_name}" resolves to the wrong session inside a hook,
+# "#{hook_session_name}" is the one that just went away.
+tmux set-hook -g session-closed \
+  'run-shell "echo \"$(date -Is) closed session=#{hook_session_name}\" >> /tmp/tmux-session-closed.log"' \
+  2>/dev/null || true
+
 while true; do
   started=$(date -Is)
   pid=$$

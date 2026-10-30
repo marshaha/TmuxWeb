@@ -80,7 +80,8 @@ tmux new-session -d -s tmuxweb -c ~/workspace/TmuxWeb './scripts/run_service.sh'
 - every exit is appended to `logs/service-exit.log` with the code: `129`=SIGHUP (session destroyed by
   kill-session), `130`=SIGINT, `137`=SIGKILL, `143`=SIGTERM, `139`=segfault. Access logs go to
   `logs/service.log`. `logs/` is not committed;
-- to catch the culprit: the `session-closed` tmux hook records when a session closes, and
+- to catch the culprit: the `session-closed` tmux hook records which session closed and when (inside a hook the format is
+  `#{hook_session_name}`, not `#{session_name}`), and
   `./.venv/bin/python scripts/tmux_watch.py --seconds 1800` records tmux client commands (a
   `kill-session` client only lives a few milliseconds, which is why polling is the only way).
 

@@ -49,8 +49,8 @@ tmux new-session -d -s tmuxweb -c ~/workspace/TmuxWeb './scripts/run_service.sh'
 - 进程退出后 2 秒自动重启（tmux 会话不会因为一次崩溃而消失）。
 - 每次退出都记一行 `logs/service-exit.log`，退出码说明死因：`129`=SIGHUP（会话被 kill-session 销毁）、
   `130`=SIGINT、`137`=SIGKILL（`kill -9`）、`143`=SIGTERM、`139`=段错误。访问日志在 `logs/service.log`。
-- 想抓"谁杀的"：`tmux set-hook -g session-closed 'run-shell "date >> /tmp/tmux-session-closed.log"'`
-  记录会话关闭时间；再看 `./.venv/bin/python scripts/tmux_watch.py --seconds 1800` 记录的 tmux 客户端命令
+- 想抓"谁杀的"：`tmux set-hook -g session-closed 'run-shell "echo \"$(date -Is) closed session=#{hook_session_name}\" >> /tmp/tmux-session-closed.log"'`
+  记录哪个会话何时关闭（注意 hook 里 `#{session_name}` 是错的，要用 `#{hook_session_name}`）；再看 `./.venv/bin/python scripts/tmux_watch.py --seconds 1800` 记录的 tmux 客户端命令
   （`kill-session` 只活几毫秒，只能这样抓）。`logs/` 不入库。
 
 排查结论（2026-10-30）：`tmuxweb` 两次消失时，内核 `kern.log` 无 OOM、无 segfault，`systemd-oomd` 无 kill
