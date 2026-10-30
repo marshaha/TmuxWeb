@@ -98,6 +98,7 @@
 - 窄窗口里的「复制」：把某一列拖到最窄（170px），窗口里对话消息下的「复制」胶囊里文字完整、不溢出边框。
 - 插件权限：manifest 不写 `permissions = ["mcp"]` 的插件调用 `ctx.add_mcp_tool` 必须加载失败并在 `/api/plugins` 报错；没写 `assets` 的插件 `/plugin-assets/<它>/...` 返回 403。
 - 插件扩展点：启用 example 后 `/api/plugins` 的 `buttons` 里出现条目、侧栏出现插头图标、`/mcp` 的 `tools/list` 里有 `example_status`、`/plugin-assets/example/index.html` 返回 200；关掉后三者一起消失；`/plugin-assets/example/../plugin.py` 必须 404。
+- 主题跟账号走：在 A 浏览器选 Claude Code → 清空 B 浏览器的 cookie/localStorage 登录 → 应直接是深色、不再闪米白；`/api/prefs` 未登录 401、未知键 400、空值 400。
 - 主题：设置 → 主题 展开后 6 个色板，点 ChatGPT/Claude/GitHub/Claude Code/夜间 每个页面立刻换色并记住；深色主题下不应出现扎眼的白色块（控制台的输入框、主页的搜索框/状态标签、多窗口的选中项都要跟着变暗）。
 - 插件那一行默认**收起**，右侧显示「1 / 2 已启用」，点开才列出插件。
 - 插件管理界面：设置面板里「插件」一节列出所有插件（名称/版本/描述/错误），开关可点；关掉 relay 后 `/api/relay/log` 立刻 404 而控制台照常；再打开恢复 200；刷新页面/重启服务后选择保持。

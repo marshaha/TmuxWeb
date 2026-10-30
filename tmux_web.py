@@ -58,6 +58,7 @@ def safe_next_url(value: str, default: str = "/") -> str:
 
 
 COOKIE_NAME = "tmux_web_session"
+THEME_COOKIE = "tmux_theme"      # readable by scripts: pages paint in the account's theme before any fetch
 SHARE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,47}$")
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
@@ -1196,6 +1197,39 @@ def create_app(
             max_age=60 * 60 * 24 * 7,
             path="/",
         )
+        theme = home.get_prefs().get("theme", "")
+        if theme:
+            # the account's theme travels in a readable cookie so the next page paints in it immediately
+            response.set_cookie(THEME_COOKIE, theme, samesite="lax", max_age=60 * 60 * 24 * 365, path="/")
+        return response
+
+    @app.get("/api/prefs")
+    async def read_prefs(request: Request):
+        require_auth(request)
+        return {"prefs": home.get_prefs()}
+
+    @app.put("/api/prefs")
+    async def write_prefs(request: Request):
+        """UI preferences that follow the account (theme today), so every device shows the same console."""
+        require_auth(request)
+        try:
+            payload = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="invalid JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="expected an object of preferences")
+        allowed = {"theme"}
+        saved = home.get_prefs()
+        for key, value in payload.items():
+            if key not in allowed:
+                raise HTTPException(status_code=400, detail=f"unknown preference {key}")
+            if not isinstance(value, str) or not value.strip():
+                raise HTTPException(status_code=400, detail=f"preference {key} must be a non-empty string")
+            stored = home.set_pref(key, value)
+            saved = stored
+        response = JSONResponse({"prefs": saved})
+        if "theme" in saved:
+            response.set_cookie(THEME_COOKIE, saved["theme"], samesite="lax", max_age=60 * 60 * 24 * 365, path="/")
         return response
 
     @app.get("/api/settings")

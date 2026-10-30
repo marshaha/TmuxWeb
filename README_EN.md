@@ -128,8 +128,10 @@ shows 重发中…, then the same green confirmation — the stale failure text 
 ### Themes
 
 Settings → Theme offers six palettes: **Default (warm grey, terracotta), ChatGPT (white, green), Claude
-(cream, orange), GitHub (white, blue), Claude Code (dark terminal) and Night (neutral dark)**. The choice is
-per browser (`localStorage['tmux-theme']`) and every page follows it, including a plugin's own pages.
+(cream, orange), GitHub (white, blue), Claude Code (dark terminal) and Night (neutral dark)**. The choice **follows the
+account**: it is stored server-side (`prefs` table in `home.db`, `GET/PUT /api/prefs`), and login hands it back
+in a readable `tmux_theme` cookie so the first painted frame is already right — `localStorage` only covers the
+logged-out login page and offline. Every page follows it, including a plugin's own pages.
 
 Under the hood only the CSS variables change; `:root[data-theme=…]` in `theme.css` outranks each page's own
 `:root`, so a new theme is just another block of variables — the dark ones add a dozen overrides that point

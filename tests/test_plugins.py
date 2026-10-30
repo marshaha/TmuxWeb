@@ -286,6 +286,39 @@ class PluginLoadingTests(unittest.TestCase):
         client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
         self.assertEqual(client.get("/plugin-assets/noassets/page.html").status_code, 403)
 
+    def test_the_theme_follows_the_account_not_the_browser(self):
+        """Written through /api/prefs, delivered back as a readable cookie so the next page paints at once."""
+        state = str(Path(tempfile.mkdtemp()) / "home.db")
+        client = make_app(home_db=state)
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertEqual(client.get("/api/prefs").json()["prefs"], {})
+
+        saved = client.put("/api/prefs", json={"theme": "chatgpt"})
+        self.assertEqual(saved.json()["prefs"]["theme"], "chatgpt")
+        self.assertIn("tmux_theme=chatgpt", saved.headers.get("set-cookie", ""))
+
+        # a second device: same account, fresh cookies and no localStorage
+        elsewhere = make_app(home_db=state)
+        login = elsewhere.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertIn("tmux_theme=chatgpt", login.headers.get("set-cookie", ""))
+        self.assertEqual(elsewhere.get("/api/prefs").json()["prefs"]["theme"], "chatgpt")
+
+    def test_prefs_reject_junk_and_need_a_login(self):
+        client = make_app()
+        self.assertEqual(client.get("/api/prefs").status_code, 401)
+        self.assertEqual(client.put("/api/prefs", json={"theme": "x"}).status_code, 401)
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertEqual(client.put("/api/prefs", json={"nope": "x"}).status_code, 400)
+        self.assertEqual(client.put("/api/prefs", json={"theme": ""}).status_code, 400)
+        self.assertEqual(client.put("/api/prefs", json=["theme"]).status_code, 400)
+
+    def test_theme_script_prefers_the_cookie(self):
+        script = self.client_public().get("/assets/theme.js").text
+        self.assertIn("function fromCookie()", script)
+        self.assertIn("document.cookie.match", script)
+        self.assertIn("syncWithAccount", script)
+        self.assertIn("saveToAccount", script)
+
     def test_themes_are_served_and_offered_in_the_panel(self):
         client = make_app()
         css = client.get("/assets/theme.css")

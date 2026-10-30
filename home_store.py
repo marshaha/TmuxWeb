@@ -71,11 +71,36 @@ class HomeStore:
                        visited_at REAL NOT NULL
                    )"""
             )
+            # small key/value bag for UI preferences that should follow the account, not the browser
+            self._conn.execute(
+                """CREATE TABLE IF NOT EXISTS prefs (
+                       key TEXT PRIMARY KEY,
+                       value TEXT NOT NULL DEFAULT ''
+                   )"""
+            )
             self._conn.commit()
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    # ------------------------------------------------------------------- prefs
+    def get_prefs(self) -> dict[str, str]:
+        with self._lock:
+            rows = self._conn.execute("SELECT key, value FROM prefs").fetchall()
+        return {row["key"]: row["value"] for row in rows}
+
+    def set_pref(self, key: str, value: str) -> dict[str, str]:
+        key = (key or "").strip()[:64]
+        if not key:
+            raise ValueError("pref key is required")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO prefs (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, (value or "").strip()[:200]),
+            )
+            self._conn.commit()
+        return self.get_prefs()
 
     # ---------------------------------------------------------------- favorites
     def add_favorite(self, pane_id: str, note: str = "", title: str = "") -> dict:
