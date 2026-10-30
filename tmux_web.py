@@ -2354,6 +2354,30 @@ def create_app(
             return
         remember_home_entry(pane_id, entry)
 
+    def with_cached_preview(pane_id: str, entry: dict) -> dict:
+        """A pane that cannot be read still has a last known answer: keep showing it.
+
+        The cache holds the previous entry (and when it was taken) so a dropped host does not blank
+        the card; the client marks it offline and shows how old the cached text is.
+        """
+        if entry.get("preview") or entry.get("agent_preview"):
+            return entry
+        hit = HOME_ENTRY_CACHE.get(pane_id)
+        if not hit:
+            return entry
+        previous = hit[1] or {}
+        if not (previous.get("preview") or previous.get("agent_preview")):
+            return entry
+        merged = dict(entry)
+        for key in ("preview", "agent_preview", "waiting", "provider"):
+            if previous.get(key):
+                merged[key] = previous[key]
+        merged["cached"] = True
+        merged["cached_at"] = hit[0]
+        if not merged.get("status"):
+            merged["status"] = "offline"
+        return merged
+
     async def build_home_payload() -> dict:
         started = time.time()
         favorites = await asyncio.to_thread(home.favorites)
@@ -2377,13 +2401,15 @@ def create_app(
                 except Exception:  # noqa: BLE001
                     entry = None
                 if isinstance(entry, dict):
+                    if entry.get("status") == "offline":
+                        entry = with_cached_preview(row["pane_id"], entry)
                     remember_home_entry(row["pane_id"], entry)
                     slots[futures[future]] = entry
                 else:
-                    slots[futures[future]] = home_entry_skeleton(row)
+                    slots[futures[future]] = with_cached_preview(row["pane_id"], home_entry_skeleton(row))
             for future in set(futures) - done:
                 row = favorites[futures[future]]
-                slots[futures[future]] = home_entry_skeleton(row)
+                slots[futures[future]] = with_cached_preview(row["pane_id"], home_entry_skeleton(row))
                 future.add_done_callback(lambda fut, pane=row["pane_id"]: collect_home_entry(fut, pane))
         cards = await asyncio.to_thread(home.cards)
         # counters may lag a few seconds; the favourites above are always live

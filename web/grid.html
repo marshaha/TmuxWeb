@@ -229,14 +229,15 @@
       const saved=JSON.parse(localStorage.getItem(KEY)||'{}');
       state.panes=Array.isArray(saved.panes)?saved.panes.filter(x=>typeof x==='string'):[];
       state.layout=LAYOUTS.includes(saved.layout)?saved.layout:'strip';
+      // the mode a pane had last time is remembered even while it is not a window: removing and
+      // re-adding a session should not lose "I use this one as a terminal"
       state.modes={};
       for(const [pane,mode] of Object.entries(saved.modes||{})){
-        if(state.panes.includes(pane)&&(mode==='chat'||mode==='term'))state.modes[pane]=mode;
+        if(mode==='chat'||mode==='term')state.modes[pane]=mode;
       }
-      // modes saved before this flag existed were picked automatically; they go back to chat
       state.explicit={};
       for(const [pane,on] of Object.entries(saved.explicit||{})){
-        if(state.panes.includes(pane)&&on===true)state.explicit[pane]=true;
+        if(on===true)state.explicit[pane]=true;
       }
       state.widths={};
       for(const [pane,width] of Object.entries(saved.widths||{})){
@@ -377,11 +378,23 @@
   // ---- add / remove
   // once the pane list is known, any window that is still on chat but belongs to a shell gets
   // switched to terminal (a shell has no structured transcript to chat with)
+  // A window opens as chat when the pane really has a transcript; a plain shell has nothing to
+  // chat with, so it degrades to the terminal instead of showing an empty chat card.
+  function defaultModeFor(pane){
+    if(state.explicit[pane])return state.modes[pane]==='term'?'term':'chat';
+    const meta=state.titles.get(pane);
+    if(meta&&meta.capabilities&&meta.capabilities.transcript===false)return 'term';
+    return 'chat';
+  }
   function applyDefaultModes(){
-    // modes stored without the explicit flag were picked by the old auto-rule: back to chat
     let changed=false;
     for(const pane of state.panes){
-      if(state.modes[pane]==='term'&&!state.explicit[pane]){delete state.modes[pane];changed=true;}
+      const want=defaultModeFor(pane);
+      const current=state.modes[pane]==='term'?'term':'chat';
+      if(want===current)continue;
+      if(want==='term')state.modes[pane]='term';
+      else delete state.modes[pane];
+      changed=true;
     }
     if(!changed)return;
     save();render();loadStatus();
@@ -389,8 +402,8 @@
   function addPane(paneId){
     if(!paneId||state.panes.includes(paneId))return;
     state.panes.push(paneId);
-    // every window starts as chat; a shell is one tap away on the header toggle
-    save();render();loadStatus();
+    // chat when the pane has a transcript, terminal when it only has a screen
+    save();render();loadStatus();applyDefaultModes();
   }
   function removePane(paneId){
     const index=state.panes.indexOf(paneId);
@@ -434,7 +447,7 @@
     const next=mode||(state.modes[pane]==='term'?'chat':'term');
     if(next==='chat')delete state.modes[pane];
     else state.modes[pane]=next;
-    state.explicit[pane]=next==='term';
+    state.explicit[pane]=true;      // a manual choice, in either direction, wins over the default
     save();
     const cell=document.querySelector(`.cell[data-pane="${CSS.escape(pane)}"]`);
     if(!cell)return;

@@ -101,6 +101,12 @@ both the outage and the blind spot go away.
   refreshed every 5s) plus a "switch to terminal" button instead of an empty box. A terminal opened on purpose
   through the header toggle is remembered.
 
+### A card whose pane dropped
+
+When the host or pane behind a favourite is unreachable the card's status dot reads 离线 (offline) and the
+preview header says so; if something was read before, the last cached answer stays on screen
+("离线 · 缓存 · 10 分钟前") instead of going blank. The cache lives in memory only.
+
 ## Settings panel
 
 The console's bottom-left "设置" (settings) button opens three collapsible rows (one open at a time):

@@ -100,11 +100,14 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("/term?pane=", page)
         self.assertIn("function setMode(", page)
         self.assertIn("modes:state.modes", page)
-        # chat is the default even for a plain shell; the terminal is the opt-in toggle, and
-        # restoring a preset is the only place that may re-open one without a tap
-        self.assertEqual(page.count("state.modes[pane]='term'"), 1)
-        self.assertIn("state.explicit[pane]=next==='term'", page)
-        self.assertIn("every window starts as chat", page)
+        # chat is the default when the pane really has a transcript; a plain shell degrades to the
+        # terminal instead of showing an empty chat. Restoring a preset may set it too.
+        self.assertEqual(page.count("state.modes[pane]='term'"), 2)   # default + preset restore
+        self.assertIn("capabilities.transcript===false", page)
+        self.assertIn("function defaultModeFor(", page)
+        # a manual toggle (either direction) outranks the default and is remembered per pane
+        self.assertIn("state.explicit[pane]=true", page)
+        self.assertIn("for(const [pane,on] of Object.entries(saved.explicit||{}))", page)
 
         term = self.client.get("/term?pane=%254")
         self.assertEqual(term.status_code, 200)
