@@ -92,6 +92,15 @@ pane was terminated by an external signal (no shutdown log ⇒ SIGKILL/SIGHUP) a
 Pinpointing the sender needs auditd (not installed); the three recorders above plus the auto-restart now make
 both the outage and the blind spot go away.
 
+### Multi-window on a phone
+
+- The toolbar slims down to icons (add / presets / home) and the layout switch disappears: a phone is always
+  one column.
+- Every window is a full-height card, one per screen, with scroll snapping.
+- Windows open as **chat**; a plain shell has no transcript, so its card shows the current screen (read-only,
+  refreshed every 5s) plus a "switch to terminal" button instead of an empty box. A terminal opened on purpose
+  through the header toggle is remembered.
+
 ## Settings panel
 
 The console's bottom-left "设置" (settings) button opens three collapsible rows (one open at a time):

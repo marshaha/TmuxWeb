@@ -101,15 +101,27 @@
     body.moving{cursor:grabbing;user-select:none}
     body.moving iframe{pointer-events:none}
     @media(max-width:760px){
-      .grid{flex-direction:column;overflow-x:hidden;overflow-y:auto}
-      /* stored column widths are desktop-only: on a phone each window is a full-width card */
-      .cell{flex:0 0 auto!important;width:auto!important;height:min(72vh,560px);margin:8px 8px 0;min-width:0}
-      .cell:last-of-type{margin-bottom:8px}
+      /* the toolbar used to be 475px wide inside a 390px phone: icon-only buttons, tighter gaps */
+      .top{height:48px;gap:6px;padding:0 10px;overflow-x:auto;scrollbar-width:none}
+      .top::-webkit-scrollbar{display:none}
+      .top .count{display:none}
+      .top strong{font-size:14px;white-space:nowrap}
+      .top .btn{padding:0 8px;gap:0}
+      .top .lbl{display:none}
+      .top .btn .ico{width:17px;height:17px}
+      /* one column only on a phone, so the layout switch would be a lie: hide it */
+      .seg{display:none}
+      .grid{flex-direction:column;overflow-x:hidden;overflow-y:auto;scroll-snap-type:y proximity}
+      /* stored column widths are desktop-only: on a phone each window fills the screen */
+      .cell{flex:0 0 auto!important;width:auto!important;height:calc(100dvh - 64px);margin:8px 10px 0;min-width:0;scroll-snap-align:start}
+      .cell:last-of-type{margin-bottom:10px}
+      .cell-head{height:32px;gap:5px}
+      .cell-title{font-size:12px}
       /* a phone never gets a 2- or 3-column grid: one window per row */
       .grid.mode-grid{grid-template-columns:minmax(0,1fr)!important;grid-auto-rows:auto;overflow-y:auto}
-      .grid.mode-grid .cell{height:min(72vh,560px)}
+      .grid.mode-grid .cell{height:calc(100dvh - 64px)}
       .splitter{display:none}
-      .top{height:48px}
+      .empty{padding:16px}
     }
   </style>
 </head>
@@ -169,9 +181,9 @@
     <button type="button" data-layout="grid2">网格 2</button>
     <button type="button" data-layout="grid3">网格 3</button>
   </div>
-  <button class="btn primary" id="add" type="button"><svg class="ico"><use href="#i-plus"/></svg>添加窗口</button>
-  <button class="btn" id="preset-btn" type="button" title="布局预设"><svg class="ico"><use href="#i-preset"/></svg>预设</button>
-  <a class="btn" id="home" href="/home" title="返回主页"><svg class="ico"><use href="#i-home"/></svg>主页</a>
+  <button class="btn primary" id="add" type="button" title="添加窗口" aria-label="添加窗口"><svg class="ico"><use href="#i-plus"/></svg><span class="lbl">添加窗口</span></button>
+  <button class="btn" id="preset-btn" type="button" title="布局预设" aria-label="布局预设"><svg class="ico"><use href="#i-preset"/></svg><span class="lbl">预设</span></button>
+  <a class="btn" id="home" href="/home" title="返回主页" aria-label="返回主页"><svg class="ico"><use href="#i-home"/></svg><span class="lbl">主页</span></a>
 </div>
 
 <div class="grid" id="grid"><div class="empty"><div><b>还没有窗口</b>点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。</div></div></div>
@@ -207,7 +219,7 @@
   const KEY='tmux-grid-v1';
   // widths are keyed by pane id: unset columns share the leftover space equally, so adding or
   // removing a window never leaves a column pinned at the width it had when it was alone
-  const state={panes:[], widths:{}, layout:'strip', modes:{}, max:null, presets:{}, titles:new Map(), statuses:new Map(), hosts:null};
+  const state={panes:[], widths:{}, layout:'strip', modes:{}, explicit:{}, max:null, presets:{}, titles:new Map(), statuses:new Map(), hosts:null};
   const PRESET_KEY='tmux-grid-presets-v1';
   const LAYOUTS=['strip','grid2','grid3'];
   const MIN=260;
@@ -221,6 +233,11 @@
       for(const [pane,mode] of Object.entries(saved.modes||{})){
         if(state.panes.includes(pane)&&(mode==='chat'||mode==='term'))state.modes[pane]=mode;
       }
+      // modes saved before this flag existed were picked automatically; they go back to chat
+      state.explicit={};
+      for(const [pane,on] of Object.entries(saved.explicit||{})){
+        if(state.panes.includes(pane)&&on===true)state.explicit[pane]=true;
+      }
       state.widths={};
       for(const [pane,width] of Object.entries(saved.widths||{})){
         if(state.panes.includes(pane)&&Number.isFinite(width)&&width>=MIN)state.widths[pane]=Math.round(width);
@@ -229,7 +246,7 @@
   }
   function save(){
     try{
-      localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout,modes:state.modes}));
+      localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout,modes:state.modes,explicit:state.explicit}));
     }catch{}
   }
   function widthOf(pane){
@@ -358,18 +375,13 @@
   }
 
   // ---- add / remove
-  const AGENTS=new Set(['claude','codex','hermes','kimi','gemini','qwen','aider','cursor']);
   // once the pane list is known, any window that is still on chat but belongs to a shell gets
   // switched to terminal (a shell has no structured transcript to chat with)
   function applyDefaultModes(){
+    // modes stored without the explicit flag were picked by the old auto-rule: back to chat
     let changed=false;
     for(const pane of state.panes){
-      if(state.modes[pane])continue;
-      const meta=state.titles.get(pane);
-      if(!meta)continue;
-      const cell=document.querySelector(`.cell[data-pane="${CSS.escape(pane)}"]`);
-      if(cell&&cell.dataset.mode!=='chat')continue;
-      if(meta.command&&!AGENTS.has(String(meta.command).toLowerCase())){state.modes[pane]='term';changed=true;}
+      if(state.modes[pane]==='term'&&!state.explicit[pane]){delete state.modes[pane];changed=true;}
     }
     if(!changed)return;
     save();render();loadStatus();
@@ -377,10 +389,7 @@
   function addPane(paneId){
     if(!paneId||state.panes.includes(paneId))return;
     state.panes.push(paneId);
-    // a plain shell has no structured transcript, so open it as a terminal rather than as an
-    // empty chat with "not supported" in it
-    const meta=state.titles.get(paneId);
-    if(meta&&meta.command&&!AGENTS.has(String(meta.command).toLowerCase()))state.modes[paneId]='term';
+    // every window starts as chat; a shell is one tap away on the header toggle
     save();render();loadStatus();
   }
   function removePane(paneId){
@@ -425,6 +434,8 @@
     const next=mode||(state.modes[pane]==='term'?'chat':'term');
     if(next==='chat')delete state.modes[pane];
     else state.modes[pane]=next;
+    state.explicit[pane]=next==='term';
+    save();
     const cell=document.querySelector(`.cell[data-pane="${CSS.escape(pane)}"]`);
     if(!cell)return;
     cell.dataset.mode=next;
@@ -609,8 +620,9 @@
       }
       state.layout=LAYOUTS.includes(preset.layout)?preset.layout:'strip';
       state.modes={};
+      state.explicit={};
       for(const [pane,mode] of Object.entries(preset.modes||{})){
-        if(state.panes.includes(pane)&&mode==='term')state.modes[pane]='term';
+        if(state.panes.includes(pane)&&mode==='term'){state.modes[pane]='term';state.explicit[pane]=true;}
       }
       state.max=null;
       save();render();loadStatus();

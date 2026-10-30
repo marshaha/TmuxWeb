@@ -48,6 +48,9 @@
 .icon-btn{display:grid;place-items:center;width:30px;height:30px;padding:0;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--muted);cursor:pointer;flex:none;text-decoration:none}
 .icon-btn:hover{color:var(--accent);border-color:#d8c4b8}
 .icon-btn[hidden]{display:none}
+/* the shell owns the icon size: without it the inline <svg> keeps its 300px default and spills
+   out of the 30px button (a grey blob at the screen edge on a phone) */
+.icon-btn .ico{width:16px;height:16px}
 .brand{display:flex;flex-direction:column;margin-right:4px}
 .brand b{font-size:15px;font-weight:650;letter-spacing:.01em}
 .brand span{font-size:11px;color:var(--faint)}
@@ -65,7 +68,9 @@ body.resizing .app,body.resizing .shell{transition:none}
 .tree summary::-webkit-details-marker{display:none}
 .tree summary:hover{background:rgba(255,255,255,.75);color:var(--ink)}
 @media (max-width:860px){
-    .sidebar{position:fixed;top:0;left:0;z-index:20;width:min(86vw,320px);transform:translateX(-100%);transition:transform .18s ease;box-shadow:6px 0 24px rgba(38,37,32,.12)}
+    /* the shadow of an off-canvas drawer leaks into the viewport: only show it when open */
+    .sidebar{position:fixed;top:0;left:0;z-index:20;width:min(86vw,320px);transform:translateX(-100%);transition:transform .18s ease;box-shadow:none}
+    .shell.mobile-open .sidebar{transform:none;box-shadow:6px 0 24px rgba(38,37,32,.12)}
     .side-resizer{display:none}
     .shell.collapsed .sidebar{display:flex}
     .shell.mobile-open .sidebar{transform:none}

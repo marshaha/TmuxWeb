@@ -100,14 +100,34 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("/term?pane=", page)
         self.assertIn("function setMode(", page)
         self.assertIn("modes:state.modes", page)
-        # a shell has no transcript to chat with, so it opens as a terminal
-        self.assertIn("AGENTS.has", page)
+        # chat is the default even for a plain shell; the terminal is the opt-in toggle, and
+        # restoring a preset is the only place that may re-open one without a tap
+        self.assertEqual(page.count("state.modes[pane]='term'"), 1)
+        self.assertIn("state.explicit[pane]=next==='term'", page)
+        self.assertIn("every window starts as chat", page)
 
         term = self.client.get("/term?pane=%254")
         self.assertEqual(term.status_code, 200)
         for marker in ("/assets/xterm/xterm.js", "addon-fit.js", "/ws/terminal/",
                        "{type:'resize'", "{type:'input'", "embed"):
             self.assertIn(marker, term.text)
+
+    def test_a_phone_gets_a_compact_toolbar_and_one_card_per_screen(self):
+        page = self.client.get("/grid").text
+        for marker in (".top .lbl{display:none}", ".top .count{display:none}",
+                       "height:calc(100dvh - 64px)", "scroll-snap-align:start", ".seg{display:none}"):
+            self.assertIn(marker, page)
+        # an unsized inline <svg> keeps its 300px default and spills out of the 30px button
+        shell = self.client.get("/assets/shell.css").text
+        self.assertIn(".icon-btn .ico{width:16px;height:16px}", shell)
+        # the drawer's shadow must not bleed into a closed phone drawer
+        self.assertIn(".shell.mobile-open .sidebar{transform:none;box-shadow:6px 0 24px rgba(38,37,32,.12)}", shell)
+        # a message column must not stretch the chat horizontally on a narrow screen
+        preview = self.client.get("/preview?pane=%254&embed=1").text
+        self.assertIn(".msg>*{min-width:0;max-width:100%}", preview)
+        # a pane without a transcript shows its screen and a way into the terminal, not a dead card
+        self.assertIn("function enterScreenMode(", preview)
+        self.assertIn("切到终端", preview)
 
     def test_the_terminal_page_needs_a_login(self):
         anonymous = TestClient(create_app(

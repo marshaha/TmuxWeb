@@ -82,7 +82,8 @@
   const savedFont=Number(localStorage.getItem('tmux-term-font'));
   const term=new Terminal({
     cursorBlink:true, disableStdin:false, convertEol:false, scrollback:10000,
-    fontSize:savedFont>=9&&savedFont<=22?savedFont:13,
+    // a phone shows ~45 columns at 13px and wraps long paths into confetti; 11.5px buys ~55
+    fontSize:savedFont>=9&&savedFont<=22?savedFont:(matchMedia('(pointer:coarse)').matches?11.5:13),
     fontFamily:'ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',
     theme:{background:'#111111',foreground:'#e7e5df',cursor:'#faf9f5',selectionBackground:'#5a574f88'}
   });

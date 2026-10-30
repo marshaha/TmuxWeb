@@ -30,16 +30,19 @@
   .state.busy{color:#8a5a12;border-color:#eadfc6;background:#fdf6e8}.state.busy i{background:var(--amber);animation:pulse 1.2s ease-in-out infinite}
   .state.idle{color:#3b7350;border-color:#d6e6da;background:#f2f8f3}.state.idle i{background:var(--green)}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-  main{flex:1;min-height:0;overflow-y:auto;padding:16px 14px 8px;scrollbar-gutter:stable}
+  main{flex:1;min-height:0;overflow-x:hidden;overflow-y:auto;padding:16px 14px 8px;scrollbar-gutter:stable}
   /* embedded in /grid: the cell header carries the title and the actions */
   body.embed header{display:none}
   body.embed main{padding-top:8px}
   body.embed .msg{margin-bottom:10px}
   body.embed .body{font-size:13.5px}
-  .msg{display:flex;margin:0 0 14px}
+  .msg{display:flex;margin:0 0 14px;min-width:0}
+  /* a flex item refuses to shrink below its content by default, so one long code line used to
+     stretch the whole message column and give the chat a horizontal scrollbar on a phone */
+  .msg>*{min-width:0;max-width:100%}
   .msg.user{justify-content:flex-end}
   .bubble{max-width:min(86%,720px);padding:10px 14px;border-radius:16px;background:#e9e7df;white-space:pre-wrap;overflow-wrap:anywhere}
-  .body{max-width:min(94%,780px);padding:12px 15px;border:1px solid var(--line);border-radius:16px;background:#fff;font-size:14px;line-height:1.65;overflow-wrap:anywhere}
+  .body{max-width:min(94%,780px);min-width:0;padding:12px 15px;border:1px solid var(--line);border-radius:16px;background:#fff;font-size:14px;line-height:1.65;overflow-wrap:anywhere}pre{max-width:100%}.body>*{min-width:0;max-width:100%}
   .body>*:first-child{margin-top:0}.body>*:last-child{margin-bottom:0}
   .body pre{overflow:auto;padding:12px;border-radius:10px;background:#272622;color:#f5f4ed;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
   .body :not(pre)>code{padding:2px 5px;border-radius:5px;background:#eceae3;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -54,6 +57,15 @@
   .copy:hover{background:#fff;color:var(--ink)}
   .empty{padding:40px 16px;text-align:center;color:var(--muted)}
   .notice{padding:8px 12px;margin:0 0 12px;border:1px solid #eadfc6;border-radius:10px;background:#fdf6e8;color:#8a5a12;font-size:12px}
+  .screen-fallback{flex:1;display:flex;flex-direction:column;gap:10px;padding:4px 2px;min-height:0}
+  /* screen mode owns the column height: the pre scrolls instead of stretching the page */
+  body.screen-mode main{display:flex;overflow:hidden}
+  body.screen-mode #messages{flex:1;min-height:0;display:flex}
+  .screen-note{margin:0;color:var(--muted);font-size:12.5px;line-height:1.6}
+  .screen-term{align-self:flex-start;height:32px;padding:0 12px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font:12.5px inherit;cursor:pointer}
+  .screen-term:hover{border-color:#c8c5bc}
+  .screen{flex:1 1 auto;min-height:0;margin:0;padding:10px 12px;overflow:auto;border-radius:10px;background:#111;
+    color:#e7e5df;font:11.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
   footer{flex:none;padding:9px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--surface)}
   .composer{display:flex;align-items:flex-end;gap:8px;padding:8px 10px;border:1px solid #cbc9c0;border-radius:14px;background:#fff}
   textarea{flex:1;min-height:22px;max-height:120px;padding:4px 2px;border:0;resize:none;background:transparent;color:var(--ink);outline:none;font:inherit;line-height:1.5}
@@ -123,6 +135,8 @@ function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;'
 marked.use({renderer:{html(token){return esc(token&&(token.text!=null?token.text:token.raw));}}});
 const md=value=>marked.parse(String(value??''),{gfm:true,breaks:false,async:false});
 if(new URLSearchParams(location.search).get('embed')==='1')document.body.classList.add('embed');
+// a phone has no Shift key: the desktop shortcut hint is noise there
+if(matchMedia('(pointer:coarse)').matches)document.getElementById('input').placeholder='继续提问…';
 // /grid tells each cell whether it is on screen; offscreen cells back off to one request per 15s
 let cellVisible=true;
 document.body.dataset.cellVisible='true';
@@ -209,6 +223,11 @@ async function load(info=false){
     }
     $('hint').textContent=`${state.messages.length} 条消息 · 每 2 秒刷新`;
   }catch(error){
+    if(/not supported|unsupported/i.test(error.message||'')){
+      // a plain shell has no transcript: show its screen and offer the terminal instead of a dead card
+      if(!screenMode)enterScreenMode();
+      return;
+    }
     $('hint').textContent=error.message;
     if(!state.messages.length)$('messages').innerHTML=`<div class="empty">${esc(error.message)}</div>`;
   }finally{
@@ -216,6 +235,35 @@ async function load(info=false){
     // a window scrolled out of /grid slows right down instead of polling in the background
     state.timer=setTimeout(()=>load(false),cellVisible?2000:15000);
   }
+}
+
+// ---- 没有结构化对话的 pane（普通 shell / 全屏程序）：展示当前屏幕，并给一个切终端的入口
+let screenMode=false, screenTimer=null;
+function enterScreenMode(){
+  screenMode=true;
+  document.body.classList.add('screen-mode');
+  clearTimeout(state.timer);
+  $('hint').textContent='只读屏幕 · 每 5 秒刷新';
+  $('messages').innerHTML=`<div class="screen-fallback">
+      <p class="screen-note">这个 pane 没有结构化对话（普通 shell 或全屏程序），下面是它的当前屏幕，只读。</p>
+      <button class="screen-term" type="button">切到终端（可输入）</button>
+      <pre class="screen" id="screen"></pre>
+    </div>`;
+  const button=$('messages').querySelector('.screen-term');
+  if(button)button.onclick=()=>{location.href=`/term?pane=${encodeURIComponent(pane)}&embed=1`;};
+  loadScreen();
+}
+async function loadScreen(){
+  try{
+    const data=await api(`/api/panes/${encodeURIComponent(pane)}/capture?history=200`);
+    const pre=$('screen');
+    if(pre){
+      pre.textContent=(data.content||'').replace(/\s+$/,'');
+      pre.scrollTop=pre.scrollHeight;
+    }
+  }catch{}
+  clearTimeout(screenTimer);
+  screenTimer=setTimeout(loadScreen,cellVisible?5000:20000);
 }
 
 async function loadPaneInfo(){
