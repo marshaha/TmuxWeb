@@ -39,4 +39,20 @@ class ExamplePlugin(Plugin):
                 "panes": len(ctx.services.tmux.list_panes()) if ctx.services.tmux else None,
             }
 
+        # a sidebar button on every page, pointing at this plugin's own static page
+        ctx.add_sidebar_button("示例", f"{ctx.static_url}/index.html", icon="plug", title="示例插件页面")
+
+        # an MCP tool: visible in tools/list only while this plugin is enabled
+        def example_status(arguments: dict) -> dict:
+            return {"plugin": ctx.name, "version": ctx.version,
+                    "greeting": ctx.config.get("greeting", "hello"),
+                    "echo": arguments.get("echo", "")}
+
+        ctx.add_mcp_tool(
+            "example_status",
+            "示例插件：回显参数并报告自身状态",
+            {"type": "object", "properties": {"echo": {"type": "string", "description": "原样返回"}}},
+            example_status,
+        )
+
         ctx.on_shutdown(lambda: ctx.log.info("example plugin stopping"))

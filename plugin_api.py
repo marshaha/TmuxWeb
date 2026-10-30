@@ -43,6 +43,7 @@ Enable them with ``TMUX_WEB_PLUGINS``:
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -93,6 +94,7 @@ class PluginContext:
     config: dict[str, Any]
     services: Any                 # PluginServices: the documented core capabilities
     log: logging.Logger
+    manager: Any = None           # PluginManager, for registration helpers
     _shutdown: list[Callable[[], None]] = field(default_factory=list)
 
     # -- convenience ------------------------------------------------------
@@ -106,6 +108,21 @@ class PluginContext:
         target = Path(self.services.data_root) / "plugins" / self.name
         target.mkdir(parents=True, exist_ok=True)
         return target
+
+    # -- registration helpers --------------------------------------------
+    def add_mcp_tool(self, name: str, description: str, input_schema: dict | None,
+                     handler: Callable[[dict], Any]) -> None:
+        """Expose a tool on the /mcp endpoint (visible only while this plugin is enabled)."""
+        self.manager.add_tool(self.name, name, description, input_schema or {"type": "object"}, handler)
+
+    def add_sidebar_button(self, label: str, href: str, *, icon: str = "plug", title: str = "") -> None:
+        """Add a button to the sidebar of every page (console, board, multi-window)."""
+        self.manager.add_button(self.name, label=label, href=href, icon=icon, title=title or label)
+
+    @property
+    def static_url(self) -> str:
+        """Where this plugin's ``static/`` folder is served: ``/plugin-assets/<name>``."""
+        return f"/plugin-assets/{self.name}"
 
     def on_shutdown(self, callback: Callable[[], None]) -> None:
         self._shutdown.append(callback)
@@ -229,16 +246,20 @@ class PluginManager:
         self.directory = Path(directory) if directory else Path(services.plugins_root)
         self.log = logger or logging.getLogger("tmuxweb.plugins")
         self.enabled_raw = enabled if enabled is not None else os.environ.get("TMUX_WEB_PLUGINS", "")
-        self.state_path = Path(state_path) if state_path else Path(services.data_root) / "plugins.json"
+        self.state_path = Path(state_path) if state_path else None    # None: decisions live in memory only
         self.state: dict[str, bool] = self._read_state()   # what the settings panel decided
         self.specs: list[PluginSpec] = []
         self.loaded: dict[str, Plugin] = {}
         self.contexts: dict[str, PluginContext] = {}
         self.errors: dict[str, str] = {}
         self.paths: dict[str, str] = {}                    # route path -> plugin name
+        self.tools: dict[str, dict] = {}                   # mcp tool name -> {owner, description, schema, handler}
+        self.buttons: list[dict] = []                      # sidebar buttons contributed by plugins
 
     # -- persisted decisions ----------------------------------------------
     def _read_state(self) -> dict[str, bool]:
+        if self.state_path is None:
+            return {}
         try:
             loaded = json.loads(self.state_path.read_text())
         except (OSError, ValueError):
@@ -248,6 +269,8 @@ class PluginManager:
         return {str(k): bool(v) for k, v in loaded.items()}
 
     def _write_state(self) -> None:
+        if self.state_path is None:
+            return
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
@@ -329,7 +352,7 @@ class PluginManager:
 
         context = PluginContext(app=self.app, name=spec.name, version=spec.version,
                                 directory=spec.directory, config=_plugin_config(spec.directory, spec.name),
-                                services=self.services, log=self.log.getChild(spec.name))
+                                services=self.services, log=self.log.getChild(spec.name), manager=self)
         before = {getattr(route, "path", "") for route in self.app.router.routes} if self.app else set()
         instance.setup(context)
         if self.app:
@@ -340,6 +363,49 @@ class PluginManager:
         self.loaded[spec.name] = instance
         self.contexts[spec.name] = context
         self.log.info("plugin %s %s loaded", spec.name, spec.version)
+
+    # -- things plugins register -------------------------------------------
+    def add_tool(self, owner: str, name: str, description: str, schema: dict, handler: Callable) -> None:
+        if name in self.tools and self.tools[name]["owner"] != owner:
+            raise PluginError(f"mcp tool {name!r} is already provided by {self.tools[name]['owner']}")
+        self.tools[name] = {"owner": owner, "description": description, "schema": schema, "handler": handler}
+
+    def add_button(self, owner: str, *, label: str, href: str, icon: str, title: str) -> None:
+        self.buttons = [item for item in self.buttons if not (item["owner"] == owner and item["href"] == href)]
+        self.buttons.append({"owner": owner, "label": label, "href": href, "icon": icon, "title": title})
+
+    def tool_schemas(self) -> list[dict]:
+        return [{"name": name, "description": tool["description"], "inputSchema": tool["schema"]}
+                for name, tool in self.tools.items() if self.is_enabled(tool["owner"])]
+
+    async def call_tool(self, name: str, arguments: dict) -> Any:
+        tool = self.tools.get(name)
+        if tool is None:
+            raise KeyError(name)
+        if not self.is_enabled(tool["owner"]):
+            raise PluginError(f"plugin {tool['owner']} is disabled")
+        result = tool["handler"](arguments or {})
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    def buttons_for_ui(self) -> list[dict]:
+        return [{"plugin": item["owner"], "label": item["label"], "href": item["href"],
+                 "icon": item["icon"], "title": item["title"]}
+                for item in self.buttons if self.is_enabled(item["owner"])]
+
+    def resolve_static(self, plugin: str, path: str) -> Path:
+        """A file inside ``plugins/<name>/static``; refuses anything that escapes it."""
+        spec = next((item for item in self.specs if item.name == plugin), None)
+        if spec is None:
+            raise KeyError(plugin)
+        root = (spec.directory / "static").resolve()
+        target = (root / path).resolve()
+        if root != target and root not in target.parents:
+            raise PluginError("path escapes the plugin's static folder")
+        if not target.is_file():
+            raise FileNotFoundError(path)
+        return target
 
     # -- runtime switching -------------------------------------------------
     def is_enabled(self, name: str) -> bool:
@@ -388,6 +454,8 @@ class PluginManager:
             "loaded": spec.name in self.loaded,
             "first_party": spec.default_enabled,
             "error": self.errors.get(spec.name, spec.error),
+            "tools": [name for name, tool in self.tools.items() if tool["owner"] == spec.name],
+            "buttons": [item["href"] for item in self.buttons if item["owner"] == spec.name],
         }
 
     def status(self) -> list[dict]:
@@ -410,7 +478,7 @@ def install_routes(app, manager: PluginManager, require_auth: Callable[[Any], No
     @app.get("/api/plugins")
     async def list_plugins(request: Request):
         require_auth(request)
-        return {"api": API_VERSION, "plugins": manager.status()}
+        return {"api": API_VERSION, "plugins": manager.status(), "buttons": manager.buttons_for_ui()}
 
     @app.post("/api/plugins/{name}/enable")
     async def enable_plugin(request: Request, name: str):
@@ -429,6 +497,22 @@ def install_routes(app, manager: PluginManager, require_auth: Callable[[Any], No
             return {"plugin": manager.disable(name)}
         except KeyError:
             return JSONResponse({"detail": f"no plugin named {name}"}, status_code=404)
+
+    @app.get("/plugin-assets/{plugin}/{path:path}")
+    async def plugin_asset(request: Request, plugin: str, path: str):
+        require_auth(request)          # plugin assets are part of the console, not a public CDN
+        if not manager.is_enabled(plugin):
+            return JSONResponse({"detail": "plugin is disabled"}, status_code=404)
+        try:
+            target = manager.resolve_static(plugin, path)
+        except KeyError:
+            return JSONResponse({"detail": "no such plugin"}, status_code=404)
+        except PluginError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=400)
+        except FileNotFoundError:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        from fastapi.responses import FileResponse
+        return FileResponse(target)
 
     @app.middleware("http")
     async def plugin_guard(request, call_next):

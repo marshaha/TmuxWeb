@@ -437,6 +437,8 @@
     try {
       await api(`/api/plugins/${encodeURIComponent(name)}/${wanted ? 'enable' : 'disable'}`, { method: 'POST' });
       await loadPlugins();
+      // let the sidebar redraw its plugin buttons without a page reload
+      document.dispatchEvent(new CustomEvent('tmuxweb:plugins-changed'));
     } catch (error) {
       button.disabled = false;
       const row = button.closest('.ts-plugin');

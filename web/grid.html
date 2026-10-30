@@ -135,6 +135,7 @@
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v4M15 3v4M6.2 7h11.6v4.2a5.8 5.8 0 0 1-11.6 0Z"/><path d="M12 17.2V21"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></symbol>
   <symbol id="i-term" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"></path></symbol>
   <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 15.5a2 2 0 0 1-2 2H8.6L5 20.4V6.5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2Z"/></symbol>
@@ -821,6 +822,7 @@
   setInterval(syncVisibility,5000);      // safety net while a window is still loading
 })();
 </script>
+<script src="/assets/plugins-ui.js"></script>
 <script src="/assets/settings.js"></script>
 <script>if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));</script>
 </body>

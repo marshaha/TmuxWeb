@@ -176,7 +176,8 @@ highlight the first control otherwise); only Tab brings up the accent-coloured r
 A feature can live in `plugins/<name>/` (a `plugin.toml` plus a Python module). Only first-party plugins load
 by default; `TMUX_WEB_PLUGINS` turns others on, and `GET /api/plugins` reports what is installed, enabled and
 broken. **The cross-server relay is one**: its four HTTP endpoints now live in `plugins/relay/`, switch the
-plugin off and they are gone. See [`plugins/README.md`](plugins/README.md) for the API.
+plugin off and they are gone. A plugin can also add a sidebar button, register an `/mcp` tool and serve its own static page
+(`/plugin-assets/<name>/`, login required). See [`plugins/README.md`](plugins/README.md) for the API.
 
 
 ## Design boundaries

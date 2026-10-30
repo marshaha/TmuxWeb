@@ -198,6 +198,50 @@ class PluginLoadingTests(unittest.TestCase):
     def client_public(self):
         return make_app()
 
+    def test_a_plugin_can_register_an_mcp_tool_a_button_and_assets(self):
+        client = make_app()          # example is off by default: nothing of it may leak
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        tools = lambda: [row["name"] for row in                                     # noqa: E731
+                         client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+                         .json()["result"]["tools"]]
+        self.assertNotIn("example_status", tools())
+        self.assertEqual(client.get("/api/plugins").json()["buttons"], [])
+        self.assertEqual(client.get("/plugin-assets/example/index.html").status_code, 404)
+
+        client.post("/api/plugins/example/enable")
+        self.assertIn("example_status", tools())
+        call = client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                         "params": {"name": "example_status", "arguments": {"echo": "hi"}}})
+        self.assertIn("\"echo\": \"hi\"", call.json()["result"]["content"][0]["text"])
+        buttons = client.get("/api/plugins").json()["buttons"]
+        self.assertEqual([(row["plugin"], row["href"]) for row in buttons],
+                         [("example", "/plugin-assets/example/index.html")])
+        self.assertEqual(client.get("/plugin-assets/example/index.html").status_code, 200)
+
+        client.post("/api/plugins/example/disable")
+        self.assertNotIn("example_status", tools())
+        self.assertEqual(client.get("/api/plugins").json()["buttons"], [])
+        self.assertEqual(client.get("/plugin-assets/example/index.html").status_code, 404)
+
+    def test_plugin_assets_cannot_escape_their_folder(self):
+        client = make_app(plugins="example")
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertEqual(client.get("/plugin-assets/example/../plugin.py").status_code, 404)
+        self.assertEqual(client.get("/plugin-assets/nope/index.html").status_code, 404)
+        self.assertEqual(client.get("/plugin-assets/example/index.html").status_code, 200)
+
+    def test_the_sidebar_script_is_served_and_wired_into_every_page(self):
+        client = make_app()
+        script = client.get("/assets/plugins-ui.js")
+        self.assertEqual(script.status_code, 200)
+        self.assertIn("data-plugin-button", script.text)
+        self.assertIn("tmuxweb:plugins-changed", script.text)
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        for page in ("/", "/home", "/grid"):
+            body = client.get(page).text
+            self.assertIn("/assets/plugins-ui.js", body, page)
+            self.assertIn('id="i-plug"', body, page)
+
     def test_shutdown_hooks_run_in_reverse_order(self):
         calls = []
 

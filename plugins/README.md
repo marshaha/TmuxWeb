@@ -83,6 +83,16 @@ plugins/
 - 单个插件加载失败**不会**影响服务启动：错误记在日志里，并在 `GET /api/plugins` 的 `error` 字段里显示。
 - 启动日志：`plugins` 子 logger，形如 `plugin relay 1.0.0 loaded`。
 
+## 插件能往界面 / MCP 里加东西
+
+| 调用 | 效果 |
+|---|---|
+| `ctx.add_sidebar_button("示例", "/plugin-assets/example/index.html", icon="plug")` | 控制台/主页/多窗口侧栏多一个图标按钮（开关插件即时增删） |
+| `ctx.add_mcp_tool("名字", "说明", {"type":"object",...}, handler)` | 出现在 `/mcp` 的 `tools/list`，可被 agent 调用；`handler(dict)` 可以返回 dict 或 awaitable |
+| `ctx.static_url` | 本插件 `static/` 的地址（`/plugin-assets/<名字>`，需登录；拒绝 `..` 越界） |
+
+这三样都只在插件启用时可见：关掉插件，按钮消失、工具从 `tools/list` 里消失、静态文件 404。
+
 ## 两个容易踩的坑
 
 1. **处理函数的参数要有类型注解**：`async def ping(request: Request)` —— 写成 `async def ping(request)`

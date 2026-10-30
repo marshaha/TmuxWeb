@@ -19,7 +19,7 @@ import termios
 import sqlite3
 
 from auth_store import PasswordStore
-from plugin_api import PluginManager, PluginServices, install_routes
+from plugin_api import PluginError, PluginManager, PluginServices, install_routes
 import time
 import threading
 from collections import defaultdict, deque
@@ -643,6 +643,9 @@ def ensure_share_schema(connection) -> None:
             connection.execute("ALTER TABLE shares ADD COLUMN allow_input INTEGER NOT NULL DEFAULT 1")
 
 
+PLUGIN_MANAGER: dict = {}     # filled near the end of create_app: the MCP endpoint needs it earlier
+
+
 def create_app(
     backend: TmuxBackend | None = None,
     *,
@@ -658,6 +661,8 @@ def create_app(
     plugins: str | None = None,
     plugin_state: str | None = None,
 ) -> FastAPI:
+    plugin_manager = PLUGIN_MANAGER
+    plugin_manager.clear()
     tmux = backend or TmuxBackend()
     configured_password = password if password is not None else os.environ.get("TMUX_WEB_PASSWORD")
     if not configured_password:
@@ -1475,6 +1480,12 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / f"shell.{kind}", media_type=media,
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/plugins-ui.js")
+    async def plugins_ui_script():
+        """Sidebar buttons contributed by plugins; no-store so a plugin edit shows up on reload."""
+        return FileResponse(WEB_DIR / "assets" / "plugins-ui.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/settings.js")
     async def settings_asset() -> FileResponse:
         """The settings panel shared by the console and /grid."""
@@ -1621,6 +1632,15 @@ def create_app(
     async def perform_mcp_tool(name: str, arguments: dict) -> dict:
         """Same semantics as mcp_relay.py, but executed in-process (no python3 on the client)."""
         arguments = arguments or {}
+        if plugin_manager.get("mgr") and name in plugin_manager["mgr"].tools:
+            try:
+                result = await plugin_manager["mgr"].call_tool(name, arguments)
+            except KeyError:
+                pass
+            except PluginError as exc:
+                raise McpToolError(str(exc)) from exc
+            else:
+                return result if isinstance(result, dict) else {"result": result}
         if name == "list_remote_hosts":
             hosts = await asyncio.to_thread(remote_hosts.list_hosts)
             return {"hosts": [
@@ -1789,7 +1809,8 @@ def create_app(
         if method == "ping":
             return reply({})
         if method == "tools/list":
-            return reply({"tools": mcp_relay.tool_schemas()})
+            plugin_tools = plugin_manager["mgr"].tool_schemas() if plugin_manager.get("mgr") else []
+            return reply({"tools": mcp_relay.tool_schemas() + plugin_tools})
         if method == "tools/call":
             params = payload.get("params") or {}
             try:
@@ -2932,8 +2953,17 @@ def create_app(
         collect_pane_states=collect_pane_states,
         version=os.environ.get("TMUX_WEB_VERSION", ""),
     )
+    # Same rule as the password file: an app built with an explicit password (the tests, a throwaway
+    # instance) must not adopt the deployment's plugin decisions.
+    plugin_state_path = (
+        plugin_state
+        if plugin_state is not None
+        else os.environ.get("TMUX_WEB_PLUGIN_STATE")
+        or (None if password is not None else str(BASE_DIR / "plugins.json"))
+    )
     manager = PluginManager(app, plugin_services, directory=plugins_dir, enabled=plugins,
-                            state_path=plugin_state, logger=logging.getLogger("tmuxweb.plugins"))
+                            state_path=plugin_state_path, logger=logging.getLogger("tmuxweb.plugins"))
+    plugin_manager["mgr"] = manager
     manager.load_all()
     install_routes(app, manager, require_auth)
     app.state.plugins = manager
