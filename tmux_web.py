@@ -1480,6 +1480,18 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / f"shell.{kind}", media_type=media,
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/theme.css")
+    async def theme_stylesheet() -> FileResponse:
+        """Theme palettes; they re-point the CSS variables every page already uses."""
+        return FileResponse(WEB_DIR / "assets" / "theme.css", media_type="text/css",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/theme.js")
+    async def theme_script() -> FileResponse:
+        """Applies the remembered theme before first paint (no cream flash on a dark theme)."""
+        return FileResponse(WEB_DIR / "assets" / "theme.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/plugins-ui.js")
     async def plugins_ui_script():
         """Sidebar buttons contributed by plugins; no-store so a plugin edit shows up on reload."""

@@ -125,6 +125,16 @@ The status line under the composer is grey by default; a successful send shows a
 after ~1.4 s, a failure shows a **red** 发送失败 and stays put (with a 重发 button on the bubble). Retrying
 shows 重发中…, then the same green confirmation — the stale failure text no longer lingers in the corner.
 
+### Themes
+
+Settings → Theme offers six palettes: **Default (warm grey, terracotta), ChatGPT (white, green), Claude
+(cream, orange), GitHub (white, blue), Claude Code (dark terminal) and Night (neutral dark)**. The choice is
+per browser (`localStorage['tmux-theme']`) and every page follows it, including a plugin's own pages.
+
+Under the hood only the CSS variables change; `:root[data-theme=…]` in `theme.css` outranks each page's own
+`:root`, so a new theme is just another block of variables — the dark ones add a dozen overrides that point
+hard-coded white surfaces at the variables.
+
 ### A narrow sidebar
 
 The sidebar header is two stacked rows: the title on top, the icons on a full-width row underneath.

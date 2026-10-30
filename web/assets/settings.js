@@ -62,9 +62,14 @@
   .ts-file-name.picked{color:inherit}
   /* plugin manager */
   .ts-plugins{display:flex;flex-direction:column;gap:8px;padding:10px 0 4px}
-  .ts-subhead{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 0 8px;
-    border-bottom:1px solid var(--line,#dddcd5);font:600 13px/1.4 inherit}
-  .ts-subhead .ts-hint{margin:0}
+  .ts-tail{display:flex;align-items:center;gap:8px}
+  .ts-tail .ts-hint{margin:0}
+  .ts-themes{display:flex;flex-wrap:wrap;gap:8px;padding:10px 0 6px}
+  .ts-theme{display:flex;align-items:center;gap:8px;height:34px;padding:0 11px;border:1px solid var(--line,#dddcd5);
+    border-radius:10px;background:#fff;color:var(--ink,#242421);font:12px inherit;cursor:pointer}
+  .ts-theme:hover{border-color:#cbc9c0}
+  .ts-theme[aria-pressed="true"]{border-color:var(--accent,#c96442);box-shadow:0 0 0 2px rgba(201,100,66,.18)}
+  .ts-swatch{width:16px;height:16px;border-radius:50%;flex:none}
   .ts-plugin{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line,#dddcd5);
     border-radius:12px;background:#faf9f6}
   .ts-plugin.off{background:#f6f5f1}
@@ -149,8 +154,24 @@
     </section>
 
     <section class="ts-block">
-      <div class="ts-subhead"><span>插件</span><span class="ts-hint" id="ts-plugins-count"></span></div>
-      <div class="ts-plugins" id="ts-plugins"><p class="ts-hint">读取中…</p></div>
+      <button class="ts-row" type="button" id="ts-plugin-toggle" aria-expanded="false" aria-controls="ts-plugin-panel">
+        <span>插件</span>
+        <span class="ts-tail"><span class="ts-hint" id="ts-plugins-count"></span><span class="ts-caret" aria-hidden="true"></span></span>
+      </button>
+      <div class="ts-panel" id="ts-plugin-panel" hidden>
+        <div class="ts-plugins" id="ts-plugins"><p class="ts-hint">读取中…</p></div>
+      </div>
+    </section>
+
+    <section class="ts-block">
+      <button class="ts-row" type="button" id="ts-theme-toggle" aria-expanded="false" aria-controls="ts-theme-panel">
+        <span>主题</span>
+        <span class="ts-tail"><span class="ts-hint" id="ts-theme-current"></span><span class="ts-caret" aria-hidden="true"></span></span>
+      </button>
+      <div class="ts-panel" id="ts-theme-panel" hidden>
+        <div class="ts-themes" id="ts-themes"></div>
+        <p class="ts-hint">主题记在本浏览器里；插件自己的页面也会跟着变。</p>
+      </div>
     </section>
 
     <div class="ts-actions">
@@ -391,6 +412,28 @@
     $('ts-import').hidden = name !== 'import';
   }
 
+  // ---------------------------------------------------------------- themes
+  function renderThemes() {
+    const box = $('ts-themes');
+    if (!box || !window.TmuxTheme) return;
+    const current = window.TmuxTheme.get();
+    const themes = window.TmuxTheme.list();
+    box.innerHTML = themes.map(theme => `
+      <button class="ts-theme" type="button" data-theme="${theme.name}" aria-pressed="${theme.name === current}"
+        title="${theme.hint}">
+        <span class="ts-swatch" style="background:${theme.page};box-shadow:inset 0 0 0 2px ${theme.accent}"></span>
+        ${theme.label}
+      </button>`).join('');
+    const label = $('ts-theme-current');
+    if (label) label.textContent = (themes.find(theme => theme.name === current) || {}).label || '';
+  }
+
+  function chooseTheme(name) {
+    if (!window.TmuxTheme) return;
+    window.TmuxTheme.set(name);
+    renderThemes();
+  }
+
   // ---------------------------------------------------------------- plugins
   const esc = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -458,7 +501,8 @@
     $('ts-import-name').classList.remove('picked');
     $('ts-pw-source').textContent = '读取中…';
     dialog.showModal();
-    loadPlugins();
+    renderThemes();
+    loadPlugins();          // fills the row's counter; the list itself stays collapsed
     // Chrome/Firefox auto-focus the first control, Safari draws its blue ring on it: park the focus on
     // the dialog instead, so opening 设置 never comes with a highlighted row
     for (const element of dialog.querySelectorAll('.ts-row, .ts-btn, a, button, input')) {
@@ -498,13 +542,21 @@
     dialog = $('ts-dialog');
     dialog.querySelector('h2').id = 'ts-title';
 
-    sections = [['ts-pw-toggle', 'ts-pw-panel'], ['ts-io-toggle', 'ts-io-panel']];
-    for (const [toggleId] of sections) $(toggleId).onclick = () => toggleSection(toggleId);
+    sections = [['ts-pw-toggle', 'ts-pw-panel'], ['ts-io-toggle', 'ts-io-panel'],
+                ['ts-plugin-toggle', 'ts-plugin-panel'], ['ts-theme-toggle', 'ts-theme-panel']];
+    for (const [toggleId] of sections) $(toggleId).onclick = () => {
+      toggleSection(toggleId);
+      if (toggleId === 'ts-plugin-toggle' && !$('ts-plugin-panel').hidden) loadPlugins();
+    };
     for (const button of dialog.querySelectorAll('[data-ts-tab]')) {
       button.onclick = () => selectTab(button.dataset.tsTab);
     }
     for (const button of buttons) button.onclick = () => open();
     $('ts-close').onclick = () => dialog.close();
+    $('ts-themes').addEventListener('click', event => {
+      const button = event.target.closest('[data-theme]');
+      if (button) chooseTheme(button.dataset.theme);
+    });
     $('ts-plugins').addEventListener('click', event => {
       const button = event.target.closest('[data-toggle]');
       if (button) togglePlugin(button.dataset.toggle, button);

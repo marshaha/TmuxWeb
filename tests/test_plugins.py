@@ -286,6 +286,27 @@ class PluginLoadingTests(unittest.TestCase):
         client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
         self.assertEqual(client.get("/plugin-assets/noassets/page.html").status_code, 403)
 
+    def test_themes_are_served_and_offered_in_the_panel(self):
+        client = make_app()
+        css = client.get("/assets/theme.css")
+        script = client.get("/assets/theme.js")
+        self.assertEqual((css.status_code, script.status_code), (200, 200))
+        for name in ("chatgpt", "claude", "github", "claude-code", "night"):
+            self.assertIn(f'[data-theme="{name}"]', css.text)
+        self.assertIn("tmux-theme", script.text)
+        self.assertIn("TmuxTheme", script.text)
+
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        for page in ("/", "/home", "/grid", "/login"):
+            body = client.get(page).text
+            self.assertIn("/assets/theme.css", body, page)
+            self.assertIn("/assets/theme.js", body, page)
+
+        panel = client.get("/assets/settings.js").text
+        self.assertIn('id="ts-themes"', panel)
+        self.assertIn("chooseTheme", panel)
+        self.assertIn("window.TmuxTheme.set(name)", panel)
+
     def test_shutdown_hooks_run_in_reverse_order(self):
         calls = []
 

@@ -1,0 +1,146 @@
+/*
+ * Themes. Every page defines its palette once in `:root{--page:…}`; a theme only re-points those variables,
+ * so nothing in the markup or the scripts has to know about it.
+ *
+ * `:root[data-theme=…]` (0,2,0) beats the page's own `:root` (0,1,0) no matter which stylesheet loads first.
+ * Selection lives in localStorage (tmux-theme) and is applied by /assets/theme.js before first paint.
+ */
+
+/* ---- ChatGPT: white + teal, like the chat UI most people have open all day */
+:root[data-theme="chatgpt"]{
+  --page:#ffffff;--sidebar:#f7f7f8;--surface:#ffffff;--surface2:#f7f7f8;
+  --ink:#0d0d0d;--muted:#5d5d5d;--faint:#8e8e8e;--line:#e3e3e3;
+  --accent:#10a37f;--green:#10a37f;--danger:#ef4146;
+  --shadow:0 8px 30px rgba(0,0,0,.08);
+}
+
+/* ---- Claude: the cream + terracotta of claude.ai */
+:root[data-theme="claude"]{
+  --page:#faf9f5;--sidebar:#f0eee6;--surface:#ffffff;--surface2:#f5f3ee;
+  --ink:#1f1e1d;--muted:#6b6a63;--faint:#a49f95;--line:#e2ddd2;
+  --accent:#d97757;--green:#5a8f6b;--danger:#b04a3f;
+  --shadow:0 8px 30px rgba(31,30,29,.07);
+}
+
+/* ---- GitHub: the light theme of github.com */
+:root[data-theme="github"]{
+  --page:#ffffff;--sidebar:#f6f8fa;--surface:#ffffff;--surface2:#f6f8fa;
+  --ink:#1f2328;--muted:#59636e;--faint:#818b98;--line:#d1d9e0;
+  --accent:#0969da;--green:#1a7f37;--danger:#cf222e;
+  --shadow:0 8px 30px rgba(31,35,40,.08);
+}
+
+/* ---- Claude Code: the dark terminal the CLI runs in */
+:root[data-theme="claude-code"]{
+  color-scheme:dark;
+  --page:#1a1917;--sidebar:#151412;--surface:#232120;--surface2:#2a2725;
+  --ink:#e8e4dc;--muted:#a8a29a;--faint:#7c766e;--line:#3a3632;
+  --accent:#d97757;--green:#5aa87a;--danger:#e0776b;
+  --shadow:0 10px 34px rgba(0,0,0,.45);
+}
+
+/* ---- Night: neutral dark, no brand colour */
+:root[data-theme="night"]{
+  color-scheme:dark;
+  --page:#15161a;--sidebar:#111216;--surface:#1e1f25;--surface2:#25262d;
+  --ink:#e6e6e3;--muted:#a5a39c;--faint:#76746e;--line:#33343d;
+  --accent:#7aa2f7;--green:#6cc08b;--danger:#d4736a;
+  --shadow:0 10px 34px rgba(0,0,0,.45);
+}
+
+/* ---- dark surfaces -------------------------------------------------------
+ * A dozen backgrounds are hard-coded white/cream inside the pages (chat bubbles, cards, small buttons).
+ * On the two dark themes they are re-pointed at the surface variables here, in one place, instead of
+ * hunting every literal through five files.
+ */
+[data-theme="claude-code"] body,[data-theme="night"] body{background:var(--page)}
+[data-theme="claude-code"] .assistant-body,[data-theme="night"] .assistant-body,
+[data-theme="claude-code"] .card,[data-theme="night"] .card,
+[data-theme="claude-code"] .cell,[data-theme="night"] .cell,
+[data-theme="claude-code"] .panel,[data-theme="night"] .panel,
+[data-theme="claude-code"] .host,[data-theme="night"] .host,
+[data-theme="claude-code"] .stat,[data-theme="night"] .stat,
+[data-theme="claude-code"] .msg-copy,[data-theme="night"] .msg-copy,
+[data-theme="claude-code"] .block-btn,[data-theme="night"] .block-btn,
+[data-theme="claude-code"] .copy,[data-theme="night"] .copy,
+[data-theme="claude-code"] .icon-btn,[data-theme="night"] .icon-btn,
+[data-theme="claude-code"] .chip-btn,[data-theme="night"] .chip-btn,
+[data-theme="claude-code"] .tree-tool,[data-theme="night"] .tree-tool,
+[data-theme="claude-code"] .seg,[data-theme="night"] .seg,
+[data-theme="claude-code"] .share-btn,[data-theme="night"] .share-btn,
+[data-theme="claude-code"] .fullscreen-btn,[data-theme="night"] .fullscreen-btn,
+[data-theme="claude-code"] .cell-head,[data-theme="night"] .cell-head,
+[data-theme="claude-code"] .top,[data-theme="night"] .top,
+[data-theme="claude-code"] header.top,[data-theme="night"] header.top,
+[data-theme="claude-code"] .toolbar,[data-theme="night"] .toolbar,
+[data-theme="claude-code"] dialog,[data-theme="night"] dialog,
+[data-theme="claude-code"] .preset-row,[data-theme="night"] .preset-row,
+[data-theme="claude-code"] .mermaid-target,[data-theme="night"] .mermaid-target,
+[data-theme="claude-code"] .table-holder,[data-theme="night"] .table-holder,
+[data-theme="claude-code"] .block-wrap,[data-theme="night"] .block-wrap,
+[data-theme="claude-code"] .md-panel,[data-theme="night"] .md-panel{
+  background:var(--surface);color:var(--ink)
+}
+[data-theme="claude-code"] .chat-bubble,[data-theme="night"] .chat-bubble,
+[data-theme="claude-code"] .block-bar,[data-theme="night"] .block-bar,
+[data-theme="claude-code"] .file-row:hover,[data-theme="night"] .file-row:hover,
+[data-theme="claude-code"] .pane:hover,[data-theme="night"] .pane:hover{
+  background:var(--surface2);color:var(--ink)
+}
+[data-theme="claude-code"] .assistant-body :not(pre)>code,[data-theme="night"] .assistant-body :not(pre)>code,
+[data-theme="claude-code"] .assistant-body th,[data-theme="night"] .assistant-body th,
+[data-theme="claude-code"] code:not(pre code),[data-theme="night"] code:not(pre code){
+  background:var(--surface2);color:var(--ink)
+}
+[data-theme="claude-code"] .ts-dialog,[data-theme="night"] .ts-dialog,
+[data-theme="claude-code"] .ts-plugin,[data-theme="night"] .ts-plugin,
+[data-theme="claude-code"] .ts-tabs,[data-theme="night"] .ts-tabs{
+  background:var(--surface);color:var(--ink);border-color:var(--line)
+}
+[data-theme="claude-code"] .ts-field input,[data-theme="night"] .ts-field input,
+[data-theme="claude-code"] .field input,[data-theme="night"] .field input,
+[data-theme="claude-code"] .field select,[data-theme="night"] .field select,
+[data-theme="claude-code"] .field textarea,[data-theme="night"] .field textarea{
+  background:var(--surface2);color:var(--ink);border-color:var(--line)
+}
+[data-theme="claude-code"] .composer-card,[data-theme="night"] .composer-card{
+  background:var(--surface);border-color:var(--line);color:var(--ink)
+}
+[data-theme="claude-code"] .composer-card textarea::placeholder,[data-theme="night"] .composer-card textarea::placeholder{
+  color:var(--faint)
+}
+[data-theme="claude-code"] .composer,[data-theme="night"] .composer{
+  background:var(--page);border-color:var(--line)
+}
+[data-theme="claude-code"] .terminal-frame,[data-theme="night"] .terminal-frame{
+  background:var(--surface);border-color:var(--line)
+}
+[data-theme="claude-code"] .capture-output,[data-theme="night"] .capture-output{color:var(--ink)}
+[data-theme="claude-code"] .msg-actions,[data-theme="night"] .msg-actions{color:var(--muted)}
+/* selected rows and the view switcher are white pills in the light themes */
+[data-theme="claude-code"] .pane.selected,[data-theme="night"] .pane.selected,
+[data-theme="claude-code"] .mode-switch,[data-theme="night"] .mode-switch,
+[data-theme="claude-code"] .mode-btn.active,[data-theme="night"] .mode-btn.active{
+  background:var(--surface2);color:var(--ink);border-color:var(--line)
+}
+[data-theme="claude-code"] .pane.selected .pane-title,[data-theme="night"] .pane.selected .pane-title{color:var(--ink)}
+/* the board's search field and the grid's picker inputs */
+[data-theme="claude-code"] .search,[data-theme="night"] .search,
+[data-theme="claude-code"] .picker input,[data-theme="night"] .picker input,
+[data-theme="claude-code"] .tabs button,[data-theme="night"] .tabs button,
+[data-theme="claude-code"] .toolbar,[data-theme="night"] .toolbar{
+  background:var(--surface);color:var(--ink);border-color:var(--line)
+}
+[data-theme="claude-code"] .state.busy,[data-theme="night"] .state.busy{
+  background:var(--surface2);border-color:var(--line);color:var(--accent)
+}
+[data-theme="claude-code"] .search input::placeholder,[data-theme="night"] .search input::placeholder{color:var(--faint)}
+/* status pills and pressed icon buttons are pastel on light themes; keep them as tinted surfaces in the dark */
+[data-theme="claude-code"] .state.busy,[data-theme="night"] .state.busy{background:#3a3327;color:#e0b877;border-color:#4a4132}
+[data-theme="claude-code"] .state.idle,[data-theme="night"] .state.idle{background:#233229;color:#8fd0a4;border-color:#31443a}
+[data-theme="claude-code"] .state.offline,[data-theme="night"] .state.offline{background:#3a2825;color:#e0a094;border-color:#4a332f}
+[data-theme="claude-code"] .icon-btn.active,[data-theme="night"] .icon-btn.active,
+[data-theme="claude-code"] .tree-tool.active,[data-theme="night"] .tree-tool.active,
+[data-theme="claude-code"] .chip-btn.active,[data-theme="night"] .chip-btn.active{
+  background:var(--surface2);color:var(--accent);border-color:var(--line)
+}
