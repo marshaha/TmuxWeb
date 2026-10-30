@@ -1,0 +1,6 @@
+name = "example"
+version = "0.1.0"
+api = 1
+entry = "plugin.py"
+description = "模板插件：/api/example/ping，演示鉴权、配置与生命周期（默认不启用）"
+default_enabled = false

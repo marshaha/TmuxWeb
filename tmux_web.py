@@ -19,6 +19,7 @@ import termios
 import sqlite3
 
 from auth_store import PasswordStore
+from plugin_api import PluginManager, PluginServices, install_status_route
 import time
 import threading
 from collections import defaultdict, deque
@@ -653,6 +654,8 @@ def create_app(
     remote_store=None,
     remote_runner_factory=None,
     password_db: str | None = None,
+    plugins_dir: str | None = None,
+    plugins: str | None = None,
 ) -> FastAPI:
     tmux = backend or TmuxBackend()
     configured_password = password if password is not None else os.environ.get("TMUX_WEB_PASSWORD")
@@ -2229,11 +2232,6 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"status": "uploaded", "path": target, "size": len(body)}
 
-    @app.get("/api/relay/peers")
-    async def relay_peers(request: Request):
-        require_auth(request)
-        return {"peers": await asyncio.to_thread(collect_pane_states)}
-
     def host_label(pane_id: str) -> str:
         try:
             host_id, _ = split_pane_ref(pane_id)
@@ -2805,32 +2803,6 @@ def create_app(
                               "reply": str(result["reply"])[:400], "elapsed": result["elapsed"]})
         return result
 
-    @app.post("/api/relay/ask")
-    async def relay_ask(request: Request, payload: RelayAskRequest):
-        require_auth(request)
-        try:
-            return await perform_relay_ask(payload)
-        except RelayTimeoutError as exc:
-            return JSONResponse({"detail": str(exc), "tail": exc.tail, "target": payload.target},
-                                status_code=504)
-
-    @app.post("/api/relay/message")
-    async def relay_message(request: Request, payload: RelayMessageRequest):
-        require_auth(request)
-        transport, pane_id, pane, host_name = await asyncio.to_thread(relay_target, payload.target)
-        try:
-            await asyncio.to_thread(transport.send, pane_id, payload.text, True)
-        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        relay_log.appendleft({"at": time.time(), "target": payload.target, "source": "message",
-                              "status": "sent", "question": payload.text[:400], "elapsed": 0})
-        return {"status": "sent", "target": payload.target, "host": host_name}
-
-    @app.get("/api/relay/log")
-    async def relay_history(request: Request):
-        require_auth(request)
-        return {"events": list(relay_log)}
-
     @app.websocket("/ws/panes/{pane_id}")
     async def stream_pane(websocket: WebSocket, pane_id: str):
         token = websocket.cookies.get(COOKIE_NAME, "")
@@ -2940,6 +2912,31 @@ def create_app(
     @app.exception_handler(HTTPException)
     async def http_error(_request: Request, exc: HTTPException):
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+    # ---------------------------------------------------------------- plugins
+    # A feature can live in plugins/<name>/ and be left out entirely: the relay is the first one. The
+    # core hands plugins a small, documented set of capabilities (PluginServices) and nothing else.
+    plugin_services = PluginServices(
+        require_auth=require_auth,
+        plugins_root=str(BASE_DIR / "plugins"),
+        data_root=str(BASE_DIR),
+        tmux=tmux,
+        tmux_error=TmuxError,
+        remote_hosts=remote_hosts,
+        home_store=home,
+        share_store=None,          # shares are still core-only; expose one when a plugin needs it
+        relay_log=relay_log,
+        relay_ask=perform_relay_ask,
+        relay_target=relay_target,
+        collect_pane_states=collect_pane_states,
+        version=os.environ.get("TMUX_WEB_VERSION", ""),
+    )
+    manager = PluginManager(app, plugin_services, directory=plugins_dir, enabled=plugins,
+                            logger=logging.getLogger("tmuxweb.plugins"))
+    manager.load_all()
+    install_status_route(app, manager, require_auth)
+    app.state.plugins = manager
+    app.router.add_event_handler("shutdown", manager.shutdown)
 
     return app
 

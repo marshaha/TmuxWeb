@@ -171,6 +171,13 @@ highlight the first control otherwise); only Tab brings up the accent-coloured r
   - import takes the file and that password; a wrong password fails at the AES-GCM tag, existing hosts (same
     host/port/user) are skipped, jump hops are relinked by name, layout and presets replace the local ones.
 - **Log out** — bottom-left of the panel. The sidebar no longer has its own 退出 button.
+## Plugins
+
+A feature can live in `plugins/<name>/` (a `plugin.toml` plus a Python module). Only first-party plugins load
+by default; `TMUX_WEB_PLUGINS` turns others on, and `GET /api/plugins` reports what is installed, enabled and
+broken. **The cross-server relay is one**: its four HTTP endpoints now live in `plugins/relay/`, switch the
+plugin off and they are gone. See [`plugins/README.md`](plugins/README.md) for the API.
+
 
 ## Design boundaries
 

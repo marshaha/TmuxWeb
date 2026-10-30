@@ -1,0 +1,6 @@
+name = "relay"
+version = "1.0.0"
+api = 1
+entry = "plugin.py"
+description = "跨服务器 agent 通信：/api/relay/peers、/api/relay/ask、/api/relay/message、/api/relay/log"
+default_enabled = true
