@@ -77,8 +77,16 @@
     .seg button{height:26px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:var(--muted);font:12px inherit;cursor:pointer}
     .seg button:hover{color:var(--ink)}
     .seg button.active{background:#292825;color:#fff}
-    .grid.mode-grid{display:grid;grid-template-columns:repeat(var(--cols,2),minmax(0,1fr));grid-auto-rows:minmax(240px,1fr);
-      gap:8px;padding:8px;overflow:auto;align-content:stretch}
+    .grid.mode-grid{display:grid;grid-template-columns:var(--col-tpl,repeat(2,minmax(0,1fr)));
+      grid-template-rows:var(--row-tpl,repeat(2,minmax(0,1fr)));gap:8px;padding:8px;overflow:hidden;position:relative;align-content:stretch}
+    /* resize grips: they sit on the seams and simply move the fr ratios between two neighbours */
+    .grip{position:absolute;z-index:3;touch-action:none}
+    .grip.col{width:9px;cursor:col-resize;z-index:4}
+    .grip.row{height:9px;cursor:row-resize}
+    .grip::after{content:'';position:absolute;border-radius:3px;background:transparent;transition:background .12s}
+    .grip.col::after{inset:0 2px}
+    .grip.row::after{inset:2px 0}
+    .grip:hover::after,.grip.dragging::after{background:#c9a227}
     .grid.mode-grid .cell{margin:0;min-width:0;height:100%}
     .cell-head{cursor:grab}
     .grid.maximized .cell:not(.max){display:none!important}
@@ -120,7 +128,7 @@
       /* a phone never gets a 2- or 3-column grid: one window per row */
       .grid.mode-grid{grid-template-columns:minmax(0,1fr)!important;grid-auto-rows:auto;overflow-y:auto}
       .grid.mode-grid .cell{height:calc(100dvh - 64px)}
-      .splitter{display:none}
+      .splitter,.grip{display:none}
       .empty{padding:16px}
     }
   </style>
@@ -181,9 +189,9 @@
   <span class="spacer"></span>
   <div class="seg" id="layout" role="group" aria-label="布局">
     <button type="button" data-layout="strip">并排</button>
-    <button type="button" data-layout="grid2">网格 2</button>
-    <button type="button" data-layout="grid3">网格 3</button>
+    <button type="button" data-layout="grid">网格</button>
   </div>
+  <div class="seg" id="grid-size" role="group" aria-label="网格行列" hidden></div>
   <button class="btn primary" id="add" type="button" title="添加窗口" aria-label="添加窗口"><svg class="ico"><use href="#i-plus"/></svg><span class="lbl">添加窗口</span></button>
   <button class="btn" id="preset-btn" type="button" title="布局预设" aria-label="布局预设"><svg class="ico"><use href="#i-preset"/></svg><span class="lbl">预设</span></button>
   <a class="btn" id="home" href="/home" title="返回主页" aria-label="返回主页"><svg class="ico"><use href="#i-home"/></svg><span class="lbl">主页</span></a>
@@ -224,14 +232,37 @@
   // removing a window never leaves a column pinned at the width it had when it was alone
   const state={panes:[], widths:{}, layout:'strip', modes:{}, explicit:{}, max:null, presets:{}, titles:new Map(), statuses:new Map(), hosts:null};
   const PRESET_KEY='tmux-grid-presets-v1';
-  const LAYOUTS=['strip','grid2','grid3'];
+  const LAYOUTS=['strip','grid'];
+  const GRID_PRESETS=[{cols:2,rows:1},{cols:2,rows:2},{cols:3,rows:2},{cols:2,rows:3},{cols:3,rows:3}];
   const MIN=260;
+  const GRID_MIN=170;
+
+  // fr arrays are the single source of truth for cell sizes in grid mode: the row/column ratio
+  // survives a resize, and dragging a seam just moves one fr value into its neighbour.
+  function fitFr(list,count){
+    const out=Array.isArray(list)?list.slice(0,count).map(v=>Number(v)):[];
+    while(out.length<count)out.push(1);
+    return out.map(v=>Number.isFinite(v)&&v>=0.1?v:1);
+  }
+  function applyGridShape(){
+    const cols=Math.max(1,Math.min(4,Math.round(Number(state.cols)||2)));
+    const needed=Math.max(1,Math.ceil(state.panes.length/cols));
+    state.cols=cols;
+    state.rows=Math.max(Math.min(6,Math.round(Number(state.rows)||2)),needed);
+    state.colFr=fitFr(state.colFr,state.cols);
+    state.rowFr=fitFr(state.rowFr,state.rows);
+  }
 
   function load(){
     try{
       const saved=JSON.parse(localStorage.getItem(KEY)||'{}');
       state.panes=Array.isArray(saved.panes)?saved.panes.filter(x=>typeof x==='string'):[];
-      state.layout=LAYOUTS.includes(saved.layout)?saved.layout:'strip';
+      const layout=String(saved.layout||'strip');
+      state.layout=LAYOUTS.includes(layout)?layout:(layout==='grid2'||layout==='grid3'?'grid':'strip');
+      state.cols=Number(saved.cols)||(layout==='grid3'?3:2);
+      state.rows=Number(saved.rows)||2;
+      state.colFr=Array.isArray(saved.colFr)?saved.colFr:null;
+      state.rowFr=Array.isArray(saved.rowFr)?saved.rowFr:null;
       // the mode a pane had last time is remembered even while it is not a window: removing and
       // re-adding a session should not lose "I use this one as a terminal"
       state.modes={};
@@ -247,10 +278,11 @@
         if(state.panes.includes(pane)&&Number.isFinite(width)&&width>=MIN)state.widths[pane]=Math.round(width);
       }
     }catch{state.panes=[];state.widths={};}
+    applyGridShape();
   }
   function save(){
     try{
-      localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout,modes:state.modes,explicit:state.explicit}));
+      localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout,cols:state.cols,rows:state.rows,colFr:state.colFr,rowFr:state.rowFr,modes:state.modes,explicit:state.explicit}));
     }catch{}
   }
   function widthOf(pane){
@@ -275,11 +307,18 @@
     const gridded=state.layout!=='strip';
     grid.classList.toggle('mode-grid',gridded);
     grid.classList.toggle('maximized',!!state.max);
-    if(gridded)grid.style.setProperty('--cols',state.layout==='grid3'?3:2);
-    else grid.style.removeProperty('--cols');
+    if(gridded){
+      applyGridShape();
+      grid.style.setProperty('--col-tpl',state.colFr.map(v=>v+'fr').join(' '));
+      grid.style.setProperty('--row-tpl',state.rowFr.map(v=>v+'fr').join(' '));
+    }else{
+      grid.style.removeProperty('--col-tpl');
+      grid.style.removeProperty('--row-tpl');
+    }
     for(const button of document.querySelectorAll('[data-layout]')){
       button.classList.toggle('active',button.dataset.layout===state.layout);
     }
+    syncSizeUi();
     if(!state.panes.length){
       grid.innerHTML='<div class="empty"><div><b>还没有窗口</b>点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。</div></div>';
       return;
@@ -308,8 +347,43 @@
       const next=cells[index+1];
       if(next)grid.insertBefore(splitter,next);
     });
+    positionGrips();
     syncVisibility();
     syncTreeMarks();
+  }
+
+  // ---- grid mode: a size picker in the toolbar plus seams you can drag
+  function syncSizeUi(){
+    const bar=$('grid-size');
+    if(!bar)return;
+    bar.hidden=state.layout!=='grid';
+    bar.innerHTML=GRID_PRESETS.map(({cols,rows})=>{
+      const active=cols===state.cols&&rows===state.rows;
+      const label=rows>1||cols>1?`${cols}×${rows}`:`1×1`;
+      return `<button type="button" data-cols="${cols}" data-rows="${rows}"${active?' class="active"':''}`
+        +` title="${cols} 列 × ${rows} 行" aria-label="${cols} 列 ${rows} 行">${label}</button>`;
+    }).join('');
+  }
+
+  function positionGrips(){
+    const grid=$('grid');
+    for(const old of grid.querySelectorAll('.grip'))old.remove();
+    if(state.layout!=='grid'||state.max||window.innerWidth<=760)return;
+    const cells=[...grid.querySelectorAll('.cell')];
+    if(cells.length<2)return;
+    const box=grid.getBoundingClientRect();
+    for(let col=1;col<state.cols;col++){
+      const left=cells[col-1],right=cells[col];
+      if(!left||!right)continue;
+      const x=(left.getBoundingClientRect().right+right.getBoundingClientRect().left)/2-box.left;
+      grid.insertAdjacentHTML('beforeend',`<div class="grip col" data-grip="col" data-index="${col}" style="left:${Math.round(x-4.5)}px;top:0;bottom:0"></div>`);
+    }
+    for(let row=1;row<state.rows;row++){
+      const above=cells[(row-1)*state.cols],below=cells[row*state.cols];
+      if(!above||!below)continue;
+      const y=(above.getBoundingClientRect().bottom+below.getBoundingClientRect().top)/2-box.top;
+      grid.insertAdjacentHTML('beforeend',`<div class="grip row" data-grip="row" data-index="${row}" style="top:${Math.round(y-4.5)}px;left:0;right:0"></div>`);
+    }
   }
 
   // ---- tell each cell whether it is on screen, so hidden windows stop polling.
@@ -337,6 +411,8 @@
   }
   $('grid').addEventListener('scroll',queueVisibility,{passive:true});
   window.addEventListener('resize',queueVisibility);
+  window.addEventListener('resize',()=>{clearTimeout(window.__gripTimer);
+    window.__gripTimer=setTimeout(()=>{if(state.layout==='grid')positionGrips();},120);});
 
   async function loadMeta(){
     try{
@@ -422,6 +498,16 @@
     if(row){event.preventDefault();addPane(row.dataset.add);$('picker').close();return;}
     const layout=event.target.closest('[data-layout]');
     if(layout){event.preventDefault();state.layout=layout.dataset.layout;save();render();return;}
+    const size=event.target.closest('[data-cols][data-rows]');
+    if(size){
+      event.preventDefault();
+      state.layout='grid';
+      state.cols=Number(size.dataset.cols);
+      state.rows=Number(size.dataset.rows);
+      state.colFr=Array.from({length:state.cols},()=>1);
+      state.rowFr=Array.from({length:state.rows},()=>1);
+      save();render();return;
+    }
     const toggle=event.target.closest('[data-mode-toggle]');
     if(toggle){event.preventDefault();setMode(toggle.dataset.modeToggle);return;}
   });
@@ -519,7 +605,23 @@
 
   // ---- resizable columns
   let drag=null;
+  let gdrag=null;
   document.addEventListener('pointerdown',event=>{
+    const grip=event.target.closest('[data-grip]');
+    if(grip&&window.innerWidth>760&&state.layout==='grid'){
+      event.preventDefault();
+      const grid=$('grid');
+      const axis=grip.dataset.grip==='row'?'row':'col';
+      const list=axis==='col'?state.colFr:state.rowFr;
+      const gaps=8*((axis==='col'?state.cols:state.rows)-1)+16;
+      const total=(axis==='col'?grid.clientWidth:grid.clientHeight)-gaps;
+      if(total<=0||list.length<2)return;
+      gdrag={axis,index:Math.max(0,Number(grip.dataset.index)-1),start:axis==='col'?event.clientX:event.clientY,fr:[...list],total};
+      grip.classList.add('dragging');
+      grip.setPointerCapture&&grip.setPointerCapture(event.pointerId);
+      document.body.classList.add('resizing');
+      return;
+    }
     const splitter=event.target.closest('[data-split]');
     if(!splitter||window.innerWidth<=760)return;
     event.preventDefault();
@@ -533,6 +635,21 @@
     document.body.classList.add('resizing');
   });
   document.addEventListener('pointermove',event=>{
+    if(gdrag){
+      const {axis,index,fr,total}=gdrag;
+      const pair=fr[index]+fr[index+1];
+      const sum=fr.reduce((a,b)=>a+b,0);
+      if(!(total>0)||!(pair>0)||!(sum>0))return;
+      const perPx=sum/total;   // fr per pixel, measured against the whole row/column set
+      const delta=(axis==='col'?event.clientX:event.clientY)-gdrag.start;
+      const minFr=Math.min(GRID_MIN*perPx,pair/2-0.001);
+      const next=Math.max(minFr,Math.min(pair-minFr,fr[index]+delta*perPx));
+      const list=axis==='col'?state.colFr:state.rowFr;
+      list[index]=Number(next.toFixed(4));
+      list[index+1]=Number((pair-next).toFixed(4));
+      $('grid').style.setProperty(axis==='col'?'--col-tpl':'--row-tpl',list.map(v=>v+'fr').join(' '));
+      return;
+    }
     if(!drag)return;
     const delta=event.clientX-drag.startX;
     const leftWidth=Math.max(MIN,drag.left+delta);
@@ -546,7 +663,18 @@
     state.widths[drag.leftPane]=Math.round(leftWidth);
     state.widths[drag.rightPane]=Math.round(rightWidth);
   });
-  const endDrag=()=>{if(!drag)return;drag=null;document.body.classList.remove('resizing');save();};
+  const endDrag=()=>{
+    if(gdrag){
+      gdrag=null;
+      for(const grip of document.querySelectorAll('.grip.dragging'))grip.classList.remove('dragging');
+      document.body.classList.remove('resizing');
+      save();
+      positionGrips();
+      return;
+    }
+    if(!drag)return;
+    drag=null;document.body.classList.remove('resizing');save();
+  };
   document.addEventListener('pointerup',endDrag);
   document.addEventListener('pointercancel',endDrag);
 

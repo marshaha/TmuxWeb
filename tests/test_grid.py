@@ -71,12 +71,48 @@ class GridPageTests(unittest.TestCase):
 
     def test_the_layout_can_be_switched_between_one_row_and_a_grid(self):
         page = self.client.get("/grid").text
-        for mode in ("strip", "grid2", "grid3"):
+        for mode in ("strip", "grid"):
             self.assertIn(f'data-layout="{mode}"', page)
         self.assertIn("mode-grid", page)
-        self.assertIn("--cols", page)
         self.assertIn("state.layout=layout.dataset.layout", page)
         self.assertIn("layout:state.layout", page)          # the choice is remembered
+        # the two old fixed grids still load as a plain grid
+        self.assertIn("layout==='grid2'||layout==='grid3'", page)
+
+    def test_a_grid_can_be_any_rows_by_columns_and_every_cell_resizes(self):
+        page = self.client.get("/grid").text
+        self.assertIn('id="grid-size"', page)
+        self.assertIn("GRID_PRESETS", page)
+        for shape in ((2, 1), (2, 2), (3, 2), (2, 3), (3, 3)):
+            self.assertIn(f'{{cols:{shape[0]},rows:{shape[1]}}}', page)
+        self.assertIn("data-cols=", page)
+        self.assertIn("data-rows=", page)
+        # cells are sized by fr ratios so a dragged seam keeps the rest proportional
+        self.assertIn("--col-tpl", page)
+        self.assertIn("--row-tpl", page)
+        self.assertIn("grid-template-columns:var(--col-tpl", page)
+        self.assertIn("grid-template-rows:var(--row-tpl", page)
+        self.assertIn('class="grip col"', page)
+        self.assertIn('class="grip row"', page)
+        self.assertIn("colFr:state.colFr", page)            # ratios are remembered too
+        self.assertIn("GRID_MIN", page)
+        # a column never shrinks into a sliver, and the phone stays single-column
+        self.assertIn("const perPx=sum/total", page)
+        self.assertIn(".grip{display:none}", page.replace(",.grip", ".grip"))
+        self.assertIn(".splitter,.grip{display:none}", page)
+
+    def test_sidebar_buttons_are_sized_on_every_page(self):
+        """An inline <svg> with no size renders at 300px: that was the giant gear on /grid."""
+        shell = self.client.get("/assets/shell.css").text
+        self.assertIn(".chip-btn{", shell)
+        self.assertIn(".chip-btn .ico{", shell)
+        self.assertIn("width:12px;height:12px", shell)
+
+    def test_the_embedded_copy_button_keeps_its_label_inside_the_capsule(self):
+        preview = self.client.get("/preview?pane=%254&embed=1").text
+        self.assertIn(".copy{flex:0 0 auto;white-space:nowrap;", preview)
+        # .ico is display:block in the preview: it has to be inline inside the button
+        self.assertIn(".copy .ico{display:inline-block;", preview)
 
     def test_a_window_can_be_dragged_to_a_new_position(self):
         page = self.client.get("/grid").text

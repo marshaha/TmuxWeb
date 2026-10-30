@@ -82,3 +82,12 @@ body.resizing .app,body.resizing .shell{transition:none}
 .tpane.in-grid .tname{color:var(--ink)}
 
 
+
+/* chip buttons are shared by the sidebars of every page: without a size rule an inline <svg>
+   falls back to 300×300 and blows the button apart (that was the giant gear on /grid) */
+.chip-btn{display:inline-flex;align-items:center;gap:4px;height:23px;padding:0 9px;border:1px solid var(--line);
+  border-radius:7px;background:#fff;color:var(--ink);font:11px inherit;cursor:pointer}
+.chip-btn .ico{flex:none;width:12px;height:12px}
+.chip-btn:hover{background:#fff;border-color:#cbc9c0}
+.chip-btn.active,.chip-btn.primary{background:#292825;border-color:#292825;color:#fff}
+.chip-btn:disabled{opacity:.45;cursor:default}

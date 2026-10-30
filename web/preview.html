@@ -52,10 +52,11 @@
   .body blockquote{margin-left:0;padding-left:12px;border-left:3px solid var(--accent);color:var(--muted)}
   .body a{color:var(--accent)}
   .msg-tools{display:flex;align-items:center;justify-content:flex-end;margin-top:6px;opacity:.5}
-  .msg-tools .msg-time{margin-right:auto;line-height:1;color:var(--faint);font:10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;letter-spacing:.02em}
+  .msg-tools .msg-time{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:auto;line-height:1;color:var(--faint);font:10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;letter-spacing:.02em}
   .copy
   .msg:hover .msg-tools{opacity:1}
-  .copy{height:22px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.8);color:var(--muted);font-size:11px;cursor:pointer}
+  .copy{flex:0 0 auto;white-space:nowrap;height:22px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.8);color:var(--muted);font-size:11px;cursor:pointer}
+  .copy .ico{display:inline-block;width:11px;height:11px;margin-right:4px;vertical-align:-1px}
   .copy:hover{background:#fff;color:var(--ink)}
   .empty{padding:40px 16px;text-align:center;color:var(--muted)}
   .notice{padding:8px 12px;margin:0 0 12px;border:1px solid #eadfc6;border-radius:10px;background:#fdf6e8;color:#8a5a12;font-size:12px}
