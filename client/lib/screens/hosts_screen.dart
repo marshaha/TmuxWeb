@@ -24,6 +24,7 @@ class HostsScreen extends StatefulWidget {
 class _HostsScreenState extends State<HostsScreen> {
   List<Host>? _hosts;
   Map<String, String> _states = const {};
+  Set<String> _favorites = const {};
   String? _error;
   bool _loading = true;
   Timer? _stateTimer;
@@ -32,7 +33,42 @@ class _HostsScreenState extends State<HostsScreen> {
   void initState() {
     super.initState();
     _load();
+    _loadFavorites();
     _stateTimer = Timer.periodic(const Duration(seconds: 9), (_) => _refreshStates());
+  }
+
+  /// Web's shell loadFavorites: silent on failure, so a board error never
+  /// breaks the tree; the star just reads unstarred until the next load.
+  Future<void> _loadFavorites() async {
+    try {
+      final data = await widget.api.homeFavorites();
+      final list = data['favorites'];
+      if (list is! List || !mounted) return;
+      setState(() => _favorites = list
+          .map((item) => item is Map ? '${item['pane'] ?? ''}' : '$item')
+          .where((pane) => pane.isNotEmpty)
+          .toSet());
+    } catch (_) {}
+  }
+
+  /// Web's shell toggleStar: DELETE when starred, POST {pane} otherwise,
+  /// then reload the set so the row reflects the server, not optimism.
+  Future<void> _toggleFavorite(Pane pane) async {
+    final starred = _favorites.contains(pane.ref);
+    try {
+      if (starred) {
+        await widget.api.deleteHomeFavorite(pane.ref);
+      } else {
+        await widget.api.addHomeFavorite(pane.ref);
+      }
+      await _loadFavorites();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(starred ? '已取消收藏' : '已收藏到主页')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    }
   }
 
   @override
@@ -137,7 +173,7 @@ class _HostsScreenState extends State<HostsScreen> {
             key: const Key('home-board'),
             tooltip: '主页板',
             onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => HomeBoardScreen(api: widget.api))),
+                MaterialPageRoute(builder: (_) => HomeBoardScreen(api: widget.api, baseUrl: widget.baseUrl))),
             icon: const Icon(Icons.dashboard_outlined, size: 20),
           ),
           IconButton(
@@ -221,9 +257,24 @@ class _HostsScreenState extends State<HostsScreen> {
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontSize: 10.5, color: AppTheme.faint),
       ),
-      trailing: pane.hasTranscript
-          ? const Icon(Icons.chat_bubble_outline, size: 16, color: AppTheme.faint)
-          : const Icon(Icons.terminal, size: 16, color: AppTheme.faint),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            key: Key('star-${pane.ref}'),
+            tooltip: _favorites.contains(pane.ref) ? '取消收藏' : '收藏到主页',
+            icon: Icon(
+              _favorites.contains(pane.ref) ? Icons.star : Icons.star_border,
+              size: 18,
+              color: _favorites.contains(pane.ref) ? AppTheme.accent : AppTheme.faint,
+            ),
+            onPressed: () => _toggleFavorite(pane),
+          ),
+          pane.hasTranscript
+              ? const Icon(Icons.chat_bubble_outline, size: 16, color: AppTheme.faint)
+              : const Icon(Icons.terminal, size: 16, color: AppTheme.faint),
+        ],
+      ),
       onTap: () => _openPane(pane),
     );
   }

@@ -9,10 +9,11 @@ import 'package:tmuxweb_client/screens/login_screen.dart';
 import 'package:tmuxweb_client/theme.dart';
 
 class FakeApi implements Api {
-  FakeApi({this.loginError, this.hostsError});
+  FakeApi({this.loginError, this.hostsError, this.boardError});
 
   final ApiException? loginError;
   final ApiException? hostsError;
+  final ApiException? boardError;
   final List<String> logins = [];
   final List<String> sent = [];
   final List<String> uploads = [];
@@ -119,7 +120,9 @@ class FakeApi implements Api {
   final List<String> deletedCards = [];
 
   @override
-  Future<Map<String, dynamic>> homeBoard() async => {
+  Future<Map<String, dynamic>> homeBoard() async {
+    if (boardError != null) throw boardError!;
+    return {
         'favorites': [
           {
             'pane': '%7',
@@ -157,13 +160,19 @@ class FakeApi implements Api {
         ],
         'stats': {'panes': 2, 'busy': 1, 'idle': 1, 'favorites': 1, 'cards': 1},
       };
+  }
+
+  /// The favorite set the hosts tree reads; add/delete keep it in sync,
+  /// like the server, so star toggles are observable in widget tests.
+  final Set<String> favoritePanes = {'abc~%0'};
 
   @override
-  Future<Map<String, dynamic>> homeFavorites() async => const {'favorites': [], 'notes': {}};
+  Future<Map<String, dynamic>> homeFavorites() async => {'favorites': favoritePanes.toList(), 'notes': {}};
 
   @override
   Future<void> addHomeFavorite(String paneRef, {String note = '', String title = ''}) async {
     addedFavorites.add(paneRef);
+    favoritePanes.add(paneRef);
   }
 
   @override
@@ -174,6 +183,7 @@ class FakeApi implements Api {
   @override
   Future<void> deleteHomeFavorite(String paneRef) async {
     unfavorited.add(paneRef);
+    favoritePanes.remove(paneRef);
   }
 
   @override
@@ -185,25 +195,38 @@ class FakeApi implements Api {
   }
 
   @override
-  Future<Map<String, dynamic>> homeSearch(String query, {int limit = 20, bool messages = true}) async => {
-        'query': query,
-        'mode': 'literal',
-        'hosts': [
-          {'id': 'localhost', 'name': 'localhost', 'hostname': 'localhost', 'panes': 1},
-        ],
-        'sessions': [
-          {'host': 'localhost', 'host_id': 'localhost', 'session': 'codex', 'panes': 1},
-        ],
-        'panes': [
-          {'id': '%7', 'host_id': 'localhost', 'title': 'review', 'session': 'codex', 'provider': 'codex'},
-        ],
-        'messages': [
-          {'pane': '%7', 'title': 'review', 'session': 'codex', 'host': 'localhost', 'role': 'assistant', 'snippet': '已完成第一版'},
-        ],
-        'cards': [
-          {'id': 'c1', 'title': '结论', 'body': '先做 API 再做界面', 'kind': 'note'},
-        ],
-      };
+  Future<Map<String, dynamic>> homeSearch(String query, {int limit = 20, bool messages = true}) async {
+    // Web's two-phase search: names first, conversations second.
+    final names = {
+      'query': query,
+      'mode': 'literal',
+      'hosts': [
+        {'id': 'localhost', 'name': 'localhost', 'hostname': 'localhost', 'panes': 1},
+      ],
+      'sessions': [
+        {'host': 'localhost', 'host_id': 'localhost', 'session': 'codex', 'panes': 1},
+      ],
+      'panes': [
+        {'id': '%7', 'host_id': 'localhost', 'title': 'review', 'session': 'codex', 'provider': 'codex'},
+      ],
+      'messages': [],
+      'cards': [],
+      'messages_pending': true,
+      'messages_partial': true,
+    };
+    if (!messages) return names;
+    return {
+      ...names,
+      'messages': [
+        {'pane': '%7', 'title': 'review', 'session': 'codex', 'host': 'localhost', 'role': 'assistant', 'snippet': '已完成第一版'},
+      ],
+      'cards': [
+        {'id': 'c1', 'title': '结论', 'body': '先做 API 再做界面', 'kind': 'note'},
+      ],
+      'messages_pending': false,
+      'messages_partial': false,
+    };
+  }
 
   @override
   Future<List<Map<String, dynamic>>> homeCards() async => const [];

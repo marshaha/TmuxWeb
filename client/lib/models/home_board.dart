@@ -32,6 +32,27 @@ Pane paneFromBoardRef(String paneRef,
   );
 }
 
+/// The web hover panel's preview for one pane, following home.html's
+/// cardPreview: the last agent turn first, then the last message, then a
+/// hint. `offline`/`cached` come from the board entry, not the preview.
+class HoverPreview {
+  HoverPreview({
+    required this.role,
+    required this.text,
+    this.timestamp = 0,
+    this.truncated = false,
+    this.offline = false,
+    this.cached = false,
+  });
+
+  final String role;
+  final String text;
+  final double timestamp;
+  final bool truncated;
+  final bool offline;
+  final bool cached;
+}
+
 class HomeFavorite {
   HomeFavorite({
     required this.pane,
@@ -49,7 +70,13 @@ class HomeFavorite {
     this.command = '',
     this.previewRole = '',
     this.previewText = '',
+    this.previewTimestamp = 0,
+    this.agentPreviewRole = '',
+    this.agentPreviewText = '',
+    this.agentPreviewTimestamp = 0,
+    this.agentPreviewTruncated = false,
     this.cached = false,
+    this.cachedAt = 0,
     this.waiting = false,
     this.pending = false,
   });
@@ -67,11 +94,39 @@ class HomeFavorite {
   final String window;
   final String host;
   final String command;
+
+  /// The card's own preview: the last message (web's card() uses preview,
+  /// never agent_preview).
   final String previewRole;
   final String previewText;
+  final double previewTimestamp;
+
+  /// The hover panel's preview: the last agent turn.
+  final String agentPreviewRole;
+  final String agentPreviewText;
+  final double agentPreviewTimestamp;
+  final bool agentPreviewTruncated;
   final bool cached;
+  final double cachedAt;
   final bool waiting;
   final bool pending;
+
+  /// Web cardPreview for this favorite.
+  HoverPreview get hoverPreview {
+    final offline = status == 'offline';
+    if (agentPreviewText.isNotEmpty) {
+      return HoverPreview(
+          role: agentPreviewRole, text: agentPreviewText, timestamp: agentPreviewTimestamp, truncated: agentPreviewTruncated, offline: offline, cached: cached);
+    }
+    if (previewText.isNotEmpty) {
+      return HoverPreview(role: previewRole, text: previewText, timestamp: previewTimestamp, offline: offline, cached: cached);
+    }
+    return HoverPreview(
+        role: provider ?? 'pane',
+        text: cached ? '缓存里也没有这个会话的内容。' : '这个会话暂时没有可预览的内容。',
+        offline: offline,
+        cached: cached);
+  }
 
   String get displayTitle {
     if (title.isNotEmpty) return title;
@@ -91,7 +146,6 @@ class HomeFavorite {
   factory HomeFavorite.fromJson(Map<String, dynamic> json) {
     final preview = _map(json['preview']);
     final agentPreview = _map(json['agent_preview']);
-    final shown = preview.isNotEmpty ? preview : agentPreview;
     return HomeFavorite(
       pane: _s(json['pane']),
       note: _s(json['note']),
@@ -106,9 +160,15 @@ class HomeFavorite {
       window: _s(json['window']),
       host: _s(json['host']),
       command: _s(json['command']),
-      previewRole: _s(shown['role']),
-      previewText: _s(shown['text']),
+      previewRole: _s(preview['role']),
+      previewText: _s(preview['text']),
+      previewTimestamp: (preview['timestamp'] as num?)?.toDouble() ?? 0,
+      agentPreviewRole: _s(agentPreview['role']),
+      agentPreviewText: _s(agentPreview['text']),
+      agentPreviewTimestamp: (agentPreview['timestamp'] as num?)?.toDouble() ?? 0,
+      agentPreviewTruncated: agentPreview['truncated'] == true,
       cached: json['cached'] == true,
+      cachedAt: (json['cached_at'] as num?)?.toDouble() ?? 0,
       waiting: json['waiting'] == true,
       pending: json['pending'] == true,
     );
@@ -223,6 +283,20 @@ class HomeBoard {
       stats: HomeStats.fromJson(_map(json['stats'])),
     );
   }
+
+  /// Web cardPreview for any board pane: a favorite's hover preview when
+  /// the pane is favorited, otherwise the hint (recent entries carry no
+  /// preview of their own, exactly like web).
+  HoverPreview previewFor(String paneRef, {String? provider, bool offline = false, bool cached = false}) {
+    for (final favorite in favorites) {
+      if (favorite.pane == paneRef) return favorite.hoverPreview;
+    }
+    return HoverPreview(
+        role: provider ?? 'pane',
+        text: cached ? '缓存里也没有这个会话的内容。' : '这个会话暂时没有可预览的内容。',
+        offline: offline,
+        cached: cached);
+  }
 }
 
 /// One grouped search result set from GET /api/home/search.
@@ -235,6 +309,9 @@ class HomeSearchResults {
     this.panes = const [],
     this.messages = const [],
     this.cards = const [],
+    this.messagesPending = false,
+    this.messagesPartial = false,
+    this.indexing = false,
   });
 
   final String query;
@@ -244,6 +321,27 @@ class HomeSearchResults {
   final List<Map<String, dynamic>> panes;
   final List<Map<String, dynamic>> messages;
   final List<Map<String, dynamic>> cards;
+  final bool messagesPending;
+  final bool messagesPartial;
+  final bool indexing;
+
+  /// Web's modeNote in renderSearch.
+  String get modeNote => switch (mode) {
+        'regex' => '正则',
+        'literal-fallback' => '正则无效，已按字面匹配',
+        'literal' => '字面匹配',
+        _ => mode,
+      };
+
+  /// Web's extras line in renderSearch.
+  String get extras {
+    final parts = <String>[
+      if (indexing) '会话索引正在建立，几秒后再搜一次',
+      if (messagesPending) '对话搜索中…'
+      else if (messagesPartial) '对话还在扫，结果可能不全',
+    ];
+    return parts.join(' · ');
+  }
 
   factory HomeSearchResults.fromJson(Map<String, dynamic> json) {
     return HomeSearchResults(
@@ -254,6 +352,9 @@ class HomeSearchResults {
       panes: _maps(json['panes']),
       messages: _maps(json['messages']),
       cards: _maps(json['cards']),
+      messagesPending: json['messages_pending'] == true,
+      messagesPartial: json['messages_partial'] == true,
+      indexing: json['indexing'] == true,
     );
   }
 }

@@ -1,8 +1,18 @@
 /// Board search: the Flutter equivalent of the search box on web/home.html.
-/// Web runs the search twice (names first with messages=0, then with
-/// messages=1); this screen makes the single messages=1 call, which is the
-/// same result set with one round trip instead of two.
+///
+/// Web behaviour, followed here:
+/// - Names first (messages=0, instant), then conversations (messages=1);
+///   a newer query cancels an older one (web's seq guard).
+/// - Input debounces 280ms; an empty query clears the results.
+/// - Mode line: mode note + "先匹配主机 / session / pane，再看最近的对话"
+///   + extras (indexing / messages pending / messages partial).
+/// - Hosts/sessions/panes/messages sections always render, with web's
+///   empty texts when they have no hits; cards only render when non-empty.
+/// - A search hit opens the console directly (web's hits are not .card
+///   elements, so they navigate, unlike board cards which preview).
 library;
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -34,36 +44,74 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
   final _query = TextEditingController();
   HomeSearchResults? _results;
   String? _error;
-  bool _loading = false;
+  bool _loadingNames = false;
+  bool _loadingMessages = false;
   bool _searched = false;
+  int _seq = 0;
+  Timer? _debounce;
 
   @override
   void dispose() {
     _query.dispose();
+    _debounce?.cancel();
     super.dispose();
   }
 
+  void _onQueryChanged(String value) {
+    // Rebuild so the clear button appears/disappears with the text.
+    setState(() {});
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 280), _search);
+  }
+
   Future<void> _search() async {
+    _debounce?.cancel();
     final query = _query.text.trim();
-    if (query.isEmpty) return;
+    if (query.isEmpty) {
+      setState(() {
+        _results = null;
+        _error = null;
+        _searched = false;
+        _loadingNames = false;
+        _loadingMessages = false;
+      });
+      return;
+    }
+    final seq = ++_seq;
     setState(() {
-      _loading = true;
+      _loadingNames = true;
       _error = null;
       _searched = true;
     });
     try {
-      final results = HomeSearchResults.fromJson(await widget.api.homeSearch(query));
-      if (!mounted) return;
+      final names = HomeSearchResults.fromJson(await widget.api.homeSearch(query, messages: false));
+      if (!mounted || seq != _seq) return;
       setState(() {
-        _results = results;
-        _loading = false;
+        _results = names;
+        _loadingNames = false;
+        _loadingMessages = true;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || seq != _seq) return;
       setState(() {
         _error = '$error';
-        _loading = false;
+        _loadingNames = false;
+        _loadingMessages = false;
       });
+      return;
+    }
+    try {
+      final full = HomeSearchResults.fromJson(await widget.api.homeSearch(query, messages: true));
+      if (!mounted || seq != _seq) return;
+      setState(() {
+        _results = full;
+        _loadingMessages = false;
+      });
+    } catch (error) {
+      // Names stay on screen; only a toast, like web's catch in search().
+      if (!mounted || seq != _seq) return;
+      setState(() => _loadingMessages = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
     }
   }
 
@@ -103,14 +151,25 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                       controller: _query,
                       autocorrect: false,
                       textInputAction: TextInputAction.search,
+                      onChanged: _onQueryChanged,
                       onSubmitted: (_) => _search(),
-                      decoration: const InputDecoration(hintText: '搜索服务器 / session / pane（支持正则），以及最近对话内容…'),
+                      decoration: InputDecoration(
+                        hintText: '搜索服务器 / session / pane（支持正则），以及最近对话内容…',
+                        suffixIcon: _query.text.isEmpty
+                            ? null
+                            : IconButton(
+                                key: const Key('search-clear'),
+                                tooltip: '清除',
+                                icon: const Icon(Icons.clear, size: 18),
+                                onPressed: () {
+                                  _query.clear();
+                                  _search();
+                                },
+                              ),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
-                  // A bare FilledButton in this Row gets unbounded constraints
-                  // from the Column above and tries to size to infinity;
-                  // pin it so the row lays out on every platform.
                   SizedBox(
                     width: 72,
                     height: 48,
@@ -120,7 +179,7 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
               ),
             ),
           ),
-          if (_loading) const LinearProgressIndicator(),
+          if (_loadingNames || _loadingMessages) const LinearProgressIndicator(),
           Expanded(
             child: _error != null
                 ? ListView(
@@ -141,70 +200,108 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                         : ListView(
                             padding: const EdgeInsets.only(bottom: 16),
                             children: [
-                              if (results.mode.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                                  child: Text('匹配方式：${results.mode}', style: const TextStyle(fontSize: 11.5, color: AppTheme.faint)),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                child: Text(
+                                  '匹配方式：${results.modeNote} · 先匹配主机 / session / pane，再看最近的对话${results.extras.isNotEmpty ? ' · ${results.extras}' : ''}',
+                                  style: const TextStyle(fontSize: 11.5, color: AppTheme.faint),
                                 ),
-                              _sectionTitle('主机', results.hosts.length),
-                              for (final host in results.hosts)
-                                ListTile(
-                                  title: Text(_s(host['name'])),
-                                  subtitle: Text(
-                                      [_s(host['hostname']), '${_s(host['panes'])} panes']
-                                          .where((part) => part.isNotEmpty)
-                                          .join(' · '),
-                                      style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
-                                ),
-                              _sectionTitle('会话', results.sessions.length),
-                              for (final session in results.sessions)
-                                ListTile(
-                                  title: Text(_s(session['session'])),
-                                  subtitle: Text(
-                                      [_s(session['host']), '${_s(session['panes'])} panes']
-                                          .where((part) => part.isNotEmpty)
-                                          .join(' · '),
-                                      style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
-                                ),
-                              _sectionTitle('会话 pane', results.panes.length),
-                              for (final pane in results.panes)
-                                ListTile(
-                                  title: Text(_s(pane['title']).isNotEmpty ? _s(pane['title']) : _s(pane['id'])),
-                                  subtitle: Text(
-                                      [_s(pane['host_name']), _s(pane['session']), _s(pane['provider'])]
-                                          .where((part) => part.isNotEmpty)
-                                          .join(' · '),
-                                      style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
-                                  onTap: () => _openPane(_paneFromSearch(pane)),
-                                ),
-                              _sectionTitle('对话', results.messages.length),
-                              for (final message in results.messages)
-                                ListTile(
-                                  title: Text(_s(message['snippet']).isNotEmpty ? _s(message['snippet']) : _s(message['title']),
-                                      maxLines: 3, overflow: TextOverflow.ellipsis),
-                                  subtitle: Text(
-                                      [_s(message['host']), _s(message['session']), _s(message['role'])]
-                                          .where((part) => part.isNotEmpty)
-                                          .join(' · '),
-                                      style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
-                                  onTap: () => _openPane(_paneFromSearch(message)),
-                                ),
-                              _sectionTitle('看板卡片', results.cards.length),
-                              for (final card in results.cards)
-                                ListTile(
-                                  title: Text(_s(card['title'])),
-                                  subtitle: Text(_s(card['body']), maxLines: 3, overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
-                                ),
-                              if (results.hosts.isEmpty &&
-                                  results.sessions.isEmpty &&
-                                  results.panes.isEmpty &&
-                                  results.messages.isEmpty &&
-                                  results.cards.isEmpty)
+                              ),
+                              _sectionTitle('服务器', results.hosts.length),
+                              if (results.hosts.isEmpty)
                                 const Padding(
-                                  padding: EdgeInsets.all(24),
-                                  child: Text('没有匹配的结果。', style: TextStyle(color: AppTheme.muted)),
-                                ),
+                                    padding: EdgeInsets.symmetric(horizontal: 16),
+                                    child: Text('没有命中的服务器', style: TextStyle(color: AppTheme.muted)))
+                              else
+                                for (final host in results.hosts)
+                                  ListTile(
+                                    title: Text(_s(host['name'])),
+                                    subtitle: Text(
+                                        [_s(host['hostname']), _s(host['port']), '${_s(host['panes'])} panes']
+                                            .where((part) => part.isNotEmpty)
+                                            .join(' · '),
+                                        style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                                  ),
+                              _sectionTitle('tmux session', results.sessions.length),
+                              if (results.sessions.isEmpty)
+                                const Padding(
+                                    padding: EdgeInsets.symmetric(horizontal: 16),
+                                    child: Text('没有命中的 session', style: TextStyle(color: AppTheme.muted)))
+                              else
+                                for (final session in results.sessions)
+                                  ListTile(
+                                    title: Text(_s(session['session'])),
+                                    subtitle: Text(
+                                        [_s(session['host']), '${_s(session['panes'])} panes']
+                                            .where((part) => part.isNotEmpty)
+                                            .join(' · '),
+                                        style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                                  ),
+                              _sectionTitle('pane', results.panes.length),
+                              if (results.panes.isEmpty)
+                                const Padding(
+                                    padding: EdgeInsets.symmetric(horizontal: 16),
+                                    child: Text('没有命中的 pane', style: TextStyle(color: AppTheme.muted)))
+                              else
+                                for (final pane in results.panes)
+                                  ListTile(
+                                    leading: Container(
+                                      width: 7,
+                                      height: 7,
+                                      decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: _s(pane['status']) == 'busy'
+                                              ? AppTheme.accent
+                                              : (_s(pane['status']) == 'idle' ? AppTheme.green : AppTheme.faint)),
+                                    ),
+                                    title: Text(
+                                        [_s(pane['title']), _s(pane['target']), _s(pane['id'])]
+                                            .firstWhere((part) => part.isNotEmpty, orElse: () => ''),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis),
+                                    subtitle: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                            [_s(pane['host_name']), _s(pane['session']), _s(pane['provider'])]
+                                                .where((part) => part.isNotEmpty)
+                                                .join(' · '),
+                                            style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                                        if (_s(pane['path']).isNotEmpty)
+                                          Text(_s(pane['path']),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                                      ],
+                                    ),
+                                    onTap: () => _openPane(_paneFromSearch(pane)),
+                                  ),
+                              _sectionTitle('对话内容', results.messages.length),
+                              if (results.messages.isEmpty)
+                                const Padding(
+                                    padding: EdgeInsets.symmetric(horizontal: 16),
+                                    child: Text('最近对话里没有命中', style: TextStyle(color: AppTheme.muted)))
+                              else
+                                for (final message in results.messages)
+                                  ListTile(
+                                    title: Text(_s(message['snippet']).isNotEmpty ? _s(message['snippet']) : _s(message['title']),
+                                        maxLines: 3, overflow: TextOverflow.ellipsis),
+                                    subtitle: Text(
+                                        [_s(message['role']), _s(message['host']), _s(message['session'])]
+                                            .where((part) => part.isNotEmpty)
+                                            .join(' · '),
+                                        style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                                    onTap: () => _openPane(_paneFromSearch(message)),
+                                  ),
+                              if (results.cards.isNotEmpty) ...[
+                                _sectionTitle('看板卡片', results.cards.length),
+                                for (final card in results.cards)
+                                  ListTile(
+                                    title: Text(_s(card['title'])),
+                                    subtitle: Text(_s(card['body']), maxLines: 3, overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                                  ),
+                              ],
                             ],
                           ),
           ),
