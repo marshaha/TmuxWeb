@@ -17,12 +17,18 @@
 /// - Cards are created by the MCP publish_home_card tool, not by a UI form,
 ///   exactly like web: there is no "new card" button here.
 ///
-/// One navigation-model collapse, stated plainly: web's preview panel has
-/// two ways out, "完整预览" (/preview page) and "聊天" (console /?pane).
-/// Flutter has no sidebar console to distinguish them from: the pushed
-/// chat screen already is the single-pane transcript + composer view that
-/// both web destinations are. So the panel has one way in, "打开对话",
-/// which lands on that screen, rather than two buttons doing the same push.
+/// Full preview, kept distinct from the console chat, like web:
+/// - The preview panel (web's hover preview) has three ways out:
+///   "完整预览", "聊天", "关闭". "聊天" opens the console chat screen.
+/// - "完整预览" is the preview page itself, and it can talk: on a wide
+///   screen (web's PREVIEW_WIDE = 1100) it opens as a drawer on the right
+///   side of the board, with a backdrop, a header (title, favorite star,
+///   terminal, console button, close) and the full transcript + composer
+///   below; on a narrow screen it navigates to the full preview page
+///   (PanePreviewScreen), exactly like web's /preview?pane= page.
+/// - The drawer header merges web's drawer chrome (title, console, close)
+///   and the preview page's header (favorite, terminal) into one row, so
+///   the panel does not carry two stacked headers.
 library;
 
 import 'dart:async';
@@ -36,8 +42,11 @@ import '../models/chat_source.dart';
 import '../models/home_board.dart';
 import '../models/models.dart';
 import '../theme.dart';
+import '../widgets/favorite_star_button.dart';
 import 'chat_screen.dart';
 import 'home_search_screen.dart';
+import 'pane_preview_screen.dart';
+import 'terminal_screen.dart';
 
 const _cacheKeyPrefix = 'tmux-home-cache-v1';
 
@@ -121,6 +130,8 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
   bool _loading = false;
   bool _stale = false;
   bool _resumed = true;
+  Pane? _previewPane;
+  String _previewTitle = '';
   Timer? _intervalTimer;
   Timer? _pendingTimer;
   Timer? _retryTimer;
@@ -238,11 +249,36 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
     ));
   }
 
+  /// Web's openFullPreview: wide screens get the right-side drawer, narrow
+  /// screens navigate to the preview page.
+  void _openFullPreview(Pane pane, String title) {
+    if (MediaQuery.of(context).size.width >= 1100) {
+      setState(() {
+        _previewPane = pane;
+        _previewTitle = title;
+      });
+      return;
+    }
+    final api = widget.api;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => PanePreviewScreen(
+        api: api,
+        pane: pane,
+        terminalApi: api is TerminalApi ? api as TerminalApi : null,
+      ),
+    ));
+  }
+
+  void _closePreview() => setState(() {
+        _previewPane = null;
+        _previewTitle = '';
+      });
+
   Future<void> _showPreview(Pane pane, HoverPreview preview, String title) async {
     final origin = preview.offline ? (preview.cached ? '离线 · 缓存' : '离线') : '';
     final time = [origin, _agoLabel(preview.timestamp), if (preview.truncated) '已截断'].where((part) => part.isNotEmpty).join(' · ');
     final role = preview.role == 'assistant' ? 'agent 回复' : preview.role;
-    final open = await showModalBottomSheet<bool>(
+    final action = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
       builder: (context) => DraggableScrollableSheet(
@@ -261,7 +297,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                     child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
                   ),
-                  IconButton(tooltip: '关闭预览', icon: const Icon(Icons.close, size: 20), onPressed: () => Navigator.pop(context, false)),
+                  IconButton(tooltip: '关闭预览', icon: const Icon(Icons.close, size: 20), onPressed: () => Navigator.pop(context)),
                 ],
               ),
               const SizedBox(height: 4),
@@ -277,11 +313,13 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
               const SizedBox(height: 12),
               Row(
                 children: [
+                  OutlinedButton(onPressed: () => Navigator.pop(context, 'full'), child: const Text('完整预览')),
+                  const SizedBox(width: 8),
                   Expanded(
-                    child: FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('打开对话')),
+                    child: FilledButton(onPressed: () => Navigator.pop(context, 'chat'), child: const Text('聊天')),
                   ),
                   const SizedBox(width: 8),
-                  OutlinedButton(onPressed: () => Navigator.pop(context, false), child: const Text('关闭')),
+                  TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
                 ],
               ),
             ],
@@ -289,7 +327,12 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
         ),
       ),
     );
-    if (open == true && mounted) _openPane(pane);
+    if (!mounted) return;
+    if (action == 'full') {
+      _openFullPreview(pane, title);
+    } else if (action == 'chat') {
+      _openPane(pane);
+    }
   }
 
   Future<void> _run(Future<void> Function() action, String doneMessage) async {
@@ -538,34 +581,89 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
     );
   }
 
+  Widget _previewPanel(double width) {
+    final pane = _previewPane;
+    if (pane == null) return const SizedBox.shrink();
+    final api = widget.api;
+    final panelWidth = width * 0.56 < 760 ? width * 0.56 : 760.0;
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Container(
+        key: const Key('preview-panel'),
+        width: panelWidth,
+        height: double.infinity,
+        decoration: const BoxDecoration(
+          color: AppTheme.page,
+          border: Border(left: BorderSide(color: AppTheme.line)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(_previewTitle, maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                  ),
+                  FavoriteStarButton(api: api, paneRef: pane.ref),
+                  if (api is TerminalApi)
+                    IconButton(
+                      tooltip: '终端',
+                      icon: const Icon(Icons.terminal, size: 20),
+                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => TerminalScreen(api: api as TerminalApi, pane: pane),
+                      )),
+                    ),
+                  IconButton(
+                    key: const Key('preview-panel-console'),
+                    tooltip: '在对话中打开',
+                    icon: const Icon(Icons.chat_bubble_outline, size: 20),
+                    onPressed: () {
+                      _closePreview();
+                      _openPane(pane);
+                    },
+                  ),
+                  IconButton(
+                    key: const Key('preview-panel-close'),
+                    tooltip: '关闭预览',
+                    icon: const Icon(Icons.close, size: 20),
+                    onPressed: _closePreview,
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ChatScreen(
+                source: PaneChatSource(api: api, pane: pane),
+                terminalApi: api is TerminalApi ? api as TerminalApi : null,
+                embedded: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('主页板'),
-        actions: [
-          IconButton(
-            tooltip: '搜索',
-            icon: const Icon(Icons.search, size: 20),
-            onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => HomeSearchScreen(api: widget.api))),
-          ),
-          IconButton(tooltip: '添加收藏', icon: const Icon(Icons.star_border, size: 20), onPressed: _addFavorite),
-          IconButton(tooltip: '刷新', icon: const Icon(Icons.refresh, size: 20), onPressed: _load),
-        ],
-      ),
-      body: _loading && _board == null
-          ? _skeleton()
-          : _board == null
-              ? ListView(
-                  padding: const EdgeInsets.all(24),
-                  children: [
-                    Text(_error ?? '加载失败', style: const TextStyle(color: Color(0xFFB34B43), fontSize: 13)),
-                    const SizedBox(height: 12),
-                    OutlinedButton(onPressed: _load, child: const Text('重试')),
-                  ],
-                )
-              : RefreshIndicator(
+    final width = MediaQuery.of(context).size.width;
+    final wide = width >= 1100;
+    final boardBody = _loading && _board == null
+        ? _skeleton()
+        : _board == null
+            ? ListView(
+                padding: const EdgeInsets.all(24),
+                children: [
+                  Text(_error ?? '加载失败', style: const TextStyle(color: Color(0xFFB34B43), fontSize: 13)),
+                  const SizedBox(height: 12),
+                  OutlinedButton(onPressed: _load, child: const Text('重试')),
+                ],
+              )
+            : RefreshIndicator(
                   onRefresh: _load,
                   child: ListView(
                     padding: const EdgeInsets.only(bottom: 16),
@@ -624,7 +722,36 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                         for (final card in _board!.cards) _boardCard(card),
                     ],
                   ),
+                );
+    final showPanel = wide && _previewPane != null;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('主页板'),
+        actions: [
+          IconButton(
+            tooltip: '搜索',
+            icon: const Icon(Icons.search, size: 20),
+            onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => HomeSearchScreen(api: widget.api))),
+          ),
+          IconButton(tooltip: '添加收藏', icon: const Icon(Icons.star_border, size: 20), onPressed: _addFavorite),
+          IconButton(tooltip: '刷新', icon: const Icon(Icons.refresh, size: 20), onPressed: _load),
+        ],
+      ),
+      body: showPanel
+          ? Stack(
+              children: [
+                boardBody,
+                Positioned.fill(
+                  child: GestureDetector(
+                    onTap: _closePreview,
+                    child: Container(color: const Color.fromRGBO(32, 31, 28, 0.18)),
+                  ),
                 ),
+                _previewPanel(width),
+              ],
+            )
+          : boardBody,
     );
   }
 }

@@ -14,6 +14,12 @@ import '../widgets/message_tile.dart';
 
 /// Chat view for a pane or a share link: polls the transcript, renders messages
 /// with per-message and per-block copy controls, sends input when allowed.
+///
+/// With [embedded] true, the screen renders only the transcript + composer
+/// column, no Scaffold and no AppBar, so a caller can put it inside its own
+/// panel or page (the board's right-side preview drawer, the full preview
+/// page). The state, polling, cache and composer are identical in both
+/// modes; only the chrome differs.
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
@@ -21,6 +27,7 @@ class ChatScreen extends StatefulWidget {
     this.poll = const Duration(seconds: 2),
     this.cache,
     this.terminalApi,
+    this.embedded = false,
   });
 
   final ChatSource source;
@@ -31,6 +38,8 @@ class ChatScreen extends StatefulWidget {
 
   /// Injectable for tests; defaults to the process-wide cache.
   final TranscriptCache? cache;
+
+  final bool embedded;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -188,6 +197,9 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final data = _data;
+    if (widget.embedded) {
+      return Column(children: [Expanded(child: _buildBody(data)), _buildComposer()]);
+    }
     return Scaffold(
       appBar: AppBar(
         title: Column(

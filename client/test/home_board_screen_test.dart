@@ -34,13 +34,60 @@ void main() {
 
     await tester.tap(find.text('review').first);
     await tester.pumpAndSettle();
-    expect(find.text('打开对话'), findsOneWidget);
+    expect(find.text('完整预览'), findsOneWidget);
+    expect(find.text('聊天'), findsOneWidget);
+    expect(find.text('关闭'), findsOneWidget);
     expect(find.text('agent 回复'), findsOneWidget);
     expect(find.textContaining('已完成第一版'), findsWidgets);
 
-    await tester.tap(find.text('打开对话'));
+    await tester.tap(find.text('聊天'));
     await tester.pumpAndSettle();
     expect(find.text('来自 %7 的回复'), findsOneWidget);
+  });
+
+  testWidgets('full preview on a narrow screen opens the preview page', (tester) async {
+    final api = FakeApi();
+    await tester.pumpWidget(wrap(HomeBoardScreen(api: api, baseUrl: _baseUrl)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('review').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('完整预览'));
+    await tester.pumpAndSettle();
+
+    // The preview page can talk: it shows the transcript + composer,
+    // and it is a different screen from the console chat.
+    expect(find.text('对话预览'), findsOneWidget);
+    expect(find.text('来自 %7 的回复'), findsOneWidget);
+    expect(find.byKey(const Key('preview-fav')), findsOneWidget);
+    expect(find.byKey(const Key('preview-open-chat')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('preview-fav')));
+    await tester.pumpAndSettle();
+    expect(api.addedFavorites, ['%7']);
+  });
+
+  testWidgets('full preview on a wide screen opens the right-side panel', (tester) async {
+    tester.view.physicalSize = const Size(1600, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(wrap(HomeBoardScreen(api: FakeApi(), baseUrl: _baseUrl)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('review').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('完整预览'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('preview-panel')), findsOneWidget);
+    expect(find.text('来自 %7 的回复'), findsOneWidget);
+    expect(find.byKey(const Key('preview-panel-close')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('preview-panel-close')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('preview-panel')), findsNothing);
   });
 
   testWidgets('recent card previews with the hint when it has no preview', (tester) async {
@@ -50,7 +97,8 @@ void main() {
     await tester.tap(find.text('agent'));
     await tester.pumpAndSettle();
     expect(find.text('这个会话暂时没有可预览的内容。'), findsOneWidget);
-    expect(find.text('打开对话'), findsOneWidget);
+    expect(find.text('完整预览'), findsOneWidget);
+    expect(find.text('聊天'), findsOneWidget);
   });
 
   testWidgets('unfavorite, rename and card delete call the board API', (tester) async {
