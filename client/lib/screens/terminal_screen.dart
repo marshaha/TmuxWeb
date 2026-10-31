@@ -112,7 +112,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(widget.pane.label, maxLines: 1, overflow: TextOverflow.ellipsis),
-            Text(_status, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w400, color: AppTheme.faint)),
+            Text(_status, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w400, color: AppTheme.faint)),
           ],
         ),
         actions: [

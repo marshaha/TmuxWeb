@@ -59,7 +59,7 @@ class FakeApi implements Api {
   @override
   Future<RemoteHost> createRemoteHost(Map<String, dynamic> payload) async {
     savedHostPayloads.add(Map<String, dynamic>.from(payload));
-    return RemoteHost(id: 'new', name: '${payload['name']}', hostname: '${payload['hostname']}',
+    return RemoteHost(id: 'new-${payload['name']}', name: '${payload['name']}', hostname: '${payload['hostname']}',
         port: 22, username: '${payload['username']}', authType: 'password');
   }
 
@@ -252,23 +252,71 @@ class FakeApi implements Api {
     deletedCards.add(cardId);
   }
 
+  String? updatedTheme;
+  bool loggedOut = false;
+  final Map<String, bool> pluginStates = {'cross-server-relay': true, 'broken-plugin': false};
+  final List<String> pluginToggles = [];
+
   @override
   Future<Map<String, dynamic>> prefs() async => const {'prefs': {}};
 
   @override
-  Future<Map<String, dynamic>> updateTheme(String theme) async => {'prefs': {'theme': theme}};
+  Future<Map<String, dynamic>> updateTheme(String theme) async {
+    updatedTheme = theme;
+    return {'prefs': {'theme': theme}};
+  }
 
   @override
-  Future<Map<String, dynamic>> settingsInfo() async => const {};
+  Future<Map<String, dynamic>> settingsInfo() async =>
+      const {'password_source': 'file', 'hosts': 2, 'api_token': false};
 
   @override
-  Future<void> changePassword(String current, String next) async {}
+  Future<void> changePassword(String current, String next) async {
+    if (current != 'old') throw ApiException(403, '当前密码不正确');
+    if (next.length < 6) throw ApiException(400, '新密码至少 6 位');
+  }
 
   @override
-  Future<List<Map<String, dynamic>>> plugins() async => const [];
+  Future<Map<String, dynamic>> settingsExport() async => {
+        'app': 'TmuxWeb',
+        'exported_at': '2026-10-31T00:00:00',
+        'hosts': [
+          {'name': 'ctyun', 'hostname': '100.123.123.8', 'port': 22, 'username': 'mars', 'credential': 'secret'},
+          {'name': 'backup', 'hostname': '10.0.0.9', 'port': 22, 'username': 'mars', 'credential': ''},
+        ],
+        'board': {'favorites': []},
+      };
 
   @override
-  Future<void> setPluginEnabled(String name, bool enabled) async {}
+  Future<void> logout() async {
+    loggedOut = true;
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> plugins() async => [
+        {
+          'name': 'cross-server-relay',
+          'version': '1.0.0',
+          'description': '跨服务器中继',
+          'enabled': pluginStates['cross-server-relay'] ?? false,
+          'loaded': true,
+          'error': '',
+        },
+        {
+          'name': 'broken-plugin',
+          'version': '0.1.0',
+          'description': '',
+          'enabled': pluginStates['broken-plugin'] ?? false,
+          'loaded': false,
+          'error': '加载失败：入口模块不存在',
+        },
+      ];
+
+  @override
+  Future<void> setPluginEnabled(String name, bool enabled) async {
+    pluginToggles.add('$name=$enabled');
+    pluginStates[name] = enabled;
+  }
 
   @override
   Future<List<Map<String, dynamic>>> listShares() async => const [];

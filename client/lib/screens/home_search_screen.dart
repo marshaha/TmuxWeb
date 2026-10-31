@@ -191,8 +191,8 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                     ],
                   )
                 : !_searched
-                    ? const Padding(
-                        padding: EdgeInsets.all(24),
+                    ? Padding(
+                        padding: const EdgeInsets.all(24),
                         child: Text('先匹配主机 / session / pane，再看最近的对话。', style: TextStyle(color: AppTheme.muted)),
                       )
                     : results == null
@@ -204,13 +204,13 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                                 padding: const EdgeInsets.symmetric(horizontal: 16),
                                 child: Text(
                                   '匹配方式：${results.modeNote} · 先匹配主机 / session / pane，再看最近的对话${results.extras.isNotEmpty ? ' · ${results.extras}' : ''}',
-                                  style: const TextStyle(fontSize: 11.5, color: AppTheme.faint),
+                                  style: TextStyle(fontSize: 11.5, color: AppTheme.faint),
                                 ),
                               ),
                               _sectionTitle('服务器', results.hosts.length),
                               if (results.hosts.isEmpty)
-                                const Padding(
-                                    padding: EdgeInsets.symmetric(horizontal: 16),
+                                Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 16),
                                     child: Text('没有命中的服务器', style: TextStyle(color: AppTheme.muted)))
                               else
                                 for (final host in results.hosts)
@@ -220,12 +220,12 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                                         [_s(host['hostname']), _s(host['port']), '${_s(host['panes'])} panes']
                                             .where((part) => part.isNotEmpty)
                                             .join(' · '),
-                                        style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                                        style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
                                   ),
                               _sectionTitle('tmux session', results.sessions.length),
                               if (results.sessions.isEmpty)
-                                const Padding(
-                                    padding: EdgeInsets.symmetric(horizontal: 16),
+                                Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 16),
                                     child: Text('没有命中的 session', style: TextStyle(color: AppTheme.muted)))
                               else
                                 for (final session in results.sessions)
@@ -235,12 +235,12 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                                         [_s(session['host']), '${_s(session['panes'])} panes']
                                             .where((part) => part.isNotEmpty)
                                             .join(' · '),
-                                        style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                                        style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
                                   ),
                               _sectionTitle('pane', results.panes.length),
                               if (results.panes.isEmpty)
-                                const Padding(
-                                    padding: EdgeInsets.symmetric(horizontal: 16),
+                                Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 16),
                                     child: Text('没有命中的 pane', style: TextStyle(color: AppTheme.muted)))
                               else
                                 for (final pane in results.panes)
@@ -266,20 +266,20 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                                             [_s(pane['host_name']), _s(pane['session']), _s(pane['provider'])]
                                                 .where((part) => part.isNotEmpty)
                                                 .join(' · '),
-                                            style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                                            style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
                                         if (_s(pane['path']).isNotEmpty)
                                           Text(_s(pane['path']),
                                               maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                                              style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
                                       ],
                                     ),
                                     onTap: () => _openPane(_paneFromSearch(pane)),
                                   ),
                               _sectionTitle('对话内容', results.messages.length),
                               if (results.messages.isEmpty)
-                                const Padding(
-                                    padding: EdgeInsets.symmetric(horizontal: 16),
+                                Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 16),
                                     child: Text('最近对话里没有命中', style: TextStyle(color: AppTheme.muted)))
                               else
                                 for (final message in results.messages)
@@ -290,7 +290,7 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                                         [_s(message['role']), _s(message['host']), _s(message['session'])]
                                             .where((part) => part.isNotEmpty)
                                             .join(' · '),
-                                        style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                                        style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
                                     onTap: () => _openPane(_paneFromSearch(message)),
                                   ),
                               if (results.cards.isNotEmpty) ...[
@@ -299,7 +299,7 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                                   ListTile(
                                     title: Text(_s(card['title'])),
                                     subtitle: Text(_s(card['body']), maxLines: 3, overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                                        style: TextStyle(fontSize: 12, color: AppTheme.muted)),
                                   ),
                               ],
                             ],

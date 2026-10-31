@@ -9,6 +9,7 @@ import '../theme.dart';
 import 'chat_screen.dart';
 import 'home_board_screen.dart';
 import 'hosts_admin_screen.dart';
+import 'settings_screen.dart';
 
 /// Host → pane browser: the mobile equivalent of the web sidebar.
 class HostsScreen extends StatefulWidget {
@@ -165,7 +166,7 @@ class _HostsScreenState extends State<HostsScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text('会话'),
-            Text(widget.baseUrl, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w400, color: AppTheme.faint)),
+            Text(widget.baseUrl, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w400, color: AppTheme.faint)),
           ],
         ),
         actions: [
@@ -175,6 +176,17 @@ class _HostsScreenState extends State<HostsScreen> {
             onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => HomeBoardScreen(api: widget.api, baseUrl: widget.baseUrl))),
             icon: const Icon(Icons.dashboard_outlined, size: 20),
+          ),
+          IconButton(
+            key: const Key('settings'),
+            tooltip: '设置',
+            onPressed: () async {
+              await Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => SettingsScreen(api: widget.api, baseUrl: widget.baseUrl),
+              ));
+              await _load();
+            },
+            icon: const Icon(Icons.settings_outlined, size: 20),
           ),
           IconButton(
             key: const Key('hosts-admin'),
@@ -194,10 +206,10 @@ class _HostsScreenState extends State<HostsScreen> {
       body: RefreshIndicator(onRefresh: _load, child: _buildBody()),
       bottomNavigationBar: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: const BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
+        decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
         child: Text(
           _hosts == null ? '' : '${_hosts!.length} 台主机 · $_paneCount 个 pane',
-          style: const TextStyle(fontSize: 11.5, color: AppTheme.faint),
+          style: TextStyle(fontSize: 11.5, color: AppTheme.faint),
         ),
       ),
     );
@@ -255,7 +267,7 @@ class _HostsScreenState extends State<HostsScreen> {
         [pane.ref, if (pane.provider != null) pane.provider!, if (pane.path.isNotEmpty) pane.path].join(' · '),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 10.5, color: AppTheme.faint),
+        style: TextStyle(fontSize: 10.5, color: AppTheme.faint),
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -271,8 +283,8 @@ class _HostsScreenState extends State<HostsScreen> {
             onPressed: () => _toggleFavorite(pane),
           ),
           pane.hasTranscript
-              ? const Icon(Icons.chat_bubble_outline, size: 16, color: AppTheme.faint)
-              : const Icon(Icons.terminal, size: 16, color: AppTheme.faint),
+              ? Icon(Icons.chat_bubble_outline, size: 16, color: AppTheme.faint)
+              : Icon(Icons.terminal, size: 16, color: AppTheme.faint),
         ],
       ),
       onTap: () => _openPane(pane),
@@ -295,7 +307,7 @@ class _HostsScreenState extends State<HostsScreen> {
     if (hosts.isEmpty) {
       return ListView(
         padding: const EdgeInsets.all(24),
-        children: const [Text('还没有可用的 tmux pane。', style: TextStyle(color: AppTheme.muted))],
+        children: [Text('还没有可用的 tmux pane。', style: TextStyle(color: AppTheme.muted))],
       );
     }
     return ListView.builder(
@@ -315,7 +327,7 @@ class _HostsScreenState extends State<HostsScreen> {
               const SizedBox(width: 8),
               Flexible(child: Text(host.name, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600))),
               const SizedBox(width: 8),
-              Text('${host.panes.length}', style: const TextStyle(fontSize: 11.5, color: AppTheme.faint)),
+              Text('${host.panes.length}', style: TextStyle(fontSize: 11.5, color: AppTheme.faint)),
             ],
           ),
           children: [
@@ -329,14 +341,14 @@ class _HostsScreenState extends State<HostsScreen> {
                 shape: const Border(),
                 collapsedShape: const Border(),
                 title: Row(children: [
-                  const Icon(Icons.folder_outlined, size: 15, color: AppTheme.faint),
+                  Icon(Icons.folder_outlined, size: 15, color: AppTheme.faint),
                   const SizedBox(width: 7),
                   Flexible(
                     child: Text(session.$1,
                         maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
                   ),
                   const SizedBox(width: 6),
-                  Text('${session.$2.length}', style: const TextStyle(fontSize: 10.5, color: AppTheme.faint)),
+                  Text('${session.$2.length}', style: TextStyle(fontSize: 10.5, color: AppTheme.faint)),
                 ]),
                 children: [
                   for (final window in _groupByWindow(session.$2))
@@ -350,7 +362,7 @@ class _HostsScreenState extends State<HostsScreen> {
                       title: Text(window.$1,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                          style: TextStyle(fontSize: 12, color: AppTheme.muted)),
                       children: [for (final pane in window.$2) _paneTile(pane)],
                     ),
                 ],
@@ -441,7 +453,7 @@ class _ShareScreenState extends State<ShareScreen> {
                     if (_busy) const CircularProgressIndicator(strokeWidth: 2),
                     if (!_busy)
                       Text(_error ?? '加载失败',
-                          textAlign: TextAlign.center, style: const TextStyle(color: AppTheme.muted, fontSize: 13)),
+                          textAlign: TextAlign.center, style: TextStyle(color: AppTheme.muted, fontSize: 13)),
                     if (!_busy) ...[
                       const SizedBox(height: 12),
                       OutlinedButton(onPressed: () => _load(), child: const Text('重试')),
@@ -480,7 +492,7 @@ class _PasswordFormState extends State<_PasswordForm> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text('访问密码', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+        Text('访问密码', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
         const SizedBox(height: 8),
         TextField(
           key: const Key('share-unlock-password'),

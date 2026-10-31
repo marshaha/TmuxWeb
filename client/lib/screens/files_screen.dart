@@ -152,7 +152,7 @@ class _FilesScreenState extends State<FilesScreen> {
             const Divider(height: 1),
             Expanded(
               child: failure != null
-                  ? Center(child: Text(failure, style: const TextStyle(color: AppTheme.danger)))
+                  ? Center(child: Text(failure, style: TextStyle(color: AppTheme.danger)))
                   : _previewBody(entry, bytes, controller),
             ),
           ],
@@ -197,7 +197,7 @@ class _FilesScreenState extends State<FilesScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('文件 · ${widget.pane.label}', maxLines: 1, overflow: TextOverflow.ellipsis),
-            Text(widget.pane.ref, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w400, color: AppTheme.faint)),
+            Text(widget.pane.ref, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w400, color: AppTheme.faint)),
           ],
         ),
         actions: [
@@ -252,14 +252,14 @@ class _FilesScreenState extends State<FilesScreen> {
     if (_loading && _listing == null) return const Center(child: CircularProgressIndicator(strokeWidth: 2));
     if (_listing == null) {
       return ListView(padding: const EdgeInsets.all(24), children: [
-        Text(_error ?? '加载失败', style: const TextStyle(color: AppTheme.danger, fontSize: 13)),
+        Text(_error ?? '加载失败', style: TextStyle(color: AppTheme.danger, fontSize: 13)),
         const SizedBox(height: 12),
         OutlinedButton(onPressed: () => _open(widget.pane.path), child: const Text('重试')),
       ]);
     }
     final entries = _listing!.entries;
     if (entries.isEmpty) {
-      return const Center(child: Text('这个目录是空的', style: TextStyle(color: AppTheme.muted)));
+      return Center(child: Text('这个目录是空的', style: TextStyle(color: AppTheme.muted)));
     }
     return RefreshIndicator(
       onRefresh: () => _open(_listing!.path),
@@ -267,8 +267,8 @@ class _FilesScreenState extends State<FilesScreen> {
         itemCount: entries.length + (_listing!.truncated ? 1 : 0),
         itemBuilder: (context, index) {
           if (index == entries.length) {
-            return const Padding(
-              padding: EdgeInsets.all(16),
+            return Padding(
+              padding: const EdgeInsets.all(16),
               child: Text('条目太多，只显示了一部分', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
             );
           }
@@ -283,9 +283,9 @@ class _FilesScreenState extends State<FilesScreen> {
             ),
             title: Text(entry.name,
                 maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
-            subtitle: entry.isDir ? null : Text(entry.sizeLabel, style: const TextStyle(fontSize: 11, color: AppTheme.faint)),
+            subtitle: entry.isDir ? null : Text(entry.sizeLabel, style: TextStyle(fontSize: 11, color: AppTheme.faint)),
             trailing: entry.isDir
-                ? const Icon(Icons.chevron_right, size: 18, color: AppTheme.faint)
+                ? Icon(Icons.chevron_right, size: 18, color: AppTheme.faint)
                 : IconButton(
                     tooltip: '下载',
                     onPressed: _busy ? null : () => _download(entry),

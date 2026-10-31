@@ -15,11 +15,13 @@ dependencies:
   xterm: ^4.0.0
   file_picker: ^13.3.0
   path_provider: ^2.1.6
+  pointycastle: ^4.0.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  path_provider_platform_interface: ^2.1.2
 
 flutter:
   uses-material-design: true

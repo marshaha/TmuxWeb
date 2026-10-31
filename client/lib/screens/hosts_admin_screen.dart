@@ -115,13 +115,13 @@ class _HostsAdminScreenState extends State<HostsAdminScreen> {
     final hosts = _hosts;
     if (hosts == null) {
       return ListView(padding: const EdgeInsets.all(24), children: [
-        Text(_error ?? '加载失败', style: const TextStyle(color: AppTheme.danger, fontSize: 13)),
+        Text(_error ?? '加载失败', style: TextStyle(color: AppTheme.danger, fontSize: 13)),
         const SizedBox(height: 12),
         OutlinedButton(onPressed: _load, child: const Text('重试')),
       ]);
     }
     if (hosts.isEmpty) {
-      return ListView(padding: const EdgeInsets.all(24), children: const [
+      return ListView(padding: const EdgeInsets.all(24), children: [
         Text('还没有远程主机。点右下角 + 添加，远端只需要 SSH 和 tmux。', style: TextStyle(color: AppTheme.muted)),
       ]);
     }
@@ -177,16 +177,16 @@ class _HostsAdminScreenState extends State<HostsAdminScreen> {
                 ],
               ),
               Text('${host.username}@${host.hostname}:${host.port} · ${_authLabel(host.authType)}',
-                  style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                  style: TextStyle(fontSize: 12, color: AppTheme.muted)),
               if (!host.enabled)
-                const Padding(
-                  padding: EdgeInsets.only(top: 2),
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
                   child: Text('已停用', style: TextStyle(fontSize: 11.5, color: AppTheme.danger)),
                 ),
               if (host.jumpPath.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
-                  child: Text('经由 ${host.jumpPath}', style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                  child: Text('经由 ${host.jumpPath}', style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
                 ),
               // Web shows the tmux path line for every host, with a
               // pending note until the first successful connection
@@ -201,7 +201,7 @@ class _HostsAdminScreenState extends State<HostsAdminScreen> {
                 padding: const EdgeInsets.only(top: 2),
                 child: Text(
                   host.tmuxPath.isNotEmpty ? 'tmux: ${host.tmuxPath}' : 'tmux 路径待首次连通时记录',
-                  style: const TextStyle(fontSize: 11.5, color: AppTheme.muted),
+                  style: TextStyle(fontSize: 11.5, color: AppTheme.muted),
                 ),
               ),
               const SizedBox(height: 4),
@@ -406,7 +406,7 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
         children: [
           Padding(
             padding: const EdgeInsets.only(left: 2, bottom: 4),
-            child: Text(label, style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+            child: Text(label, style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
           ),
           child,
           const SizedBox(height: 10),
@@ -432,7 +432,7 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: Text(widget.host!.fingerprint,
-                        style: const TextStyle(fontSize: 11, color: AppTheme.muted, fontFamily: 'monospace')),
+                        style: TextStyle(fontSize: 11, color: AppTheme.muted, fontFamily: 'monospace')),
                   ),
                 ),
               _field('显示名称', TextField(controller: _name, decoration: const InputDecoration(hintText: 'build-box'))),
@@ -542,7 +542,7 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
                 contentPadding: EdgeInsets.zero,
                 controlAffinity: ListTileControlAffinity.leading,
                 title: const Text('不校验连接直接保存', style: TextStyle(fontSize: 12.5)),
-                subtitle: const Text('密码/密钥有误或主机暂不可达也能先存下来，指纹在首次连通时记录',
+                subtitle: Text('密码/密钥有误或主机暂不可达也能先存下来，指纹在首次连通时记录',
                     style: TextStyle(fontSize: 11, color: AppTheme.faint)),
                 onChanged: (value) => setState(() => _skipVerify = value ?? false),
               ),
@@ -551,7 +551,7 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
                   alignment: Alignment.centerLeft,
                   child: Padding(
                     padding: const EdgeInsets.only(top: 6),
-                    child: Text(_status, style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                    child: Text(_status, style: TextStyle(fontSize: 12, color: AppTheme.muted)),
                   ),
                 ),
             ],

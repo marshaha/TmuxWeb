@@ -211,7 +211,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 widget.source.subtitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w400, color: AppTheme.faint),
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w400, color: AppTheme.faint),
               ),
           ],
         ),
@@ -307,8 +307,8 @@ class _ChatScreenState extends State<ChatScreen> {
         key: const Key('read-only-banner'),
         width: double.infinity,
         padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + MediaQuery.of(context).padding.bottom),
-        decoration: const BoxDecoration(color: AppTheme.page, border: Border(top: BorderSide(color: AppTheme.line))),
-        child: const Text(
+        decoration: BoxDecoration(color: AppTheme.page, border: Border(top: BorderSide(color: AppTheme.line))),
+        child: Text(
           '只读分享：可以查看内容，但不能发送消息。',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 12.5, color: AppTheme.muted),
@@ -317,7 +317,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     return Container(
       padding: EdgeInsets.fromLTRB(12, 8, 12, 8 + MediaQuery.of(context).padding.bottom),
-      decoration: const BoxDecoration(color: AppTheme.page, border: Border(top: BorderSide(color: AppTheme.line))),
+      decoration: BoxDecoration(color: AppTheme.page, border: Border(top: BorderSide(color: AppTheme.line))),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
@@ -405,7 +405,7 @@ class _ErrorState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(message, textAlign: TextAlign.center, style: const TextStyle(color: AppTheme.muted, fontSize: 13)),
+            Text(message, textAlign: TextAlign.center, style: TextStyle(color: AppTheme.muted, fontSize: 13)),
             const SizedBox(height: 12),
             OutlinedButton(onPressed: onRetry, child: const Text('重试')),
           ],

@@ -109,6 +109,14 @@ abstract class Api {
   /// POST /api/settings/password with {current, next} (web's field names).
   Future<void> changePassword(String current, String next);
 
+  /// GET /api/settings/export: {app, exported_at, hosts, board}; the
+  /// hosts carry credentials, so callers must encrypt before writing
+  /// the bundle to disk, like web's settings panel does.
+  Future<Map<String, dynamic>> settingsExport();
+
+  /// POST /logout; clears the local session either way.
+  Future<void> logout();
+
   /// GET /api/plugins: {plugins: [...]}; each entry is passed through raw.
   Future<List<Map<String, dynamic>>> plugins();
 
@@ -572,6 +580,23 @@ class ApiClient implements Api, TerminalApi {
       body: jsonEncode({'current': current, 'next': next}),
     );
     _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> settingsExport() async {
+    final response = await _http.get(_uri('/api/settings/export'), headers: _headers());
+    return _decode(response);
+  }
+
+  @override
+  Future<void> logout() async {
+    try {
+      await _http.post(_uri('/logout'), headers: _headers());
+    } catch (_) {
+      // the local session is cleared regardless
+    }
+    cookies.clear();
+    token = '';
   }
 
   @override

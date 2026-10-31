@@ -55,16 +55,16 @@ class _BlockViewState extends State<BlockView> {
         children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               border: Border(bottom: BorderSide(color: AppTheme.line)),
-              color: Color(0xB3FFFFFF),
+              color: const Color(0xB3FFFFFF),
             ),
             child: Row(
               children: [
                 Expanded(
                   child: Text(
                     _label.toUpperCase(),
-                    style: const TextStyle(fontSize: 10, letterSpacing: 0.6, color: AppTheme.faint),
+                    style: TextStyle(fontSize: 10, letterSpacing: 0.6, color: AppTheme.faint),
                   ),
                 ),
                 _BlockButton(
@@ -85,8 +85,8 @@ class _BlockViewState extends State<BlockView> {
             ),
           ),
           if (_block.kind == BlockKind.mermaid)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(12, 10, 12, 0),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
               child: Text(
                 'Mermaid 源码（客户端暂不渲染图形，可在网页版查看）',
                 style: TextStyle(fontSize: 11, color: AppTheme.faint, height: 1.4),
@@ -153,7 +153,7 @@ class _SourceView extends StatelessWidget {
             source.trim(),
             style: mono
                 ? AppTheme.mono
-                : const TextStyle(fontSize: 12, height: 1.5, color: AppTheme.muted, fontFamily: 'monospace'),
+                : TextStyle(fontSize: 12, height: 1.5, color: AppTheme.muted, fontFamily: 'monospace'),
           ),
         ),
       ),

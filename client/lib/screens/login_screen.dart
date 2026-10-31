@@ -73,6 +73,19 @@ class _LoginScreenState extends State<LoginScreen> {
       final api = (widget.apiFactory ?? (url) => ApiClient(baseUrl: url))(baseUrl);
       await api.login(baseUrl: baseUrl, password: _password.text, token: _token.text);
       await _prefs?.setString(_prefsKey, baseUrl);
+      // The theme follows the account, like web's syncWithAccount: the
+      // server's stored theme wins over the locally cached one. A
+      // failure here keeps the cached theme, like web offline.
+      try {
+        final data = await api.prefs();
+        final stored = (data['prefs'] as Map?)?['theme'];
+        if (stored is String && AppThemes.byName(stored).name == stored) {
+          AppTheme.set(AppThemes.byName(stored));
+          await AppTheme.cache(baseUrl, stored);
+        }
+      } catch (_) {
+        // keep the cached theme
+      }
       if (!mounted) return;
       await Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => HostsScreen(api: api, baseUrl: baseUrl)),
@@ -101,7 +114,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 22),
                   const Text('连接你的 TmuxWeb', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
                   const SizedBox(height: 6),
-                  const Text(
+                  Text(
                     '本机与远程主机上的 AI 会话，原生界面直接读写。',
                     style: TextStyle(fontSize: 13, color: AppTheme.muted, height: 1.5),
                   ),
@@ -167,7 +180,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         : const Text('连接'),
                   ),
                   const SizedBox(height: 14),
-                  const Text(
+                  Text(
                     '地址会记在这台设备上，密码只用来换取登录 cookie，不会保存。',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 11.5, color: AppTheme.faint, height: 1.5),
@@ -214,6 +227,6 @@ class _Label extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(bottom: 6),
-        child: Text(text, style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+        child: Text(text, style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
       );
 }

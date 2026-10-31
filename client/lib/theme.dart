@@ -1,56 +1,258 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+/// One palette. Hex values come from web/assets/theme.css (the five named
+/// themes) and from the existing Flutter warm palette for the default.
+/// Web also has --surface2 (a secondary surface); Flutter screens only
+/// distinguish page and card, so both map to [card] here.
+class AppPalette {
+  const AppPalette({
+    required this.name,
+    required this.label,
+    required this.hint,
+    required this.ink,
+    required this.muted,
+    required this.faint,
+    required this.line,
+    required this.page,
+    required this.card,
+    required this.accent,
+    required this.green,
+    required this.danger,
+    required this.isDark,
+  });
+
+  final String name;
+  final String label;
+  final String hint;
+  final Color ink;
+  final Color muted;
+  final Color faint;
+  final Color line;
+  final Color page;
+  final Color card;
+  final Color accent;
+  final Color green;
+  final Color danger;
+  final bool isDark;
+
+  TextStyle get mono => TextStyle(fontFamily: 'monospace', fontSize: 12.5, height: 1.5, color: ink);
+}
+
+class AppThemes {
+  static const warm = AppPalette(
+    name: 'warm',
+    label: '默认',
+    hint: '暖灰 + 陶土橙',
+    ink: Color(0xFF242421),
+    muted: Color(0xFF73716B),
+    faint: Color(0xFF9B998F),
+    line: Color(0xFFDDDCD5),
+    page: Color(0xFFF7F6F2),
+    card: Color(0xFFFFFFFF),
+    accent: Color(0xFFC96442),
+    green: Color(0xFF4F9A65),
+    danger: Color(0xFFB34B43),
+    isDark: false,
+  );
+
+  static const chatgpt = AppPalette(
+    name: 'chatgpt',
+    label: 'ChatGPT',
+    hint: '白底 + 绿色强调',
+    ink: Color(0xFF0D0D0D),
+    muted: Color(0xFF5D5D5D),
+    faint: Color(0xFF8E8E8E),
+    line: Color(0xFFE3E3E3),
+    page: Color(0xFFFFFFFF),
+    card: Color(0xFFFFFFFF),
+    accent: Color(0xFF10A37F),
+    green: Color(0xFF10A37F),
+    danger: Color(0xFFEF4146),
+    isDark: false,
+  );
+
+  static const claude = AppPalette(
+    name: 'claude',
+    label: 'Claude',
+    hint: '米白 + 陶土橙',
+    ink: Color(0xFF1F1E1D),
+    muted: Color(0xFF6B6A63),
+    faint: Color(0xFFA49F95),
+    line: Color(0xFFE2DDD2),
+    page: Color(0xFFFAF9F5),
+    card: Color(0xFFFFFFFF),
+    accent: Color(0xFFD97757),
+    green: Color(0xFF5A8F6B),
+    danger: Color(0xFFB04A3F),
+    isDark: false,
+  );
+
+  static const github = AppPalette(
+    name: 'github',
+    label: 'GitHub',
+    hint: '白底 + 蓝色强调',
+    ink: Color(0xFF1F2328),
+    muted: Color(0xFF59636E),
+    faint: Color(0xFF818B98),
+    line: Color(0xFFD1D9E0),
+    page: Color(0xFFFFFFFF),
+    card: Color(0xFFFFFFFF),
+    accent: Color(0xFF0969DA),
+    green: Color(0xFF1A7F37),
+    danger: Color(0xFFCF222E),
+    isDark: false,
+  );
+
+  static const claudeCode = AppPalette(
+    name: 'claude-code',
+    label: 'Claude Code',
+    hint: '深色终端 + 橙色强调',
+    ink: Color(0xFFE8E4DC),
+    muted: Color(0xFFA8A29A),
+    faint: Color(0xFF7C766E),
+    line: Color(0xFF3A3632),
+    page: Color(0xFF1A1917),
+    card: Color(0xFF232120),
+    accent: Color(0xFFD97757),
+    green: Color(0xFF5AA87A),
+    danger: Color(0xFFE0776B),
+    isDark: true,
+  );
+
+  static const night = AppPalette(
+    name: 'night',
+    label: '夜间',
+    hint: '中性深灰 + 蓝色强调',
+    ink: Color(0xFFE6E6E3),
+    muted: Color(0xFFA5A39C),
+    faint: Color(0xFF76746E),
+    line: Color(0xFF33343D),
+    page: Color(0xFF15161A),
+    card: Color(0xFF1E1F25),
+    accent: Color(0xFF7AA2F7),
+    green: Color(0xFF6CC08B),
+    danger: Color(0xFFD4736A),
+    isDark: true,
+  );
+
+  static const all = [warm, chatgpt, claude, github, claudeCode, night];
+
+  static AppPalette byName(String? name) =>
+      all.firstWhere((palette) => palette.name == name, orElse: () => warm);
+}
+
+/// The live theme. Screens read the static getters at build time, so a
+/// theme change repaints a screen when that screen rebuilds; MaterialApp
+/// itself rebuilds from [notifier] (see main.dart), which repaints the
+/// Theme.of dependents (AppBar, Scaffold, inputs, buttons) across routes.
+///
+/// Invariant that makes the static getters correct: the theme is only
+/// changed from the settings screen, which is only reachable from the
+/// hosts screen, and the hosts screen reloads (and so rebuilds) when the
+/// settings screen returns. A settings entry added anywhere else must do
+/// the same reload-on-return.
 class AppTheme {
-  static const ink = Color(0xFF242421);
-  static const muted = Color(0xFF73716B);
-  static const faint = Color(0xFF9B998F);
-  static const line = Color(0xFFDDDCD5);
-  static const page = Color(0xFFF7F6F2);
-  static const card = Color(0xFFFFFFFF);
-  static const accent = Color(0xFFC96442);
-  static const green = Color(0xFF4F9A65);
-  static const danger = Color(0xFFB34B43);
+  static AppPalette _current = AppThemes.warm;
+  static final ValueNotifier<AppPalette> notifier = ValueNotifier<AppPalette>(AppThemes.warm);
 
-  static ThemeData light() {
-    final base = ThemeData.light(useMaterial3: true);
+  static AppPalette get current => _current;
+  static String get name => _current.name;
+
+  static void set(AppPalette palette) {
+    _current = palette;
+    notifier.value = palette;
+  }
+
+  static void resetForTest() => set(AppThemes.warm);
+
+  static Color get ink => _current.ink;
+  static Color get muted => _current.muted;
+  static Color get faint => _current.faint;
+  static Color get line => _current.line;
+  static Color get page => _current.page;
+  static Color get card => _current.card;
+  static Color get accent => _current.accent;
+  static Color get green => _current.green;
+  static Color get danger => _current.danger;
+  static TextStyle get mono => _current.mono;
+
+  static ThemeData themeData([AppPalette? palette]) {
+    final colors = palette ?? _current;
+    final base = colors.isDark ? ThemeData.dark(useMaterial3: true) : ThemeData.light(useMaterial3: true);
     return base.copyWith(
-      scaffoldBackgroundColor: page,
+      scaffoldBackgroundColor: colors.page,
       colorScheme: base.colorScheme.copyWith(
-        primary: ink,
-        secondary: accent,
-        surface: card,
-        error: const Color(0xFFB34B43),
+        primary: colors.ink,
+        secondary: colors.accent,
+        surface: colors.card,
+        error: colors.danger,
       ),
-      appBarTheme: const AppBarTheme(
-        backgroundColor: page,
-        foregroundColor: ink,
+      appBarTheme: AppBarTheme(
+        backgroundColor: colors.page,
+        foregroundColor: colors.ink,
         elevation: 0,
         scrolledUnderElevation: 0.5,
         centerTitle: false,
-        titleTextStyle: TextStyle(color: ink, fontSize: 16, fontWeight: FontWeight.w600),
+        titleTextStyle: TextStyle(color: colors.ink, fontSize: 16, fontWeight: FontWeight.w600),
       ),
-      dividerColor: line,
-      textSelectionTheme: const TextSelectionThemeData(cursorColor: accent, selectionColor: Color(0x33C96442)),
+      dividerColor: colors.line,
+      textSelectionTheme: TextSelectionThemeData(
+        cursorColor: colors.accent,
+        selectionColor: colors.accent.withValues(alpha: 0.2),
+      ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: card,
+        fillColor: colors.card,
         isDense: true,
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: line)),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: line)),
-        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: faint)),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: colors.line)),
+        enabledBorder:
+            OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: colors.line)),
+        focusedBorder:
+            OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: colors.faint)),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: ink,
-          foregroundColor: Colors.white,
+          backgroundColor: colors.ink,
+          foregroundColor: colors.isDark ? colors.page : Colors.white,
           minimumSize: const Size.fromHeight(48),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
       ),
-      snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating, backgroundColor: ink),
+      snackBarTheme: SnackBarThemeData(behavior: SnackBarBehavior.floating, backgroundColor: colors.ink),
     );
   }
 
-  static const mono = TextStyle(fontFamily: 'monospace', fontSize: 12.5, height: 1.5, color: ink);
+  /// Historical name for the ThemeData builder; kept so existing tests
+  /// and main.dart need no rename. It builds from the current palette,
+  /// light or dark.
+  static ThemeData light() => themeData();
+
+  // -- persistence: the theme follows the account, like web ------------
+  // Web keeps the account theme in a cookie plus localStorage fallback.
+  // Flutter keeps it in SharedPreferences, per server (an account lives
+  // on one server) plus a global last-used copy for the login screen.
+  static const _globalKey = 'tmux-theme';
+  static String _serverKey(String baseUrl) => 'tmux-theme:$baseUrl';
+
+  static Future<void> restoreCached({String? baseUrl}) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final name = (baseUrl != null ? prefs.getString(_serverKey(baseUrl)) : null) ?? prefs.getString(_globalKey);
+      if (name != null && AppThemes.byName(name).name == name) set(AppThemes.byName(name));
+    } catch (_) {
+      // preferences are a convenience only
+    }
+  }
+
+  static Future<void> cache(String baseUrl, String name) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_serverKey(baseUrl), name);
+      await prefs.setString(_globalKey, name);
+    } catch (_) {
+      // preferences are a convenience only
+    }
+  }
 }

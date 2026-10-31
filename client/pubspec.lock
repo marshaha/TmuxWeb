@@ -385,7 +385,7 @@ packages:
     source: hosted
     version: "2.2.2"
   path_provider_platform_interface:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: path_provider_platform_interface
       sha256: "484838772624c3a4b94f1e44a3e19897fee738f2d5c4ce448443b0417f7c9dda"
@@ -424,6 +424,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "2.1.8"
+  pointycastle:
+    dependency: "direct main"
+    description:
+      name: pointycastle
+      sha256: "92aa3841d083cc4b0f4709b5c74fd6409a3e6ba833ffc7dc6a8fee096366acf5"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "4.0.0"
   pub_semver:
     dependency: transitive
     description:

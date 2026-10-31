@@ -302,7 +302,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
               ),
               const SizedBox(height: 4),
               Text([role, time].where((part) => part.isNotEmpty).join(' · '),
-                  style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                  style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
               const SizedBox(height: 12),
               Expanded(
                 child: SingleChildScrollView(
@@ -436,8 +436,8 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                   if (favorite.provider != null && favorite.provider!.isNotEmpty)
                     Chip(label: Text(favorite.provider!), visualDensity: VisualDensity.compact),
                   const Spacer(),
-                  if (favorite.cached) const Text('缓存', style: TextStyle(fontSize: 11, color: AppTheme.faint)),
-                  if (favorite.pending) const Text('加载中', style: TextStyle(fontSize: 11, color: AppTheme.faint)),
+                  if (favorite.cached) Text('缓存', style: TextStyle(fontSize: 11, color: AppTheme.faint)),
+                  if (favorite.pending) Text('加载中', style: TextStyle(fontSize: 11, color: AppTheme.faint)),
                   IconButton(
                     key: Key('rename-${favorite.pane}'),
                     tooltip: '修改卡片名',
@@ -447,7 +447,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                   IconButton(
                     key: Key('unfav-${favorite.pane}'),
                     tooltip: '取消收藏',
-                    icon: const Icon(Icons.star, size: 20, color: AppTheme.accent),
+                    icon: Icon(Icons.star, size: 20, color: AppTheme.accent),
                     onPressed: () => _run(() => widget.api.deleteHomeFavorite(favorite.pane), '已取消收藏'),
                   ),
                 ],
@@ -455,10 +455,10 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
               const SizedBox(height: 6),
               Text(favorite.displayTitle, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
               const SizedBox(height: 2),
-              Text(favorite.meta, style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+              Text(favorite.meta, style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
               if (favorite.note.isNotEmpty) ...[
                 const SizedBox(height: 6),
-                Text(favorite.note, style: const TextStyle(fontSize: 12.5, color: AppTheme.muted)),
+                Text(favorite.note, style: TextStyle(fontSize: 12.5, color: AppTheme.muted)),
               ],
               if (favorite.previewText.isNotEmpty) ...[
                 const SizedBox(height: 6),
@@ -470,11 +470,11 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                   ]),
                   maxLines: 4,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12.5, color: AppTheme.muted),
+                  style: TextStyle(fontSize: 12.5, color: AppTheme.muted),
                 ),
               ] else
-                const Padding(
-                  padding: EdgeInsets.only(top: 6),
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
                   child: Text('还没有对话内容', style: TextStyle(fontSize: 12.5, color: AppTheme.faint)),
                 ),
               const SizedBox(height: 8),
@@ -498,7 +498,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                 .join(' · '),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+            style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
         leading: _statusDot(recent.status),
         trailing: IconButton(
           key: Key('delete-recent-${recent.pane}'),
@@ -592,7 +592,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
         key: const Key('preview-panel'),
         width: panelWidth,
         height: double.infinity,
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           color: AppTheme.page,
           border: Border(left: BorderSide(color: AppTheme.line)),
         ),
@@ -669,12 +669,12 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                     padding: const EdgeInsets.only(bottom: 16),
                     children: [
                       if (_stale)
-                        const Padding(
-                          padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                           child: Row(
                             children: [
-                              Icon(Icons.circle, size: 6, color: Color(0xFFC98A2B)),
-                              SizedBox(width: 6),
+                              const Icon(Icons.circle, size: 6, color: Color(0xFFC98A2B)),
+                              const SizedBox(width: 6),
                               Text('显示缓存，正在更新…', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
                             ],
                           ),
@@ -695,8 +695,8 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                       ),
                       _section('收藏', _board!.favorites.length),
                       if (_board!.favorites.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 16),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
                           child: Text('还没有收藏的会话。点右上角的星号添加，或在会话列表里点 pane 的星号。',
                               style: TextStyle(color: AppTheme.muted)),
                         )
@@ -704,8 +704,8 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                         for (final favorite in _board!.favorites) _favoriteCard(favorite),
                       _section('最近访问', _board!.recent.length),
                       if (_board!.recent.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 16),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
                           child: Text('还没有访问记录。打开任意 pane 后，最近的 4 个会出现在这里。',
                               style: TextStyle(color: AppTheme.muted)),
                         )
@@ -713,8 +713,8 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                         for (final recent in _board!.recent) _recentTile(recent),
                       _section('看板卡片', _board!.cards.length),
                       if (_board!.cards.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 16),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
                           child: Text('看板是空的。在任意 agent pane 里让模型调用 MCP 工具 publish_home_card，就能把结论贴到这里。',
                               style: TextStyle(color: AppTheme.muted)),
                         )
