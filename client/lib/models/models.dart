@@ -181,6 +181,12 @@ class RemoteHost {
     required this.username,
     required this.authType,
     this.fingerprint = '',
+    this.jumpHostId = '',
+    this.jumpSpec = '',
+    this.jumpPath = '',
+    this.tmuxPath = '',
+    this.enabled = true,
+    this.position = 0,
   });
 
   final String id;
@@ -190,6 +196,19 @@ class RemoteHost {
   final String username;
   final String authType; // password | key | agent
   final String fingerprint;
+
+  /// Saved jump host id, or '' for a direct connection. When jumpSpec is
+  /// non-empty, web sends jump_host_id as '' and the spec wins.
+  final String jumpHostId;
+
+  /// Directly typed "user@host:port" hop; it borrows this host's credential.
+  final String jumpSpec;
+
+  /// Server-computed jump chain display, e.g. "bastion -> target".
+  final String jumpPath;
+  final String tmuxPath;
+  final bool enabled;
+  final int position;
 
   bool get hasPin => fingerprint.isNotEmpty;
 
@@ -201,6 +220,12 @@ class RemoteHost {
         username: '${json['username'] ?? ''}',
         authType: '${json['auth_type'] ?? 'password'}',
         fingerprint: '${json['fingerprint'] ?? ''}',
+        jumpHostId: '${json['jump_host_id'] ?? ''}',
+        jumpSpec: '${json['jump_spec'] ?? ''}',
+        jumpPath: '${json['jump_path'] ?? ''}',
+        tmuxPath: '${json['tmux_path'] ?? ''}',
+        enabled: json['enabled'] != false,
+        position: int.tryParse('${json['position'] ?? 0}') ?? 0,
       );
 }
 

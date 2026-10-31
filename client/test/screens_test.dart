@@ -46,18 +46,29 @@ class FakeApi implements Api {
   @override
   Future<List<RemoteHost>> remoteHosts() async => [
         RemoteHost(id: 'abc', name: 'ctyun', hostname: '100.123.123.8', port: 22,
-            username: 'mars', authType: 'password', fingerprint: 'SHA256:abc'),
+            username: 'mars', authType: 'password', fingerprint: 'SHA256:abc',
+            jumpPath: 'bastion', tmuxPath: '/usr/bin/tmux'),
+        RemoteHost(id: 'def', name: 'backup', hostname: '10.0.0.9', port: 22,
+            username: 'mars', authType: 'password'),
       ];
 
-  @override
-  Future<RemoteHost> createRemoteHost(Map<String, dynamic> payload) async =>
-      RemoteHost(id: 'new', name: '${payload['name']}', hostname: '${payload['hostname']}',
-          port: 22, username: '${payload['username']}', authType: 'password');
+  final List<Map<String, dynamic>> savedHostPayloads = [];
+  final List<List<String>> reorderedIds = [];
+  final List<Map<String, dynamic>> testedHostPayloads = [];
 
   @override
-  Future<RemoteHost> updateRemoteHost(String id, Map<String, dynamic> payload) async =>
-      RemoteHost(id: id, name: '${payload['name'] ?? 'x'}', hostname: 'h', port: 22,
-          username: 'u', authType: 'password');
+  Future<RemoteHost> createRemoteHost(Map<String, dynamic> payload) async {
+    savedHostPayloads.add(Map<String, dynamic>.from(payload));
+    return RemoteHost(id: 'new', name: '${payload['name']}', hostname: '${payload['hostname']}',
+        port: 22, username: '${payload['username']}', authType: 'password');
+  }
+
+  @override
+  Future<RemoteHost> updateRemoteHost(String id, Map<String, dynamic> payload) async {
+    savedHostPayloads.add(Map<String, dynamic>.from(payload));
+    return RemoteHost(id: id, name: '${payload['name'] ?? 'x'}', hostname: 'h', port: 22,
+        username: 'u', authType: 'password');
+  }
 
   @override
   Future<void> deleteRemoteHost(String id) async {}
@@ -284,10 +295,16 @@ class FakeApi implements Api {
       {'session': name};
 
   @override
-  Future<List<Map<String, dynamic>>> reorderRemoteHosts(List<String> ids) async => const [];
+  Future<List<Map<String, dynamic>>> reorderRemoteHosts(List<String> ids) async {
+    reorderedIds.add(List<String>.from(ids));
+    return const [];
+  }
 
   @override
-  Future<Map<String, dynamic>> testRemoteHost(Map<String, dynamic> payload) async => const {};
+  Future<Map<String, dynamic>> testRemoteHost(Map<String, dynamic> payload) async {
+    testedHostPayloads.add(Map<String, dynamic>.from(payload));
+    return const {'ssh_ok': true, 'tmux_ok': true, 'pane_count': 3, 'sessions': ['main', 'codex']};
+  }
 
   @override
   Future<List<Map<String, dynamic>>> listPanes() async => const [];

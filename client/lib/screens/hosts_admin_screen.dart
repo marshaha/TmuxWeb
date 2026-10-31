@@ -48,9 +48,28 @@ class _HostsAdminScreenState extends State<HostsAdminScreen> {
   Future<void> _openEditor([RemoteHost? host]) async {
     final saved = await showDialog<bool>(
       context: context,
-      builder: (_) => _HostEditorDialog(api: widget.api, host: host),
+      builder: (_) => _HostEditorDialog(api: widget.api, host: host, allHosts: _hosts ?? const []),
     );
     if (saved == true) await _load();
+  }
+
+  /// Web's moveHost: swap the id in the order list, POST the whole order,
+  /// reload on success; on failure the list stays as it was, like web,
+  /// which only re-renders on a successful load().
+  Future<void> _moveHost(int index, int direction) async {
+    final hosts = _hosts;
+    if (hosts == null) return;
+    final target = index + direction;
+    if (index < 0 || target < 0 || target >= hosts.length) return;
+    final order = hosts.map((host) => host.id).toList();
+    order.insert(target, order.removeAt(index));
+    try {
+      await widget.api.reorderRemoteHosts(order);
+      await _load();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('排序失败：$error')));
+    }
   }
 
   Future<void> _delete(RemoteHost host) async {
@@ -132,6 +151,18 @@ class _HostsAdminScreenState extends State<HostsAdminScreen> {
                         style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
                   ),
                   IconButton(
+                    key: Key('host-move-up-${host.id}'),
+                    tooltip: '上移',
+                    onPressed: index == 0 ? null : () => _moveHost(index, -1),
+                    icon: const Icon(Icons.arrow_upward, size: 18),
+                  ),
+                  IconButton(
+                    key: Key('host-move-down-${host.id}'),
+                    tooltip: '下移',
+                    onPressed: index == hosts.length - 1 ? null : () => _moveHost(index, 1),
+                    icon: const Icon(Icons.arrow_downward, size: 18),
+                  ),
+                  IconButton(
                     key: Key('host-edit-${host.id}'),
                     tooltip: '编辑',
                     onPressed: () => _openEditor(host),
@@ -147,6 +178,16 @@ class _HostsAdminScreenState extends State<HostsAdminScreen> {
               ),
               Text('${host.username}@${host.hostname}:${host.port} · ${_authLabel(host.authType)}',
                   style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+              if (host.jumpPath.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text('经由 ${host.jumpPath}', style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                ),
+              if (host.tmuxPath.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text('tmux: ${host.tmuxPath}', style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+                ),
               const SizedBox(height: 4),
               Text(host.hasPin ? host.fingerprint : '指纹待首次连通时记录',
                   maxLines: 1,
@@ -172,11 +213,17 @@ class _HostsAdminScreenState extends State<HostsAdminScreen> {
 
 /// Add or edit one host. A failed fingerprint scan or a wrong password is not
 /// fatal when "不校验连接直接保存" is ticked.
+///
+/// Jump, following web/hosts.html: either pick a saved host as the hop, or
+/// type "user@host:port" directly; a typed spec wins and clears the pick,
+/// and picking a host clears the spec. The same rule applies to the save
+/// and test payloads.
 class _HostEditorDialog extends StatefulWidget {
-  const _HostEditorDialog({required this.api, this.host});
+  const _HostEditorDialog({required this.api, this.host, this.allHosts = const []});
 
   final Api api;
   final RemoteHost? host;
+  final List<RemoteHost> allHosts;
 
   @override
   State<_HostEditorDialog> createState() => _HostEditorDialogState();
@@ -189,20 +236,87 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
   late final TextEditingController _username = TextEditingController(text: widget.host?.username ?? '');
   final TextEditingController _credential = TextEditingController();
   final TextEditingController _key = TextEditingController();
+  late final TextEditingController _jumpSpec = TextEditingController(text: widget.host?.jumpSpec ?? '');
   late String _authType = widget.host?.authType ?? 'password';
+  late String _jumpHostId =
+      (widget.host?.jumpSpec.isNotEmpty ?? false) ? '' : (widget.host?.jumpHostId ?? '');
   bool _reveal = false;
   bool _skipVerify = false;
   bool _busy = false;
+  bool _testing = false;
   String _status = '';
 
   bool get _editing => widget.host != null;
 
   @override
   void dispose() {
-    for (final controller in [_name, _hostname, _port, _username, _credential, _key]) {
+    for (final controller in [_name, _hostname, _port, _username, _credential, _key, _jumpSpec]) {
       controller.dispose();
     }
     super.dispose();
+  }
+
+  Map<String, dynamic> _formPayload(String secret) {
+    final spec = _jumpSpec.text.trim();
+    return {
+      'name': _name.text.trim(),
+      'hostname': _hostname.text.trim(),
+      'port': int.tryParse(_port.text.trim()) ?? 22,
+      'username': _username.text.trim(),
+      'auth_type': _authType,
+      'credential': secret,
+      'jump_host_id': spec.isNotEmpty ? '' : _jumpHostId,
+      'jump_spec': spec,
+    };
+  }
+
+  /// Web's test button on the add form: scan the host key, then POST
+  /// /api/remote-hosts/test with the form payload + scanned keys, and
+  /// report pane count and sessions in web's wording. Web caches a scan
+  /// per host:port; here the test always re-scans, same result, one
+  /// more request. Note the server's test handler builds its temporary
+  /// host without the jump fields, so a test through a jump is still
+  /// the direct check web performs — the jump itself is verified by
+  /// saving and connecting, not by this button.
+  Future<void> _test() async {
+    final name = _name.text.trim();
+    final hostname = _hostname.text.trim();
+    final username = _username.text.trim();
+    if (name.isEmpty || hostname.isEmpty || username.isEmpty) {
+      setState(() => _status = '显示名称、主机/IP、用户名都要填');
+      return;
+    }
+    final secret = _authType == 'key' ? _key.text : _credential.text;
+    if (_authType != 'agent' && secret.isEmpty) {
+      setState(() => _status = _editing
+          ? '编辑时留空表示不修改已保存凭据，无法用空凭据测试；填入凭据后再测试'
+          : '请填写密码或私钥（或选择本机密钥）');
+      return;
+    }
+    setState(() {
+      _testing = true;
+      _status = '正在测试 SSH 登录和远程 tmux…';
+    });
+    try {
+      final scanning = await widget.api.scanHostKey(hostname, int.tryParse(_port.text.trim()) ?? 22);
+      final payload = _formPayload(secret)
+        ..['host_key'] = scanning['host_key'] ?? ''
+        ..['fingerprint'] = scanning['fingerprint'] ?? ''
+        ..['confirm_fingerprint'] = scanning['fingerprint'] ?? '';
+      final result = await widget.api.testRemoteHost(payload);
+      if (!mounted) return;
+      final sessions = (result['sessions'] as List?)?.map((session) => '$session').toList() ?? const [];
+      setState(() {
+        _testing = false;
+        _status = '联通成功：SSH 正常，发现 ${result['pane_count'] ?? 0} 个 pane，session：${sessions.join(', ').isEmpty ? '无' : sessions.join(', ')}';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _testing = false;
+        _status = '联通失败：$error';
+      });
+    }
   }
 
   Future<void> _save() async {
@@ -236,6 +350,7 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
           if (mounted) setState(() => _status = '读取指纹失败，将在首次连通时自动记录。');
         }
       }
+      final spec = _jumpSpec.text.trim();
       final payload = <String, dynamic>{
         'name': name,
         'hostname': hostname,
@@ -243,6 +358,8 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
         'username': username,
         'auth_type': _authType,
         'verify': !_skipVerify,
+        'jump_host_id': spec.isNotEmpty ? '' : _jumpHostId,
+        'jump_spec': spec,
       };
       if (secret.isNotEmpty) payload['credential'] = secret;
       if (scanning != null) {
@@ -336,6 +453,39 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
                   onChanged: (value) => setState(() => _authType = value ?? 'password'),
                 ),
               ),
+              _field(
+                '跳板机',
+                DropdownButtonFormField<String>(
+                  key: const Key('host-jump-host'),
+                  initialValue: _jumpHostId,
+                  decoration: const InputDecoration(),
+                  items: [
+                    const DropdownMenuItem(value: '', child: Text('直连（不经过跳板机）')),
+                    for (final other in widget.allHosts.where((host) => host.id != widget.host?.id))
+                      DropdownMenuItem(value: other.id, child: Text('${other.name} · ${other.hostname}')),
+                  ],
+                  onChanged: (value) {
+                    // Picking a host clears a typed spec, like web.
+                    if (value != null && value.isNotEmpty) _jumpSpec.clear();
+                    setState(() => _jumpHostId = value ?? '');
+                  },
+                ),
+              ),
+              _field(
+                '或直接填 user@host:port',
+                TextField(
+                  key: const Key('host-jump-spec'),
+                  controller: _jumpSpec,
+                  autocorrect: false,
+                  decoration: const InputDecoration(hintText: '不保存为独立主机时用，复用本机凭据'),
+                  onChanged: (value) {
+                    // A typed spec wins over the pick, like web.
+                    if (value.trim().isNotEmpty && _jumpHostId.isNotEmpty) {
+                      setState(() => _jumpHostId = '');
+                    }
+                  },
+                ),
+              ),
               if (!agent) ...[
                 _field(
                   keyMode ? '私钥内容' : (_editing ? 'SSH 密码（留空不修改）' : 'SSH 密码'),
@@ -383,10 +533,17 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
         ),
       ),
       actions: [
-        TextButton(onPressed: _busy ? null : () => Navigator.pop(context, false), child: const Text('取消')),
+        TextButton(onPressed: (_busy || _testing) ? null : () => Navigator.pop(context, false), child: const Text('取消')),
+        TextButton(
+          key: const Key('host-test'),
+          onPressed: (_busy || _testing) ? null : _test,
+          child: _testing
+              ? const SizedBox(height: 15, width: 15, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('测试联通'),
+        ),
         FilledButton(
           key: const Key('host-save'),
-          onPressed: _busy ? null : _save,
+          onPressed: (_busy || _testing) ? null : _save,
           child: _busy
               ? const SizedBox(height: 15, width: 15, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
               : Text(_editing ? '保存' : '添加'),
