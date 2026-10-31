@@ -11,6 +11,7 @@ import '../services/config_crypto.dart';
 import '../services/config_import.dart';
 import '../theme.dart';
 import 'hosts_admin_screen.dart';
+import 'shares_screen.dart';
 import 'login_screen.dart';
 
 /// Settings, mirroring web/assets/settings.js: server and share
@@ -337,12 +338,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               MaterialPageRoute(builder: (_) => HostsAdminScreen(api: widget.api)),
             ),
           ),
-          const ListTile(
-            key: Key('settings-shares'),
-            enabled: false,
-            title: Text('分享管理'),
-            subtitle: Text('下一批'),
-            trailing: Icon(Icons.chevron_right, size: 18),
+          ListTile(
+            key: const Key('settings-shares'),
+            title: const Text('分享管理'),
+            trailing: const Icon(Icons.chevron_right, size: 18),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => SharesScreen(api: widget.api, baseUrl: widget.baseUrl)),
+            ),
           ),
           _sectionTitle('修改密码'),
           ExpansionTile(

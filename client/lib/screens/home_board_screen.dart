@@ -245,6 +245,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
       builder: (_) => ChatScreen(
         source: PaneChatSource(api: api, pane: pane),
         terminalApi: api is TerminalApi ? api as TerminalApi : null,
+        baseUrl: widget.baseUrl,
       ),
     ));
   }
@@ -265,6 +266,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
         api: api,
         pane: pane,
         terminalApi: api is TerminalApi ? api as TerminalApi : null,
+        baseUrl: widget.baseUrl,
       ),
     ));
   }
@@ -640,6 +642,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                 source: PaneChatSource(api: api, pane: pane),
                 terminalApi: api is TerminalApi ? api as TerminalApi : null,
                 embedded: true,
+                baseUrl: widget.baseUrl,
               ),
             ),
           ],
@@ -732,7 +735,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
             tooltip: '搜索',
             icon: const Icon(Icons.search, size: 20),
             onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => HomeSearchScreen(api: widget.api))),
+                MaterialPageRoute(builder: (_) => HomeSearchScreen(api: widget.api, baseUrl: widget.baseUrl))),
           ),
           IconButton(tooltip: '添加收藏', icon: const Icon(Icons.star_border, size: 20), onPressed: _addFavorite),
           IconButton(tooltip: '刷新', icon: const Icon(Icons.refresh, size: 20), onPressed: _load),

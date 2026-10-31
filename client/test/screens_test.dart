@@ -9,11 +9,12 @@ import 'package:tmuxweb_client/screens/login_screen.dart';
 import 'package:tmuxweb_client/theme.dart';
 
 class FakeApi implements Api {
-  FakeApi({this.loginError, this.hostsError, this.boardError});
+  FakeApi({this.loginError, this.hostsError, this.boardError, this.sessionError});
 
   final ApiException? loginError;
   final ApiException? hostsError;
   final ApiException? boardError;
+  final ApiException? sessionError;
   final List<String> logins = [];
   final List<String> sent = [];
   final List<String> uploads = [];
@@ -318,29 +319,104 @@ class FakeApi implements Api {
     pluginStates[name] = enabled;
   }
 
+  final List<Map<String, dynamic>> shares = [
+    {
+      'id': 's1',
+      'slug': 'share-abc',
+      'url': '/share/share-abc',
+      'pane_id': 'abc~%0',
+      'title': 'agent',
+      'provider': 'hermes',
+      'session_id': 'main',
+      'created_at': 1761868800,
+      'expires_at': 1893456000,
+      'revoked': false,
+      'password_protected': true,
+      'allow_input': true,
+      'status': 'active',
+    },
+    {
+      'id': 's2',
+      'slug': 'share-old',
+      'url': '/share/share-old',
+      'pane_id': '%7',
+      'title': 'review',
+      'provider': 'codex',
+      'session_id': 'codex',
+      'created_at': 1761868800,
+      'expires_at': 1761955200,
+      'revoked': false,
+      'password_protected': false,
+      'allow_input': false,
+      'status': 'stopped',
+    },
+  ];
+  final List<Map<String, dynamic>> createdShares = [];
+  final List<String> extendedShares = [];
+  final List<Map<String, dynamic>> createdSessions = [];
+
+  Map<String, dynamic> _shareById(String id) => shares.firstWhere((share) => share['id'] == id);
+
   @override
-  Future<List<Map<String, dynamic>>> listShares() async => const [];
+  Future<List<Map<String, dynamic>>> listShares() async =>
+      shares.map((share) => Map<String, dynamic>.from(share)).toList();
 
   @override
   Future<Map<String, dynamic>> createShare(
-          {required String paneRef, required String slug, String password = '', int expiresIn = 86400, bool allowInput = true}) async =>
-      {'slug': slug};
+      {required String paneRef, required String slug, String password = '', int expiresIn = 86400, bool allowInput = true}) async {
+    final share = {
+      'id': 's-new',
+      'slug': slug,
+      'url': '/share/$slug',
+      'pane_id': paneRef,
+      'title': paneRef,
+      'created_at': 1761868800,
+      'expires_at': 1893456000,
+      'revoked': false,
+      'password_protected': password.isNotEmpty,
+      'allow_input': allowInput,
+      'status': 'active',
+    };
+    shares.add(share);
+    createdShares.add(Map<String, dynamic>.from(share));
+    return Map<String, dynamic>.from(share);
+  }
 
   @override
-  Future<Map<String, dynamic>> extendShare(String shareId, int seconds) async => const {};
+  Future<Map<String, dynamic>> extendShare(String shareId, int seconds) async {
+    extendedShares.add('$shareId+$seconds');
+    final share = _shareById(shareId);
+    share['expires_at'] = (share['expires_at'] as int) + seconds;
+    return Map<String, dynamic>.from(share);
+  }
 
   @override
-  Future<void> stopShare(String shareId) async {}
+  Future<void> stopShare(String shareId) async {
+    _shareById(shareId)['status'] = 'stopped';
+  }
 
   @override
-  Future<void> deleteShare(String shareId) async {}
+  Future<void> deleteShare(String shareId) async {
+    shares.removeWhere((share) => share['id'] == shareId);
+  }
 
   @override
-  Future<void> resetSharePassword(String shareId, String password) async {}
+  Future<void> resetSharePassword(String shareId, String password) async {
+    _shareById(shareId)['password_protected'] = password.isNotEmpty;
+  }
 
   @override
-  Future<Map<String, dynamic>> createSession({String host = 'localhost', required String name, String path = ''}) async =>
-      {'session': name};
+  Future<Map<String, dynamic>> createSession({String host = 'localhost', required String name, String path = ''}) async {
+    if (sessionError != null) throw sessionError!;
+    createdSessions.add({'host': host, 'name': name, 'path': path});
+    return {
+      'session': {'session': name},
+      'host': host,
+      'panes': [
+        {'id': host == 'abc' ? 'abc~%0' : '%7'},
+      ],
+    };
+  }
 
   @override
   Future<List<Map<String, dynamic>>> reorderRemoteHosts(List<String> ids) async {

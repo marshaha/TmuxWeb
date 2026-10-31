@@ -19,17 +19,19 @@ import 'chat_screen.dart';
 import 'terminal_screen.dart';
 
 class PanePreviewScreen extends StatelessWidget {
-  const PanePreviewScreen({super.key, required this.api, required this.pane, this.terminalApi});
+  const PanePreviewScreen({super.key, required this.api, required this.pane, this.terminalApi, this.baseUrl = ''});
 
   final Api api;
   final Pane pane;
   final TerminalApi? terminalApi;
+  final String baseUrl;
 
   void _openChat(BuildContext context) {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => ChatScreen(
         source: PaneChatSource(api: api, pane: pane),
         terminalApi: terminalApi,
+        baseUrl: baseUrl,
       ),
     ));
   }
@@ -68,6 +70,7 @@ class PanePreviewScreen extends StatelessWidget {
         source: PaneChatSource(api: api, pane: pane),
         terminalApi: terminalApi,
         embedded: true,
+        baseUrl: baseUrl,
       ),
     );
   }

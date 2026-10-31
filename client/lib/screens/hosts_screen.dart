@@ -115,8 +115,42 @@ class _HostsScreenState extends State<HostsScreen> {
       builder: (_) => ChatScreen(
         source: PaneChatSource(api: api, pane: pane),
         terminalApi: api is TerminalApi ? api as TerminalApi : null,
+        baseUrl: widget.baseUrl,
       ),
     ));
+  }
+
+  /// New-session dialog, mirroring web/index.html: per-host '+' button,
+  /// name + optional path (prefilled with the host's first pane path).
+  /// On success the tree reloads and the first new pane opens, like
+  /// web selecting it; without a matching pane it reports the name.
+  Future<void> _newSession(Host host) async {
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => _NewSessionDialog(api: widget.api, host: host),
+    );
+    if (result == null || !mounted) return;
+    await _load();
+    if (!mounted) return;
+    Pane? target;
+    final panes = result['panes'];
+    if (panes is List && panes.isNotEmpty) {
+      final ref = '${panes.first['id'] ?? panes.first['pane'] ?? ''}';
+      if (ref.isNotEmpty) {
+        for (final host in _hosts ?? const <Host>[]) {
+          for (final pane in host.panes) {
+            if (pane.ref == ref) target = pane;
+          }
+        }
+      }
+    }
+    if (target != null) {
+      _openPane(target);
+      return;
+    }
+    final session = result['session'];
+    final name = session is Map ? '${session['session'] ?? ''}' : '$session';
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已创建会话 $name')));
   }
 
   Future<void> _openShare() async {
@@ -328,6 +362,14 @@ class _HostsScreenState extends State<HostsScreen> {
               Flexible(child: Text(host.name, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600))),
               const SizedBox(width: 8),
               Text('${host.panes.length}', style: TextStyle(fontSize: 11.5, color: AppTheme.faint)),
+              IconButton(
+                key: Key('new-session-${host.id}'),
+                tooltip: '新建会话',
+                iconSize: 18,
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _newSession(host),
+                icon: const Icon(Icons.add, size: 18),
+              ),
             ],
           ),
           children: [
@@ -506,6 +548,108 @@ class _PasswordFormState extends State<_PasswordForm> {
         ],
         const SizedBox(height: 14),
         FilledButton(onPressed: widget.busy ? null : () => widget.onSubmit(_controller.text), child: const Text('打开')),
+      ],
+    );
+  }
+}
+
+/// New-session dialog (see _HostsScreenState._newSession). Returns the
+/// server's create response on success, null on cancel.
+class _NewSessionDialog extends StatefulWidget {
+  const _NewSessionDialog({required this.api, required this.host});
+
+  final Api api;
+  final Host host;
+
+  @override
+  State<_NewSessionDialog> createState() => _NewSessionDialogState();
+}
+
+class _NewSessionDialogState extends State<_NewSessionDialog> {
+  final TextEditingController _name = TextEditingController();
+  late final TextEditingController _path;
+  String _status = '';
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final panes = widget.host.panes;
+    _path = TextEditingController(text: panes.isNotEmpty ? panes.first.path : '');
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _path.dispose();
+    super.dispose();
+  }
+
+  Future<void> _create() async {
+    final name = _name.text.trim();
+    if (name.isEmpty) {
+      setState(() => _status = '请填写会话名称');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _status = '正在创建会话…';
+    });
+    try {
+      final result = await widget.api.createSession(
+        host: widget.host.id,
+        name: name,
+        path: _path.text.trim(),
+      );
+      if (mounted) Navigator.of(context).pop(result);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _status = '创建失败：$error';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('新建 tmux 会话'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('主机：${widget.host.name}', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+          const SizedBox(height: 12),
+          TextField(
+            key: const Key('session-name'),
+            controller: _name,
+            decoration: const InputDecoration(labelText: '会话名称', hintText: 'my-agent'),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            key: const Key('session-path'),
+            controller: _path,
+            decoration: const InputDecoration(labelText: '工作目录（可选，留空用默认）', hintText: '/home/you/project'),
+          ),
+          if (_status.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(_status, style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+            ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          key: const Key('session-cancel'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const Key('session-create'),
+          onPressed: _busy ? null : _create,
+          child: const Text('创建'),
+        ),
       ],
     );
   }

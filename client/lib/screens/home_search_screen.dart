@@ -32,9 +32,10 @@ Pane _paneFromSearch(Map<String, dynamic> item) {
 }
 
 class HomeSearchScreen extends StatefulWidget {
-  const HomeSearchScreen({super.key, required this.api});
+  const HomeSearchScreen({super.key, required this.api, this.baseUrl = ''});
 
   final Api api;
+  final String baseUrl;
 
   @override
   State<HomeSearchScreen> createState() => _HomeSearchScreenState();
@@ -121,6 +122,7 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
       builder: (_) => ChatScreen(
         source: PaneChatSource(api: api, pane: pane),
         terminalApi: api is TerminalApi ? api as TerminalApi : null,
+        baseUrl: widget.baseUrl,
       ),
     ));
   }
