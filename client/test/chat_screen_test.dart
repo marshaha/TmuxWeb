@@ -8,6 +8,7 @@ import 'package:tmuxweb_client/models/models.dart';
 import 'package:tmuxweb_client/models/transcript_cache.dart';
 import 'package:tmuxweb_client/screens/chat_screen.dart';
 import 'package:tmuxweb_client/theme.dart';
+import 'package:tmuxweb_client/widgets/message_tile.dart';
 
 class FakeSource implements ChatSource {
   FakeSource({this.readOnly = false, Transcript? transcript}) : _transcript = transcript ?? _default;
@@ -37,6 +38,9 @@ class FakeSource implements ChatSource {
 
   @override
   Future<Transcript> fetch({bool refresh = false}) async => _transcript;
+
+  @override
+  Stream<String> screenStream() => const Stream.empty();
 
   int stops = 0;
 
@@ -252,7 +256,7 @@ void main() {
     expect(find.text('复制全部'), findsNothing);
   });
 
-  testWidgets('a failed send surfaces the error and drops the pending bubble', (tester) async {
+  testWidgets('a failed send surfaces the error and returns the text to the composer', (tester) async {
     final source = _FailingSource();
     await tester.pumpWidget(wrap(ChatScreen(source: source, poll: Duration.zero)));
     await tester.pumpAndSettle();
@@ -262,7 +266,17 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('该会话只读，不能发送消息'), findsOneWidget);
-    expect(find.text('hi'), findsNothing);
+    // The pending bubble is gone, but the text is not lost: it is back
+    // in the composer so the user can retry without retyping.
+    expect(tester.widget<TextField>(find.byKey(const Key('chat-composer'))).controller?.text, 'hi');
+    expect(find.byType(MessageTile), findsWidgets);
+    expect(
+      find.byType(MessageTile).evaluate().every((element) {
+        final tile = element.widget as MessageTile;
+        return tile.message.text != 'hi';
+      }),
+      isTrue,
+    );
   });
 }
 

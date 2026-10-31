@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../api/api_client.dart';
 import '../models/chat_source.dart';
+import '../services/screen_stream.dart';
 import 'files_screen.dart';
 import 'terminal_screen.dart';
 import '../models/models.dart';
@@ -12,7 +13,9 @@ import '../models/transcript_cache.dart';
 import '../theme.dart';
 import '../widgets/message_tile.dart';
 
-/// Chat view for a pane or a share link: polls the transcript, renders messages
+/// Chat view for a pane or a share link: transcript mode polls, screen
+/// mode streams live captures over the pane socket, and the live
+/// toggle pauses either one while keeping the content on screen
 /// with per-message and per-block copy controls, sends input when allowed.
 ///
 /// With [embedded] true, the screen renders only the transcript + composer
@@ -24,7 +27,7 @@ class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
     required this.source,
-    this.poll = const Duration(seconds: 2),
+    this.poll = const Duration(seconds: 1),
     this.cache,
     this.terminalApi,
     this.embedded = false,
@@ -61,7 +64,10 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _sending = false;
   bool _stopping = false;
   bool _stale = false;
+  bool _paused = false;
   Timer? _timer;
+  StreamSubscription<String>? _screenSub;
+  bool _screenClosedByUs = false;
 
   TranscriptCache get _cache => widget.cache ?? TranscriptCache.instance;
   String get _key => widget.source.cacheKey;
@@ -81,9 +87,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _controller.addListener(() => _cache.saveDraft(_key, _controller.text));
     _scroll.addListener(_rememberScroll);
     _refresh(initial: true);
-    if (widget.poll > Duration.zero) {
-      _timer = Timer.periodic(widget.poll, (_) => _refresh());
-    }
+    _startPolling();
     if (cached != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _restoreScroll(cached));
     }
@@ -93,11 +97,76 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _rememberScroll();
     _timer?.cancel();
+    _stopScreenStream();
     _controller.removeListener(() {});
     _controller.dispose();
     _scroll.removeListener(_rememberScroll);
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _startPolling() {
+    _timer?.cancel();
+    if (!_paused && widget.poll > Duration.zero) {
+      _timer = Timer.periodic(widget.poll, (_) => _refresh());
+    }
+  }
+
+  /// Pauses live refresh, like web's live-toggle: polling and the
+  /// screen socket stop, but the content stays on screen. Resuming
+  /// re-attaches — for a screen pane the first capture frame
+  /// repaints the frozen screen, so there is no blank gap.
+  void _toggleLive() {
+    if (_paused) {
+      setState(() => _paused = false);
+      _startPolling();
+      _refresh();
+    } else {
+      setState(() => _paused = true);
+      _timer?.cancel();
+      _stopScreenStream();
+    }
+  }
+
+  void _startScreenStream() {
+    if (_screenSub != null || _paused) return;
+    _timer?.cancel();
+    _screenClosedByUs = false;
+    _screenSub = widget.source.screenStream().listen(
+      (frame) {
+        if (!mounted) return;
+        final data = _data;
+        if (data == null || !data.isScreen) return;
+        setState(() {
+          _data = Transcript(
+            mode: data.mode,
+            provider: data.provider,
+            sessionId: data.sessionId,
+            content: trimCapture(stripAnsi(frame)),
+            mtime: data.mtime,
+            readOnly: data.readOnly,
+            waiting: data.waiting,
+            waitingSince: data.waitingSince,
+          );
+        });
+      },
+      onDone: _screenStreamUnavailable,
+      onError: (_) => _screenStreamUnavailable(),
+    );
+  }
+
+  /// The source has no live stream (shares, or an API without socket
+  /// support): fall back to polling instead of going stale.
+  void _screenStreamUnavailable() {
+    _screenSub = null;
+    if (!_screenClosedByUs && mounted && !_paused) _startPolling();
+  }
+
+  void _stopScreenStream() {
+    _screenClosedByUs = true;
+    final sub = _screenSub;
+    _screenSub = null;
+    unawaited(sub?.cancel());
   }
 
   void _rememberScroll() {
@@ -137,6 +206,12 @@ class _ChatScreenState extends State<ChatScreen> {
         _stale = false;
         _pending.removeWhere((text) => seen.contains(text.trim()));
       });
+      if (transcript.isScreen) {
+        _startScreenStream();
+      } else if (_screenSub != null) {
+        _stopScreenStream();
+        _startPolling();
+      }
       if (atBottom || (initial && previous == null)) _scrollToEnd();
     } catch (error) {
       if (!mounted) return;
@@ -192,7 +267,14 @@ class _ChatScreenState extends State<ChatScreen> {
       await _refresh();
     } catch (error) {
       if (!mounted) return;
-      setState(() => _pending.removeLast());
+      // The failed text goes back into the composer instead of being
+      // lost: web keeps a failed message with a resend action, and
+      // dropping the text here would make the user retype it.
+      setState(() {
+        _pending.removeLast();
+        _controller.text = text;
+        _controller.selection = TextSelection.collapsed(offset: text.length);
+      });
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -262,8 +344,16 @@ class _ChatScreenState extends State<ChatScreen> {
               },
               icon: const Icon(Icons.terminal, size: 20),
             ),
+          if (_paused)
+            const Padding(padding: EdgeInsets.only(right: 4), child: Center(child: _Badge(label: '已暂停'))),
           if (_stale)
             const Padding(padding: EdgeInsets.only(right: 4), child: Center(child: _Badge(label: '更新中…'))),
+          IconButton(
+            key: const Key('chat-live-toggle'),
+            tooltip: _paused ? '继续实时刷新' : '暂停实时刷新',
+            onPressed: _toggleLive,
+            icon: Icon(_paused ? Icons.play_arrow : Icons.pause, size: 20),
+          ),
           if (widget.source.readOnly)
             const Padding(padding: EdgeInsets.only(right: 8), child: Center(child: _Badge(label: '只读', accent: true)))
           else if (data?.provider != null)

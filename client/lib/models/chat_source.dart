@@ -1,7 +1,10 @@
 /// Chat data sources: a pane (authenticated) or a public share link.
 library;
 
+import 'dart:async';
+
 import '../api/api_client.dart';
+import '../services/screen_stream.dart';
 import 'models.dart';
 
 abstract class ChatSource {
@@ -15,6 +18,11 @@ abstract class ChatSource {
   bool get readOnly;
 
   Future<Transcript> fetch({bool refresh = false});
+
+  /// Live capture frames for screen-mode panes. The default is an
+  /// empty stream (polling stays in charge); pane sources override
+  /// it with the `/ws/panes/{id}` socket.
+  Stream<String> screenStream() => const Stream.empty();
 
   Future<void> send(String text, {bool submit = true});
 
@@ -48,6 +56,22 @@ class PaneChatSource implements ChatSource {
   Future<Transcript> fetch({bool refresh = false}) => api.transcript(pane.ref, refresh: refresh);
 
   @override
+  Stream<String> screenStream() {
+    final socketApi = api is TerminalApi ? api as TerminalApi : null;
+    if (socketApi == null) return const Stream.empty();
+    final inner = ScreenStream(
+      uri: socketApi.wsUri('/ws/panes/${encodePaneRef(pane.ref)}'),
+      headers: socketApi.wsHeaders,
+    );
+    // Cancelling the returned stream must stop the socket and its
+    // reconnect timer, not just drop frames on the floor.
+    final controller = StreamController<String>(onCancel: () => inner.close());
+    inner.stream.listen(controller.add, onDone: controller.close, onError: controller.addError);
+    inner.start();
+    return controller.stream;
+  }
+
+  @override
   Future<void> send(String text, {bool submit = true}) => api.sendInput(pane.ref, text, submit: submit);
 
   @override
@@ -74,6 +98,9 @@ class ShareChatSource implements ChatSource {
 
   @override
   Future<Transcript> fetch({bool refresh = false}) => api.shareTranscript(meta.slug);
+
+  @override
+  Stream<String> screenStream() => const Stream.empty();
 
   @override
   Future<void> send(String text, {bool submit = true}) => api.shareInput(meta.slug, text, submit: submit);

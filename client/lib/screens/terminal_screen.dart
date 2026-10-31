@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -28,7 +29,9 @@ class _TerminalScreenState extends State<TerminalScreen> {
   WebSocket? _socket;
   String _status = '连接中…';
   bool _alive = true;
+  bool _paused = false;
   int _attempt = 0;
+  Timer? _reconnectTimer;
 
   @override
   void initState() {
@@ -39,10 +42,28 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   void dispose() {
     _alive = false;
+    _reconnectTimer?.cancel();
     _socket?.close();
     _terminal.onOutput = null;
     _terminal.onResize = null;
     super.dispose();
+  }
+
+  /// Pauses live output like web's live-toggle: the socket closes but
+  /// the terminal buffer stays, so resuming repaints into the frozen
+  /// screen instead of blanking it.
+  void _toggleLive() {
+    if (_paused) {
+      _paused = false;
+      _attempt = 0;
+      _connect();
+    } else {
+      _paused = true;
+      _reconnectTimer?.cancel();
+      _socket?.close();
+      _socket = null;
+      setState(() => _status = '已暂停实时刷新');
+    }
   }
 
   void _sendOutput(String data) {
@@ -94,13 +115,14 @@ class _TerminalScreenState extends State<TerminalScreen> {
   }
 
   void _reconnect() {
-    if (!_alive) return;
+    if (!_alive || _paused) return;
     _socket = null;
     setState(() => _status = '连接断开，正在重连…');
     _attempt += 1;
     final delay = Duration(milliseconds: 600 * (_attempt.clamp(1, 5)));
-    Future.delayed(delay, () {
-      if (_alive && mounted) _connect();
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(delay, () {
+      if (_alive && mounted && !_paused) _connect();
     });
   }
 
@@ -116,6 +138,12 @@ class _TerminalScreenState extends State<TerminalScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            key: const Key('terminal-live-toggle'),
+            tooltip: _paused ? '继续实时刷新' : '暂停实时刷新',
+            onPressed: _toggleLive,
+            icon: Icon(_paused ? Icons.play_arrow : Icons.pause, size: 20),
+          ),
           IconButton(
             tooltip: '重新连接',
             onPressed: () {
