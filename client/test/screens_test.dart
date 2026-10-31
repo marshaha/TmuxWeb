@@ -110,6 +110,99 @@ class FakeApi implements Api {
 
   @override
   Future<void> shareInput(String slug, String text, {bool submit = true}) async => throw ApiException(403, '该会话只读');
+
+  // Web parity batch 1: stubs; no screen calls these yet.
+  @override
+  Future<Map<String, dynamic>> homeBoard() async => const {};
+
+  @override
+  Future<Map<String, dynamic>> homeFavorites() async => const {'favorites': [], 'notes': {}};
+
+  @override
+  Future<void> addHomeFavorite(String paneRef, {String note = '', String title = ''}) async {}
+
+  @override
+  Future<void> renameHomeFavorite(String paneRef, String title) async {}
+
+  @override
+  Future<void> deleteHomeFavorite(String paneRef) async {}
+
+  @override
+  Future<void> touchHomeRecent(String paneRef) async {}
+
+  @override
+  Future<void> deleteHomeRecent(String paneRef) async {}
+
+  @override
+  Future<Map<String, dynamic>> homeSearch(String query, {int limit = 20, bool messages = true}) async => const {};
+
+  @override
+  Future<List<Map<String, dynamic>>> homeCards() async => const [];
+
+  @override
+  Future<Map<String, dynamic>> createHomeCard(
+          {required String title, String body = '', String paneRef = '', String kind = 'note'}) async =>
+      {'title': title};
+
+  @override
+  Future<void> deleteHomeCard(String cardId) async {}
+
+  @override
+  Future<Map<String, dynamic>> prefs() async => const {'prefs': {}};
+
+  @override
+  Future<Map<String, dynamic>> updateTheme(String theme) async => {'prefs': {'theme': theme}};
+
+  @override
+  Future<Map<String, dynamic>> settingsInfo() async => const {};
+
+  @override
+  Future<void> changePassword(String current, String next) async {}
+
+  @override
+  Future<List<Map<String, dynamic>>> plugins() async => const [];
+
+  @override
+  Future<void> setPluginEnabled(String name, bool enabled) async {}
+
+  @override
+  Future<List<Map<String, dynamic>>> listShares() async => const [];
+
+  @override
+  Future<Map<String, dynamic>> createShare(
+          {required String paneRef, required String slug, String password = '', int expiresIn = 86400, bool allowInput = true}) async =>
+      {'slug': slug};
+
+  @override
+  Future<Map<String, dynamic>> extendShare(String shareId, int seconds) async => const {};
+
+  @override
+  Future<void> stopShare(String shareId) async {}
+
+  @override
+  Future<void> deleteShare(String shareId) async {}
+
+  @override
+  Future<void> resetSharePassword(String shareId, String password) async {}
+
+  @override
+  Future<Map<String, dynamic>> createSession({String host = 'localhost', required String name, String path = ''}) async =>
+      {'session': name};
+
+  @override
+  Future<List<Map<String, dynamic>>> reorderRemoteHosts(List<String> ids) async => const [];
+
+  @override
+  Future<Map<String, dynamic>> testRemoteHost(Map<String, dynamic> payload) async => const {};
+
+  @override
+  Future<List<Map<String, dynamic>>> listPanes() async => const [];
+
+  @override
+  Future<String> capturePane(String paneRef, {int history = 500}) async => '';
+
+  @override
+  Future<void> sendPaneKey(String paneRef, String key) async {}
 }
 
 Widget wrap(Widget child) => MaterialApp(theme: AppTheme.light(), home: child);

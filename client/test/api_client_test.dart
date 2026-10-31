@@ -240,6 +240,85 @@ void main() {
     expect(requests.single.method, 'POST');
     expect(requests.single.url.path, '/api/panes/%257/interrupt');
   });
+
+  group('web parity batch 1', () {
+    test('home board, favorites and search hit the board endpoints', () async {
+      final requests = <http.Request>[];
+      final client = ApiClient(httpClient: MockClient((request) async {
+        requests.add(request);
+        return switch (request.url.path) {
+          '/api/home' => http.Response('{"favorites":[],"recent":[],"cards":[],"stats":{}}', 200),
+          '/api/home/favorites' => http.Response('{"favorites":["%7"],"notes":{"%7":"review"}}', 200),
+          '/api/home/search' => http.Response('{"query":"codex","mode":"literal","hosts":[],"sessions":[],"panes":[],"messages":[],"cards":[]}', 200),
+          _ => http.Response('{"detail":"not found"}', 404),
+        };
+      }));
+      final board = await client.homeBoard();
+      expect(board['stats'], isA<Map>());
+      final favorites = await client.homeFavorites();
+      expect(favorites['favorites'], ['%7']);
+      final search = await client.homeSearch('codex');
+      expect(search['mode'], 'literal');
+      expect(requests.map((request) => '${request.method} ${request.url.path}').toList(),
+          ['GET /api/home', 'GET /api/home/favorites', 'GET /api/home/search']);
+      expect(requests[2].url.queryParameters['q'], 'codex');
+    });
+
+    test('favorite add/rename/delete encode the pane reference', () async {
+      final requests = <http.Request>[];
+      final client = ApiClient(httpClient: MockClient((request) async {
+        requests.add(request);
+        return http.Response('{}', request.method == 'POST' ? 201 : 200);
+      }));
+      await client.addHomeFavorite('%7', note: 'review');
+      await client.renameHomeFavorite('%7', 'My agent');
+      await client.deleteHomeFavorite('%7');
+      expect(requests.map((request) => '${request.method} ${request.url.path}').toList(), [
+        'POST /api/home/favorites',
+        'PATCH /api/home/favorites/%257',
+        'DELETE /api/home/favorites/%257',
+      ]);
+      expect(jsonDecode(requests[0].body)['pane'], '%7');
+      expect(jsonDecode(requests[1].body)['title'], 'My agent');
+    });
+
+    test('shares, sessions and pane key use the web request shapes', () async {
+      final requests = <http.Request>[];
+      final client = ApiClient(httpClient: MockClient((request) async {
+        requests.add(request);
+        return switch (request.url.path) {
+          '/api/shares' => http.Response('{"shares":[{"id":"s1","slug":"demo"}]}', 201),
+          '/api/sessions' => http.Response('{"session":{},"host":"localhost","panes":[]}', 201),
+          '/api/panes/%257/key' => http.Response('{"status":"sent"}', 200),
+          '/api/panes/%257/capture' => http.Response(r'{"pane":"%7","content":"$ "}', 200),
+          _ => http.Response('{}', 200),
+        };
+      }));
+      final shares = await client.listShares();
+      expect(shares.single['slug'], 'demo');
+      await client.createShare(paneRef: '%7', slug: 'demo', expiresIn: 3600);
+      expect(jsonDecode(requests[1].body)['expires_in'], 3600);
+      await client.createSession(name: 'work');
+      expect(jsonDecode(requests[2].body), {'host': 'localhost', 'name': 'work', 'path': ''});
+      await client.sendPaneKey('%7', 'Escape');
+      expect(await client.capturePane('%7'), r'$ ');
+    });
+
+    test('prefs, settings and plugins follow the web field names', () async {
+      final requests = <http.Request>[];
+      final client = ApiClient(httpClient: MockClient((request) async {
+        requests.add(request);
+        return http.Response('{"prefs":{"theme":"Night"},"plugins":[]}', 200);
+      }));
+      await client.updateTheme('Night');
+      expect(jsonDecode(requests.single.body), {'theme': 'Night'});
+      await client.changePassword('old', 'new');
+      expect(jsonDecode(requests[1].body), {'current': 'old', 'next': 'new'});
+      await client.setPluginEnabled('relay', true);
+      expect(requests[2].method, 'POST');
+      expect(requests[2].url.path, '/api/plugins/relay/enable');
+    });
+  });
 }
 
 class _Unreachable implements Exception {
