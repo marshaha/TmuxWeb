@@ -8,7 +8,7 @@ import 'package:tmuxweb_client/screens/hosts_screen.dart';
 import 'package:tmuxweb_client/screens/login_screen.dart';
 import 'package:tmuxweb_client/theme.dart';
 
-class FakeApi implements Api {
+class FakeApi implements Api, TerminalApi {
   FakeApi({this.loginError, this.hostsError, this.boardError, this.sessionError});
 
   final ApiException? loginError;
@@ -351,6 +351,15 @@ class FakeApi implements Api {
       'status': 'stopped',
     },
   ];
+  @override
+  Map<String, String> get wsHeaders => {};
+
+  @override
+  Uri wsUri(String path, [Map<String, String>? query]) =>
+      // Literal loopback, refused at once: a hostname would leave
+      // dart:io's staggered DNS lookup timer pending at teardown.
+      Uri.parse('ws://127.0.0.1:1$path').replace(queryParameters: query);
+
   final List<Map<String, dynamic>> createdShares = [];
   final List<String> extendedShares = [];
   final List<Map<String, dynamic>> createdSessions = [];

@@ -12,10 +12,14 @@ import '../theme.dart';
 /// Real PTY terminal for one pane (local or SSH), driven by the server's
 /// `/ws/terminal/{pane}` socket.
 class TerminalScreen extends StatefulWidget {
-  const TerminalScreen({super.key, required this.api, required this.pane});
+  const TerminalScreen({super.key, required this.api, required this.pane, this.embedded = false});
 
   final TerminalApi api;
   final Pane pane;
+
+  /// Inside a grid cell there is no room for the page chrome: only
+  /// the terminal view, like web's /term?embed=1 iframe.
+  final bool embedded;
 
   @override
   State<TerminalScreen> createState() => _TerminalScreenState();
@@ -126,8 +130,42 @@ class _TerminalScreenState extends State<TerminalScreen> {
     });
   }
 
+  Widget _terminalView() => TerminalView(
+        _terminal,
+        autofocus: !widget.embedded,
+        padding: const EdgeInsets.all(6),
+        theme: const TerminalTheme(
+          cursor: Color(0xFFFAF9F5),
+          selection: Color(0x665A574F),
+          foreground: Color(0xFFE7E5DF),
+          background: Color(0xFF111111),
+          black: Color(0xFF2B2B2B),
+          red: Color(0xFFE06C60),
+          green: Color(0xFF8FBF6F),
+          yellow: Color(0xFFE2C46B),
+          blue: Color(0xFF6FA8DC),
+          magenta: Color(0xFFC88BD1),
+          cyan: Color(0xFF6FC5C0),
+          white: Color(0xFFD8D6CF),
+          brightBlack: Color(0xFF6B6B6B),
+          brightRed: Color(0xFFF08C80),
+          brightGreen: Color(0xFFA8D98A),
+          brightYellow: Color(0xFFF2D98A),
+          brightBlue: Color(0xFF8FC1F0),
+          brightMagenta: Color(0xFFDDA8E6),
+          brightCyan: Color(0xFF8FDCD7),
+          brightWhite: Color(0xFFFFFFFF),
+          searchHitBackground: Color(0x66C96442),
+          searchHitBackgroundCurrent: Color(0x99C96442),
+          searchHitForeground: Color(0xFF1A1A1A),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
+    if (widget.embedded) {
+      return Container(color: const Color(0xFF111111), child: _terminalView());
+    }
     return Scaffold(
       appBar: AppBar(
         title: Column(
@@ -157,38 +195,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
         ],
       ),
       backgroundColor: const Color(0xFF111111),
-      body: SafeArea(
-        child: TerminalView(
-          _terminal,
-          autofocus: true,
-          padding: const EdgeInsets.all(6),
-          theme: const TerminalTheme(
-            cursor: Color(0xFFFAF9F5),
-            selection: Color(0x665A574F),
-            foreground: Color(0xFFE7E5DF),
-            background: Color(0xFF111111),
-            black: Color(0xFF2B2B2B),
-            red: Color(0xFFE06C60),
-            green: Color(0xFF8FBF6F),
-            yellow: Color(0xFFE2C46B),
-            blue: Color(0xFF6FA8DC),
-            magenta: Color(0xFFC88BD1),
-            cyan: Color(0xFF6FC5C0),
-            white: Color(0xFFD8D6CF),
-            brightBlack: Color(0xFF6B6B6B),
-            brightRed: Color(0xFFF08C80),
-            brightGreen: Color(0xFFA8D98A),
-            brightYellow: Color(0xFFF2D98A),
-            brightBlue: Color(0xFF8FC1F0),
-            brightMagenta: Color(0xFFDDA8E6),
-            brightCyan: Color(0xFF8FDCD7),
-            brightWhite: Color(0xFFFFFFFF),
-            searchHitBackground: Color(0x66C96442),
-            searchHitBackgroundCurrent: Color(0x99C96442),
-            searchHitForeground: Color(0xFF1A1A1A),
-          ),
-        ),
-      ),
+      body: SafeArea(child: _terminalView()),
     );
   }
 }

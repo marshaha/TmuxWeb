@@ -7,6 +7,7 @@ import '../models/chat_source.dart';
 import '../models/models.dart';
 import '../theme.dart';
 import 'chat_screen.dart';
+import 'grid_screen.dart';
 import 'home_board_screen.dart';
 import 'hosts_admin_screen.dart';
 import 'settings_screen.dart';
@@ -204,6 +205,13 @@ class _HostsScreenState extends State<HostsScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            key: const Key('grid'),
+            tooltip: '多窗口',
+            onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => GridScreen(api: widget.api, baseUrl: widget.baseUrl))),
+            icon: const Icon(Icons.grid_view_outlined, size: 20),
+          ),
           IconButton(
             key: const Key('home-board'),
             tooltip: '主页板',
