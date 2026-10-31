@@ -178,16 +178,32 @@ class _HostsAdminScreenState extends State<HostsAdminScreen> {
               ),
               Text('${host.username}@${host.hostname}:${host.port} · ${_authLabel(host.authType)}',
                   style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+              if (!host.enabled)
+                const Padding(
+                  padding: EdgeInsets.only(top: 2),
+                  child: Text('已停用', style: TextStyle(fontSize: 11.5, color: AppTheme.danger)),
+                ),
               if (host.jumpPath.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
                   child: Text('经由 ${host.jumpPath}', style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
                 ),
-              if (host.tmuxPath.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text('tmux: ${host.tmuxPath}', style: const TextStyle(fontSize: 11.5, color: AppTheme.muted)),
+              // Web shows the tmux path line for every host, with a
+              // pending note until the first successful connection
+              // discovers it server-side; it is never user-editable:
+              // neither the create nor the update request accepts a
+              // tmux_path field, and the server fills it from the
+              // runner's on_tmux_bin callback. Same for enabled: the
+              // column exists and is returned, but no endpoint accepts
+              // it, so a toggle here would be silently dropped by the
+              // server — hence display-only, no switch.
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  host.tmuxPath.isNotEmpty ? 'tmux: ${host.tmuxPath}' : 'tmux 路径待首次连通时记录',
+                  style: const TextStyle(fontSize: 11.5, color: AppTheme.muted),
                 ),
+              ),
               const SizedBox(height: 4),
               Text(host.hasPin ? host.fingerprint : '指纹待首次连通时记录',
                   maxLines: 1,
@@ -409,6 +425,16 @@ class _HostEditorDialogState extends State<_HostEditorDialog> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Web's edit dialog header shows the pinned fingerprint.
+              if (_editing && (widget.host?.fingerprint ?? '').isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(widget.host!.fingerprint,
+                        style: const TextStyle(fontSize: 11, color: AppTheme.muted, fontFamily: 'monospace')),
+                  ),
+                ),
               _field('显示名称', TextField(controller: _name, decoration: const InputDecoration(hintText: 'build-box'))),
               _field(
                 '主机 / IP',

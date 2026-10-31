@@ -97,6 +97,15 @@ void main() {
     expect(api.savedHostPayloads.single['jump_host_id'], '');
   });
 
+  testWidgets('disabled host and pending tmux path show in the list', (tester) async {
+    await tester.pumpWidget(wrap(HostsAdminScreen(api: FakeApi())));
+    await tester.pumpAndSettle();
+
+    expect(find.text('已停用'), findsOneWidget);
+    expect(find.text('tmux 路径待首次连通时记录'), findsOneWidget);
+    expect(find.text('tmux: /usr/bin/tmux'), findsOneWidget);
+  });
+
   testWidgets('editor jump pick offers the other hosts, not itself', (tester) async {
     final api = FakeApi();
     await tester.pumpWidget(wrap(HostsAdminScreen(api: api)));
@@ -104,6 +113,9 @@ void main() {
 
     await tester.tap(find.byKey(const Key('host-edit-abc')));
     await tester.pumpAndSettle();
+
+    // The edit dialog header shows the pinned fingerprint, like web.
+    expect(find.text('SHA256:abc'), findsWidgets);
 
     await tester.ensureVisible(find.byKey(const Key('host-jump-host')));
     await tester.pumpAndSettle();

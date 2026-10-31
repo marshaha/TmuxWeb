@@ -49,7 +49,7 @@ class FakeApi implements Api {
             username: 'mars', authType: 'password', fingerprint: 'SHA256:abc',
             jumpPath: 'bastion', tmuxPath: '/usr/bin/tmux'),
         RemoteHost(id: 'def', name: 'backup', hostname: '10.0.0.9', port: 22,
-            username: 'mars', authType: 'password'),
+            username: 'mars', authType: 'password', enabled: false),
       ];
 
   final List<Map<String, dynamic>> savedHostPayloads = [];
