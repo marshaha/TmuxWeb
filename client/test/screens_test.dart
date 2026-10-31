@@ -111,30 +111,99 @@ class FakeApi implements Api {
   @override
   Future<void> shareInput(String slug, String text, {bool submit = true}) async => throw ApiException(403, '该会话只读');
 
-  // Web parity batch 1: stubs; no screen calls these yet.
+  // Web parity batch 2: a small board so the board screen can be tested.
+  final List<String> addedFavorites = [];
+  final List<String> unfavorited = [];
+  final List<String> renamedFavorites = [];
+  final List<String> deletedRecent = [];
+  final List<String> deletedCards = [];
+
   @override
-  Future<Map<String, dynamic>> homeBoard() async => const {};
+  Future<Map<String, dynamic>> homeBoard() async => {
+        'favorites': [
+          {
+            'pane': '%7',
+            'note': '重点看',
+            'status': 'idle',
+            'provider': 'codex',
+            'title': 'review',
+            'default_title': 'review',
+            'custom_title': false,
+            'pane_title': 'review',
+            'path': '/srv/work',
+            'session': 'codex',
+            'window': 'main',
+            'host': 'localhost',
+            'command': 'codex',
+            'preview': {'role': 'assistant', 'text': '已完成第一版'},
+            'waiting': false,
+          },
+        ],
+        'recent': [
+          {
+            'pane': 'abc~%0',
+            'visited_at': 1761900000,
+            'title': 'agent',
+            'host': 'ctyun',
+            'session': 'main',
+            'window': 'main',
+            'provider': 'hermes',
+            'status': 'busy',
+            'online': true,
+          },
+        ],
+        'cards': [
+          {'id': 'c1', 'title': '结论', 'body': '先做 API 再做界面', 'pane_id': '%7', 'kind': 'note', 'created_at': 1761900000},
+        ],
+        'stats': {'panes': 2, 'busy': 1, 'idle': 1, 'favorites': 1, 'cards': 1},
+      };
 
   @override
   Future<Map<String, dynamic>> homeFavorites() async => const {'favorites': [], 'notes': {}};
 
   @override
-  Future<void> addHomeFavorite(String paneRef, {String note = '', String title = ''}) async {}
+  Future<void> addHomeFavorite(String paneRef, {String note = '', String title = ''}) async {
+    addedFavorites.add(paneRef);
+  }
 
   @override
-  Future<void> renameHomeFavorite(String paneRef, String title) async {}
+  Future<void> renameHomeFavorite(String paneRef, String title) async {
+    renamedFavorites.add('$paneRef|$title');
+  }
 
   @override
-  Future<void> deleteHomeFavorite(String paneRef) async {}
+  Future<void> deleteHomeFavorite(String paneRef) async {
+    unfavorited.add(paneRef);
+  }
 
   @override
   Future<void> touchHomeRecent(String paneRef) async {}
 
   @override
-  Future<void> deleteHomeRecent(String paneRef) async {}
+  Future<void> deleteHomeRecent(String paneRef) async {
+    deletedRecent.add(paneRef);
+  }
 
   @override
-  Future<Map<String, dynamic>> homeSearch(String query, {int limit = 20, bool messages = true}) async => const {};
+  Future<Map<String, dynamic>> homeSearch(String query, {int limit = 20, bool messages = true}) async => {
+        'query': query,
+        'mode': 'literal',
+        'hosts': [
+          {'id': 'localhost', 'name': 'localhost', 'hostname': 'localhost', 'panes': 1},
+        ],
+        'sessions': [
+          {'host': 'localhost', 'host_id': 'localhost', 'session': 'codex', 'panes': 1},
+        ],
+        'panes': [
+          {'id': '%7', 'host_id': 'localhost', 'title': 'review', 'session': 'codex', 'provider': 'codex'},
+        ],
+        'messages': [
+          {'pane': '%7', 'title': 'review', 'session': 'codex', 'host': 'localhost', 'role': 'assistant', 'snippet': '已完成第一版'},
+        ],
+        'cards': [
+          {'id': 'c1', 'title': '结论', 'body': '先做 API 再做界面', 'kind': 'note'},
+        ],
+      };
 
   @override
   Future<List<Map<String, dynamic>>> homeCards() async => const [];
@@ -145,7 +214,9 @@ class FakeApi implements Api {
       {'title': title};
 
   @override
-  Future<void> deleteHomeCard(String cardId) async {}
+  Future<void> deleteHomeCard(String cardId) async {
+    deletedCards.add(cardId);
+  }
 
   @override
   Future<Map<String, dynamic>> prefs() async => const {'prefs': {}};

@@ -7,6 +7,7 @@ import '../models/chat_source.dart';
 import '../models/models.dart';
 import '../theme.dart';
 import 'chat_screen.dart';
+import 'home_board_screen.dart';
 import 'hosts_admin_screen.dart';
 
 /// Host → pane browser: the mobile equivalent of the web sidebar.
@@ -132,6 +133,13 @@ class _HostsScreenState extends State<HostsScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            key: const Key('home-board'),
+            tooltip: '主页板',
+            onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => HomeBoardScreen(api: widget.api))),
+            icon: const Icon(Icons.dashboard_outlined, size: 20),
+          ),
           IconButton(
             key: const Key('hosts-admin'),
             tooltip: '服务器管理',
