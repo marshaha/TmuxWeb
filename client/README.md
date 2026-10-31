@@ -103,6 +103,25 @@ iOS 不能交叉编译，也不需要 Mac：`.github/workflows/mobile.yml` 在 G
 审核注意：`ios/Runner/Info.plist` 默认开了 `NSAllowsArbitraryLoads`（连自建内网 http 需要）；
 只面向公网用户时建议上 HTTPS 并删掉这个例外。
 
+## 构建桌面端（macOS / Windows）
+
+桌面端与移动端是同一套 Dart 代码，只多两个平台目录（`macos/`、`windows/`），没有分平台的界面。
+图标取自 iOS 的 AppIcon（`client/ios/Runner/Assets.xcassets` 的 1024 图），macOS 按 AppIcon 尺寸重切、Windows 打成多尺寸 `.ico`。
+
+```bash
+cd client
+flutter build macos --release    # 产物：build/macos/Build/Products/Release/tmuxweb_client.app
+flutter build windows --release  # 产物：build/windows/x64/runner/Release/tmuxweb_client.exe
+```
+
+CI（`.github/workflows/mobile.yml`）在 `macos-latest` / `windows-latest` 上同样出包，产物为
+`tmuxweb-macos.zip` / `tmuxweb-windows` 文件夹。现阶段两者都**未签名**：macOS 首次打开用右键 → 打开绕过 Gatekeeper；
+Windows 直接运行文件夹里的 exe（SmartScreen 会提示未知发布者）。要上架/分发时再接签名，脚手架本身不依赖任何签名 secret。
+
+桌面端与移动端共用同一份插件：`shared_preferences`、`path_provider`、`file_picker` 均有
+macOS/Windows 实现（见 `pubspec.lock` 里的 `*_foundation` / `*_windows` 包）；Windows 的插件注册表在构建时由
+Flutter 重生成，模板里那份空表是正常的。
+
 ## 与服务端的约定
 
 ```

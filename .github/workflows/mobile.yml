@@ -190,3 +190,58 @@ jobs:
             client/build/ios/ipa/*.ipa
             tmuxweb-unsigned.ipa
           if-no-files-found: error
+
+  macos:
+    name: macOS app
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+      - working-directory: client
+        run: flutter pub get
+
+      # Unsigned, like the unsigned iOS path: Gatekeeper will block a plain
+      # double-click, open it once with right-click -> Open, or sign it later.
+      - name: Build macOS app
+        working-directory: client
+        run: |
+          flutter build macos --release --no-pub
+          cd build/macos/Build/Products/Release
+          zip -qry "$GITHUB_WORKSPACE/tmuxweb-macos.zip" tmuxweb_client.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tmuxweb-macos
+          path: tmuxweb-macos.zip
+          if-no-files-found: error
+
+  windows:
+    name: Windows exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+      - working-directory: client
+        run: flutter pub get
+
+      # Unsigned release folder (exe + Flutter DLLs + data). windows-latest
+      # already carries Visual Studio with the C++ desktop workload.
+      - name: Build Windows app
+        working-directory: client
+        run: flutter build windows --release --no-pub
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tmuxweb-windows
+          path: client/build/windows/x64/runner/Release
+          if-no-files-found: error
