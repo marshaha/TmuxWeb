@@ -34,6 +34,10 @@
     .btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 11px;border:1px solid var(--line);border-radius:9px;
       background:#fff;color:var(--ink);font-size:12.5px;cursor:pointer;text-decoration:none;white-space:nowrap}
     .btn:hover{border-color:#c8c5bc;background:var(--surface2)}
+    @media (max-width:1180px){
+      .top .btn .lbl{display:none}
+      .top .btn{padding:0 9px}
+    }
     .btn.primary{border-color:#292825;background:#292825;color:#fff}
     .btn.primary:hover{background:#3a3934}
     .btn .ico{width:15px;height:15px}
@@ -74,6 +78,9 @@
     .prow.added{opacity:.45;cursor:default}
     .picker-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
     .seg{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:#fff}
+    #grid-size{flex:none;max-width:min(48vw,430px);overflow-x:auto;scrollbar-width:none}
+    #grid-size::-webkit-scrollbar{display:none}
+    #grid-size button{flex:none}
     .seg button{height:26px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:var(--muted);font:12px inherit;cursor:pointer}
     .seg button:hover{color:var(--ink)}
     .seg button.active{background:#292825;color:#fff}
@@ -94,6 +101,15 @@
     .grid.maximized .cell.max{flex:1 1 auto!important;width:auto!important;height:100%;margin:8px}
     .grid.mode-grid.maximized .cell.max{grid-column:1/-1;height:100%}
     .presets{display:flex;flex-direction:column;gap:10px}
+    .shape-row{display:flex;align-items:flex-end;gap:10px;padding:4px 0 2px}
+    .shape-row label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
+    .shape-row input{width:96px;height:36px;padding:0 10px;border:1px solid var(--line);border-radius:9px;
+      background:#fff;color:var(--ink);font:14px inherit;outline:none}
+    .shape-row input:focus{border-color:var(--accent)}
+    .shape-row .times{color:var(--faint);padding-bottom:9px}
+    .shape-hint{margin:4px 0 0;color:var(--faint);font-size:11.5px;line-height:1.5}
+    #grid-size .custom{color:var(--muted)}
+    #grid-size .custom:hover{color:var(--ink)}
     .presets .row{display:flex;gap:8px}
     .presets .row input{flex:1;min-width:0;height:36px;padding:0 10px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font:13px inherit;outline:none}
     .presets .row input:focus{border-color:var(--accent)}
@@ -226,6 +242,23 @@
     <div class="picker-foot"><button class="btn" value="cancel" type="submit">关闭</button></div>
   </form>
 </dialog>
+
+<!-- 自定义网格：内置的 2×1…3×3 不够用时自己填列数和行数 -->
+<dialog id="grid-custom">
+  <form method="dialog" class="picker" id="grid-custom-form">
+    <h2>自定义网格</h2>
+    <div class="shape-row">
+      <label>列<input id="gc-cols" type="number" min="1" max="6" step="1" inputmode="numeric" aria-label="列数"></label>
+      <span class="times">×</span>
+      <label>行<input id="gc-rows" type="number" min="1" max="6" step="1" inputmode="numeric" aria-label="行数"></label>
+    </div>
+    <p class="shape-hint" id="gc-hint">最多 6 列 × 6 行；窗口少于格子时多出来的格子留空。</p>
+    <div class="picker-foot">
+      <button class="btn" value="cancel" type="submit">取消</button>
+      <button class="btn primary" id="gc-apply" type="button">应用</button>
+    </div>
+  </form>
+</dialog>
 <script src="/assets/shell.js"></script>
 <script>
 (() => {
@@ -234,6 +267,8 @@
   // widths are keyed by pane id: unset columns share the leftover space equally, so adding or
   // removing a window never leaves a column pinned at the width it had when it was alone
   const state={panes:[], widths:{}, layout:'strip', modes:{}, explicit:{}, max:null, presets:{}, titles:new Map(), statuses:new Map(), hosts:null};
+  // 上一次用过的自定义行列：留在工具栏里，一键就能回到那个形状
+  const SHAPE_MAX_COLS=6, SHAPE_MAX_ROWS=6;
   const PRESET_KEY='tmux-grid-presets-v1';
   const LAYOUTS=['strip','grid'];
   const GRID_PRESETS=[{cols:2,rows:1},{cols:2,rows:2},{cols:3,rows:2},{cols:2,rows:3},{cols:3,rows:3}];
@@ -248,10 +283,11 @@
     return out.map(v=>Number.isFinite(v)&&v>=0.1?v:1);
   }
   function applyGridShape(){
-    const cols=Math.max(1,Math.min(4,Math.round(Number(state.cols)||2)));
+    const cols=Math.max(1,Math.min(SHAPE_MAX_COLS,Math.round(Number(state.cols)||2)));
     const needed=Math.max(1,Math.ceil(state.panes.length/cols));
     state.cols=cols;
-    state.rows=Math.max(Math.min(6,Math.round(Number(state.rows)||2)),needed);
+    // 行数至少装得下所有窗口，所以窗口比格子多时行数自己长，窗口少时留空
+    state.rows=Math.max(Math.min(SHAPE_MAX_ROWS,Math.round(Number(state.rows)||2)),needed);
     state.colFr=fitFr(state.colFr,state.cols);
     state.rowFr=fitFr(state.rowFr,state.rows);
   }
@@ -266,6 +302,10 @@
       state.rows=Number(saved.rows)||2;
       state.colFr=Array.isArray(saved.colFr)?saved.colFr:null;
       state.rowFr=Array.isArray(saved.rowFr)?saved.rowFr:null;
+      const custom=saved.custom;
+      state.custom=(custom&&Number(custom.cols)>=1&&Number(custom.rows)>=1)
+        ?{cols:Math.min(SHAPE_MAX_COLS,Math.round(Number(custom.cols))),rows:Math.min(SHAPE_MAX_ROWS,Math.round(Number(custom.rows)))}
+        :null;
       // the mode a pane had last time is remembered even while it is not a window: removing and
       // re-adding a session should not lose "I use this one as a terminal"
       state.modes={};
@@ -285,7 +325,7 @@
   }
   function save(){
     try{
-      localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout,cols:state.cols,rows:state.rows,colFr:state.colFr,rowFr:state.rowFr,modes:state.modes,explicit:state.explicit}));
+      localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout,cols:state.cols,rows:state.rows,colFr:state.colFr,rowFr:state.rowFr,modes:state.modes,explicit:state.explicit,custom:state.custom||null}));
     }catch{}
   }
   function widthOf(pane){
@@ -302,6 +342,58 @@
     const meta=state.titles.get(paneId);
     if(meta)return `${meta.session||paneId}${meta.window_name?':'+meta.window_name:''}${meta.command?' · '+meta.command:''}`;
     return paneId;
+  }
+
+  // pane -> <section class="cell">；iframe 只在首次出现或切换 chat/term 时才写入 src
+  const cells=new Map();
+  function srcFor(pane,mode){
+    return mode==='term'
+      ?`/term?pane=${encodeURIComponent(pane)}&embed=1`
+      :`/preview?pane=${encodeURIComponent(pane)}&embed=1`;
+  }
+  function cellFor(pane,mode,status,gridded){
+    let cell=cells.get(pane);
+    const switching=cell&&cell.dataset.mode!==mode;
+    if(!cell){
+      cell=document.createElement('section');
+      cell.className='cell';
+      cell.dataset.pane=pane;
+      cell.innerHTML=`<div class="cell-head">`
+        +`<span class="dot" data-dot="${esc(pane)}"></span>`
+        +`<span class="cell-title"></span>`
+        +`<button class="cell-btn" type="button" data-mode-toggle="${esc(pane)}"><svg class="ico"><use href="#i-chat"/></svg></button>`
+        +`<a class="cell-btn" href="/?pane=${encodeURIComponent(pane)}" target="_self" title="在控制台打开" aria-label="在控制台打开"><svg class="ico"><use href="#i-console"/></svg></a>`
+        +`<button class="cell-btn" type="button" data-remove="${esc(pane)}" title="移出多窗口" aria-label="移出多窗口"><svg class="ico"><use href="#i-close"/></svg></button>`
+        +`</div><iframe title="${esc(pane)}" loading="lazy"></iframe>`;
+      cells.set(pane,cell);
+    }
+    if(!cell.dataset.mode||switching){
+      cell.dataset.mode=mode;
+      const frame=cell.querySelector('iframe');
+      if(frame)frame.src=srcFor(pane,mode);
+    }
+    cell.classList.toggle('max',state.max===pane);
+    const dot=cell.querySelector('[data-dot]');
+    if(dot)dot.className=`dot ${status}`;
+    const title=cell.querySelector('.cell-title');
+    if(title){
+      const label=titleFor(pane);
+      if(title.textContent!==label)title.textContent=label;
+      title.title=pane;
+    }
+    const toggle=cell.querySelector('[data-mode-toggle]');
+    if(toggle){
+      const tip=mode==='term'?'切到聊天':'切到终端';
+      if(toggle.getAttribute('aria-label')!==tip){
+        toggle.title=tip;
+        toggle.setAttribute('aria-label',tip);
+        const use=toggle.querySelector('use');
+        if(use)use.setAttribute('href',mode==='term'?'#i-chat':'#i-term');
+      }else if(!toggle.title){
+        toggle.title=tip;
+      }
+    }
+    return cell;
   }
 
   function render(){
@@ -323,33 +415,38 @@
     }
     syncSizeUi();
     if(!state.panes.length){
+      cells.clear();
       grid.innerHTML='<div class="empty"><div><b>还没有窗口</b>点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。</div></div>';
       return;
     }
-    grid.innerHTML=state.panes.map((pane)=>{
+    // 单元格与 iframe 按 pane 复用：改行列、加/移窗口只动结构，绝不再重建 iframe。
+    // 之前每次 render 都重写 innerHTML，等于把每个 chat/terminal 页面重新加载一遍。
+    const wanted=new Set(state.panes);
+    for(const [pane,cell] of cells){
+      if(!wanted.has(pane)){cell.remove();cells.delete(pane);}
+    }
+    // splitters are cheap throwaway divs: drop them first so `grid.children` is just cells
+    for(const old of grid.querySelectorAll('.splitter'))old.remove();
+    // 空状态是上一轮 render 留下的节点，有窗口以后必须摘掉（以前整块 innerHTML 重写顺带清掉了）
+    for(const old of grid.querySelectorAll('.empty'))old.remove();
+    state.panes.forEach((pane,index)=>{
       const status=state.statuses.get(pane)||'unknown';
       const mode=state.modes[pane]==='term'?'term':'chat';
-      const src=mode==='term'
-        ?`/term?pane=${encodeURIComponent(pane)}&embed=1`
-        :`/preview?pane=${encodeURIComponent(pane)}&embed=1`;
-      return `<section class="cell${state.max===pane?' max':''}" data-pane="${esc(pane)}" data-mode="${mode}" style="${gridded?'':cellStyle(pane)}">
-        <div class="cell-head">
-          <span class="dot ${esc(status)}" data-dot="${esc(pane)}"></span>
-          <span class="cell-title" title="${esc(pane)}">${esc(titleFor(pane))}</span>
-          <button class="cell-btn" type="button" data-mode-toggle="${esc(pane)}" title="${mode==='term'?'切到聊天':'切到终端'}" aria-label="${mode==='term'?'切到聊天':'切到终端'}"><svg class="ico"><use href="#${mode==='term'?'i-chat':'i-term'}"/></svg></button>
-          <a class="cell-btn" href="/?pane=${encodeURIComponent(pane)}" target="_self" title="在控制台打开" aria-label="在控制台打开"><svg class="ico"><use href="#i-console"/></svg></a>
-          <button class="cell-btn" type="button" data-remove="${esc(pane)}" title="移出多窗口" aria-label="移出多窗口"><svg class="ico"><use href="#i-close"/></svg></button>
-        </div>
-        <iframe src="${src}" title="${esc(pane)}" loading="lazy"></iframe>
-      </section>`;
-    }).join('') + (gridded?'':state.panes.slice(0,-1).map((_,index)=>`<div class="splitter" data-split="${index}"></div>`).join(''));
-    // splitters have to sit between cells, not after them
-    const cells=[...grid.querySelectorAll('.cell')];
-    const splitters=[...grid.querySelectorAll('.splitter')];
-    splitters.forEach((splitter,index)=>{
-      const next=cells[index+1];
-      if(next)grid.insertBefore(splitter,next);
+      const cell=cellFor(pane,mode,status,gridded);
+      cell.style.cssText=gridded?'':cellStyle(pane);
+      // Only move a cell when it is actually in the wrong place: re-inserting an iframe
+      // (even into the same parent) makes the browser reload the document inside it.
+      if(grid.children[index]!==cell)grid.insertBefore(cell,grid.children[index]||null);
     });
+    if(!gridded){
+      const sections=state.panes.map(pane=>cells.get(pane));
+      for(let index=0;index<sections.length-1;index+=1){
+        const splitter=document.createElement('div');
+        splitter.className='splitter';
+        splitter.dataset.split=String(index);
+        grid.insertBefore(splitter,sections[index+1]);
+      }
+    }
     positionGrips();
     syncVisibility();
     syncTreeMarks();
@@ -360,12 +457,67 @@
     const bar=$('grid-size');
     if(!bar)return;
     bar.hidden=state.layout!=='grid';
-    bar.innerHTML=GRID_PRESETS.map(({cols,rows})=>{
+    const chips=GRID_PRESETS.map(({cols,rows})=>{
       const active=cols===state.cols&&rows===state.rows;
       const label=rows>1||cols>1?`${cols}×${rows}`:`1×1`;
       return `<button type="button" data-cols="${cols}" data-rows="${rows}"${active?' class="active"':''}`
         +` title="${cols} 列 × ${rows} 行" aria-label="${cols} 列 ${rows} 行">${label}</button>`;
     }).join('');
+    // 上次的自定义形状单独占一个 chip：内置里没有它时才显示，避免和预设重复
+    const custom=state.custom;
+    const builtin=custom&&GRID_PRESETS.some(p=>p.cols===custom.cols&&p.rows===custom.rows);
+    const customChip=(custom&&!builtin)
+      ?`<button type="button" data-cols="${custom.cols}" data-rows="${custom.rows}"`
+        +`${custom.cols===state.cols&&custom.rows===state.rows?' class="active"':''}`
+        +` title="自定义 ${custom.cols} 列 × ${custom.rows} 行" aria-label="自定义 ${custom.cols} 列 ${custom.rows} 行">`
+        +`${custom.cols}×${custom.rows}</button>`
+      :'';
+    bar.innerHTML=chips+customChip
+      +`<button type="button" id="grid-custom-open" class="custom" title="自定义行列" aria-label="自定义行列">自定义…</button>`;
+  }
+
+  // ---- custom shape: open the dialog seeded with whatever is on screen now
+  // 输入时就把结果算给用户看：窗口比格子多时行数会自动长，不留意外
+  function updateShapeHint(){
+    const cols=Math.max(1,Math.min(SHAPE_MAX_COLS,Math.round(Number($('gc-cols').value)||1)));
+    const rows=Math.max(1,Math.min(SHAPE_MAX_ROWS,Math.round(Number($('gc-rows').value)||1)));
+    const panes=state.panes.length;
+    const need=panes?Math.ceil(panes/cols):1;
+    const parts=[`${cols} 列 × ${rows} 行`];
+    if(panes)parts.push(`当前 ${panes} 个窗口`);
+    if(panes&&need>rows)parts.push(`按 ${cols} 列会占 ${need} 行（行数自动加到 ${Math.min(SHAPE_MAX_ROWS,need)}）`);
+    else if(panes&&panes<cols*rows)parts.push(`${cols*rows-panes} 个空位`);
+    $('gc-hint').textContent=parts.join('，')+'。最多 6 × 6。';
+  }
+
+  function openCustomShape(){
+    const dialog=$('grid-custom');
+    if(!dialog)return;
+    $('gc-cols').value=String(state.cols);
+    $('gc-rows').value=String(state.rows);
+    updateShapeHint();
+    if(typeof dialog.showModal==='function')dialog.showModal();else dialog.setAttribute('open','');
+    $('gc-cols').focus();
+    $('gc-cols').select?.();
+  }
+
+  function applyCustomShape(){
+    const cols=Math.max(1,Math.min(SHAPE_MAX_COLS,Math.round(Number($('gc-cols').value)||state.cols)));
+    const rows=Math.max(1,Math.min(SHAPE_MAX_ROWS,Math.round(Number($('gc-rows').value)||state.rows)));
+    const same=state.layout==='grid'&&state.cols===cols&&state.rows===rows;
+    state.layout='grid';
+    state.cols=cols;
+    state.rows=rows;
+    state.custom={cols,rows};
+    if(!same){
+      state.colFr=Array.from({length:cols},()=>1);
+      state.rowFr=Array.from({length:rows},()=>1);
+    }
+    const dialog=$('grid-custom');
+    if(dialog&&dialog.open)dialog.close();
+    save();render();
+    const opener=$('grid-custom-open');
+    if(opener)opener.focus();     // 键盘用户的焦点回到按钮上，而不是掉到页面开头
   }
 
   function positionGrips(){
@@ -501,14 +653,26 @@
     if(row){event.preventDefault();addPane(row.dataset.add);$('picker').close();return;}
     const layout=event.target.closest('[data-layout]');
     if(layout){event.preventDefault();state.layout=layout.dataset.layout;save();render();return;}
+    if(event.target.closest('#grid-custom-open')){
+      event.preventDefault();openCustomShape();return;
+    }
+    if(event.target.closest('#gc-apply')){
+      event.preventDefault();applyCustomShape();return;
+    }
     const size=event.target.closest('[data-cols][data-rows]');
     if(size){
       event.preventDefault();
+      const cols=Number(size.dataset.cols);
+      const rows=Number(size.dataset.rows);
+      const same=state.layout==='grid'&&state.cols===cols&&state.rows===rows;
       state.layout='grid';
-      state.cols=Number(size.dataset.cols);
-      state.rows=Number(size.dataset.rows);
-      state.colFr=Array.from({length:state.cols},()=>1);
-      state.rowFr=Array.from({length:state.rows},()=>1);
+      state.cols=cols;
+      state.rows=rows;
+      // 形状没变就别动比例：用户拖了半天接缝，再点一下同一个按钮不该回到等分
+      if(!same){
+        state.colFr=Array.from({length:cols},()=>1);
+        state.rowFr=Array.from({length:rows},()=>1);
+      }
       save();render();return;
     }
     const toggle=event.target.closest('[data-mode-toggle]');
@@ -586,6 +750,17 @@
     if(event.key==='Escape'&&state.max){toggleMax(state.max);}
   });
   $('add').onclick=()=>{renderPicker('');$('pq').value='';$('picker').showModal();$('pq').focus();};
+
+  // 自定义形状：边输边算，回车直接应用（表单是 method=dialog，不退化成"回车就关掉"）
+  for(const id of ['gc-cols','gc-rows']){
+    const input=$(id);
+    input.addEventListener('input',updateShapeHint);
+    input.addEventListener('keydown',event=>{
+      if(event.key!=='Enter')return;
+      event.preventDefault();
+      applyCustomShape();
+    });
+  }
 
   // ---- picker
   function renderPicker(query){
@@ -803,8 +978,11 @@
     TmuxShell.mount({
       onPane: paneId => openPane(paneId),
       onHosts: hosts => {
+        // 共享侧栏的这条回调以前只更新标题，没把 hosts 本身存下来，于是「添加窗口」的
+        // 选择器永远是空的（读取的是 state.hosts）。两个都要补。
+        state.hosts=hosts||[];
         state.titles.clear();
-        for(const host of hosts||[]){
+        for(const host of state.hosts){
           for(const pane of host.panes||[]){
             state.titles.set(pane.id,pane);
           }
@@ -813,6 +991,8 @@
           const label=cell.querySelector('.cell-title');
           if(label)label.textContent=titleFor(cell.dataset.pane);
         }
+        // the picker may already be open: refill it instead of leaving "没有匹配的会话"
+        if($('picker').open)renderPicker($('pq').value||'');
         applyDefaultModes();
         syncTreeMarks();            // the tree is only in the DOM once the shell has loaded
       },

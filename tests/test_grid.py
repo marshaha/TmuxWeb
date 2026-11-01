@@ -101,6 +101,44 @@ class GridPageTests(unittest.TestCase):
         self.assertIn(".grip{display:none}", page.replace(",.grip", ".grip"))
         self.assertIn(".splitter,.grip{display:none}", page)
 
+    def test_the_shape_picker_also_takes_a_custom_rows_by_columns(self):
+        page = self.client.get("/grid").text
+        # 自定义弹窗：列/行两个输入 + 应用
+        self.assertIn('id="grid-custom"', page)
+        self.assertIn('id="gc-cols"', page)
+        self.assertIn('id="gc-rows"', page)
+        self.assertIn('id="gc-apply"', page)
+        # 形状按钮里始终有一个「自定义…」，并且上一次的自定义形状会单独留一个 chip
+        self.assertIn("自定义…", page)
+        self.assertIn("id=\"grid-custom-open\"", page)
+        self.assertIn("state.custom", page)
+        # 上限放宽到 6×6，窗口多时行数自动长（不是静默裁掉）
+        self.assertIn("SHAPE_MAX_COLS", page)
+        self.assertIn("SHAPE_MAX_ROWS", page)
+        self.assertIn("custom:state.custom||null", page)     # 自定义形状跟着布局一起记住
+        self.assertIn("updateShapeHint()", page)             # 输入时就告诉用户要几行
+        # 点同一个形状不该抹掉手动拖出来的比例；换形状才重置
+        self.assertIn("if(!same){", page)
+        self.assertIn("if(opener)opener.focus()", page)
+
+    def test_changing_the_shape_never_reloads_the_embedded_windows(self):
+        """Reloading an iframe throws away a live terminal and re-fetches the chat; keep the nodes."""
+        page = self.client.get("/grid").text
+        self.assertIn("const cells=new Map()", page)
+        self.assertIn("function cellFor(", page)
+        # only touch an iframe when the pane is new or switches chat <-> terminal
+        self.assertIn("const switching=cell&&cell.dataset.mode!==mode", page)
+        # and only move a cell when it is genuinely out of order -- insertBefore reloads otherwise
+        self.assertIn("if(grid.children[index]!==cell)grid.insertBefore(", page)
+        self.assertNotIn("grid.innerHTML=state.panes.map(", page)
+
+    def test_the_window_picker_gets_its_hosts_from_the_shared_sidebar(self):
+        """The page only builds the picker from state.hosts; the shell callback has to fill it."""
+        page = self.client.get("/grid").text
+        self.assertIn("onHosts: hosts => {", page)
+        self.assertIn("state.hosts=hosts||[]", page)
+        self.assertIn("if($('picker').open)renderPicker(", page)
+
     def test_sidebar_buttons_are_sized_on_every_page(self):
         """An inline <svg> with no size renders at 300px: that was the giant gear on /grid."""
         shell = self.client.get("/assets/shell.css").text

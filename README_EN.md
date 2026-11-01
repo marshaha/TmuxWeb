@@ -25,9 +25,14 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Multi-window** (`/grid`): same shell as the board — the session tree sidebar is the board's (same icons,
   expand/collapse-all, draggable width, collapsible, drawer on a phone), and clicking a session in it adds that pane
   as a window (rows already on screen carry an accent mark, and clicking one just jumps to that window). Several conversations side by side on one page. Two layouts — **side by side** (draggable widths) and
-  **grid** — the grid lets you pick its shape (`2×1 / 2×2 / 3×2 / 2×3 / 3×3`, shown as columns × rows) and then drag any
+  **grid** — the grid lets you pick its shape (`2×1 / 2×2 / 3×2 / 2×3 / 3×3`, shown as columns × rows) — or
+  **「自定义…」 to type any columns × rows from 1–6 each**, with a live hint telling you how many rows the current
+  windows need and how many slots would stay empty; Enter applies it. The last custom shape keeps its own chip
+  (e.g. `4×2`) next to the presets and is remembered with the layout. Then drag any
   seam to resize that one cell, with the rest of its row/column re-fitting proportionally (170 px floor); dragging a
-  window's title bar reorders it; layout, ratios, order and widths live in localStorage. A window
+  window's title bar reorders it; layout, ratios, order and widths live in localStorage. Changing the shape,
+  adding or removing a window reuses the existing cells — the iframes are never rebuilt, so a running terminal is
+  not dropped and a chat does not refetch its transcript. A window
   scrolled out of view drops to one request every 15s (and refreshes the moment it comes back), so four or five remote
   conversations do not saturate anything. The console sidebar's «+» pushes the current pane straight in (`/grid?add=…`), and the full preview page has a
   grid button of its own. Each window is **chat or a real terminal** (the second header button — a shell without a

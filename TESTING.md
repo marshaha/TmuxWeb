@@ -102,6 +102,9 @@
 - 任何测试里 `create_app(...)` 都要带 `home_db=":memory:"`：不带就会读部署的 `home.db`，线上收藏的 pane 会插进断言里当第 0 条（`test_home_offline` 就是这样红的）。
 - 客户端打包壳：`python -m unittest tests.test_client_packaging`（CI 工作流里 `if:` 不得出现 secrets、macOS 两个 entitlements 必须有 `network.client`、web 清单与首页 meta 是产品名和品牌色）。
 - 客户端发送失败：消息留在记录里、旁边有「重发」，输入框清空，状态行转红（`chat_screen_test`、`chat_live_test` 钉这三条）。
+- 自定义网格：`/grid` → 网格 → 「自定义…」填 4×2 → 列/行模板变成 4 列 2 行、按钮条多出一个 `4×2` chip；刷新页面后这个 chip 和形状都还在；窗口比格子多时行数自动长，弹窗提示里会写明要几行。
+- 换形状不重载窗口：给 `iframe` 打个 `dataset.mark`，切 3×2 / 自定义 4×2，`load` 事件计数应保持 0（之前每次都会重载）。
+- 添加窗口的选择器：`/grid` 点「添加窗口」应列出全部 pane（共享侧栏的 `onHosts` 现在会把 hosts 也存下来）。
 - 主题：设置 → 主题 展开后 6 个色板，点 ChatGPT/Claude/GitHub/Claude Code/夜间 每个页面立刻换色并记住；深色主题下不应出现扎眼的白色块（控制台的输入框、主页的搜索框/状态标签、多窗口的选中项都要跟着变暗）。
 - 插件那一行默认**收起**，右侧显示「1 / 2 已启用」，点开才列出插件。
 - 插件管理界面：设置面板里「插件」一节列出所有插件（名称/版本/描述/错误），开关可点；关掉 relay 后 `/api/relay/log` 立刻 404 而控制台照常；再打开恢复 200；刷新页面/重启服务后选择保持。
