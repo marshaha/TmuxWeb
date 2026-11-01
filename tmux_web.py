@@ -1297,6 +1297,27 @@ def create_app(
         )
         return response
 
+    @app.post("/api/session")
+    async def create_session_cookie(request: Request):
+        # Token -> cookie exchange for browser clients. A WebSocket
+        # handshake cannot carry an Authorization header, and the session
+        # cookie is the only WS credential, so a client that logged in with
+        # an API token mints the cookie here. Without a valid token (or
+        # without a configured api_token) this is 401, like every other
+        # API route; a cookie holder just refreshes their cookie.
+        require_auth(request)
+        response = JSONResponse({"ok": True})
+        response.set_cookie(
+            COOKIE_NAME,
+            expected_token(),
+            httponly=True,
+            samesite="strict",
+            secure=secure_cookie(request),
+            max_age=60 * 60 * 24 * 7,
+            path="/",
+        )
+        return response
+
     @app.post("/logout")
     async def logout():
         response = RedirectResponse("/login", status_code=303)

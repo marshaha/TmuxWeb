@@ -1196,6 +1196,24 @@ class TmuxWebTests(unittest.TestCase):
             self.assertEqual(client.get("/api/panes", headers={
                 "Authorization": "Bearer relay-token-value"}).status_code, 200)
 
+    def test_api_session_mints_a_cookie_from_the_api_token(self):
+        # Browser clients cannot send an Authorization header on a WebSocket
+        # handshake, so a token login mints the session cookie here.
+        with patch.dict("os.environ", {"TMUX_WEB_API_TOKEN": "relay-token-value"}):
+            client = TestClient(create_app(self.tmux, password="pw",
+                                           session_secret="test-session-secret",
+                                           share_db=":memory:", remote_store=FakeRemoteStore(),
+                                           remote_runner_factory=FakeSSHRunner))
+            self.assertEqual(client.post("/api/session").status_code, 401)
+            self.assertEqual(client.post("/api/session",
+                                         headers={"Authorization": "Bearer wrong"}).status_code, 401)
+            response = client.post("/api/session",
+                                   headers={"Authorization": "Bearer relay-token-value"})
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("tmux_web_session", response.headers.get("set-cookie", ""))
+            # The minted cookie authenticates without the token header.
+            self.assertEqual(client.get("/api/panes").status_code, 200)
+
     def test_relay_peers_reports_status_for_every_host(self):
         self.login()
         host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"

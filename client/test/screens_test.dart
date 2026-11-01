@@ -33,7 +33,9 @@ class FakeApi implements Api, TerminalApi {
         Pane(ref: '%7', title: 'review', command: 'codex', session: 'codex', provider: 'codex', hasTranscript: true),
       ]),
       Host(id: 'abc', name: 'ctyun', kind: 'ssh', status: 'online', panes: [
-        Pane(ref: 'abc~%0', title: 'agent', command: 'hermes', session: 'main', provider: 'hermes', hostId: 'abc'),
+        // Real Pane.fromJson sets hasTranscript when a provider is present,
+        // so this hermes pane carries it like the server would report it.
+        Pane(ref: 'abc~%0', title: 'agent', command: 'hermes', session: 'main', provider: 'hermes', hostId: 'abc', hasTranscript: true),
       ]),
     ];
   }

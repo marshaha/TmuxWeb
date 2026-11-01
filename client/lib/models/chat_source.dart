@@ -53,7 +53,14 @@ class PaneChatSource implements ChatSource {
   bool get readOnly => false;
 
   @override
-  Future<Transcript> fetch({bool refresh = false}) => api.transcript(pane.ref, refresh: refresh);
+  Future<Transcript> fetch({bool refresh = false}) {
+    // Panes without a transcript capability (plain shells) have no agent
+    // transcript: the server answers 409. Web shows those panes as a
+    // screen view, so return a screen-mode transcript and let the chat
+    // screen start its capture stream instead of polling into a 409.
+    if (!pane.hasTranscript) return Future.value(Transcript(mode: 'screen'));
+    return api.transcript(pane.ref, refresh: refresh);
+  }
 
   @override
   Stream<String> screenStream() {

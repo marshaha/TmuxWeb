@@ -3,6 +3,7 @@ library;
 
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/models.dart';
@@ -250,6 +251,17 @@ class ApiClient implements Api, TerminalApi {
     this.token = token.trim();
     if (this.token.isNotEmpty) {
       await hosts(); // verifies the token by fetching a cheap endpoint
+      if (kIsWeb) {
+        // Browsers cannot send an Authorization header on a WebSocket
+        // handshake, and terminal/screen streams only accept the session
+        // cookie: mint it from the token. A 404 means an older server
+        // without this route; HTTP keeps working, only the streams stay
+        // cookie-gated as before.
+        final exchange = await _http.post(_uri('/api/session'), headers: _headers());
+        if (exchange.statusCode != 404 && exchange.statusCode >= 400) {
+          throw ApiException(exchange.statusCode, '登录成功，但会话建立失败，终端将无法使用');
+        }
+      }
       return;
     }
     if (password.isEmpty) throw ApiException(0, '请填写密码或 API Token');
@@ -265,6 +277,14 @@ class ApiClient implements Api, TerminalApi {
     }
     _storeCookies(response);
     if (response.statusCode >= 400) _fail(response);
+    if (kIsWeb) {
+      // Browsers store the httponly session cookie from this response but
+      // never expose Set-Cookie to JS, so the readable-cookie check below
+      // would always fail on web. Verify through an authenticated call
+      // instead; the browser sends the stored cookie automatically.
+      await hosts();
+      return;
+    }
     if (!cookies.containsKey('tmux_web_session')) {
       throw ApiException(response.statusCode, '登录失败：服务器没有返回会话 cookie');
     }
