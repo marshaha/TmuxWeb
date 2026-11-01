@@ -186,6 +186,16 @@ class AppTheme {
   static Color get danger => _current.danger;
   static TextStyle get mono => _current.mono;
 
+  /// Surfaces the transcript paints itself. On the dark palettes they must lift off
+  /// the card instead of staying cream, otherwise near-white ink lands on cream and
+  /// the two dark themes are unreadable.
+  static Color get bubble =>
+      _current.isDark ? Color.alphaBlend(_current.ink.withValues(alpha: 0.10), _current.card) : const Color(0xFFE9E7DF);
+  static Color get codeBg =>
+      _current.isDark ? Color.alphaBlend(_current.ink.withValues(alpha: 0.07), _current.card) : const Color(0xFFF1EFE7);
+  static Color get tileLine => _current.isDark ? _current.line : const Color(0xFFE1DFD7);
+  static Color get tileGrid => _current.isDark ? _current.line : const Color(0xFFD1CFC6);
+
   static ThemeData themeData([AppPalette? palette]) {
     final colors = palette ?? _current;
     final base = colors.isDark ? ThemeData.dark(useMaterial3: true) : ThemeData.light(useMaterial3: true);

@@ -175,6 +175,8 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
       final data = jsonDecode(raw);
       if (data is! Map || data['favorites'] is! List) return;
       if (!mounted) return;
+      // 实时数据已经先到了就别用缓存覆盖它（慢 prefs 读会让页面倒退成旧数据）。
+      if (_board != null) return;
       setState(() {
         _board = HomeBoard.fromJson(Map<String, dynamic>.from(data));
         _stale = true;
@@ -211,7 +213,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
   }
 
   Future<void> _load() async {
-    if (_loading) return;
+    if (_loading || !mounted) return;
     setState(() => _loading = true);
     try {
       final raw = await widget.api.homeBoard();
@@ -661,7 +663,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
             ? ListView(
                 padding: const EdgeInsets.all(24),
                 children: [
-                  Text(_error ?? '加载失败', style: const TextStyle(color: Color(0xFFB34B43), fontSize: 13)),
+                  Text(_error ?? '加载失败', style: TextStyle(color: AppTheme.danger, fontSize: 13)),
                   const SizedBox(height: 12),
                   OutlinedButton(onPressed: _load, child: const Text('重试')),
                 ],

@@ -195,7 +195,9 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.textContaining('发送失败测试'), findsOneWidget);
-      expect(tester.widget<TextField>(composer).controller?.text, 'hello fail');
+      // 失败的消息留在记录里可重发，输入框清空（避免重发成两条）。
+      expect(find.byKey(const Key('chat-resend')), findsOneWidget);
+      expect(tester.widget<TextField>(composer).controller?.text, '');
     });
   });
 }

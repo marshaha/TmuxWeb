@@ -187,7 +187,7 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                 ? ListView(
                     padding: const EdgeInsets.all(24),
                     children: [
-                      Text(_error!, style: const TextStyle(color: Color(0xFFB34B43), fontSize: 13)),
+                      Text(_error!, style: TextStyle(color: AppTheme.danger, fontSize: 13)),
                       const SizedBox(height: 12),
                       OutlinedButton(onPressed: _search, child: const Text('重试')),
                     ],

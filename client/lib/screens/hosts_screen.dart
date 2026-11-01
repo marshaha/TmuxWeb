@@ -541,7 +541,7 @@ class _HostsScreenState extends State<HostsScreen> {
       return ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Text(_error ?? '加载失败', style: const TextStyle(color: Color(0xFFB34B43), fontSize: 13)),
+          Text(_error ?? '加载失败', style: TextStyle(color: AppTheme.danger, fontSize: 13)),
           const SizedBox(height: 12),
           OutlinedButton(onPressed: _load, child: const Text('重试')),
         ],

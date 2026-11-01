@@ -251,16 +251,21 @@ class ApiClient implements Api, TerminalApi {
     this.token = token.trim();
     if (this.token.isNotEmpty) {
       await hosts(); // verifies the token by fetching a cheap endpoint
-      if (kIsWeb) {
-        // Browsers cannot send an Authorization header on a WebSocket
-        // handshake, and terminal/screen streams only accept the session
-        // cookie: mint it from the token. A 404 means an older server
-        // without this route; HTTP keeps working, only the streams stay
-        // cookie-gated as before.
-        final exchange = await _http.post(_uri('/api/session'), headers: _headers());
-        if (exchange.statusCode != 404 && exchange.statusCode >= 400) {
-          throw ApiException(exchange.statusCode, '登录成功，但会话建立失败，终端将无法使用');
-        }
+      // Every platform needs this, not just the browser: the WS handlers only
+      // read the session cookie, and a native app that logged in with a token
+      // has never seen /login, so without the exchange its terminal and screen
+      // streams are closed with 4401 forever. A 404 means an older server
+      // without this route; HTTP keeps working, only the streams stay gated.
+      final exchange = await _http.post(_uri('/api/session'), headers: _headers());
+      _storeCookies(exchange); // native keeps its own cookie jar; the browser does this itself
+      if (exchange.statusCode != 404 && exchange.statusCode >= 400) {
+        throw ApiException(exchange.statusCode, '登录成功，但会话建立失败，终端将无法使用');
+      }
+      // A browser hides httponly cookies from us, so there is nothing to assert there;
+      // native keeps its own jar, so verify the cookie really landed instead of
+      // trusting the status code (a 2xx with no Set-Cookie means a dead终端 later).
+      if (!kIsWeb && exchange.statusCode < 400 && !cookies.containsKey('tmux_web_session')) {
+        throw ApiException(exchange.statusCode, '登录成功，但会话 cookie 没有保存，终端将无法使用');
       }
       return;
     }
@@ -309,9 +314,11 @@ class ApiClient implements Api, TerminalApi {
   }
 
   /// Headers for the WebSocket handshake (cookie + bearer both work).
+  @override
   Map<String, String> get wsHeaders => _headers();
 
   /// ws:// or wss:// URL for a server path.
+  @override
   Uri wsUri(String path, [Map<String, String>? query]) {
     final base = Uri.parse(baseUrl.isEmpty ? 'http://127.0.0.1' : baseUrl);
     final uri = base.replace(

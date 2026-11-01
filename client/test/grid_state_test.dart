@@ -93,4 +93,39 @@ void main() {
     expect(state.explicit, contains('%7'));
     expect(state.maximized, isNull);
   });
+
+  test('more than 12 panes grows the row count instead of throwing', () {
+    // clamp(needed, 6) 在 needed > 6 时会抛 ArgumentError，而 fromJson 里的
+    // 兜底会把这个异常吞掉，导致保存的布局整个消失。
+    final state = GridState(cols: 2, rows: 6);
+    expect(
+      () {
+        for (var i = 0; i < 13; i++) {
+          state.add('pane-$i');
+        }
+      },
+      returnsNormally,
+    );
+    expect(state.panes.length, 13);
+    expect(state.rows, greaterThanOrEqualTo(7));
+  });
+
+  test('a stored 13-pane layout survives a round trip', () {
+    final saved = GridState(cols: 2)
+      ..add('a')
+      ..add('b')
+      ..add('c')
+      ..add('d')
+      ..add('e')
+      ..add('f')
+      ..add('g')
+      ..add('h')
+      ..add('i')
+      ..add('j')
+      ..add('k')
+      ..add('l')
+      ..add('m');
+    final restored = GridState.fromJson(saved.toJson());
+    expect(restored.panes.length, 13);
+  });
 }

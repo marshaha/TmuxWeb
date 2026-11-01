@@ -142,7 +142,9 @@ class GridState {
   void _applyGridShape() {
     cols = cols.clamp(1, 4);
     final needed = panes.isEmpty ? 1 : (panes.length / cols).ceil();
-    rows = rows.clamp(needed, 6);
+    // 下界不能超过上界：pane 多到需要超过 6 行时 clamp(needed, 6) 会抛 ArgumentError，
+    // 从 fromJson 走这条路还会被静默吞掉，整个已保存的布局消失。
+    rows = rows.clamp(needed, needed > 6 ? needed : 6);
     colFr = _fitFr(colFr, cols);
     rowFr = _fitFr(rowFr, rows);
   }

@@ -81,8 +81,10 @@ class _GridScreenState extends State<GridScreen> {
         _presets = presets;
       });
     }
-    await _loadHosts();
+    // 先装定时器再 await：等主机列表回来才创建的话，用户中途退出时 dispose 已经跑过，
+    // 这个 10 秒轮询会跟着进程活到天荒地老。
     _statusTimer = Timer.periodic(const Duration(seconds: 10), (_) => _loadStatuses());
+    await _loadHosts();
     await _loadStatuses();
   }
 

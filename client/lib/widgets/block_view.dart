@@ -47,7 +47,7 @@ class _BlockViewState extends State<BlockView> {
       decoration: BoxDecoration(
         border: Border.all(color: AppTheme.line),
         borderRadius: BorderRadius.circular(10),
-        color: const Color(0xFFFBFAF7),
+        color: AppTheme.card,
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -57,7 +57,7 @@ class _BlockViewState extends State<BlockView> {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
               border: Border(bottom: BorderSide(color: AppTheme.line)),
-              color: const Color(0xB3FFFFFF),
+              color: AppTheme.codeBg.withValues(alpha: 0.70),
             ),
             child: Row(
               children: [
@@ -126,7 +126,7 @@ class _BlockButton extends StatelessWidget {
         decoration: BoxDecoration(
           border: Border.all(color: active ? AppTheme.green : AppTheme.line),
           borderRadius: BorderRadius.circular(6),
-          color: active ? const Color(0x0F4F9A65) : const Color(0xCCFFFFFF),
+          color: active ? AppTheme.green.withValues(alpha: 0.10) : AppTheme.card.withValues(alpha: 0.80),
         ),
         child: Text(label, style: TextStyle(fontSize: 11, color: active ? AppTheme.green : AppTheme.muted)),
       ),
@@ -172,7 +172,7 @@ class _TableView extends StatelessWidget {
     final width = rows.fold<int>(0, (value, row) => row.length > value ? row.length : value);
 
     TableRow buildRow(List<String> cells, {required bool header}) => TableRow(
-          decoration: BoxDecoration(color: header ? const Color(0xFFF1EFE7) : null),
+          decoration: BoxDecoration(color: header ? AppTheme.codeBg : null),
           children: List.generate(width, (index) {
             final value = index < cells.length ? cells[index] : '';
             return Padding(
@@ -196,7 +196,7 @@ class _TableView extends StatelessWidget {
         constraints: const BoxConstraints(minWidth: 280),
         child: Table(
           defaultColumnWidth: const IntrinsicColumnWidth(),
-          border: TableBorder.all(color: const Color(0xFFD1CFC6), width: 0.7),
+          border: TableBorder.all(color: AppTheme.tileGrid, width: 0.7),
           children: [
             buildRow(rows.first, header: true),
             ...rows.skip(1).map((row) => buildRow(row, header: false)),

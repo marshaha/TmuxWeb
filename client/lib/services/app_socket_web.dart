@@ -42,8 +42,15 @@ class AppSocket {
       } else {
         controller.addError(StateError('WebSocket error'));
       }
+      // 出错的 socket 和控制器都没人再管了，关掉免得每次失败漏一个。
+      if (!controller.isClosed) controller.close();
     });
     socket.onClose.listen((_) {
+      // 握手失败时浏览器只给 close、不给 open：completer 还悬着就让 connect()
+      // 以为还在连接，终端永远停在「连接中…」，ScreenStream 的重连也永远不会排上。
+      if (!completer.isCompleted) {
+        completer.completeError(StateError('WebSocket closed before it opened: $uri'));
+      }
       if (!controller.isClosed) controller.close();
     });
     return completer.future;

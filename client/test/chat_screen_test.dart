@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tmuxweb_client/models/chat_source.dart';
 import 'package:tmuxweb_client/models/models.dart';
 import 'package:tmuxweb_client/models/transcript_cache.dart';
+import 'package:tmuxweb_client/api/api_client.dart';
 import 'package:tmuxweb_client/screens/chat_screen.dart';
 import 'package:tmuxweb_client/theme.dart';
 import 'package:tmuxweb_client/widgets/message_tile.dart';
@@ -256,7 +257,7 @@ void main() {
     expect(find.text('复制全部'), findsNothing);
   });
 
-  testWidgets('a failed send surfaces the error and returns the text to the composer', (tester) async {
+  testWidgets('a failed send keeps the message with a resend action and a red status line', (tester) async {
     final source = _FailingSource();
     await tester.pumpWidget(wrap(ChatScreen(source: source, poll: Duration.zero)));
     await tester.pumpAndSettle();
@@ -266,18 +267,51 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('该会话只读，不能发送消息'), findsOneWidget);
-    // The pending bubble is gone, but the text is not lost: it is back
-    // in the composer so the user can retry without retyping.
-    expect(tester.widget<TextField>(find.byKey(const Key('chat-composer'))).controller?.text, 'hi');
-    expect(find.byType(MessageTile), findsWidgets);
+    // web 的约定：失败的那条留在记录里、旁边一个「重发」，状态行转红；
+    // 把文字塞回输入框会让用户重发成两条，所以这里明确要求输入框是空的。
+    // 一条在气泡下面、一条是输入框上方的状态行。
+    expect(find.text('发送失败'), findsNWidgets(2));
+    expect(find.byKey(const Key('chat-resend')), findsOneWidget);
+    expect(find.byKey(const Key('chat-send-state')), findsOneWidget);
+    expect(tester.widget<TextField>(find.byKey(const Key('chat-composer'))).controller?.text, '');
     expect(
-      find.byType(MessageTile).evaluate().every((element) {
+      find.byType(MessageTile).evaluate().any((element) {
         final tile = element.widget as MessageTile;
-        return tile.message.text != 'hi';
+        return tile.message.text == 'hi';
       }),
       isTrue,
     );
   });
+
+  testWidgets('resending a failed message clears the failure marker', (tester) async {
+    final source = _FlakySource();
+    await tester.pumpWidget(wrap(ChatScreen(source: source, poll: Duration.zero)));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('chat-composer')), 'hi');
+    await tester.tap(find.byKey(const Key('chat-send')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('chat-resend')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('chat-resend')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('chat-resend')), findsNothing);
+    expect(find.text('发送失败'), findsNothing);
+    expect(find.text('已发送'), findsOneWidget);
+    expect(source.attempts, 2);
+    expect(source.sent, ['hi']);
+  });
+}
+
+class _FlakySource extends FakeSource {
+  int attempts = 0;
+
+  @override
+  Future<void> send(String text, {bool submit = true}) async {
+    attempts += 1;
+    if (attempts == 1) throw ApiException(500, '发送失败测试');
+    await super.send(text, submit: submit);
+  }
 }
 
 class _SlowSource extends FakeSource {

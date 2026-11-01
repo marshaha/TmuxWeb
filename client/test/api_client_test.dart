@@ -67,10 +67,27 @@ void main() {
       );
     });
 
-    test('login with a token verifies it against /api/hosts', () async {
+    test('login with a token verifies it and mints the session cookie', () async {
       final client = ApiClient(httpClient: server({'GET /api/hosts': '{"hosts":[]}'}));
       await client.login(baseUrl: 'http://chat.local:8899', password: '', token: 'tok-1');
-      expect(seen.single.headers['Authorization'], 'Bearer tok-1');
+      // hosts() proves the token works, then /api/session trades it for the cookie
+      // the WebSocket endpoints read — without it the terminal is closed with 4401.
+      expect(seen.map((request) => '${request.method} ${request.url.path}'),
+          ['GET /api/hosts', 'POST /api/session']);
+      expect(seen.every((request) => request.headers['Authorization'] == 'Bearer tok-1'), isTrue);
+    });
+
+    test('a token login that never receives the cookie fails loudly', () async {
+      final client = ApiClient(
+        httpClient: server({
+          'GET /api/hosts': '{"hosts":[]}',
+          'POST /api/session': '{"ok":true}', // 200 but no Set-Cookie
+        }),
+      );
+      await expectLater(
+        client.login(baseUrl: 'http://chat.local:8899', password: '', token: 'tok-1'),
+        throwsA(isA<ApiException>()),
+      );
     });
 
     test('login without any credential never hits the network', () async {

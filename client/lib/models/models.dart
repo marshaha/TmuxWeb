@@ -254,7 +254,7 @@ class FileEntry {
       value /= 1024;
       unit += 1;
     }
-    return unit == 0 ? '${size} B' : '${value.toStringAsFixed(1)} ${units[unit]}';
+    return unit == 0 ? '$size B' : '${value.toStringAsFixed(1)} ${units[unit]}';
   }
 
   factory FileEntry.fromJson(Map<String, dynamic> json) => FileEntry(

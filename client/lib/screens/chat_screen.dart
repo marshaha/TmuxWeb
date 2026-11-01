@@ -57,6 +57,12 @@ class _ChatScreenState extends State<ChatScreen> {
   final _controller = TextEditingController();
   final _scroll = ScrollController();
   final List<String> _pending = [];
+  /// 发送失败的消息（按文本记），气泡旁边给一个「重发」，跟 web 一样不把内容吞掉。
+  final Set<String> _failed = {};
+  /// 输入框下面那一行状态：'' 中性 / '已发送' 绿 / '发送失败' 红。
+  String _sendState = '';
+  bool _sendStateOk = false;
+  Timer? _sendStateTimer;
 
   Transcript? _data;
   String? _error;
@@ -97,8 +103,9 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _rememberScroll();
     _timer?.cancel();
+    _sendStateTimer?.cancel();
     _stopScreenStream();
-    _controller.removeListener(() {});
+    _controller.removeListener(_rememberScroll);
     _controller.dispose();
     _scroll.removeListener(_rememberScroll);
     _scroll.dispose();
@@ -264,17 +271,63 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToEnd();
     try {
       await widget.source.send(text);
-      await _refresh();
     } catch (error) {
       if (!mounted) return;
-      // The failed text goes back into the composer instead of being
-      // lost: web keeps a failed message with a resend action, and
-      // dropping the text here would make the user retype it.
+      // 发送这一步失败 → 那条气泡留在原位并标成失败，可以重发。
       setState(() {
-        _pending.removeLast();
-        _controller.text = text;
-        _controller.selection = TextSelection.collapsed(offset: text.length);
+        _failed.add(text);
+        _setSendState('发送失败', ok: false);
       });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+      if (mounted) setState(() => _sending = false);
+      return;
+    }
+    try {
+      await _refresh();
+      if (!mounted) return;
+      setState(() {
+        _failed.remove(text);
+        _setSendState('已发送', ok: true);
+      });
+    } catch (error) {
+      // 发成功了、只是刷新失败：不能说发送失败，更不能把消息撤回（会诱导用户重发成两条）。
+      if (!mounted) return;
+      setState(() => _setSendState('已发送', ok: true));
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  void _setSendState(String text, {required bool ok}) {
+    _sendState = text;
+    _sendStateOk = ok;
+    _sendStateTimer?.cancel();
+    if (ok) {
+      // 成功状态 1.4 秒后自己消失，失败状态留着直到下一次操作（web 的 setSendState）。
+      _sendStateTimer = Timer(const Duration(milliseconds: 1400), () {
+        if (mounted) setState(() => _sendState = '');
+      });
+    }
+  }
+
+  /// 重发一条失败的消息，成功后就地从失败集合里摘掉。
+  Future<void> _resend(String text) async {
+    if (_sending) return;
+    setState(() {
+      _sending = true;
+      _setSendState('重发中…', ok: false);
+    });
+    try {
+      await widget.source.send(text);
+      await _refresh();
+      if (!mounted) return;
+      setState(() {
+        _failed.remove(text);
+        _setSendState('已发送', ok: true);
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _setSendState('发送失败', ok: false));
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -399,13 +452,40 @@ class _ChatScreenState extends State<ChatScreen> {
         if (_error != null && index == 0) {
           return Padding(
             padding: const EdgeInsets.only(bottom: 8),
-            child: Text(_error!, style: const TextStyle(color: Color(0xFFB34B43), fontSize: 12)),
+            child: Text(_error!, style: TextStyle(color: AppTheme.danger, fontSize: 12)),
           );
         }
         final position = index - offset;
         if (position < messages.length) return MessageTile(message: messages[position]);
         final text = _pending[position - messages.length];
-        return MessageTile(message: ChatMessage(id: 'pending-$index', role: 'user', text: text));
+        final failed = _failed.contains(text);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            MessageTile(message: ChatMessage(id: 'pending-$index', role: 'user', text: text)),
+            if (failed)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('发送失败', style: TextStyle(fontSize: 11.5, color: AppTheme.danger)),
+                    const SizedBox(width: 6),
+                    TextButton(
+                      key: const Key('chat-resend'),
+                      onPressed: _sending ? null : () => _resend(text),
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 28),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text('重发', style: TextStyle(fontSize: 12)),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
       },
     );
   }
@@ -425,9 +505,22 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
     return Container(
-      padding: EdgeInsets.fromLTRB(12, 8, 12, 8 + MediaQuery.of(context).padding.bottom),
+      padding: EdgeInsets.fromLTRB(12, 6, 12, 8 + MediaQuery.of(context).padding.bottom),
       decoration: BoxDecoration(color: AppTheme.page, border: Border(top: BorderSide(color: AppTheme.line))),
-      child: Row(
+      child: Column(children: [
+        if (_sendState.isNotEmpty)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 3, left: 2),
+              child: Text(
+                _sendState,
+                key: const Key('chat-send-state'),
+                style: TextStyle(fontSize: 11.5, color: _sendStateOk ? AppTheme.green : AppTheme.danger),
+              ),
+            ),
+          ),
+        Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           Expanded(
@@ -476,7 +569,8 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
         ],
-      ),
+        ),
+      ]),
     );
   }
 }

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/api_client.dart';
+import '../models/grid_state.dart';
 import '../services/config_crypto.dart';
 import '../services/save_file.dart';
 import '../services/config_import.dart';
@@ -181,8 +182,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // grid state to export; web exports null here when nothing
         // was stored, and this does the same.
         final prefs = await SharedPreferences.getInstance();
-        bundle['grid'] = _storedJson(prefs, 'tmux-grid-v1');
-        bundle['grid_presets'] = _storedJson(prefs, 'tmux-grid-presets-v1');
+        bundle['grid'] = _storedJson(prefs, GridState.gridKey);
+        bundle['grid_presets'] = _storedJson(prefs, GridState.presetsKey);
         final grid = bundle['grid'];
         if (grid is Map && grid['panes'] is List) panes = (grid['panes'] as List).length;
       }
@@ -223,13 +224,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _pickImportFile() async {
-    final picked = await FilePicker.pickFiles();
-    if (picked.isEmpty) return;
-    final bytes = await picked.first.xFile.readAsBytes();
-    setState(() {
-      _importFileName = picked.first.name;
-      _importBytes = bytes;
-    });
+    try {
+      final picked = await FilePicker.pickFiles();
+      if (picked.isEmpty) return;
+      final bytes = await picked.first.xFile.readAsBytes();
+      if (!mounted) return;
+      setState(() {
+        _importFileName = picked.first.name;
+        _importBytes = bytes;
+      });
+    } catch (error) {
+      // 选择器或读盘失败以前会变成一个没人看的异步异常，界面什么都不显示。
+      if (!mounted) return;
+      setState(() => _importStatus = '读取文件失败：$error');
+    }
   }
 
   Future<void> _import() async {
