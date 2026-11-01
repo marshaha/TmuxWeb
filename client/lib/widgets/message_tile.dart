@@ -47,8 +47,8 @@ class _MessageTileState extends State<MessageTile> {
             Container(
               constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.82),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(color: const Color(0xFFE9E7DF), borderRadius: BorderRadius.circular(16)),
-              child: SelectableText(message.text, style: const TextStyle(fontSize: 14.5, height: 1.45, color: AppTheme.ink)),
+              decoration: BoxDecoration(color: AppTheme.bubble, borderRadius: BorderRadius.circular(16)),
+              child: SelectableText(message.text, style: TextStyle(fontSize: 14.5, height: 1.45, color: AppTheme.ink)),
             ),
             const SizedBox(height: 4),
             copyButton,
@@ -63,7 +63,7 @@ class _MessageTileState extends State<MessageTile> {
         padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
         decoration: BoxDecoration(
           color: AppTheme.card,
-          border: Border.all(color: const Color(0xFFE1DFD7)),
+          border: Border.all(color: AppTheme.tileLine),
           borderRadius: BorderRadius.circular(16),
         ),
         child: Column(
@@ -82,18 +82,18 @@ class _MessageTileState extends State<MessageTile> {
     );
   }
 
-  static final _markdown = MarkdownStyleSheet(
-    p: const TextStyle(fontSize: 14.5, height: 1.5, color: AppTheme.ink),
-    h1: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: AppTheme.ink),
-    h2: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: AppTheme.ink),
-    h3: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600, color: AppTheme.ink),
-    listBullet: const TextStyle(fontSize: 14.5, height: 1.5, color: AppTheme.ink),
-    blockquote: const TextStyle(fontSize: 14, color: AppTheme.muted, height: 1.5),
-    blockquoteDecoration: const BoxDecoration(border: Border(left: BorderSide(color: AppTheme.accent, width: 3))),
-    code: const TextStyle(fontFamily: 'monospace', fontSize: 12.5, backgroundColor: Color(0xFFF1EFE7), color: AppTheme.ink),
-    strong: const TextStyle(fontWeight: FontWeight.w700, color: AppTheme.ink),
-    em: const TextStyle(fontStyle: FontStyle.italic, color: AppTheme.ink),
-    a: const TextStyle(color: AppTheme.accent, decoration: TextDecoration.underline),
+  static MarkdownStyleSheet get _markdown => MarkdownStyleSheet(
+    p: TextStyle(fontSize: 14.5, height: 1.5, color: AppTheme.ink),
+    h1: TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: AppTheme.ink),
+    h2: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: AppTheme.ink),
+    h3: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600, color: AppTheme.ink),
+    listBullet: TextStyle(fontSize: 14.5, height: 1.5, color: AppTheme.ink),
+    blockquote: TextStyle(fontSize: 14, color: AppTheme.muted, height: 1.5),
+    blockquoteDecoration: BoxDecoration(border: Border(left: BorderSide(color: AppTheme.accent, width: 3))),
+    code: TextStyle(fontFamily: 'monospace', fontSize: 12.5, backgroundColor: AppTheme.codeBg, color: AppTheme.ink),
+    strong: TextStyle(fontWeight: FontWeight.w700, color: AppTheme.ink),
+    em: TextStyle(fontStyle: FontStyle.italic, color: AppTheme.ink),
+    a: TextStyle(color: AppTheme.accent, decoration: TextDecoration.underline),
   );
 }
 

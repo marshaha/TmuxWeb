@@ -3,6 +3,7 @@ library;
 
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/models.dart';
@@ -65,6 +66,94 @@ abstract class Api {
 
   /// Zip of the given paths; an empty list zips the directory `base`.
   Future<List<int>> zipFiles(String paneRef, List<String> paths, String base);
+
+  // --- Web parity, batch 1: API surface only, no screens yet. ---
+  // Shapes below are taken from tmux_web.py (main 3fff9a1); where the
+  // server returns a plain object it is passed through as a Map so the
+  // UI batch can model it without guessing field types here.
+
+  /// GET /api/home: {favorites, recent, cards, stats, generated_at}.
+  Future<Map<String, dynamic>> homeBoard();
+
+  /// GET /api/home/favorites: {favorites: [pane_id], notes: {pane_id: note}}.
+  Future<Map<String, dynamic>> homeFavorites();
+
+  Future<void> addHomeFavorite(String paneRef, {String note = '', String title = ''});
+
+  /// PATCH title; an empty title restores the generated one.
+  Future<void> renameHomeFavorite(String paneRef, String title);
+
+  Future<void> deleteHomeFavorite(String paneRef);
+
+  Future<void> touchHomeRecent(String paneRef);
+
+  Future<void> deleteHomeRecent(String paneRef);
+
+  /// GET /api/home/search: {query, mode, hosts, sessions, panes, messages, cards}.
+  Future<Map<String, dynamic>> homeSearch(String query, {int limit = 20, bool messages = true});
+
+  Future<List<Map<String, dynamic>>> homeCards();
+
+  Future<Map<String, dynamic>> createHomeCard(
+      {required String title, String body = '', String paneRef = '', String kind = 'note'});
+
+  Future<void> deleteHomeCard(String cardId);
+
+  /// GET /api/prefs: {prefs: {theme: ...}}; today theme is the only key.
+  Future<Map<String, dynamic>> prefs();
+
+  Future<Map<String, dynamic>> updateTheme(String theme);
+
+  /// GET /api/settings: {password_source, hosts, api_token}.
+  Future<Map<String, dynamic>> settingsInfo();
+
+  /// POST /api/settings/password with {current, next} (web's field names).
+  Future<void> changePassword(String current, String next);
+
+  /// GET /api/settings/export: {app, exported_at, hosts, board}; the
+  /// hosts carry credentials, so callers must encrypt before writing
+  /// the bundle to disk, like web's settings panel does.
+  Future<Map<String, dynamic>> settingsExport();
+
+  /// POST /logout; clears the local session either way.
+  Future<void> logout();
+
+  /// GET /api/plugins: {plugins: [...]}; each entry is passed through raw.
+  Future<List<Map<String, dynamic>>> plugins();
+
+  Future<void> setPluginEnabled(String name, bool enabled);
+
+  /// Shares management (/api/shares); reading a share link stays in
+  /// shareMeta/shareTranscript/shareInput above.
+  Future<List<Map<String, dynamic>>> listShares();
+
+  Future<Map<String, dynamic>> createShare(
+      {required String paneRef, required String slug, String password = '', int expiresIn = 86400, bool allowInput = true});
+
+  Future<Map<String, dynamic>> extendShare(String shareId, int seconds);
+
+  Future<void> stopShare(String shareId);
+
+  Future<void> deleteShare(String shareId);
+
+  Future<void> resetSharePassword(String shareId, String password);
+
+  /// POST /api/sessions: {session, host, panes}.
+  Future<Map<String, dynamic>> createSession({String host = 'localhost', required String name, String path = ''});
+
+  Future<List<Map<String, dynamic>>> reorderRemoteHosts(List<String> ids);
+
+  /// POST /api/remote-hosts/test with a create-shaped payload.
+  Future<Map<String, dynamic>> testRemoteHost(Map<String, dynamic> payload);
+
+  /// GET /api/panes: [{id, ...}] (local host only; remote panes come via hosts()).
+  Future<List<Map<String, dynamic>>> listPanes();
+
+  /// GET /api/panes/{id}/capture: plain screen text (screen-mode panes).
+  Future<String> capturePane(String paneRef, {int history = 500});
+
+  /// POST /api/panes/{id}/key with {key}; server rejects unknown keys (422).
+  Future<void> sendPaneKey(String paneRef, String key);
 }
 
 String normalizeBaseUrl(String raw) {
@@ -162,6 +251,22 @@ class ApiClient implements Api, TerminalApi {
     this.token = token.trim();
     if (this.token.isNotEmpty) {
       await hosts(); // verifies the token by fetching a cheap endpoint
+      // Every platform needs this, not just the browser: the WS handlers only
+      // read the session cookie, and a native app that logged in with a token
+      // has never seen /login, so without the exchange its terminal and screen
+      // streams are closed with 4401 forever. A 404 means an older server
+      // without this route; HTTP keeps working, only the streams stay gated.
+      final exchange = await _http.post(_uri('/api/session'), headers: _headers());
+      _storeCookies(exchange); // native keeps its own cookie jar; the browser does this itself
+      if (exchange.statusCode != 404 && exchange.statusCode >= 400) {
+        throw ApiException(exchange.statusCode, '登录成功，但会话建立失败，终端将无法使用');
+      }
+      // A browser hides httponly cookies from us, so there is nothing to assert there;
+      // native keeps its own jar, so verify the cookie really landed instead of
+      // trusting the status code (a 2xx with no Set-Cookie means a dead终端 later).
+      if (!kIsWeb && exchange.statusCode < 400 && !cookies.containsKey('tmux_web_session')) {
+        throw ApiException(exchange.statusCode, '登录成功，但会话 cookie 没有保存，终端将无法使用');
+      }
       return;
     }
     if (password.isEmpty) throw ApiException(0, '请填写密码或 API Token');
@@ -177,6 +282,14 @@ class ApiClient implements Api, TerminalApi {
     }
     _storeCookies(response);
     if (response.statusCode >= 400) _fail(response);
+    if (kIsWeb) {
+      // Browsers store the httponly session cookie from this response but
+      // never expose Set-Cookie to JS, so the readable-cookie check below
+      // would always fail on web. Verify through an authenticated call
+      // instead; the browser sends the stored cookie automatically.
+      await hosts();
+      return;
+    }
     if (!cookies.containsKey('tmux_web_session')) {
       throw ApiException(response.statusCode, '登录失败：服务器没有返回会话 cookie');
     }
@@ -201,9 +314,11 @@ class ApiClient implements Api, TerminalApi {
   }
 
   /// Headers for the WebSocket handshake (cookie + bearer both work).
+  @override
   Map<String, String> get wsHeaders => _headers();
 
   /// ws:// or wss:// URL for a server path.
+  @override
   Uri wsUri(String path, [Map<String, String>? query]) {
     final base = Uri.parse(baseUrl.isEmpty ? 'http://127.0.0.1' : baseUrl);
     final uri = base.replace(
@@ -367,6 +482,267 @@ class ApiClient implements Api, TerminalApi {
       _uri('/share/${Uri.encodeComponent(slug)}/api/input'),
       headers: _headers(json: true),
       body: jsonEncode({'text': text, 'submit': submit}),
+    );
+    _decode(response);
+  }
+
+  List<Map<String, dynamic>> _maps(Map<String, dynamic> data, String key) => ((data[key] as List?) ?? const [])
+      .whereType<Map>()
+      .map((item) => Map<String, dynamic>.from(item))
+      .toList();
+
+  @override
+  Future<Map<String, dynamic>> homeBoard() async {
+    final response = await _http.get(_uri('/api/home'), headers: _headers());
+    return _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> homeFavorites() async {
+    final response = await _http.get(_uri('/api/home/favorites'), headers: _headers());
+    return _decode(response);
+  }
+
+  @override
+  Future<void> addHomeFavorite(String paneRef, {String note = '', String title = ''}) async {
+    final response = await _http.post(
+      _uri('/api/home/favorites'),
+      headers: _headers(json: true),
+      body: jsonEncode({'pane': paneRef, 'note': note, 'title': title}),
+    );
+    _decode(response);
+  }
+
+  @override
+  Future<void> renameHomeFavorite(String paneRef, String title) async {
+    final response = await _http.patch(
+      _uri('/api/home/favorites/${encodePaneRef(paneRef)}'),
+      headers: _headers(json: true),
+      body: jsonEncode({'title': title}),
+    );
+    _decode(response);
+  }
+
+  @override
+  Future<void> deleteHomeFavorite(String paneRef) async {
+    final response = await _http.delete(_uri('/api/home/favorites/${encodePaneRef(paneRef)}'), headers: _headers());
+    _decode(response);
+  }
+
+  @override
+  Future<void> touchHomeRecent(String paneRef) async {
+    final response = await _http.post(
+      _uri('/api/home/recent'),
+      headers: _headers(json: true),
+      body: jsonEncode({'pane': paneRef}),
+    );
+    _decode(response);
+  }
+
+  @override
+  Future<void> deleteHomeRecent(String paneRef) async {
+    final response = await _http.delete(_uri('/api/home/recent/${encodePaneRef(paneRef)}'), headers: _headers());
+    _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> homeSearch(String query, {int limit = 20, bool messages = true}) async {
+    final response = await _http.get(
+      _uri('/api/home/search', {'q': query, 'limit': '$limit', 'messages': messages ? '1' : '0'}),
+      headers: _headers(),
+    );
+    return _decode(response);
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> homeCards() async {
+    final response = await _http.get(_uri('/api/home/cards'), headers: _headers());
+    return _maps(_decode(response), 'cards');
+  }
+
+  @override
+  Future<Map<String, dynamic>> createHomeCard(
+      {required String title, String body = '', String paneRef = '', String kind = 'note'}) async {
+    final response = await _http.post(
+      _uri('/api/home/cards'),
+      headers: _headers(json: true),
+      body: jsonEncode({'title': title, 'body': body, 'pane': paneRef, 'kind': kind}),
+    );
+    return _decode(response);
+  }
+
+  @override
+  Future<void> deleteHomeCard(String cardId) async {
+    final response = await _http.delete(_uri('/api/home/cards/${Uri.encodeComponent(cardId)}'), headers: _headers());
+    _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> prefs() async {
+    final response = await _http.get(_uri('/api/prefs'), headers: _headers());
+    return _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> updateTheme(String theme) async {
+    final response = await _http.put(
+      _uri('/api/prefs'),
+      headers: _headers(json: true),
+      body: jsonEncode({'theme': theme}),
+    );
+    return _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> settingsInfo() async {
+    final response = await _http.get(_uri('/api/settings'), headers: _headers());
+    return _decode(response);
+  }
+
+  @override
+  Future<void> changePassword(String current, String next) async {
+    final response = await _http.post(
+      _uri('/api/settings/password'),
+      headers: _headers(json: true),
+      body: jsonEncode({'current': current, 'next': next}),
+    );
+    _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> settingsExport() async {
+    final response = await _http.get(_uri('/api/settings/export'), headers: _headers());
+    return _decode(response);
+  }
+
+  @override
+  Future<void> logout() async {
+    try {
+      await _http.post(_uri('/logout'), headers: _headers());
+    } catch (_) {
+      // the local session is cleared regardless
+    }
+    cookies.clear();
+    token = '';
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> plugins() async {
+    final response = await _http.get(_uri('/api/plugins'), headers: _headers());
+    return _maps(_decode(response), 'plugins');
+  }
+
+  @override
+  Future<void> setPluginEnabled(String name, bool enabled) async {
+    final response = await _http.post(
+      _uri('/api/plugins/${Uri.encodeComponent(name)}/${enabled ? 'enable' : 'disable'}'),
+      headers: _headers(),
+    );
+    _decode(response);
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> listShares() async {
+    final response = await _http.get(_uri('/api/shares'), headers: _headers());
+    return _maps(_decode(response), 'shares');
+  }
+
+  @override
+  Future<Map<String, dynamic>> createShare(
+      {required String paneRef, required String slug, String password = '', int expiresIn = 86400, bool allowInput = true}) async {
+    final response = await _http.post(
+      _uri('/api/shares'),
+      headers: _headers(json: true),
+      body: jsonEncode(
+          {'pane_id': paneRef, 'slug': slug, 'password': password, 'expires_in': expiresIn, 'allow_input': allowInput}),
+    );
+    return _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> extendShare(String shareId, int seconds) async {
+    final response = await _http.post(
+      _uri('/api/shares/${Uri.encodeComponent(shareId)}/extend'),
+      headers: _headers(json: true),
+      body: jsonEncode({'seconds': seconds}),
+    );
+    return _decode(response);
+  }
+
+  @override
+  Future<void> stopShare(String shareId) async {
+    final response = await _http.post(_uri('/api/shares/${Uri.encodeComponent(shareId)}/stop'), headers: _headers());
+    _decode(response);
+  }
+
+  @override
+  Future<void> deleteShare(String shareId) async {
+    final response = await _http.delete(_uri('/api/shares/${Uri.encodeComponent(shareId)}'), headers: _headers());
+    _decode(response);
+  }
+
+  @override
+  Future<void> resetSharePassword(String shareId, String password) async {
+    final response = await _http.put(
+      _uri('/api/shares/${Uri.encodeComponent(shareId)}/password'),
+      headers: _headers(json: true),
+      body: jsonEncode({'password': password}),
+    );
+    _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> createSession({String host = 'localhost', required String name, String path = ''}) async {
+    final response = await _http.post(
+      _uri('/api/sessions'),
+      headers: _headers(json: true),
+      body: jsonEncode({'host': host, 'name': name, 'path': path}),
+    );
+    return _decode(response);
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> reorderRemoteHosts(List<String> ids) async {
+    final response = await _http.post(
+      _uri('/api/remote-hosts/reorder'),
+      headers: _headers(json: true),
+      body: jsonEncode({'ids': ids}),
+    );
+    return _maps(_decode(response), 'hosts');
+  }
+
+  @override
+  Future<Map<String, dynamic>> testRemoteHost(Map<String, dynamic> payload) async {
+    final response = await _http.post(
+      _uri('/api/remote-hosts/test'),
+      headers: _headers(json: true),
+      body: jsonEncode(payload),
+    );
+    return _decode(response);
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> listPanes() async {
+    final response = await _http.get(_uri('/api/panes'), headers: _headers());
+    return _maps(_decode(response), 'panes');
+  }
+
+  @override
+  Future<String> capturePane(String paneRef, {int history = 500}) async {
+    final response = await _http.get(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/capture', {'history': '$history'}),
+      headers: _headers(),
+    );
+    final data = _decode(response);
+    return (data['content'] as String?) ?? '';
+  }
+
+  @override
+  Future<void> sendPaneKey(String paneRef, String key) async {
+    final response = await _http.post(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/key'),
+      headers: _headers(json: true),
+      body: jsonEncode({'key': key}),
     );
     _decode(response);
   }

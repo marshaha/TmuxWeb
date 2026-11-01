@@ -8,11 +8,13 @@ import 'package:tmuxweb_client/screens/hosts_screen.dart';
 import 'package:tmuxweb_client/screens/login_screen.dart';
 import 'package:tmuxweb_client/theme.dart';
 
-class FakeApi implements Api {
-  FakeApi({this.loginError, this.hostsError});
+class FakeApi implements Api, TerminalApi {
+  FakeApi({this.loginError, this.hostsError, this.boardError, this.sessionError});
 
   final ApiException? loginError;
   final ApiException? hostsError;
+  final ApiException? boardError;
+  final ApiException? sessionError;
   final List<String> logins = [];
   final List<String> sent = [];
   final List<String> uploads = [];
@@ -31,7 +33,9 @@ class FakeApi implements Api {
         Pane(ref: '%7', title: 'review', command: 'codex', session: 'codex', provider: 'codex', hasTranscript: true),
       ]),
       Host(id: 'abc', name: 'ctyun', kind: 'ssh', status: 'online', panes: [
-        Pane(ref: 'abc~%0', title: 'agent', command: 'hermes', session: 'main', provider: 'hermes', hostId: 'abc'),
+        // Real Pane.fromJson sets hasTranscript when a provider is present,
+        // so this hermes pane carries it like the server would report it.
+        Pane(ref: 'abc~%0', title: 'agent', command: 'hermes', session: 'main', provider: 'hermes', hostId: 'abc', hasTranscript: true),
       ]),
     ];
   }
@@ -45,18 +49,29 @@ class FakeApi implements Api {
   @override
   Future<List<RemoteHost>> remoteHosts() async => [
         RemoteHost(id: 'abc', name: 'ctyun', hostname: '100.123.123.8', port: 22,
-            username: 'mars', authType: 'password', fingerprint: 'SHA256:abc'),
+            username: 'mars', authType: 'password', fingerprint: 'SHA256:abc',
+            jumpPath: 'bastion', tmuxPath: '/usr/bin/tmux'),
+        RemoteHost(id: 'def', name: 'backup', hostname: '10.0.0.9', port: 22,
+            username: 'mars', authType: 'password', enabled: false),
       ];
 
-  @override
-  Future<RemoteHost> createRemoteHost(Map<String, dynamic> payload) async =>
-      RemoteHost(id: 'new', name: '${payload['name']}', hostname: '${payload['hostname']}',
-          port: 22, username: '${payload['username']}', authType: 'password');
+  final List<Map<String, dynamic>> savedHostPayloads = [];
+  final List<List<String>> reorderedIds = [];
+  final List<Map<String, dynamic>> testedHostPayloads = [];
 
   @override
-  Future<RemoteHost> updateRemoteHost(String id, Map<String, dynamic> payload) async =>
-      RemoteHost(id: id, name: '${payload['name'] ?? 'x'}', hostname: 'h', port: 22,
-          username: 'u', authType: 'password');
+  Future<RemoteHost> createRemoteHost(Map<String, dynamic> payload) async {
+    savedHostPayloads.add(Map<String, dynamic>.from(payload));
+    return RemoteHost(id: 'new-${payload['name']}', name: '${payload['name']}', hostname: '${payload['hostname']}',
+        port: 22, username: '${payload['username']}', authType: 'password');
+  }
+
+  @override
+  Future<RemoteHost> updateRemoteHost(String id, Map<String, dynamic> payload) async {
+    savedHostPayloads.add(Map<String, dynamic>.from(payload));
+    return RemoteHost(id: id, name: '${payload['name'] ?? 'x'}', hostname: 'h', port: 22,
+        username: 'u', authType: 'password');
+  }
 
   @override
   Future<void> deleteRemoteHost(String id) async {}
@@ -110,6 +125,330 @@ class FakeApi implements Api {
 
   @override
   Future<void> shareInput(String slug, String text, {bool submit = true}) async => throw ApiException(403, '该会话只读');
+
+  // Web parity batch 2: a small board so the board screen can be tested.
+  final List<String> addedFavorites = [];
+  final List<String> unfavorited = [];
+  final List<String> renamedFavorites = [];
+  final List<String> deletedRecent = [];
+  final List<String> deletedCards = [];
+
+  @override
+  Future<Map<String, dynamic>> homeBoard() async {
+    if (boardError != null) throw boardError!;
+    return {
+        'favorites': [
+          {
+            'pane': '%7',
+            'note': '重点看',
+            'status': 'idle',
+            'provider': 'codex',
+            'title': 'review',
+            'default_title': 'review',
+            'custom_title': false,
+            'pane_title': 'review',
+            'path': '/srv/work',
+            'session': 'codex',
+            'window': 'main',
+            'host': 'localhost',
+            'command': 'codex',
+            'preview': {'role': 'assistant', 'text': '已完成第一版'},
+            'waiting': false,
+          },
+        ],
+        'recent': [
+          {
+            'pane': 'abc~%0',
+            'visited_at': 1761900000,
+            'title': 'agent',
+            'host': 'ctyun',
+            'session': 'main',
+            'window': 'main',
+            'provider': 'hermes',
+            'status': 'busy',
+            'online': true,
+          },
+        ],
+        'cards': [
+          {'id': 'c1', 'title': '结论', 'body': '先做 API 再做界面', 'pane_id': '%7', 'kind': 'note', 'created_at': 1761900000},
+        ],
+        'stats': {'panes': 2, 'busy': 1, 'idle': 1, 'favorites': 1, 'cards': 1},
+      };
+  }
+
+  /// The favorite set the hosts tree reads; add/delete keep it in sync,
+  /// like the server, so star toggles are observable in widget tests.
+  final Set<String> favoritePanes = {'abc~%0'};
+
+  @override
+  Future<Map<String, dynamic>> homeFavorites() async => {'favorites': favoritePanes.toList(), 'notes': {}};
+
+  @override
+  Future<void> addHomeFavorite(String paneRef, {String note = '', String title = ''}) async {
+    addedFavorites.add(paneRef);
+    favoritePanes.add(paneRef);
+  }
+
+  @override
+  Future<void> renameHomeFavorite(String paneRef, String title) async {
+    renamedFavorites.add('$paneRef|$title');
+  }
+
+  @override
+  Future<void> deleteHomeFavorite(String paneRef) async {
+    unfavorited.add(paneRef);
+    favoritePanes.remove(paneRef);
+  }
+
+  @override
+  Future<void> touchHomeRecent(String paneRef) async {}
+
+  @override
+  Future<void> deleteHomeRecent(String paneRef) async {
+    deletedRecent.add(paneRef);
+  }
+
+  @override
+  Future<Map<String, dynamic>> homeSearch(String query, {int limit = 20, bool messages = true}) async {
+    // Web's two-phase search: names first, conversations second.
+    final names = {
+      'query': query,
+      'mode': 'literal',
+      'hosts': [
+        {'id': 'localhost', 'name': 'localhost', 'hostname': 'localhost', 'panes': 1},
+      ],
+      'sessions': [
+        {'host': 'localhost', 'host_id': 'localhost', 'session': 'codex', 'panes': 1},
+      ],
+      'panes': [
+        {'id': '%7', 'host_id': 'localhost', 'title': 'review', 'session': 'codex', 'provider': 'codex'},
+      ],
+      'messages': [],
+      'cards': [],
+      'messages_pending': true,
+      'messages_partial': true,
+    };
+    if (!messages) return names;
+    return {
+      ...names,
+      'messages': [
+        {'pane': '%7', 'title': 'review', 'session': 'codex', 'host': 'localhost', 'role': 'assistant', 'snippet': '已完成第一版'},
+      ],
+      'cards': [
+        {'id': 'c1', 'title': '结论', 'body': '先做 API 再做界面', 'kind': 'note'},
+      ],
+      'messages_pending': false,
+      'messages_partial': false,
+    };
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> homeCards() async => const [];
+
+  @override
+  Future<Map<String, dynamic>> createHomeCard(
+          {required String title, String body = '', String paneRef = '', String kind = 'note'}) async =>
+      {'title': title};
+
+  @override
+  Future<void> deleteHomeCard(String cardId) async {
+    deletedCards.add(cardId);
+  }
+
+  String? updatedTheme;
+  bool loggedOut = false;
+  final Map<String, bool> pluginStates = {'cross-server-relay': true, 'broken-plugin': false};
+  final List<String> pluginToggles = [];
+
+  @override
+  Future<Map<String, dynamic>> prefs() async => const {'prefs': {}};
+
+  @override
+  Future<Map<String, dynamic>> updateTheme(String theme) async {
+    updatedTheme = theme;
+    return {'prefs': {'theme': theme}};
+  }
+
+  @override
+  Future<Map<String, dynamic>> settingsInfo() async =>
+      const {'password_source': 'file', 'hosts': 2, 'api_token': false};
+
+  @override
+  Future<void> changePassword(String current, String next) async {
+    if (current != 'old') throw ApiException(403, '当前密码不正确');
+    if (next.length < 6) throw ApiException(400, '新密码至少 6 位');
+  }
+
+  @override
+  Future<Map<String, dynamic>> settingsExport() async => {
+        'app': 'TmuxWeb',
+        'exported_at': '2026-10-31T00:00:00',
+        'hosts': [
+          {'name': 'ctyun', 'hostname': '100.123.123.8', 'port': 22, 'username': 'mars', 'credential': 'secret'},
+          {'name': 'backup', 'hostname': '10.0.0.9', 'port': 22, 'username': 'mars', 'credential': ''},
+        ],
+        'board': {'favorites': []},
+      };
+
+  @override
+  Future<void> logout() async {
+    loggedOut = true;
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> plugins() async => [
+        {
+          'name': 'cross-server-relay',
+          'version': '1.0.0',
+          'description': '跨服务器中继',
+          'enabled': pluginStates['cross-server-relay'] ?? false,
+          'loaded': true,
+          'error': '',
+        },
+        {
+          'name': 'broken-plugin',
+          'version': '0.1.0',
+          'description': '',
+          'enabled': pluginStates['broken-plugin'] ?? false,
+          'loaded': false,
+          'error': '加载失败：入口模块不存在',
+        },
+      ];
+
+  @override
+  Future<void> setPluginEnabled(String name, bool enabled) async {
+    pluginToggles.add('$name=$enabled');
+    pluginStates[name] = enabled;
+  }
+
+  final List<Map<String, dynamic>> shares = [
+    {
+      'id': 's1',
+      'slug': 'share-abc',
+      'url': '/share/share-abc',
+      'pane_id': 'abc~%0',
+      'title': 'agent',
+      'provider': 'hermes',
+      'session_id': 'main',
+      'created_at': 1761868800,
+      'expires_at': 1893456000,
+      'revoked': false,
+      'password_protected': true,
+      'allow_input': true,
+      'status': 'active',
+    },
+    {
+      'id': 's2',
+      'slug': 'share-old',
+      'url': '/share/share-old',
+      'pane_id': '%7',
+      'title': 'review',
+      'provider': 'codex',
+      'session_id': 'codex',
+      'created_at': 1761868800,
+      'expires_at': 1761955200,
+      'revoked': false,
+      'password_protected': false,
+      'allow_input': false,
+      'status': 'stopped',
+    },
+  ];
+  @override
+  Map<String, String> get wsHeaders => {};
+
+  @override
+  Uri wsUri(String path, [Map<String, String>? query]) =>
+      // Literal loopback, refused at once: a hostname would leave
+      // dart:io's staggered DNS lookup timer pending at teardown.
+      Uri.parse('ws://127.0.0.1:1$path').replace(queryParameters: query);
+
+  final List<Map<String, dynamic>> createdShares = [];
+  final List<String> extendedShares = [];
+  final List<Map<String, dynamic>> createdSessions = [];
+
+  Map<String, dynamic> _shareById(String id) => shares.firstWhere((share) => share['id'] == id);
+
+  @override
+  Future<List<Map<String, dynamic>>> listShares() async =>
+      shares.map((share) => Map<String, dynamic>.from(share)).toList();
+
+  @override
+  Future<Map<String, dynamic>> createShare(
+      {required String paneRef, required String slug, String password = '', int expiresIn = 86400, bool allowInput = true}) async {
+    final share = {
+      'id': 's-new',
+      'slug': slug,
+      'url': '/share/$slug',
+      'pane_id': paneRef,
+      'title': paneRef,
+      'created_at': 1761868800,
+      'expires_at': 1893456000,
+      'revoked': false,
+      'password_protected': password.isNotEmpty,
+      'allow_input': allowInput,
+      'status': 'active',
+    };
+    shares.add(share);
+    createdShares.add(Map<String, dynamic>.from(share));
+    return Map<String, dynamic>.from(share);
+  }
+
+  @override
+  Future<Map<String, dynamic>> extendShare(String shareId, int seconds) async {
+    extendedShares.add('$shareId+$seconds');
+    final share = _shareById(shareId);
+    share['expires_at'] = (share['expires_at'] as int) + seconds;
+    return Map<String, dynamic>.from(share);
+  }
+
+  @override
+  Future<void> stopShare(String shareId) async {
+    _shareById(shareId)['status'] = 'stopped';
+  }
+
+  @override
+  Future<void> deleteShare(String shareId) async {
+    shares.removeWhere((share) => share['id'] == shareId);
+  }
+
+  @override
+  Future<void> resetSharePassword(String shareId, String password) async {
+    _shareById(shareId)['password_protected'] = password.isNotEmpty;
+  }
+
+  @override
+  Future<Map<String, dynamic>> createSession({String host = 'localhost', required String name, String path = ''}) async {
+    if (sessionError != null) throw sessionError!;
+    createdSessions.add({'host': host, 'name': name, 'path': path});
+    return {
+      'session': {'session': name},
+      'host': host,
+      'panes': [
+        {'id': host == 'abc' ? 'abc~%0' : '%7'},
+      ],
+    };
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> reorderRemoteHosts(List<String> ids) async {
+    reorderedIds.add(List<String>.from(ids));
+    return const [];
+  }
+
+  @override
+  Future<Map<String, dynamic>> testRemoteHost(Map<String, dynamic> payload) async {
+    testedHostPayloads.add(Map<String, dynamic>.from(payload));
+    return const {'ssh_ok': true, 'tmux_ok': true, 'pane_count': 3, 'sessions': ['main', 'codex']};
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> listPanes() async => const [];
+
+  @override
+  Future<String> capturePane(String paneRef, {int history = 500}) async => '';
+
+  @override
+  Future<void> sendPaneKey(String paneRef, String key) async {}
 }
 
 Widget wrap(Widget child) => MaterialApp(theme: AppTheme.light(), home: child);

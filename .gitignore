@@ -4,8 +4,11 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+.venv
 .venv/
 venv/
+venv
+client/.venv
 
 # Local runtime configuration and secrets
 .env
