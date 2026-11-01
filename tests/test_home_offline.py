@@ -31,7 +31,7 @@ class HomeOfflineCacheTests(unittest.TestCase):
         self.tmux.panes[0]["command"] = "claude"   # the fake only serves a transcript for claude
         self.client = TestClient(create_app(
             self.tmux, password=PASSWORD, session_secret="test-secret",
-            terminal_factory=FakeTerminalFactory(), share_db=":memory:",
+            terminal_factory=FakeTerminalFactory(), share_db=":memory:", home_db=":memory:",
             remote_store=FakeRemoteStore(), remote_runner_factory=FakeSSHRunner))
         self.client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
 

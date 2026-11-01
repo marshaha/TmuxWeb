@@ -99,6 +99,7 @@
 - 插件权限：manifest 不写 `permissions = ["mcp"]` 的插件调用 `ctx.add_mcp_tool` 必须加载失败并在 `/api/plugins` 报错；没写 `assets` 的插件 `/plugin-assets/<它>/...` 返回 403。
 - 插件扩展点：启用 example 后 `/api/plugins` 的 `buttons` 里出现条目、侧栏出现插头图标、`/mcp` 的 `tools/list` 里有 `example_status`、`/plugin-assets/example/index.html` 返回 200；关掉后三者一起消失；`/plugin-assets/example/../plugin.py` 必须 404。
 - 主题跟账号走：在 A 浏览器选 Claude Code → 清空 B 浏览器的 cookie/localStorage 登录 → 应直接是深色、不再闪米白；`/api/prefs` 未登录 401、未知键 400、空值 400。
+- 任何测试里 `create_app(...)` 都要带 `home_db=":memory:"`：不带就会读部署的 `home.db`，线上收藏的 pane 会插进断言里当第 0 条（`test_home_offline` 就是这样红的）。
 - 客户端打包壳：`python -m unittest tests.test_client_packaging`（CI 工作流里 `if:` 不得出现 secrets、macOS 两个 entitlements 必须有 `network.client`、web 清单与首页 meta 是产品名和品牌色）。
 - 客户端发送失败：消息留在记录里、旁边有「重发」，输入框清空，状态行转红（`chat_screen_test`、`chat_live_test` 钉这三条）。
 - 主题：设置 → 主题 展开后 6 个色板，点 ChatGPT/Claude/GitHub/Claude Code/夜间 每个页面立刻换色并记住；深色主题下不应出现扎眼的白色块（控制台的输入框、主页的搜索框/状态标签、多窗口的选中项都要跟着变暗）。
