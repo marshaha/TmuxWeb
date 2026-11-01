@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+
+import 'app_socket.dart';
 
 /// Live screen stream for screen-mode panes, mirroring web/index.html's
 /// `/ws/panes/{id}` socket: the server sends `{type: 'capture',
@@ -15,7 +16,7 @@ class ScreenStream {
   final Map<String, String> headers;
 
   final _controller = StreamController<String>();
-  WebSocket? _socket;
+  AppSocket? _socket;
   Timer? _retry;
   bool _closed = false;
 
@@ -28,13 +29,13 @@ class ScreenStream {
   Future<void> _connect() async {
     if (_closed) return;
     try {
-      final socket = await WebSocket.connect(uri.toString(), headers: headers);
+      final socket = await AppSocket.connect(uri, headers: headers);
       if (_closed) {
         await socket.close();
         return;
       }
       _socket = socket;
-      socket.listen(
+      socket.stream.listen(
         (data) {
           if (_closed || data is! String) return;
           try {

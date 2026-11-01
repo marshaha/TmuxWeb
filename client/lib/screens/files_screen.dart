@@ -1,13 +1,12 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../api/api_client.dart';
+import '../services/save_file.dart';
 import '../models/models.dart';
 import '../theme.dart';
 
@@ -62,13 +61,9 @@ class _FilesScreenState extends State<FilesScreen> {
   }
 
   Future<void> _save(List<int> bytes, String name) async {
-    final directory = await getApplicationDocumentsDirectory();
-    final folder = Directory('${directory.path}/tmuxweb');
-    await folder.create(recursive: true);
-    final file = File('${folder.path}/$name');
-    await file.writeAsBytes(bytes);
+    final saved = await saveFileBytes(name, bytes);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已保存到 ${file.path}')));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已保存到 $saved')));
   }
 
   Future<void> _download(FileEntry entry) async {

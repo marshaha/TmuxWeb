@@ -1,13 +1,12 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/api_client.dart';
 import '../services/config_crypto.dart';
+import '../services/save_file.dart';
 import '../services/config_import.dart';
 import '../theme.dart';
 import 'hosts_admin_screen.dart';
@@ -189,20 +188,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       final envelope = ConfigCrypto.encrypt(bundle, password);
       final stamp = DateTime.now().toIso8601String().substring(0, 19).replaceAll(RegExp(r'[:T]'), '-');
-      final directory = await getApplicationDocumentsDirectory();
-      // Synchronous writes on purpose: the bundle is small (a host
-      // list), this runs once on an explicit tap, and async dart:io
-      // does not complete under flutter_tester's fake async, which
-      // would leave this flow untestable through the UI.
-      final folder = Directory('${directory.path}/tmuxweb')..createSync(recursive: true);
-      final file = File('${folder.path}/tmuxweb-$which-$stamp.tmuxweb.json')
-        ..writeAsStringSync(const JsonEncoder.withIndent('  ').convert(envelope));
+      // saveFileBytes writes synchronously on both platforms (sync
+      // dart:io natively, sync DOM calls on web), so this still
+      // completes under flutter_tester's fake async, where async
+      // dart:io never does.
+      final saved = await saveFileBytes(
+        'tmuxweb-$which-$stamp.tmuxweb.json',
+        utf8.encode(const JsonEncoder.withIndent('  ').convert(envelope)),
+      );
       if (!mounted) return;
       final label = which == 'grid' ? '分窗布局' : which == 'hosts' ? '服务器配置' : '全部';
       setState(() {
         _exportBusy = false;
         _exportStatus = '已加密导出 $label${hostCount > 0 ? '（$hostCount 台主机）' : ''}'
-            '${panes > 0 ? '（$panes 个窗口）' : ''}，导入需要同一个密码\n已保存到 ${file.path}';
+            '${panes > 0 ? '（$panes 个窗口）' : ''}，导入需要同一个密码\n已保存到 $saved';
       });
     } catch (error) {
       if (!mounted) return;

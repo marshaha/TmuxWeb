@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
+import '../services/app_socket.dart';
 import '../theme.dart';
 
 /// Real PTY terminal for one pane (local or SSH), driven by the server's
@@ -30,7 +30,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
     ..onOutput = _sendOutput
     ..onResize = _sendResize;
 
-  WebSocket? _socket;
+  AppSocket? _socket;
   String _status = '连接中…';
   bool _alive = true;
   bool _paused = false;
@@ -72,13 +72,13 @@ class _TerminalScreenState extends State<TerminalScreen> {
 
   void _sendOutput(String data) {
     final socket = _socket;
-    if (socket == null || socket.readyState != WebSocket.open) return;
+    if (socket == null || !socket.isOpen) return;
     socket.add(jsonEncode({'type': 'input', 'data': data}));
   }
 
   void _sendResize(int cols, int rows, int pixelWidth, int pixelHeight) {
     final socket = _socket;
-    if (socket == null || socket.readyState != WebSocket.open) return;
+    if (socket == null || !socket.isOpen) return;
     socket.add(jsonEncode({'type': 'resize', 'cols': cols, 'rows': rows}));
   }
 
@@ -91,14 +91,14 @@ class _TerminalScreenState extends State<TerminalScreen> {
     );
     setState(() => _status = '连接中…');
     try {
-      final socket = await WebSocket.connect(uri.toString(), headers: widget.api.wsHeaders);
+      final socket = await AppSocket.connect(uri, headers: widget.api.wsHeaders);
       if (!mounted || !_alive) {
         await socket.close();
         return;
       }
       _socket = socket;
       setState(() => _status = '已连接 · ${widget.pane.label}');
-      socket.listen(
+      socket.stream.listen(
         (data) {
           if (!_alive) return;
           if (data is String) {

@@ -16,6 +16,9 @@ dependencies:
   file_picker: ^13.3.0
   path_provider: ^2.1.6
   pointycastle: ^4.0.0
+  # Web socket + download support (package:web is only imported
+  # from the web implementation; native builds never load it).
+  web: ^1.1.0
 
 dev_dependencies:
   flutter_test:
