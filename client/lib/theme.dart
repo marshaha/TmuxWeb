@@ -15,6 +15,7 @@ class AppPalette {
     required this.faint,
     required this.line,
     required this.page,
+    required this.sidebar,
     required this.card,
     required this.accent,
     required this.green,
@@ -30,6 +31,7 @@ class AppPalette {
   final Color faint;
   final Color line;
   final Color page;
+  final Color sidebar;
   final Color card;
   final Color accent;
   final Color green;
@@ -49,6 +51,7 @@ class AppThemes {
     faint: Color(0xFF9B998F),
     line: Color(0xFFDDDCD5),
     page: Color(0xFFF7F6F2),
+    sidebar: Color(0xFFEEEDE8),
     card: Color(0xFFFFFFFF),
     accent: Color(0xFFC96442),
     green: Color(0xFF4F9A65),
@@ -65,6 +68,7 @@ class AppThemes {
     faint: Color(0xFF8E8E8E),
     line: Color(0xFFE3E3E3),
     page: Color(0xFFFFFFFF),
+    sidebar: Color(0xFFF7F7F8),
     card: Color(0xFFFFFFFF),
     accent: Color(0xFF10A37F),
     green: Color(0xFF10A37F),
@@ -81,6 +85,7 @@ class AppThemes {
     faint: Color(0xFFA49F95),
     line: Color(0xFFE2DDD2),
     page: Color(0xFFFAF9F5),
+    sidebar: Color(0xFFF0EEE6),
     card: Color(0xFFFFFFFF),
     accent: Color(0xFFD97757),
     green: Color(0xFF5A8F6B),
@@ -97,6 +102,7 @@ class AppThemes {
     faint: Color(0xFF818B98),
     line: Color(0xFFD1D9E0),
     page: Color(0xFFFFFFFF),
+    sidebar: Color(0xFFF6F8FA),
     card: Color(0xFFFFFFFF),
     accent: Color(0xFF0969DA),
     green: Color(0xFF1A7F37),
@@ -113,6 +119,7 @@ class AppThemes {
     faint: Color(0xFF7C766E),
     line: Color(0xFF3A3632),
     page: Color(0xFF1A1917),
+    sidebar: Color(0xFF151412),
     card: Color(0xFF232120),
     accent: Color(0xFFD97757),
     green: Color(0xFF5AA87A),
@@ -129,6 +136,7 @@ class AppThemes {
     faint: Color(0xFF76746E),
     line: Color(0xFF33343D),
     page: Color(0xFF15161A),
+    sidebar: Color(0xFF111216),
     card: Color(0xFF1E1F25),
     accent: Color(0xFF7AA2F7),
     green: Color(0xFF6CC08B),
@@ -171,6 +179,7 @@ class AppTheme {
   static Color get faint => _current.faint;
   static Color get line => _current.line;
   static Color get page => _current.page;
+  static Color get sidebar => _current.sidebar;
   static Color get card => _current.card;
   static Color get accent => _current.accent;
   static Color get green => _current.green;

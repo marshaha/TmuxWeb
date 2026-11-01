@@ -11,8 +11,18 @@ import 'grid_screen.dart';
 import 'home_board_screen.dart';
 import 'hosts_admin_screen.dart';
 import 'settings_screen.dart';
+import 'terminal_screen.dart';
 
-/// Host → pane browser: the mobile equivalent of the web sidebar.
+/// Host → pane browser. Narrow screens keep the mobile flow (the tree is a
+/// full-screen page, taps push); on wide screens (>= 861px, web's own
+/// narrow breakpoint) this becomes the web console shell: a fixed 280px
+/// sidebar on the left and a detail pane on the right, like web's
+/// `grid-template-columns: var(--side-w,280px) minmax(0,1fr)`.
+///
+/// Web parity notes: sidebar width 280px is web's --side-w default; the
+/// detail defaults to the home board and shows an embedded chat for the
+/// selected pane (web: the sidebar + conversation). Drag-resizing the
+/// sidebar (web's side-resizer) is not in this cut.
 class HostsScreen extends StatefulWidget {
   const HostsScreen({super.key, required this.api, required this.baseUrl});
 
@@ -30,6 +40,16 @@ class _HostsScreenState extends State<HostsScreen> {
   String? _error;
   bool _loading = true;
   Timer? _stateTimer;
+
+  /// Wide-shell only: the pane shown in the detail pane. Null means the
+  /// detail shows the home board. Never set on narrow screens (taps push).
+  Pane? _selectedPane;
+
+  /// Web's narrow breakpoint: at or below 860px the sidebar is an overlay.
+  static const double _wideBreakpoint = 861;
+
+  /// Web's --side-w default for the console sidebar.
+  static const double _sidebarWidth = 280;
 
   @override
   void initState() {
@@ -97,6 +117,11 @@ class _HostsScreenState extends State<HostsScreen> {
         _hosts = hosts;
         _error = null;
         _loading = false;
+        // Prune a wide-shell selection whose pane went away with the reload.
+        final selected = _selectedPane;
+        if (selected != null && !hosts.any((host) => host.panes.any((pane) => pane.ref == selected.ref))) {
+          _selectedPane = null;
+        }
       });
       unawaited(_refreshStates());
     } catch (error) {
@@ -111,6 +136,23 @@ class _HostsScreenState extends State<HostsScreen> {
   int get _paneCount => (_hosts ?? const <Host>[]).fold<int>(0, (sum, host) => sum + host.panes.length);
 
   void _openPane(Pane pane) {
+    final api = widget.api;
+    if (MediaQuery.sizeOf(context).width >= _wideBreakpoint) {
+      // Wide shell: select into the detail pane instead of pushing.
+      setState(() => _selectedPane = pane);
+      return;
+    }
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ChatScreen(
+        source: PaneChatSource(api: api, pane: pane),
+        terminalApi: api is TerminalApi ? api as TerminalApi : null,
+        baseUrl: widget.baseUrl,
+      ),
+    ));
+  }
+
+  /// Full-screen chat for a pane (detail header's "open full" action).
+  void _openPaneFull(Pane pane) {
     final api = widget.api;
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => ChatScreen(
@@ -195,6 +237,14 @@ class _HostsScreenState extends State<HostsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      if (constraints.maxWidth >= _wideBreakpoint) return _buildWide();
+      return _buildNarrow();
+    });
+  }
+
+  /// Narrow flow, unchanged: the tree is a full-screen page.
+  Widget _buildNarrow() {
     return Scaffold(
       appBar: AppBar(
         title: Column(
@@ -204,46 +254,7 @@ class _HostsScreenState extends State<HostsScreen> {
             Text(widget.baseUrl, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w400, color: AppTheme.faint)),
           ],
         ),
-        actions: [
-          IconButton(
-            key: const Key('grid'),
-            tooltip: '多窗口',
-            onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => GridScreen(api: widget.api, baseUrl: widget.baseUrl))),
-            icon: const Icon(Icons.grid_view_outlined, size: 20),
-          ),
-          IconButton(
-            key: const Key('home-board'),
-            tooltip: '主页板',
-            onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => HomeBoardScreen(api: widget.api, baseUrl: widget.baseUrl))),
-            icon: const Icon(Icons.dashboard_outlined, size: 20),
-          ),
-          IconButton(
-            key: const Key('settings'),
-            tooltip: '设置',
-            onPressed: () async {
-              await Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => SettingsScreen(api: widget.api, baseUrl: widget.baseUrl),
-              ));
-              await _load();
-            },
-            icon: const Icon(Icons.settings_outlined, size: 20),
-          ),
-          IconButton(
-            key: const Key('hosts-admin'),
-            tooltip: '服务器管理',
-            onPressed: () async {
-              await Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => HostsAdminScreen(api: widget.api),
-              ));
-              await _load();
-            },
-            icon: const Icon(Icons.dns_outlined, size: 20),
-          ),
-          IconButton(tooltip: '打开分享链接', onPressed: _openShare, icon: const Icon(Icons.link, size: 20)),
-          IconButton(tooltip: '刷新', onPressed: _load, icon: const Icon(Icons.refresh, size: 20)),
-        ],
+        actions: _actions(wide: false),
       ),
       body: RefreshIndicator(onRefresh: _load, child: _buildBody()),
       bottomNavigationBar: Container(
@@ -254,6 +265,195 @@ class _HostsScreenState extends State<HostsScreen> {
           style: TextStyle(fontSize: 11.5, color: AppTheme.faint),
         ),
       ),
+    );
+  }
+
+  /// Shared header actions. Wide mode differs in one place: the board
+  /// button shows the board in the detail pane instead of pushing a page.
+  List<Widget> _actions({required bool wide}) {
+    final density = wide ? VisualDensity.compact : null;
+    return [
+      IconButton(
+        key: const Key('grid'),
+        tooltip: '多窗口',
+        visualDensity: density,
+        onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => GridScreen(api: widget.api, baseUrl: widget.baseUrl))),
+        icon: const Icon(Icons.grid_view_outlined, size: 20),
+      ),
+      IconButton(
+        key: const Key('home-board'),
+        tooltip: '主页板',
+        visualDensity: density,
+        onPressed: wide
+            ? () => setState(() => _selectedPane = null)
+            : () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => HomeBoardScreen(api: widget.api, baseUrl: widget.baseUrl))),
+        icon: Icon(
+          Icons.dashboard_outlined,
+          size: 20,
+          color: wide && _selectedPane == null ? AppTheme.accent : null,
+        ),
+      ),
+      IconButton(
+        key: const Key('settings'),
+        tooltip: '设置',
+        visualDensity: density,
+        onPressed: () async {
+          await Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => SettingsScreen(api: widget.api, baseUrl: widget.baseUrl),
+          ));
+          await _load();
+        },
+        icon: const Icon(Icons.settings_outlined, size: 20),
+      ),
+      IconButton(
+        key: const Key('hosts-admin'),
+        tooltip: '服务器管理',
+        visualDensity: density,
+        onPressed: () async {
+          await Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => HostsAdminScreen(api: widget.api),
+          ));
+          await _load();
+        },
+        icon: const Icon(Icons.dns_outlined, size: 20),
+      ),
+      IconButton(
+          tooltip: '打开分享链接', visualDensity: density, onPressed: _openShare, icon: const Icon(Icons.link, size: 20)),
+      IconButton(tooltip: '刷新', visualDensity: density, onPressed: _load, icon: const Icon(Icons.refresh, size: 20)),
+    ];
+  }
+
+  /// Wide shell: fixed sidebar + detail pane, mirroring web's console grid.
+  Widget _buildWide() {
+    return Scaffold(
+      body: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            width: _sidebarWidth,
+            decoration: BoxDecoration(
+              color: AppTheme.sidebar,
+              border: Border(right: BorderSide(color: AppTheme.line)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('会话', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 2),
+                      Text(
+                        widget.baseUrl,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 11, color: AppTheme.faint),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(children: _actions(wide: true)),
+                    ],
+                  ),
+                ),
+                Expanded(child: RefreshIndicator(onRefresh: _load, child: _buildBody())),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
+                  child: Text(
+                    _hosts == null ? '' : '${_hosts!.length} 台主机 · $_paneCount 个 pane',
+                    style: TextStyle(fontSize: 11.5, color: AppTheme.faint),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(child: _buildDetail()),
+        ],
+      ),
+    );
+  }
+
+  /// Detail pane: the home board by default, an embedded chat for the
+  /// selected pane (web: sidebar + conversation). The chat is centered
+  /// at web's 980px message width; the board uses the full detail width.
+  Widget _buildDetail() {
+    final pane = _selectedPane;
+    if (pane == null) {
+      return HomeBoardScreen(api: widget.api, baseUrl: widget.baseUrl);
+    }
+    final api = widget.api;
+    final terminalApi = api is TerminalApi ? api as TerminalApi : null;
+    final subtitle = [
+      pane.session,
+      if (pane.windowName.isNotEmpty) pane.windowName,
+      if (pane.command.isNotEmpty) pane.command,
+    ].join(' · ');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.line))),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(pane.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                    if (subtitle.isNotEmpty)
+                      Text(subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 11, color: AppTheme.faint)),
+                  ],
+                ),
+              ),
+              if (terminalApi != null)
+                IconButton(
+                  key: const Key('shell-detail-terminal'),
+                  tooltip: '终端',
+                  onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => TerminalScreen(api: terminalApi, pane: pane))),
+                  icon: const Icon(Icons.terminal, size: 20),
+                ),
+              IconButton(
+                key: const Key('shell-detail-open'),
+                tooltip: '完整对话',
+                onPressed: () => _openPaneFull(pane),
+                icon: const Icon(Icons.open_in_full, size: 20),
+              ),
+              IconButton(
+                key: const Key('shell-detail-close'),
+                tooltip: '返回主页板',
+                onPressed: () => setState(() => _selectedPane = null),
+                icon: const Icon(Icons.close, size: 20),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 980),
+              child: ChatScreen(
+                key: ValueKey('shell-chat-${pane.ref}'),
+                source: PaneChatSource(api: api, pane: pane),
+                terminalApi: terminalApi,
+                baseUrl: widget.baseUrl,
+                embedded: true,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -286,6 +486,8 @@ class _HostsScreenState extends State<HostsScreen> {
     return ListTile(
       key: Key('pane-${pane.ref}'),
       dense: true,
+      selected: _selectedPane?.ref == pane.ref,
+      selectedTileColor: AppTheme.accent.withValues(alpha: 0.08),
       contentPadding: const EdgeInsets.only(left: 62, right: 16),
       leading: SizedBox(
         width: 14,
