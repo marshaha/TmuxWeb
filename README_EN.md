@@ -153,6 +153,13 @@ The sidebar header is two stacked rows: the title on top, the icons on a full-wi
   carries a fade in the sidebar's own colour (only visible once an icon slides under it) — the "there is
   more" hint.
 
+**Sessions or files in the sidebar?** The console's (`/`) sidebar shows one of the two, and the rule is
+**the session list is always what you start with**. Clicking the folder icon in the header (or a directory in
+the panel) switches to the file browser; while it is open it follows the selected pane, and × (or the icon
+again) goes back to the sessions. The choice is **not remembered across page loads** — it used to be stored in
+`localStorage`, so a chat opened from the board, the grid or a link could start with 文件管理 instead of the
+server list, which looked random. The board and the grid only have the session tree, no file panel.
+
 Identical on the console, the board and the multi-window page (the latter two share `shell.css`).
 
 ### Message time

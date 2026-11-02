@@ -1196,6 +1196,18 @@ class TmuxWebTests(unittest.TestCase):
             self.assertEqual(client.get("/api/panes", headers={
                 "Authorization": "Bearer relay-token-value"}).status_code, 200)
 
+    def test_the_sidebar_always_opens_on_the_session_list(self):
+        """The file panel is an action, not a remembered preference: it used to be
+        restored from localStorage, so a chat opened from the board or the grid could
+        start with 文件管理 instead of the server list."""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn("id=\"file-panel\"", page)          # 控制台页面本身，不是登录页
+        self.assertNotIn("localStorage.getItem('tmux-files-mode')", page)
+        self.assertNotIn("localStorage.setItem('tmux-files-mode'", page)
+        # the panel still follows the pane while it is open
+        self.assertIn("if(state.filesMode)openFiles(null)", page)
+
     def test_refresh_on_a_local_pane_does_not_500(self):
         """The API passes refresh=1 for every transport; the local one has no cache to bypass."""
         self.login()
