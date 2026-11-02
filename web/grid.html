@@ -151,14 +151,19 @@
     .grid-pager{display:none}
     @media(max-width:760px){
       .grid.mode-grid,.grid.mode-canvas{scroll-snap-type:y proximity}
-      .grid-pager{position:fixed;right:10px;bottom:14px;z-index:7;display:flex;align-items:center;gap:2px;
-        padding:3px;border:1px solid var(--line);border-radius:999px;background:var(--surface);box-shadow:0 6px 18px #0002}
+      .grid-pager{position:fixed;right:8px;bottom:10px;z-index:7;display:flex;align-items:center;gap:0;
+        padding:2px;border:1px solid var(--line);border-radius:999px;background:var(--surface);box-shadow:0 4px 12px #0001}
       .grid-pager[hidden]{display:none}
-      .grid-pager button{display:grid;place-items:center;width:34px;height:34px;padding:0;border:0;border-radius:999px;
-        background:transparent;color:var(--ink);cursor:pointer}
-      .grid-pager button:disabled{opacity:.3;cursor:default}
-      .grid-pager span{min-width:44px;text-align:center;color:var(--muted);
-        font:11px ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+      .grid-pager button{display:grid;place-items:center;width:26px;height:26px;padding:0;border:0;border-radius:999px;
+        background:transparent;color:var(--muted);cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+      .grid-pager button:active:not(:disabled){background:rgba(0,0,0,.06);color:var(--ink)}
+      .grid-pager button:disabled{opacity:.28;cursor:default}
+      .grid-pager button .ico{width:12px;height:12px}
+      /* 视觉 26px，热区再向外扩 5px：手指点得准，胶囊看着又不占地方 */
+      .grid-pager button::after{content:'';position:absolute;inset:-5px;border-radius:999px}
+      .grid-pager button{position:relative}
+      .grid-pager span{min-width:34px;text-align:center;color:var(--faint);
+        font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
     }
     .presets{display:flex;flex-direction:column;gap:10px}
     .shape-row{display:flex;align-items:flex-end;gap:10px;padding:4px 0 2px}
@@ -873,13 +878,38 @@
   function bindPager(){
     const pager=$('grid-pager');
     if(!pager)return;
-    pager.addEventListener('click',event=>{
-      const button=event.target.closest('[data-page]');
+    let lastTap=0,lastDir=0;
+    const go=button=>{
       if(!button||button.disabled)return;
       const grid=$('grid');
       const step=pagerStep();
-      const index=step?Math.round(grid.scrollTop/step):0;
-      grid.scrollTo({top:(index+Number(button.dataset.page))*step,behavior:'smooth'});
+      if(!step)return;
+      const dir=Number(button.dataset.page);
+      const now=Date.now();
+      // 触屏上 pointerup 和 click 都会来，同一下只处理一次
+      if(dir===lastDir&&now-lastTap<500)return;
+      lastTap=now;lastDir=dir;
+      const index=Math.max(0,Math.round(grid.scrollTop/step));
+      const target=Math.max(0,(index+dir)*step);
+      try{grid.scrollTo({top:target,behavior:'smooth'});}catch{grid.scrollTop=target;}
+      // 老 Safari 会忽略 scrollTo 的 options（'smooth' 不支持时整个调用无效），兜一次直接赋值
+      setTimeout(()=>{
+        if(Math.abs(grid.scrollTop-target)>step*0.5&&Math.abs(grid.scrollTop-(index*step))<2){
+          grid.scrollTop=target;
+        }
+      },320);
+    };
+    pager.addEventListener('click',event=>{
+      const button=event.target.closest('[data-page]');
+      if(!button)return;
+      event.preventDefault();
+      go(button);
+    });
+    // 有些 WebView 在固定定位层上不派发 click，pointerup 兜底
+    pager.addEventListener('pointerup',event=>{
+      const button=event.target.closest('[data-page]');
+      if(!button)return;
+      go(button);
     });
     let queued=0;
     const kick=()=>{if(queued)return;queued=requestAnimationFrame(()=>{queued=0;syncPager();});};

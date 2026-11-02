@@ -162,7 +162,13 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("function syncPager(", page)
         self.assertIn("function bindPager(", page)
         self.assertIn("scroll-snap-type:y proximity", page)
-        self.assertIn("grid.scrollTo({top:(index+Number(button.dataset.page))*step", page)
+        # 按钮小（26px）但热区外扩，且点击/lastTap 去重 + scrollTo 失败时直接赋值
+        self.assertIn(".grid-pager button{display:grid;place-items:center;width:26px;height:26px", page)
+        self.assertIn(".grid-pager button::after{content:'';position:absolute;inset:-5px", page)
+        self.assertIn("touch-action:manipulation", page)
+        self.assertIn("if(dir===lastDir&&now-lastTap<500)return;", page)
+        self.assertIn("try{grid.scrollTo({top:target,behavior:'smooth'});}catch{grid.scrollTop=target;}", page)
+        self.assertIn("pager.addEventListener('pointerup'", page)     # 有些 WebView 不派发 click
 
     def test_the_canvas_still_falls_back_to_one_column_on_a_phone(self):
         """桌面上画布靠内联 width/height 撑大，手机上必须让位给单列，否则横向溢出。"""
