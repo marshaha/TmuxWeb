@@ -8,23 +8,29 @@
 
 /* ---- ChatGPT: white + teal, like the chat UI most people have open all day */
 :root[data-theme="chatgpt"]{
-  --page:#ffffff;--sidebar:#f7f7f8;--surface:#ffffff;--surface2:#f7f7f8;
-  --ink:#0d0d0d;--muted:#5d5d5d;--faint:#8e8e8e;--line:#e3e3e3;
+  --page:#ffffff;--bg:#ffffff;--sidebar:#f7f7f8;--surface:#ffffff;--surface2:#f7f7f8;
+  --card:#ffffff;--card-hover:#f2f2f2;--bubble:#f4f4f4;--line:#e3e3e3;--line-strong:#d9d9d9;
+  --shimmer:rgba(255,255,255,.75);
+  --ink:#0d0d0d;--muted:#5d5d5d;--faint:#868686;--line:#e3e3e3;
   --accent:#10a37f;--green:#10a37f;--danger:#ef4146;
   --shadow:0 8px 30px rgba(0,0,0,.08);
 }
 
 /* ---- Claude: the cream + terracotta of claude.ai */
 :root[data-theme="claude"]{
-  --page:#faf9f5;--sidebar:#f0eee6;--surface:#ffffff;--surface2:#f5f3ee;
-  --ink:#1f1e1d;--muted:#6b6a63;--faint:#a49f95;--line:#e2ddd2;
+  --page:#faf9f5;--bg:#f0eee6;--sidebar:#f0eee6;--surface:#ffffff;--surface2:#f5f3ee;
+  --card:#ffffff;--card-hover:#f4f2ec;--bubble:#e9e7df;--line:#e2ddd2;--line-strong:#d8d2c6;
+  --shimmer:rgba(255,255,255,.75);
+  --ink:#1f1e1d;--muted:#6b6a63;--faint:#948f84;--line:#e2ddd2;
   --accent:#d97757;--green:#5a8f6b;--danger:#b04a3f;
   --shadow:0 8px 30px rgba(31,30,29,.07);
 }
 
 /* ---- GitHub: the light theme of github.com */
 :root[data-theme="github"]{
-  --page:#ffffff;--sidebar:#f6f8fa;--surface:#ffffff;--surface2:#f6f8fa;
+  --page:#ffffff;--bg:#ffffff;--sidebar:#f6f8fa;--surface:#ffffff;--surface2:#f6f8fa;
+  --card:#ffffff;--card-hover:#f0f3f6;--bubble:#f6f8fa;--line:#d1d9e0;--line-strong:#c3ccd6;
+  --shimmer:rgba(255,255,255,.75);
   --ink:#1f2328;--muted:#59636e;--faint:#818b98;--line:#d1d9e0;
   --accent:#0969da;--green:#1a7f37;--danger:#cf222e;
   --shadow:0 8px 30px rgba(31,35,40,.08);
@@ -33,7 +39,9 @@
 /* ---- Claude Code: the dark terminal the CLI runs in */
 :root[data-theme="claude-code"]{
   color-scheme:dark;
-  --page:#1a1917;--sidebar:#151412;--surface:#232120;--surface2:#2a2725;
+  --page:#1a1917;--bg:#1a1917;--sidebar:#151412;--surface:#232120;--surface2:#2a2725;
+  --card:#2a2725;--card-hover:#332f2c;--bubble:#2f2b28;--line:#3a3632;--line-strong:#4a453f;
+  --shimmer:rgba(255,255,255,.06);
   --ink:#e8e4dc;--muted:#a8a29a;--faint:#7c766e;--line:#3a3632;
   --accent:#d97757;--green:#5aa87a;--danger:#e0776b;
   --shadow:0 10px 34px rgba(0,0,0,.45);
@@ -42,7 +50,9 @@
 /* ---- Night: neutral dark, no brand colour */
 :root[data-theme="night"]{
   color-scheme:dark;
-  --page:#15161a;--sidebar:#111216;--surface:#1e1f25;--surface2:#25262d;
+  --page:#15161a;--bg:#15161a;--sidebar:#111216;--surface:#1e1f25;--surface2:#25262d;
+  --card:#24252b;--card-hover:#2c2d35;--bubble:#2a2c33;--line:#33343d;--line-strong:#3f414b;
+  --shimmer:rgba(255,255,255,.06);
   --ink:#e6e6e3;--muted:#a5a39c;--faint:#76746e;--line:#33343d;
   --accent:#7aa2f7;--green:#6cc08b;--danger:#d4736a;
   --shadow:0 10px 34px rgba(0,0,0,.45);

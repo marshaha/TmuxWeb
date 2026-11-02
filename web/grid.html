@@ -16,7 +16,7 @@
   <link rel="apple-touch-icon" href="/assets/app-icon-180.png">
   <title>多窗口 · TmuxWeb</title>
   <style>
-    :root{color-scheme:light;--page:#f7f7f5;--surface:#fff;--surface2:#f4f3ee;--ink:#242421;--muted:#73716b;--faint:#a09d95;--line:#dddcd5;--accent:#c96442;--green:#4f9a65;--amber:#d89a3c;--danger:#b34b43;--side-w:268px}
+    :root{color-scheme:light;--page:#f7f7f5;--surface:#fff;--surface2:#f4f3ee;--ink:#242421;--muted:#73716b;--faint:#a09d95;--line:#dddcd5;--accent:#c96442;--green:#4f9a65;--amber:#d89a3c;--danger:#b34b43;--side-w:268px;--card:#fff;--card-hover:#f3f2ed;--bubble:#e9e7df;--line-strong:#cbc9c0;--shimmer:var(--card-hover);--bg:#f7f7f5}
     *{box-sizing:border-box}
     html,body{height:100%}
     body{margin:0;background:var(--page);color:var(--ink);
@@ -36,7 +36,7 @@
     .top .count{color:var(--faint);font-size:11px}
     .spacer{flex:1}
     .btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 11px;border:1px solid var(--line);border-radius:9px;
-      background:#fff;color:var(--ink);font-size:12.5px;cursor:pointer;text-decoration:none;white-space:nowrap}
+      background:var(--card);color:var(--ink);font-size:12.5px;cursor:pointer;text-decoration:none;white-space:nowrap}
     .btn:hover{border-color:#c8c5bc;background:var(--surface2)}
     @media (max-width:1180px){
       .top .btn .lbl{display:none}
@@ -56,7 +56,7 @@
     .dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--faint)}
     .dot.idle{background:var(--green)}.dot.busy{background:var(--amber)}.dot.unknown{background:#cfccc4}
     .cell-btn{flex:none;display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer;text-decoration:none}
-    .cell-btn:hover{background:#fff;color:var(--ink)}
+    .cell-btn:hover{background:var(--card);color:var(--ink)}
     .cell-btn .ico{width:15px;height:15px}
     .cell iframe{flex:1;width:100%;min-height:0;border:0;background:var(--surface)}
     .splitter{flex:0 0 6px;cursor:col-resize;touch-action:none;position:relative}
@@ -70,10 +70,10 @@
     dialog::backdrop{background:#0006}
     .picker{padding:16px}
     .picker h2{margin:0 0 10px;font-size:16px}
-    .picker input{width:100%;height:38px;padding:0 11px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font:13px inherit;outline:none}
+    .picker input{width:100%;height:38px;padding:0 11px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);font:13px inherit;outline:none}
     .picker input:focus{border-color:var(--accent)}
     .plist{margin:10px 0 0;max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:10px}
-    .prow{display:flex;align-items:center;gap:9px;width:100%;padding:8px 10px;border:0;border-bottom:1px solid var(--line);background:#fff;color:var(--ink);text-align:left;cursor:pointer;font:inherit}
+    .prow{display:flex;align-items:center;gap:9px;width:100%;padding:8px 10px;border:0;border-bottom:1px solid var(--line);background:var(--card);color:var(--ink);text-align:left;cursor:pointer;font:inherit}
     .prow:last-child{border-bottom:0}
     .prow:hover{background:var(--surface2)}
     .prow .meta{flex:1;min-width:0}
@@ -81,7 +81,7 @@
     .prow .sub{color:var(--faint);font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .prow.added{opacity:.45;cursor:default}
     .picker-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
-    .seg{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:#fff}
+    .seg{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--card)}
     #grid-size{flex:none;max-width:min(48vw,430px);overflow-x:auto;scrollbar-width:none}
     #grid-size::-webkit-scrollbar{display:none}
     #grid-size button{flex:none}
@@ -149,7 +149,7 @@
       background:var(--surface);box-shadow:0 12px 30px #0002;display:flex;flex-direction:column;gap:8px}
     .pop[hidden]{display:none}
     .pop-grid{display:grid;grid-template-columns:repeat(6,22px);gap:3px}
-    .pop-grid button{width:22px;height:22px;padding:0;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+    .pop-grid button{width:22px;height:22px;padding:0;border:1px solid var(--line);border-radius:4px;background:var(--card);cursor:pointer}
     .pop-grid button.in{border-color:var(--accent);background:rgba(201,100,66,.16)}
     .pop-grid button.edge{border-color:var(--accent)}
     .pop-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -188,17 +188,17 @@
     .shape-row{display:flex;align-items:flex-end;gap:10px;padding:4px 0 2px}
     .shape-row label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
     .shape-row input{width:96px;height:36px;padding:0 10px;border:1px solid var(--line);border-radius:9px;
-      background:#fff;color:var(--ink);font:14px inherit;outline:none}
+      background:var(--card);color:var(--ink);font:14px inherit;outline:none}
     .shape-row input:focus{border-color:var(--accent)}
     .shape-row .times{color:var(--faint);padding-bottom:9px}
     .shape-hint{margin:4px 0 0;color:var(--faint);font-size:11.5px;line-height:1.5}
     #grid-size .custom{color:var(--muted)}
     #grid-size .custom:hover{color:var(--ink)}
     .presets .row{display:flex;gap:8px}
-    .presets .row input{flex:1;min-width:0;height:36px;padding:0 10px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font:13px inherit;outline:none}
+    .presets .row input{flex:1;min-width:0;height:36px;padding:0 10px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);font:13px inherit;outline:none}
     .presets .row input:focus{border-color:var(--accent)}
     .preset-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;overflow:hidden;max-height:46vh;overflow-y:auto}
-    .preset-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);background:#fff}
+    .preset-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);background:var(--card)}
     .preset-row:last-child{border-bottom:0}
     .preset-row .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
     .preset-row .meta{color:var(--faint);font-size:11px;white-space:nowrap}

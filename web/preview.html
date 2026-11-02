@@ -14,21 +14,21 @@
 <link rel="apple-touch-icon" href="/assets/app-icon-180.png">
 <title>TmuxWeb · 对话预览</title>
 <style>
-  :root{--bg:#F0EEE6;--surface:#FAF9F5;--card:#fff;--ink:#262520;--muted:#6f6a5e;--faint:#a09a8c;--line:#E2DFD5;--accent:#C96442;--green:#3f8f5f;--amber:#D89A3C;--danger:#B4442F}
+  :root{--bg:#F0EEE6;--surface:#FAF9F5;--card:#fff;--ink:#262520;--muted:#6f6a5e;--faint:#a09a8c;--line:#E2DFD5;--accent:#C96442;--green:#3f8f5f;--amber:#D89A3C;--danger:#B4442F;--card-hover:#f3f2ed;--bubble:#e9e7df;--line-strong:#cbc9c0;--shimmer:var(--card-hover)}
   *{box-sizing:border-box}
   html,body{height:100%}
   body{margin:0;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}
   .ico{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;display:block}
   header{flex:none;display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--surface);position:sticky;top:0;z-index:5}
-  .icon-btn{display:grid;place-items:center;width:32px;height:32px;padding:0;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--muted);cursor:pointer;text-decoration:none;flex:none}
+  .icon-btn{display:grid;place-items:center;width:32px;height:32px;padding:0;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--muted);cursor:pointer;text-decoration:none;flex:none}
   .icon-btn:hover{color:var(--accent);border-color:#d8c4b8}
   .head-main{flex:1;min-width:0}
   .title{font-size:14px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .sub{font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .state{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:20px;border:1px solid var(--line);font-size:10.5px;color:var(--muted);background:var(--card);flex:none}
   .state i{width:6px;height:6px;border-radius:50%;background:var(--faint);display:block}
-  .state.busy{color:#8a5a12;border-color:#eadfc6;background:#fdf6e8}.state.busy i{background:var(--amber);animation:pulse 1.2s ease-in-out infinite}
-  .state.idle{color:#3b7350;border-color:#d6e6da;background:#f2f8f3}.state.idle i{background:var(--green)}
+  .state.busy{color:#8a5a12;border-color:#eadfc6;background:color-mix(in srgb,var(--amber) 16%,var(--card))}.state.busy i{background:var(--amber);animation:pulse 1.2s ease-in-out infinite}
+  .state.idle{color:#3b7350;border-color:#d6e6da;background:color-mix(in srgb,var(--green) 14%,var(--card))}.state.idle i{background:var(--green)}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
   main{flex:1;min-height:0;overflow-x:hidden;overflow-y:auto;padding:16px 14px 8px;scrollbar-gutter:stable}
   /* embedded in /grid: the cell header carries the title and the actions */
@@ -41,36 +41,36 @@
      stretch the whole message column and give the chat a horizontal scrollbar on a phone */
   .msg>*{min-width:0;max-width:100%}
   .msg.user{justify-content:flex-end}
-  .bubble{max-width:min(86%,720px);padding:10px 14px;border-radius:16px;background:#e9e7df;white-space:pre-wrap;overflow-wrap:anywhere}
-  .body{max-width:min(94%,780px);min-width:0;padding:12px 15px;border:1px solid var(--line);border-radius:16px;background:#fff;font-size:14px;line-height:1.65;overflow-wrap:anywhere}pre{max-width:100%}.body>*{min-width:0;max-width:100%}
+  .bubble{max-width:min(86%,720px);padding:10px 14px;border-radius:16px;background:var(--bubble);white-space:pre-wrap;overflow-wrap:anywhere}
+  .body{max-width:min(94%,780px);min-width:0;padding:12px 15px;border:1px solid var(--line);border-radius:16px;background:var(--card);font-size:14px;line-height:1.65;overflow-wrap:anywhere}pre{max-width:100%}.body>*{min-width:0;max-width:100%}
   .body>*:first-child{margin-top:0}.body>*:last-child{margin-bottom:0}
   .body pre{overflow:auto;padding:12px;border-radius:10px;background:#272622;color:#f5f4ed;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
-  .body :not(pre)>code{padding:2px 5px;border-radius:5px;background:#eceae3;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .body :not(pre)>code{padding:2px 5px;border-radius:5px;background:var(--surface2);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   .body table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:12px 0;font-size:13px}
   .body th,.body td{padding:7px 10px;border:1px solid #d1cfc6;text-align:left}
-  .body th{background:#eceae3}
+  .body th{background:var(--surface2)}
   .body blockquote{margin-left:0;padding-left:12px;border-left:3px solid var(--accent);color:var(--muted)}
   .body a{color:var(--accent)}
   .msg-tools{display:flex;align-items:center;justify-content:flex-end;margin-top:6px;opacity:.5}
   .msg-tools .msg-time{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:auto;line-height:1;color:var(--faint);font:10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;letter-spacing:.02em}
   .copy
   .msg:hover .msg-tools{opacity:1}
-  .copy{flex:0 0 auto;white-space:nowrap;height:22px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.8);color:var(--muted);font-size:11px;cursor:pointer}
+  .copy{flex:0 0 auto;white-space:nowrap;height:22px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--card-hover);color:var(--muted);font-size:11px;cursor:pointer}
   .copy .ico{display:inline-block;width:11px;height:11px;margin-right:4px;vertical-align:-1px}
-  .copy:hover{background:#fff;color:var(--ink)}
+  .copy:hover{background:var(--card);color:var(--ink)}
   .empty{padding:40px 16px;text-align:center;color:var(--muted)}
-  .notice{padding:8px 12px;margin:0 0 12px;border:1px solid #eadfc6;border-radius:10px;background:#fdf6e8;color:#8a5a12;font-size:12px}
+  .notice{padding:8px 12px;margin:0 0 12px;border:1px solid #eadfc6;border-radius:10px;background:color-mix(in srgb,var(--amber) 16%,var(--card));color:#8a5a12;font-size:12px}
   .screen-fallback{flex:1;display:flex;flex-direction:column;gap:10px;padding:4px 2px;min-height:0}
   /* screen mode owns the column height: the pre scrolls instead of stretching the page */
   body.screen-mode main{display:flex;overflow:hidden}
   body.screen-mode #messages{flex:1;min-height:0;display:flex}
   .screen-note{margin:0;color:var(--muted);font-size:12.5px;line-height:1.6}
-  .screen-term{align-self:flex-start;height:32px;padding:0 12px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font:12.5px inherit;cursor:pointer}
+  .screen-term{align-self:flex-start;height:32px;padding:0 12px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);font:12.5px inherit;cursor:pointer}
   .screen-term:hover{border-color:#c8c5bc}
   .screen{flex:1 1 auto;min-height:0;margin:0;padding:10px 12px;overflow:auto;border-radius:10px;background:#111;
     color:#e7e5df;font:11.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
   footer{flex:none;padding:9px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--surface)}
-  .composer{display:flex;align-items:flex-end;gap:8px;padding:8px 10px;border:1px solid #cbc9c0;border-radius:14px;background:#fff}
+  .composer{display:flex;align-items:flex-end;gap:8px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:14px;background:var(--card)}
   textarea{flex:1;min-height:22px;max-height:120px;padding:4px 2px;border:0;resize:none;background:transparent;color:var(--ink);outline:none;font:inherit;line-height:1.5}
   .send{display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:50%;background:#292825;color:#fff;cursor:pointer;flex:none}
   .send:disabled{background:#c8c5bd;cursor:not-allowed}

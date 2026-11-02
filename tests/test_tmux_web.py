@@ -754,7 +754,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".assistant-body>.msg-actions{margin-top:12px;padding-top:8px;border-top:1px solid var(--line)}", page)
         # 气泡自己限制宽度并裁掉溢出（fit-content 不会再被宽内容撑大）
         self.assertIn(".assistant-body{width:fit-content;max-width:min(92%,820px);min-width:0;overflow-x:clip;", page)
-        self.assertIn(".block-wrap{position:relative;margin:10px 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fbfaf7;max-width:100%;min-width:0}", page)
+        self.assertIn(".block-wrap{position:relative;margin:10px 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface2);max-width:100%;min-width:0}", page)
         self.assertIn(".table-holder{padding:8px 10px;overflow:auto;max-width:100%;", page)
         self.assertIn(".assistant-body .table-holder table{display:table;width:max-content;min-width:100%;max-width:none;", page)
         # 触屏没有悬停：复制行常显（0.45 的透明度在手机上像"没有了"）
@@ -1029,7 +1029,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("serviceWorker.register('/sw.js')", response.text)
         self.assertIn("-webkit-text-size-adjust:100%", response.text)
         self.assertIn(".chat-message.assistant{justify-content:flex-start}", response.text)
-        self.assertIn("background:#fff;color:var(--ink);font-size:15px", response.text)
+        self.assertIn("background:var(--card);color:var(--ink);font-size:15px", response.text)
         self.assertIn("refreshTranscript(id,{force=false,refresh=false}", response.text)
         self.assertIn("state.selected!==id||state.mode!=='chat'", response.text)
         self.assertIn("/api/hosts'", response.text)

@@ -100,7 +100,13 @@ Claude Code（深色终端）、夜间（中性深灰）**。选择**跟着账�
 （控制台、主页、多窗口、终端、预览、登录、主机/分享管理）以及插件自己的页面一起变。
 
 实现上只换 CSS 变量（`--page/--surface/--ink/--accent/…`），`theme.css` 里 `:root[data-theme=…]` 的优先级
-高于各页自己的 `:root`，所以加新主题只需要加一段变量；深色主题额外有十几条「把硬编码的白底改成变量」的覆盖。
+高于各页自己的 `:root`，所以加新主题只需要加一段变量。
+变量分两层：骨架是 `--page/--sidebar/--surface/--surface2/--ink/--muted/--faint/--line/--accent`，
+「表面」是 `--card/--card-hover/--bubble/--line-strong/--shimmer`；页面里**不许再写死浅色底**，
+否则深色主题就是白底白字（`claude-code` 的多窗口和设置面板踩过这个坑）。
+彩色的浅底（状态胶囊、提示条）一律写成 `color-mix(in srgb,var(--green) 14%,var(--card))` 这种
+「色相 + 表面」的组合。回归测试 `tests/test_theme_contrast.py` 会扫描所有页面和共享资源，
+出现亮度 > 0.65 的写死底色直接失败。
 
 ### 侧边栏窄了怎么办
 

@@ -12,7 +12,7 @@
 (() => {
   const STYLE = `
   .ts-dialog{width:min(calc(100vw - 24px),560px);max-width:560px;max-height:86dvh;overflow:auto;padding:0;
-    border:1px solid var(--line,#dddcd5);border-radius:18px;background:#fff;color:var(--ink,#242421);
+    border:1px solid var(--line,#dddcd5);border-radius:18px;background:var(--card);color:var(--ink,#242421);
     box-shadow:0 24px 80px #0003;font:14px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif}
   .ts-dialog::backdrop{background:rgba(32,31,28,.28)}
   .ts-form{padding:0 0 4px}
@@ -40,27 +40,27 @@
   .ts-panel[hidden]{display:none}
   .ts-hint{margin:0 0 10px;color:var(--muted,#73716b);font-size:12px;line-height:1.6}
   .ts-field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px;font-size:12px;color:var(--muted,#73716b)}
-  .ts-field input{height:36px;padding:0 10px;border:1px solid var(--line,#dddcd5);border-radius:9px;background:#fff;
+  .ts-field input{height:36px;padding:0 10px;border:1px solid var(--line,#dddcd5);border-radius:9px;background:var(--card);
     color:inherit;font:13px inherit;outline:none}
   .ts-field input:focus{border-color:var(--accent,#c96442)}
   .ts-state{margin:6px 0 0;min-height:16px;color:var(--muted,#73716b);font-size:12px}
   .ts-state.good{color:var(--green,#4f9a65)}
   .ts-state.bad{color:var(--danger,#b34b43)}
   .ts-tabs{display:inline-flex;gap:2px;padding:2px;margin-bottom:10px;border:1px solid var(--line,#dddcd5);
-    border-radius:9px;background:#f6f5f1}
+    border-radius:9px;background:var(--surface2)}
   .ts-tabs button{height:26px;padding:0 12px;border:0;border-radius:7px;background:transparent;
     color:var(--muted,#73716b);font:12px inherit;cursor:pointer}
   .ts-tabs button.on{background:#292825;color:#fff}
   .ts-btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}
-  .ts-btn{height:30px;padding:0 12px;border:1px solid var(--line,#dddcd5);border-radius:9px;background:#fff;
+  .ts-btn{height:30px;padding:0 12px;border:1px solid var(--line,#dddcd5);border-radius:9px;background:var(--card);
     color:inherit;font:12px inherit;cursor:pointer}
-  .ts-btn:hover{border-color:#c8c5bc;background:#f7f6f2}
+  .ts-btn:hover{border-color:#c8c5bc;background:var(--surface2)}
   .ts-btn.primary{border-color:#292825;background:#292825;color:#fff}
   .ts-btn.primary:hover{background:#3a3934}
   .ts-btn.danger{color:var(--danger,#b34b43);border-color:#eed6cf}
-  .ts-btn.danger:hover{background:#fbf1ee}
+  .ts-btn.danger:hover{background:color-mix(in srgb,var(--danger) 12%,var(--card))}
   .ts-file{display:flex;align-items:center;gap:10px;margin:0 0 10px;padding:8px 10px;border:1px dashed var(--line,#dddcd5);
-    border-radius:10px;background:#faf9f6}
+    border-radius:10px;background:var(--surface2)}
   .ts-file-name{color:var(--muted,#73716b);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ts-file-name.picked{color:inherit}
   /* plugin manager */
@@ -69,22 +69,22 @@
   .ts-tail .ts-hint{margin:0}
   .ts-themes{display:flex;flex-wrap:wrap;gap:8px;padding:10px 0 6px}
   .ts-theme{display:flex;align-items:center;gap:8px;height:34px;padding:0 11px;border:1px solid var(--line,#dddcd5);
-    border-radius:10px;background:#fff;color:var(--ink,#242421);font:12px inherit;cursor:pointer}
-  .ts-theme:hover{border-color:#cbc9c0}
+    border-radius:10px;background:var(--card);color:var(--ink,#242421);font:12px inherit;cursor:pointer}
+  .ts-theme:hover{border-color:var(--line-strong)}
   .ts-theme[aria-pressed="true"]{border-color:var(--accent,#c96442);box-shadow:0 0 0 2px rgba(201,100,66,.18)}
   .ts-swatch{width:16px;height:16px;border-radius:50%;flex:none}
   .ts-plugin{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line,#dddcd5);
-    border-radius:12px;background:#faf9f6}
-  .ts-plugin.off{background:#f6f5f1}
+    border-radius:12px;background:var(--surface2)}
+  .ts-plugin.off{background:var(--surface2)}
   .ts-plugin-main{flex:1;min-width:0}
   .ts-plugin-name{font-weight:650;font-size:13px}
   .ts-plugin-ver{margin-left:6px;color:var(--faint,#a09d95);font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace}
   .ts-plugin .ts-hint{margin:3px 0 0;font-size:11.5px}
   .ts-plugin .ts-state{margin:3px 0 0;min-height:0;font-size:11.5px}
   .ts-switch{flex:none;position:relative;width:42px;height:24px;margin-top:2px;padding:0;border:1px solid var(--line,#dddcd5);
-    border-radius:999px;background:#e6e4dd;cursor:pointer;transition:background .15s,border-color .15s}
+    border-radius:999px;background:var(--surface2);cursor:pointer;transition:background .15s,border-color .15s}
   .ts-switch::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;
-    background:#fff;box-shadow:0 1px 2px #0002;transition:transform .15s}
+    background:var(--card);box-shadow:0 1px 2px #0002;transition:transform .15s}
   .ts-switch[aria-checked="true"]{background:#4f9a65;border-color:#4f9a65}
   .ts-switch[aria-checked="true"]::after{transform:translateX(18px)}
   .ts-switch:disabled{opacity:.5;cursor:default}
