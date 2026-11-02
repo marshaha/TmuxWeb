@@ -154,15 +154,23 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))", page)
 
     def test_each_window_has_three_distinct_header_icons(self):
-        """格子右上角：对调（切聊天/终端）、终端（在控制台打开）、叉号——不能再出现两个终端。"""
+        """格子右上角：气泡/终端（切模式）、折角纸页（在控制台打开）、叉号。
+
+        第一个图标随模式切换（聊天里显示终端、终端里显示气泡），第二个不能再是
+        终端形状，也不能借用「管理分享」的出框箭头。
+        """
         page = self.client.get("/grid").text
-        self.assertIn('<symbol id="i-swap" viewBox="0 0 24 24">', page)
-        self.assertIn('data-mode-toggle="${esc(pane)}" title="切换聊天/终端" aria-label="切换聊天/终端"><svg class="ico"><use href="#i-swap"/></svg>', page)
-        self.assertIn('aria-label="在控制台打开"><svg class="ico"><use href="#i-console"/></svg>', page)
+        self.assertIn('<symbol id="i-page" viewBox="0 0 24 24"><path d="M6.2 4.2h7.6l5.2 5.2', page)
+        self.assertIn('data-mode-toggle="${esc(pane)}"><svg class="ico"><use href="#i-chat"/></svg>', page)
+        self.assertIn('aria-label="在控制台打开"><svg class="ico"><use href="#i-page"/></svg>', page)
         self.assertIn('aria-label="移出多窗口"><svg class="ico"><use href="#i-close"/></svg>', page)
-        # 切换模式只换提示，图标不动（不然聊天模式下又是"两个终端"）
-        self.assertNotIn("use.setAttribute('href',next==='term'?'#i-chat':'#i-term')", page)
+        # 模式切换两个方向都同步图标
+        self.assertIn("if(use)use.setAttribute('href',next==='term'?'#i-chat':'#i-term');", page)
+        self.assertIn("const want=mode==='term'?'#i-chat':'#i-term';", page)
+        # 不借用分享箭头，也不再残留临时的对调图标
         self.assertNotIn('href="#i-external"', page)
+        self.assertNotIn('id="i-swap"', page)
+
 
     def test_touch_drag_in_the_canvas_moves_only_that_window(self):
         """触控板/平板上拖标题栏：只有这一格动，画布不跟着滚；点一下不许抖。"""
