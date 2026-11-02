@@ -19,11 +19,27 @@
     *{box-sizing:border-box}html,body{height:100%}body{margin:0;overflow:hidden;background:var(--page);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}button,textarea{font:inherit}
     .app{display:grid;grid-template-columns:var(--side-w,280px) minmax(0,1fr);height:100dvh;transition:grid-template-columns .18s ease}.sidebar{display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden;border-right:1px solid var(--line);background:var(--sidebar);transition:opacity .15s ease,transform .18s ease}.app.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}.app.sidebar-collapsed .sidebar{opacity:0;pointer-events:none}.brand{display:flex;align-items:center;justify-content:space-between;padding:18px 15px 13px}.brand-name{font-family:Georgia,serif;font-size:20px}.brand-sub{color:var(--muted);font-size:11px;margin-top:1px}.brand-actions{display:flex;gap:6px}.icon-btn,.logout{min-width:36px;min-height:36px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.5);color:var(--muted);cursor:pointer}.icon-btn:hover,.logout:hover{background:#fff;color:var(--ink)}
     /* 会话树下面那条「最近」：分隔线 + 最多 6 条，够了就自己滚 */
-    .recent{flex:0 0 auto;max-height:32vh;display:flex;flex-direction:column;padding:6px 6px 4px;
-      border-top:1px solid var(--line);overflow:hidden}
+    /* 高度由用户拖（默认 2/5 侧栏高），--recent-h 记的是比例 */
+    .recent{flex:0 0 auto;height:var(--recent-h,40%);min-height:70px;display:flex;flex-direction:column;
+      padding:6px 6px 4px;border-top:1px solid var(--line);overflow:hidden;position:relative}
     .recent[hidden]{display:none}
-    .recent-head{display:flex;align-items:center;justify-content:space-between;padding:0 6px 4px;
+    .recent.collapsed{height:auto;min-height:0;padding-bottom:4px}
+    .recent.collapsed .recent-list{display:none}
+    /* 上边缘的拖拽把手：往上拖变高 */
+    .recent-grip{position:absolute;left:0;right:0;top:-5px;height:10px;cursor:row-resize;touch-action:none;z-index:3}
+    .recent-grip::after{content:'';position:absolute;left:14px;right:14px;top:4px;height:2px;border-radius:2px;
+      background:transparent;transition:background .12s}
+    .recent-grip:hover::after,.recent-grip.dragging::after{background:var(--accent);opacity:.55}
+    .recent.collapsed .recent-grip{display:none}
+    body.recent-resizing{cursor:row-resize;user-select:none}
+    .recent-head{display:flex;align-items:center;gap:4px;padding:0 6px 4px;
       color:var(--faint);font-size:10.5px;letter-spacing:.06em}
+    .recent-title{flex:1;min-width:0}
+    .recent-fold{display:grid;place-items:center;width:18px;height:18px;padding:0;border:0;border-radius:6px;
+      background:transparent;color:var(--faint);cursor:pointer}
+    .recent-fold:hover{background:rgba(0,0,0,.06);color:var(--ink)}
+    .recent-fold .ico{width:12px;height:12px;transition:transform .15s}
+    .recent.collapsed .recent-fold .ico{transform:rotate(-90deg)}
     .recent-clear{display:grid;place-items:center;width:20px;height:20px;padding:0;border:0;border-radius:6px;
       background:transparent;color:var(--faint);cursor:pointer;opacity:.7}
     .recent-clear:hover{opacity:1;background:rgba(0,0,0,.06)}
@@ -53,16 +69,25 @@
     .recent-row .label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .recent-row .when{flex:none;color:var(--faint);font-size:10.5px;opacity:0;transition:opacity .12s}
     .recent-row:hover .when,.recent-row:focus-within .when{opacity:1}
-    /* 固定区和"最近"之间一条细线：固定项再多也只占自己那截，其余靠滚动 */
+    /* 固定区单独一块浅底：跟下面的普通"最近"一眼分得开，又不抢标题的字重 */
+    .recent-pins{display:flex;flex-direction:column;gap:1px;padding:2px;border-radius:9px;
+      background:rgba(201,100,66,.06);box-shadow:inset 0 0 0 1px rgba(201,100,66,.09)}
+    @supports (background:color-mix(in srgb, red 8%, transparent)){
+      /* 深色/其它主题下跟着各自的强调色走，浅底不会变成一块脏灰 */
+      .recent-pins{background:color-mix(in srgb,var(--accent) 9%,transparent);
+        box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 14%,transparent)}
+    }
+    .recent-list>.recent-pins+.recent-row{margin-top:5px}
     .recent-row.pinned .label{font-weight:600}
     .recent-rename{flex:1;min-width:0;height:24px;padding:0 6px;border:1px solid var(--accent);border-radius:6px;
       background:var(--surface);color:var(--ink);font:12px inherit;outline:none}
     .recent-row.renaming{background:rgba(201,100,66,.08)}
-    .recent-split{flex:none;height:1px;margin:3px 6px;background:var(--line)}
     /* 手指点得准一点：手机上这一条不算图标，行高单独给到 40 */
     @media (pointer:coarse){
       /* 手机：行高按触控 44，整块留够 6 行的高度，别让最后一条被自己滚掉一半 */
-      .recent{padding:8px 4px 6px;max-height:46vh}
+      .recent{padding:8px 4px 6px}
+      .recent-grip{top:-8px;height:16px}
+      .recent-fold{width:26px;height:26px}
       /* 触屏没有悬停：两个动作按钮常显，行高按 44 给手指 */
       .recent-open{padding:10px 4px 10px 8px;min-height:44px;font-size:13px}
       .recent-rename{height:34px;font-size:16px}
@@ -237,6 +262,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2.2"/></symbol>
     <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19.5v-15M12 4.5 6.6 9.9M12 4.5l5.4 5.4"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16.5V3.8M12 3.8 7.8 8M12 3.8 16.2 8M4 16.5v2.2A1.5 1.5 0 0 0 5.5 20.2h13a1.5 1.5 0 0 0 1.5-1.5v-2.2"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6.5 9.5 5.5 5.5 5.5-5.5"/></symbol>
     <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4.6 19.4h3.2L19 8.2a2.1 2.1 0 0 0-3-3L4.8 16.4Z"/><path d="m14.6 6.6 3 3"/></symbol>
     <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9.5 3.5h5M12 3.5v6.2M8.4 9.7h7.2l1.4 3.4H7l1.4-3.4ZM12 13.1v7.4"/></symbol>
     <symbol id="i-pin-fill" viewBox="0 0 24 24"><path d="M9.5 3.5h5M12 3.5v6.2M8.4 9.7h7.2l1.4 3.4H7l1.4-3.4Z" fill="currentColor" stroke="currentColor"/><path d="M12 13.1v7.4"/></symbol>
@@ -270,7 +296,8 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     <header class="brand"><div><div class="brand-name">Tmux Chat</div><div class="brand-sub">本机实时会话</div></div><div class="brand-actions"><a class="icon-btn" href="/home" title="主页（收藏与看板）" aria-label="主页" style="text-decoration:none"><svg class="ico"><use href="#i-home"/></svg></a><a class="icon-btn" href="/grid" title="多窗口（几个会话并排）" aria-label="多窗口" style="text-decoration:none"><svg class="ico"><use href="#i-grid"/></svg></a><button class="icon-btn" id="files-toggle" title="文件（当前 pane 目录）" aria-label="文件"><svg class="ico"><use href="#i-folder"/></svg></button><a class="icon-btn" href="/hosts" title="远程主机" aria-label="远程主机" style="text-decoration:none"><svg class="ico"><use href="#i-server"/></svg></a><a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享" style="text-decoration:none"><svg class="ico"><use href="#i-external"/></svg></a><button class="icon-btn" id="refresh" title="刷新窗口" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button><button class="icon-btn" id="sidebar-close" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-chevron-left"/></svg></button></div></header>
     <div class="tree-tools"><span class="tree-tools-label">会话</span><button class="tree-tool" id="tree-expand" type="button" title="展开全部" aria-label="展开全部"><svg class="ico"><use href="#i-tree-open"/></svg></button><button class="tree-tool" id="tree-collapse" type="button" title="折叠全部" aria-label="折叠全部"><svg class="ico"><use href="#i-tree-close"/></svg></button></div><nav class="pane-list" id="pane-list" aria-label="Tmux panes"></nav>
     <section class="recent" id="recent-block" hidden aria-label="最近的会话">
-      <div class="recent-head"><span>最近</span><span class="recent-tools"><button class="recent-clear" id="recent-pin-selected" type="button" title="固定当前会话" aria-label="固定当前会话" aria-pressed="false"><svg class="ico"><use href="#i-pin"/></svg></button><button class="recent-clear" id="recent-clear" type="button" title="清空最近记录（固定的不动）" aria-label="清空最近记录"><svg class="ico"><use href="#i-close"/></svg></button></span></div>
+      <div class="recent-grip" id="recent-grip" role="separator" aria-label="拖动调整最近的高度" title="拖动调整高度，双击恢复 2/5"></div>
+      <div class="recent-head"><button class="recent-fold" id="recent-fold" type="button" aria-expanded="true" title="折叠最近" aria-label="折叠最近"><svg class="ico"><use href="#i-chevron"/></svg></button><span class="recent-title">最近</span><span class="recent-tools"><button class="recent-clear" id="recent-pin-selected" type="button" title="固定当前会话" aria-label="固定当前会话" aria-pressed="false"><svg class="ico"><use href="#i-pin"/></svg></button><button class="recent-clear" id="recent-clear" type="button" title="清空最近记录（固定的不动）" aria-label="清空最近记录"><svg class="ico"><use href="#i-close"/></svg></button></span></div>
       <div class="recent-list" id="recent-list"></div>
     </section><nav class="file-panel" id="file-panel" hidden aria-label="Pane files"><div class="file-bar"><input class="file-path" id="file-path" type="text" spellcheck="false" autocomplete="off" aria-label="当前路径，可直接修改" title=""><button class="icon-btn" id="file-download" title="打包下载当前目录" aria-label="打包下载"><svg class="ico"><use href="#i-download"/></svg></button><label class="icon-btn file-upload" id="file-choose" title="上传文件" aria-label="上传文件"><svg class="ico"><use href="#i-upload"/></svg><input type="file" id="file-input" multiple></label><button class="icon-btn" id="file-reload" title="刷新" aria-label="刷新目录"><svg class="ico"><use href="#i-refresh"/></svg></button><button class="icon-btn" id="file-close" title="隐藏文件面板" aria-label="隐藏文件面板"><svg class="ico"><use href="#i-close"/></svg></button></div><div class="file-list" id="file-list"></div><div class="file-foot"><span class="file-host" id="file-host" title="当前主机" hidden></span><span id="file-status">拖拽文件到此处上传</span><span class="file-actions" id="file-actions"><button class="chip-btn" id="file-pick-all" type="button" hidden>全选</button><button class="chip-btn" id="file-pick-none" type="button" hidden>清空</button><button class="chip-btn primary" id="file-zip" type="button" hidden>下载 zip</button></span></div></nav>
     <footer class="side-foot"><span id="pane-count">0 panes</span><span style="display:flex;align-items:center;gap:6px"><button class="chip-btn" id="settings-open" type="button" title="设置：改密码、导入导出、退出登录"><svg class="ico"><use href="#i-gear"/></svg>设置</button></span></footer>
@@ -709,7 +736,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     // 固定项即使当前主机离线/盘上找不到也要留着（它本来就带着记下来的标题），
     // 普通"最近"才要求能对上真实 pane。
     const rows=[];
-    let recentCount=0,splitDone=false;
+    let recentCount=0;
     for(const entry of recents){
       const found=paneById(entry.pane);
       if(!found&&!entry.pinned)continue;
@@ -717,15 +744,11 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
         if(recentCount>=8)continue;
         recentCount+=1;
       }
-      if(!entry.pinned&&!splitDone&&rows.some(row=>row.pinned)){
-        rows.push({split:true});
-        splitDone=true;
-      }
       rows.push(entry);
     }
-    if(state.filesMode||!rows.some(row=>!row.split)){block.hidden=true;box.innerHTML='';recentSignature='';return;}
+    if(state.filesMode||!rows.length){block.hidden=true;box.innerHTML='';recentSignature='';return;}
     block.hidden=false;
-    const signature=rows.map(row=>row.split?'|':`${row.pane}|${row.pinned?'p':''}|${row.label||''}|${row.title||''}|${row.favorite?'f':''}`).join(',');
+    const signature=rows.map(row=>`${row.pane}|${row.pinned?'p':''}|${row.label||''}|${row.title||''}|${row.favorite?'f':''}`).join(',');
     // 正在改名时绝不能走这条捷径：它会保留那个 input，也可能把用户刚输入的值冲掉
     if(signature===recentSignature&&box.children.length&&!renaming){
       // 只是选中项/状态变了：就地改 class 和圆点，不要重建成新节点（重绘会把编辑中的输入框冲掉，
@@ -742,8 +765,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
       return;
     }
     recentSignature=signature;
-    box.innerHTML=rows.map(entry=>{
-      if(entry.split)return '<div class="recent-split" aria-hidden="true"></div>';
+    const rowHtml=entry=>{
       const found=paneById(entry.pane);
       const fallback=found?recentLabel(entry.pane).text:entry.pane;
       // 一个 pane 只有一个名字：钉住时自己起的名字，或收藏卡片上的名字
@@ -772,7 +794,11 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
           <svg class="ico"><use href="${state.favorites.has(entry.pane)?'#i-star-fill':'#i-star'}"/></svg>
         </button>
       </div>`;
-    }).join('');
+    };
+    // 钉住的自成一块浅底，卷在一起也一眼看得出边界；下面才是普通最近的流水
+    const pinned=rows.filter(entry=>entry.pinned);
+    const rest=rows.filter(entry=>!entry.pinned);
+    box.innerHTML=(pinned.length?`<div class="recent-pins">${pinned.map(rowHtml).join('')}</div>`:'')+rest.map(rowHtml).join('');
     syncRecentPinButton();
   }
   // 改名：钉住的那几条双击（触屏长按）就地改；收藏着的同一名字由服务端一起改掉
@@ -1561,6 +1587,78 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   list.addEventListener('click',e=>{const add=e.target.closest('[data-new-session]');if(!add)return;
     e.preventDefault();e.stopPropagation();state.sessionHost=add.dataset.newSession;
     openSessionDialog(add.dataset.newSession,add.dataset.sessionPath||'');},true);
+  // ---- 最近这块的高度：默认占侧栏 2/5，拖上边缘改，双击回到 2/5；也可以整个折叠
+  const RECENT_H_KEY='tmux-recent-h';
+  const RECENT_FOLD_KEY='tmux-recent-fold';
+  const RECENT_H_DEFAULT=0.4;
+  const RECENT_H_MIN=0.15, RECENT_H_MAX=0.75;
+  function recentRatio(){
+    try{
+      const value=Number(localStorage.getItem(RECENT_H_KEY));
+      if(Number.isFinite(value)&&value>=RECENT_H_MIN&&value<=RECENT_H_MAX)return value;
+    }catch{}
+    return RECENT_H_DEFAULT;
+  }
+  function applyRecentRatio(ratio){
+    const block=$('recent-block');
+    if(!block)return;
+    const clamped=Math.min(RECENT_H_MAX,Math.max(RECENT_H_MIN,ratio));
+    block.style.setProperty('--recent-h',`${(clamped*100).toFixed(2)}%`);
+  }
+  function saveRecentRatio(ratio,total){
+    try{localStorage.setItem(RECENT_H_KEY,String(Math.min(RECENT_H_MAX,Math.max(RECENT_H_MIN,ratio/total))));}catch{}
+  }
+  function setRecentCollapsed(on,persist){
+    const block=$('recent-block'),button=$('recent-fold');
+    if(block)block.classList.toggle('collapsed',!!on);
+    if(button){
+      button.setAttribute('aria-expanded',on?'false':'true');
+      const title=on?'展开最近':'折叠最近';
+      button.title=title;button.setAttribute('aria-label',title);
+    }
+    if(persist){try{localStorage.setItem(RECENT_FOLD_KEY,on?'1':'0');}catch{}}
+  }
+  function recentCollapsed(){
+    try{return localStorage.getItem(RECENT_FOLD_KEY)==='1';}catch{return false;}
+  }
+  let recentDrag=null;
+  $('recent-grip').addEventListener('pointerdown',e=>{
+    const block=$('recent-block');
+    if(!block||block.hidden||block.classList.contains('collapsed'))return;
+    e.preventDefault();
+    const total=block.parentElement?block.parentElement.getBoundingClientRect().height:window.innerHeight;
+    recentDrag={startY:e.clientY,startH:block.getBoundingClientRect().height,total};
+    $('recent-grip').classList.add('dragging');
+    document.body.classList.add('recent-resizing');
+    if($('recent-grip').setPointerCapture)$('recent-grip').setPointerCapture(e.pointerId);
+  });
+  window.addEventListener('pointermove',e=>{
+    if(!recentDrag)return;
+    const height=recentDrag.startH-(e.clientY-recentDrag.startY);   // 往上拖 = 变高
+    applyRecentRatio(height/Math.max(1,recentDrag.total));
+  });
+  const endRecentDrag=()=>{
+    if(!recentDrag)return;
+    const block=$('recent-block');
+    if(block)saveRecentRatio(block.getBoundingClientRect().height,recentDrag.total);
+    recentDrag=null;
+    $('recent-grip').classList.remove('dragging');
+    document.body.classList.remove('recent-resizing');
+  };
+  window.addEventListener('pointerup',endRecentDrag);
+  window.addEventListener('pointercancel',endRecentDrag);
+  // 双击把手 = 回到默认的 2/5
+  $('recent-grip').addEventListener('dblclick',()=>{
+    applyRecentRatio(RECENT_H_DEFAULT);
+    try{localStorage.removeItem(RECENT_H_KEY);}catch{}
+  });
+  $('recent-fold').onclick=()=>{
+    const block=$('recent-block');
+    setRecentCollapsed(!(block&&block.classList.contains('collapsed')),true);
+  };
+  applyRecentRatio(recentRatio());
+  setRecentCollapsed(recentCollapsed(),false);
+
   $('recent-list').addEventListener('dblclick',e=>{
     const open=e.target.closest('.recent-open');
     if(!open)return;

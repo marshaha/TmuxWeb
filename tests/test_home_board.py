@@ -142,7 +142,7 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("function touchRecent(", page)
         self.assertIn("/api/home/recent?limit=", page)
         # 文件面板打开时这块要跟着让位
-        self.assertIn("if(state.filesMode||!rows.some(", page)
+        self.assertIn("if(state.filesMode||!rows.length)", page)
         # 过滤只决定显示哪些，不能回写 recents（启动时 hosts 还没到，回写会把历史裁掉）
         self.assertNotIn("recents=live.slice(", page)
 
@@ -249,13 +249,35 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("recent-act", page)
         # 触屏没有悬停，两个按钮必须常显；手机上 44 行高
         self.assertIn("[data-pin]", page)
-        self.assertIn("if(state.filesMode||!rows.some(", page)
-        # 固定区与最近之间那条细线 + 列表可滚（不够显示就滚/滑）
-        self.assertIn(".recent-split", page)
+        self.assertIn("if(state.filesMode||!rows.length)", page)
+        # 固定区自成一块浅底（跟下面的普通"最近"一眼分开）+ 列表可滚（不够显示就滚/滑）
+        self.assertIn(".recent-pins{", page)
+        self.assertIn('class="recent-pins"', page)
+        self.assertIn("color-mix(in srgb,var(--accent) 9%,transparent)", page)
         self.assertIn("overscroll-behavior:contain", page)
         self.assertIn("-webkit-overflow-scrolling:touch", page)
         # 清空只清普通最近，固定的不动
         self.assertIn("recents.filter(entry=>!entry.pinned)", page)
+
+    def test_the_recent_block_has_an_adjustable_height_and_folds(self):
+        """最近这块默认占侧栏 2/5，上边缘可拖，双击回默认；标题行能整个折叠。"""
+        page = self.client.get("/").text
+        self.assertIn('id="recent-grip"', page)
+        self.assertIn('id="recent-fold"', page)
+        self.assertIn("height:var(--recent-h,40%)", page)
+        self.assertIn("const RECENT_H_DEFAULT=0.4", page)      # 2/5
+        self.assertIn("RECENT_H_MIN=0.15", page)
+        self.assertIn("RECENT_H_MAX=0.75", page)
+        self.assertIn("localStorage.setItem(RECENT_H_KEY", page)
+        self.assertIn("localStorage.setItem(RECENT_FOLD_KEY", page)
+        self.assertIn(".recent.collapsed{height:auto", page)
+        self.assertIn(".recent.collapsed .recent-list{display:none}", page)
+        # 拖拽是 row-resize，向上拖变高；双击恢复默认
+        self.assertIn("cursor:row-resize", page)
+        self.assertIn("recentDrag.startH-(e.clientY-recentDrag.startY)", page)
+        self.assertIn("removeItem(RECENT_H_KEY)", page)
+        # 手机上把手更高一点，好按住
+        self.assertIn(".recent-grip{top:-8px;height:16px}", page)
 
     def test_the_console_opens_on_the_board_when_there_is_nothing_to_restore(self):
         page = self.client.get("/").text

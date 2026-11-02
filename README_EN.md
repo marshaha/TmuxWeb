@@ -178,10 +178,16 @@ that row) and edit in place — Enter saves, Esc abandons, an empty name falls b
 with it, and renaming on the board renames the sidebar row too (`PATCH /api/home/recent/pin/{pane}` and
 `PATCH /api/home/favorites/{pane}` sync each other in one transaction).
 
-The header carries a pin of its own that pins/unpins the **currently selected** conversation, and the × clears the
-ordinary recents only, leaving pins alone. When the block outgrows its box it scrolls with the wheel or a finger
-(`overscroll-behavior:contain`, so the page behind does not bounce). It caps at 32vh (46vh on a phone) and steps
-aside while the file panel is open.
+Pinned rows sit in a tinted rounded panel, so they read as one group against the plain recents below (the tint is
+derived from the theme's accent, so dark themes get their own).
+
+**The block's height is adjustable and defaults to two fifths of the sidebar**: drag its top edge (`row-resize`)
+to resize, clamped between 15% and 75%, double-click the handle to go back to 2/5; the ratio is remembered in
+localStorage. The caret at the left of the header **folds the whole block** down to its title row, and that state is
+remembered too. When it outgrows its box it scrolls with the wheel or a finger (`overscroll-behavior:contain`, so
+the page behind does not bounce). The header also carries a pin that pins/unpins the **currently selected**
+conversation, and the × clears the ordinary recents only, leaving pins alone. The block steps aside while the file
+panel is open.
 
 **Sessions or files in the sidebar?** The console's (`/`) sidebar shows one of the two, and the rule is
 **the session list is always what you start with**. Clicking the folder icon in the header (or a directory in
