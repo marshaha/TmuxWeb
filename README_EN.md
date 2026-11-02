@@ -22,9 +22,10 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Remote rendering performance**: SSH connection multiplexing, remote content digests, idle backoff — and non-ASCII pane titles no longer arrive as `_`.
 - **File panel**: browse the selected pane's working directory in the sidebar (enter/leave folders, scroll), download with a click and upload by drag-and-drop, on localhost and over SSH alike.
 - **Wide tables cannot blow up a bubble**: markdown tables live in a `.table-holder` that scrolls sideways (keeping
-  natural column widths instead of squeezing every cell into one character per line), the bubble itself is
-  `max-width:100%` + `overflow-x:clip`, and the per-message 「复制全部 / time」 row now sits outside the bubble
-  (`.assistant-wrap > .msg-actions`) so wide content can never push it off screen.
+  natural column widths instead of squeezing every cell into one character per line), and the bubble itself is
+  `max-width:min(92%,820px)` + `overflow-x:clip`, so wide content can never widen it. The per-message
+  「复制全部 / time」 row stays inside the bubble (`.assistant-body > .msg-actions`) and is always visible on touch
+  (`@media (hover:none)`) instead of floating at 0.45 opacity.
 - **Message actions**: every message has a "复制全部" (copy all) button; each block inside a message (code / mermaid / table) has its own toolbar — copy the block (tables copy as TSV, mermaid copies the source) and, for tables and mermaid, flip between source and rendered. Mermaid is vendored locally and loaded lazily, only when a message actually contains a mermaid block.
 - **Multi-window** (`/grid`): same shell as the board — the session tree sidebar is the board's (same icons,
   expand/collapse-all, draggable width, collapsible, drawer on a phone), and clicking a session in it adds that pane
