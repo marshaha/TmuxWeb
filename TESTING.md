@@ -102,6 +102,7 @@
 - 任何测试里 `create_app(...)` 都要带 `home_db=":memory:"`：不带就会读部署的 `home.db`，线上收藏的 pane 会插进断言里当第 0 条（`test_home_offline` 就是这样红的）。
 - 客户端打包壳：`python -m unittest tests.test_client_packaging`（CI 工作流里 `if:` 不得出现 secrets、macOS 两个 entitlements 必须有 `network.client`、web 清单与首页 meta 是产品名和品牌色）。
 - 客户端发送失败：消息留在记录里、旁边有「重发」，输入框清空，状态行转红（`chat_screen_test`、`chat_live_test` 钉这三条）。
+- 侧栏「最近」：会话树下面应出现分隔线和最多 6 条最近会话；点一条能切过去并把它顶到第一位；打开文件面板时这块隐藏；窄侧栏下自己滚动（`/api/home/recent?limit=`）。
 - 设置 → 侧栏「按 pane 记住」：开启后给 pane A 打开文件面板并进一个子目录，切到没打开过的 pane B 应看到会话列表，切回 A 恢复文件面板和那个目录；重载 `/?pane=A` 同样恢复。关闭时切 pane 面板会跟随保留，但每次重新加载都回到会话列表。偏好写入 `/api/prefs` 的 `sidebar`（`pane`/`none`，其它值 400）。
 - 侧栏默认：带 `localStorage['tmux-files-mode']='1'` 打开 `/`，侧栏应是会话列表（旧 key 会被清掉）；点文件夹图标出文件面板、切 pane 后面板跟着换目录、刷新后回到会话列表。
 - 远端 Codex 会话定位：带 `codex resume <id>` 的 pane 必须正好解析到那个 id；没有 resume 的 pane 走 `session_index.jsonl`（紧凑 JSON）→ cwd + 屏幕打分的顺序；同一 cwd 下两个 codex pane 不应再指向同一个会话。

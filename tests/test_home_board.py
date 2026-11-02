@@ -119,6 +119,31 @@ class HomeBoardTests(unittest.TestCase):
         for marker in ("最近访问", "recentCard", 'id="recent"', 'id="recent-count"'):
             self.assertIn(marker, page)
 
+    def test_recent_visits_have_their_own_lightweight_endpoint(self):
+        """The sidebar's 最近 block must not pay for a full /api/home sweep."""
+        for pane in ("%4", "%5", "%4"):
+            self.client.post("/api/home/recent", json={"pane": pane})
+        data = self.client.get("/api/home/recent?limit=5").json()
+        panes = [row["pane"] for row in data["recent"]]
+        self.assertEqual(panes[0], "%4")          # 最近的一次排最前，且不重复
+        self.assertEqual(sorted(panes), ["%4", "%5"])
+        self.assertTrue(all(row["visited_at"] > 0 for row in data["recent"]))
+        self.assertEqual(len(self.client.get("/api/home/recent?limit=1").json()["recent"]), 1)
+        # 删除一条就不再出现
+        self.client.delete("/api/home/recent/%254")
+        self.assertNotIn("%4", [row["pane"] for row in self.client.get("/api/home/recent").json()["recent"]])
+
+    def test_the_console_sidebar_lists_recent_chats_under_the_tree(self):
+        page = self.client.get("/").text
+        self.assertIn('id="recent-block"', page)
+        self.assertIn('id="recent-list"', page)
+        self.assertIn("data-recent=", page)
+        self.assertIn("function loadRecents()", page)
+        self.assertIn("function touchRecent(", page)
+        self.assertIn("/api/home/recent?limit=", page)
+        # 文件面板打开时这块要跟着让位
+        self.assertIn("if(state.filesMode||!recents.length){block.hidden=true", page)
+
     def test_the_console_opens_on_the_board_when_there_is_nothing_to_restore(self):
         page = self.client.get("/").text
         self.assertIn("landOnBoard", page)

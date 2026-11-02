@@ -153,6 +153,12 @@ The sidebar header is two stacked rows: the title on top, the icons on a full-wi
   carries a fade in the sidebar's own colour (only visible once an icon slides under it) — the "there is
   more" hint.
 
+**「最近」 under the session tree**: a divider, then up to six recently opened conversations (from
+`/api/home/recent`, per account) showing «host · session:window», the command and a relative time, with the
+status dot (busy / idle / offline) on the left. Clicking one switches to it and moves it to the top; the × clears
+the list (and the server-side records). The block steps aside while the file panel is open and caps itself at
+32vh with its own scroll, so a narrow sidebar is not crowded.
+
 **Sessions or files in the sidebar?** The console's (`/`) sidebar shows one of the two, and the rule is
 **the session list is always what you start with**. Clicking the folder icon in the header (or a directory in
 the panel) switches to the file browser; while it is open it follows the selected pane, and × (or the icon

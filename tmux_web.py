@@ -2569,6 +2569,13 @@ def create_app(
         require_auth(request)
         return await build_home_payload()
 
+    @app.get("/api/home/recent")
+    async def home_recent(request: Request, limit: int = 8):
+        """Recent pane visits, cheapest form for the sidebar's 最近 block."""
+        require_auth(request)
+        rows = await asyncio.to_thread(home.recent, max(1, min(int(limit), 20)))
+        return {"recent": [{"pane": row["pane_id"], "visited_at": row["visited_at"]} for row in rows]}
+
     @app.post("/api/home/recent", status_code=202)
     async def touch_home_recent(request: Request, payload: HomeRecentRequest):
         """Remember that a pane was opened (called by the console on selection)."""
