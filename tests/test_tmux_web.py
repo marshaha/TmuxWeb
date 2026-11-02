@@ -722,6 +722,14 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".msg-tools .msg-time{", preview)
         self.assertIn(".msg-tools{display:flex;align-items:center;", preview)
 
+    def test_fullscreen_follows_the_visual_viewport_on_a_phone(self):
+        """手机上全屏写死 100vh，键盘一弹出输入框就被顶到键盘底下（只露出上半截）。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn(".main:fullscreen,.main.fullscreen-fallback{width:100vw;height:var(--visual-height,100dvh);", page)
+        self.assertIn("max-height:var(--visual-height,100dvh)}", page)
+        self.assertIn("padding-bottom:calc(9px + env(safe-area-inset-bottom,0px) + 4px)}", page)
+
     def test_labelled_buttons_cannot_be_squeezed_into_overflow(self):
         """带字的按钮一律 flex:0 0 auto + nowrap：窄屏时被挤扁，文字就会顶出边框（对话全屏 那次）。"""
         self.login()
