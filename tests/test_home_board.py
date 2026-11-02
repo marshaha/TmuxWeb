@@ -295,6 +295,17 @@ class HomeBoardTests(unittest.TestCase):
         # 清空只清普通最近，固定的不动
         self.assertIn("state.entries.filter(entry => !entry.pinned)", page)
 
+    def test_the_home_sidebar_does_not_duplicate_the_console_entry(self):
+        """home 的卡片、会话树、「最近」都能进控制台，侧栏那个「控制台」按钮是重复的，去掉。"""
+        page = self.client.get("/home").text
+        head = page[:page.index('id="preview"')] if 'id="preview"' in page else page
+        self.assertNotIn('title="控制台" aria-label="控制台"', head)
+        self.assertIn('title="多窗口" aria-label="多窗口"', head)
+        self.assertIn('title="远程主机" aria-label="远程主机"', head)
+        self.assertIn('title="管理分享" aria-label="管理分享"', head)
+        # 预览面板里的「在控制台打开」保留（那是选中某个 pane 后的入口）
+        self.assertIn('id="pd-console"', page)
+
     def test_the_footer_keeps_clear_of_a_phones_bottom_left_corner(self):
         page = self.client.get("/").text
         self.assertIn(".side-foot{padding:10px 12px calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))}", page)
