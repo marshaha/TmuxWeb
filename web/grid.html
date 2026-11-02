@@ -251,7 +251,7 @@
   <symbol id="i-term" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"></path></symbol>
   <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 15.5a2 2 0 0 1-2 2H8.6L5 20.4V6.5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2Z"/></symbol>
   <symbol id="i-preset" viewBox="0 0 24 24"><path d="M6 4.6h9.4L19 8.2v11.2H6Z"/><path d="M9 4.6v5h6v-5M9 19.4v-4.6h6v4.6"/></symbol>
-  <symbol id="i-external" viewBox="0 0 24 24"><path d="M8 16 16.2 7.8M10.4 7.8h5.8v5.8"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 9.2h12.4M13.2 5.6 16.8 9.2l-3.6 3.6"/><path d="M20 14.8H7.6M10.8 11.2 7.2 14.8l3.6 3.6"/></symbol>
   <symbol id="i-max" viewBox="0 0 24 24"><path d="M9 4.6H4.6V9M15 4.6h4.4V9M20 15v4.4h-4.4M9 19.4H4.6V15"></path></symbol>
   <symbol id="i-restore" viewBox="0 0 24 24"><path d="M4.6 9.4h4.8V4.6M19.4 9.4h-4.8V4.6M19.4 14.6h-4.8v4.8M4.6 14.6h4.8v4.8"></path></symbol>
   <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 4.6 2.3 4.9 5.3.7-3.9 3.7 1 5.3-4.7-2.6-4.7 2.6 1-5.3L4.4 10.2l5.3-.7z"/></symbol>
@@ -624,8 +624,8 @@
       cell.innerHTML=`<div class="cell-head">`
         +`<span class="dot" data-dot="${esc(pane)}"></span>`
         +`<span class="cell-title"></span>`
-        +`<button class="cell-btn" type="button" data-mode-toggle="${esc(pane)}"><svg class="ico"><use href="#i-chat"/></svg></button>`
-        +`<a class="cell-btn" href="/?pane=${encodeURIComponent(pane)}" target="_self" title="在控制台打开" aria-label="在控制台打开"><svg class="ico"><use href="#i-external"/></svg></a>`
+        +`<button class="cell-btn" type="button" data-mode-toggle="${esc(pane)}" title="切换聊天/终端" aria-label="切换聊天/终端"><svg class="ico"><use href="#i-swap"/></svg></button>`
+        +`<a class="cell-btn" href="/?pane=${encodeURIComponent(pane)}" target="_self" title="在控制台打开" aria-label="在控制台打开"><svg class="ico"><use href="#i-console"/></svg></a>`
         +`<button class="cell-btn" type="button" data-remove="${esc(pane)}" title="移出多窗口" aria-label="移出多窗口"><svg class="ico"><use href="#i-close"/></svg></button>`
         +`</div><iframe title="${esc(pane)}" loading="lazy"></iframe>`;
       cells.set(pane,cell);
@@ -650,8 +650,6 @@
       if(toggle.getAttribute('aria-label')!==tip){
         toggle.title=tip;
         toggle.setAttribute('aria-label',tip);
-        const use=toggle.querySelector('use');
-        if(use)use.setAttribute('href',mode==='term'?'#i-chat':'#i-term');
       }else if(!toggle.title){
         toggle.title=tip;
       }
@@ -1204,11 +1202,10 @@
     }
     const button=cell.querySelector('[data-mode-toggle]');
     if(button){
+      // 图标固定是对调箭头（终端图形只属于「在控制台打开」），只更新提示
       const label=next==='term'?'切到聊天':'切到终端';
       button.title=label;
       button.setAttribute('aria-label',label);
-      const use=button.querySelector('use');
-      if(use)use.setAttribute('href',next==='term'?'#i-chat':'#i-term');
     }
     save();
   }

@@ -153,6 +153,17 @@ class GridPageTests(unittest.TestCase):
         page = self.client.get("/grid").text
         self.assertIn("calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))", page)
 
+    def test_each_window_has_three_distinct_header_icons(self):
+        """格子右上角：对调（切聊天/终端）、终端（在控制台打开）、叉号——不能再出现两个终端。"""
+        page = self.client.get("/grid").text
+        self.assertIn('<symbol id="i-swap" viewBox="0 0 24 24">', page)
+        self.assertIn('data-mode-toggle="${esc(pane)}" title="切换聊天/终端" aria-label="切换聊天/终端"><svg class="ico"><use href="#i-swap"/></svg>', page)
+        self.assertIn('aria-label="在控制台打开"><svg class="ico"><use href="#i-console"/></svg>', page)
+        self.assertIn('aria-label="移出多窗口"><svg class="ico"><use href="#i-close"/></svg>', page)
+        # 切换模式只换提示，图标不动（不然聊天模式下又是"两个终端"）
+        self.assertNotIn("use.setAttribute('href',next==='term'?'#i-chat':'#i-term')", page)
+        self.assertNotIn('href="#i-external"', page)
+
     def test_touch_drag_in_the_canvas_moves_only_that_window(self):
         """触控板/平板上拖标题栏：只有这一格动，画布不跟着滚；点一下不许抖。"""
         page = self.client.get("/grid").text
