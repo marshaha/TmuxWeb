@@ -24,13 +24,19 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Message actions**: every message has a "复制全部" (copy all) button; each block inside a message (code / mermaid / table) has its own toolbar — copy the block (tables copy as TSV, mermaid copies the source) and, for tables and mermaid, flip between source and rendered. Mermaid is vendored locally and loaded lazily, only when a message actually contains a mermaid block.
 - **Multi-window** (`/grid`): same shell as the board — the session tree sidebar is the board's (same icons,
   expand/collapse-all, draggable width, collapsible, drawer on a phone), and clicking a session in it adds that pane
-  as a window (rows already on screen carry an accent mark, and clicking one just jumps to that window). Several conversations side by side on one page. Two layouts — **side by side** (draggable widths) and
-  **grid** — the grid lets you pick its shape (`2×1 / 2×2 / 3×2 / 2×3 / 3×3`, shown as columns × rows) — or
-  **「自定义…」 to type any columns × rows from 1–6 each**, with a live hint telling you how many rows the current
-  windows need and how many slots would stay empty; Enter applies it. The last custom shape keeps its own chip
-  (e.g. `4×2`) next to the presets and is remembered with the layout. Then drag any
+  as a window (rows already on screen carry an accent mark, and clicking one just jumps to that window). Several conversations side by side on one page. Three layouts — **side by side** (draggable widths),
+  **grid** and **canvas**. For the first two the shape is picked the way Word inserts a table: the grid button opens
+  a 6×6 swatch, hovering previews columns × rows and says how many windows that makes, which rows they need and how
+  many slots would stay empty, and one click builds it. **「自定义…」 takes any columns × rows from 1–6 each**
+  (Enter applies it), and the last custom shape stays on the button (e.g. `4×2`), remembered with the layout. Then drag any
   seam to resize that one cell, with the rest of its row/column re-fitting proportionally (170 px floor); dragging a
-  window's title bar reorders it; layout, ratios, order and widths live in localStorage. Changing the shape,
+  window's title bar reorders it; layout, ratios, order and widths live in localStorage. **Canvas** treats the whole
+  panel as one canvas: every window is a free rectangle — drag its title bar to move it, drag any edge or corner to
+  resize (240×160 floor). When an edge or centre comes close to another window's, a dashed guide fades in **after a
+  short pause** (`SNAP=6px`, `GUIDE_DELAY=140ms`) and the window snaps to it, so a fast drag never flickers; the
+  guide disappears on release and a live size badge follows the pointer. Dragging past the right/bottom edge grows the
+  canvas. 「整理」 re-tiles a messy canvas, and a focused window nudges with `Alt/⌘ + arrows` (8 px, 40 px with
+  Shift). Positions, sizes and the shape are all stored in localStorage. Changing the shape,
   adding or removing a window reuses the existing cells — the iframes are never rebuilt, so a running terminal is
   not dropped and a chat does not refetch its transcript. A window
   scrolled out of view drops to one request every 15s (and refreshes the moment it comes back), so four or five remote

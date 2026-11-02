@@ -81,10 +81,11 @@ class GridPageTests(unittest.TestCase):
 
     def test_a_grid_can_be_any_rows_by_columns_and_every_cell_resizes(self):
         page = self.client.get("/grid").text
-        self.assertIn('id="grid-size"', page)
-        self.assertIn("GRID_PRESETS", page)
-        for shape in ((2, 1), (2, 2), (3, 2), (2, 3), (3, 3)):
-            self.assertIn(f'{{cols:{shape[0]},rows:{shape[1]}}}', page)
+        # 形状不再是硬编码的 chip 列表，而是一个 6×6 的挑格子（见 shapeGrid()）
+        self.assertIn('id="shape-btn"', page)
+        self.assertIn('id="shape-grid"', page)
+        self.assertIn('id="shape-label"', page)
+        self.assertIn("SHAPE_MAX_COLS", page)
         self.assertIn("data-cols=", page)
         self.assertIn("data-rows=", page)
         # cells are sized by fr ratios so a dragged seam keeps the rest proportional
@@ -98,8 +99,7 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("GRID_MIN", page)
         # a column never shrinks into a sliver, and the phone stays single-column
         self.assertIn("const perPx=sum/total", page)
-        self.assertIn(".grip{display:none}", page.replace(",.grip", ".grip"))
-        self.assertIn(".splitter,.grip{display:none}", page)
+        self.assertIn(".splitter,.grip,.cell .rh{display:none}", page)
 
     def test_the_shape_picker_also_takes_a_custom_rows_by_columns(self):
         page = self.client.get("/grid").text
@@ -108,9 +108,9 @@ class GridPageTests(unittest.TestCase):
         self.assertIn('id="gc-cols"', page)
         self.assertIn('id="gc-rows"', page)
         self.assertIn('id="gc-apply"', page)
-        # 形状按钮里始终有一个「自定义…」，并且上一次的自定义形状会单独留一个 chip
+        # 形状按钮里始终有一个「自定义…」，点开就是列/行输入
         self.assertIn("自定义…", page)
-        self.assertIn("id=\"grid-custom-open\"", page)
+        self.assertIn('id="shape-custom"', page)
         self.assertIn("state.custom", page)
         # 上限放宽到 6×6，窗口多时行数自动长（不是静默裁掉）
         self.assertIn("SHAPE_MAX_COLS", page)
@@ -121,6 +121,58 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("if(!same){", page)
         self.assertIn("if(opener)opener.focus()", page)
 
+    def test_the_canvas_mode_lets_every_window_be_moved_and_resized(self):
+        """画布模式：窗口是自由摆的矩形，拖标题栏移动、拖边角缩放，位置大小都记住。"""
+        page = self.client.get("/grid").text
+        self.assertIn("LAYOUTS=['strip','grid','canvas']", page)
+        self.assertIn('data-layout="canvas"', page)
+        self.assertIn("画布", page)
+        # 最小尺寸 + 吸附距离 + 参考线的延迟
+        for token in ("CANVAS_MIN_W", "CANVAS_MIN_H", "SNAP=6", "GUIDE_DELAY"):
+            self.assertIn(token, page)
+        # 8 个缩放手柄 + 标题栏拖动
+        for direction in ("n", "s", "w", "e", "nw", "ne", "sw", "se"):
+            self.assertIn(f'data-resize="{direction}"', page)
+        self.assertIn("function attachHandles(", page)
+        self.assertIn("cell.classList.add('dragging')", page)
+        # 参考线是延迟出现的，松手就清空（不是一直抖）
+        self.assertIn("function queueGuides(", page)
+        self.assertIn("function hideGuides(", page)
+        self.assertIn("hideGuides();", page)
+        # 位置/大小/形状跟着布局一起存
+        self.assertIn("cells:state.cells", page)
+        self.assertIn("canvasCols:state.canvasCols", page)
+        self.assertIn("canvasRows:state.canvasRows", page)
+        # 一排按钮里能整理、能微调
+        self.assertIn('id="tidy"', page)
+        self.assertIn("ArrowLeft", page)
+        # 手机上画布退回单列（绝对定位会把超出屏幕的窗口全藏起来）
+        self.assertIn(".grid.mode-canvas .cell{position:relative!important", page)
+
+    def test_the_canvas_still_falls_back_to_one_column_on_a_phone(self):
+        """桌面上画布靠内联 width/height 撑大，手机上必须让位给单列，否则横向溢出。"""
+        page = self.client.get("/grid").text
+        self.assertIn(".grid.mode-canvas{display:flex;flex-direction:column;overflow-y:auto;width:auto!important", page)
+        self.assertIn("if(window.innerWidth>760){", page)
+        self.assertIn("grid.style.removeProperty('width')", page)
+        self.assertIn("grid.style.removeProperty('height')", page)
+
+    def test_tiling_measures_the_viewport_not_the_grown_canvas(self):
+        """画布被拖大以后，平铺不能拿被撑大的宽度去算，否则窗口越铺越小。"""
+        page = self.client.get("/grid").text
+        self.assertIn("function tileCanvas(cols,rows){", page)
+        self.assertIn("box.style.removeProperty('width');box.style.removeProperty('height');", page)
+
+    def test_a_new_window_on_the_canvas_lands_in_the_next_empty_slot(self):
+        """加窗口不能把它扔到画布最底下、也不能把用户摆好的位置整体重排。"""
+        page = self.client.get("/grid").text
+        self.assertIn("function slotRect(", page)
+        self.assertIn("function ensureCanvasCells(", page)
+        # 只有"还是自动平铺的样子"才整体重排，动过手脚的画布保持不动
+        self.assertIn("const pure=tiled&&", page)
+        self.assertIn("if(!tiled||pure){tileCanvas(cols,rows);return;}", page)
+        self.assertIn("state.cells[pane]=slotRect(state.panes.indexOf(pane)", page)
+
     def test_changing_the_shape_never_reloads_the_embedded_windows(self):
         """Reloading an iframe throws away a live terminal and re-fetches the chat; keep the nodes."""
         page = self.client.get("/grid").text
@@ -129,8 +181,18 @@ class GridPageTests(unittest.TestCase):
         # only touch an iframe when the pane is new or switches chat <-> terminal
         self.assertIn("const switching=cell&&cell.dataset.mode!==mode", page)
         # and only move a cell when it is genuinely out of order -- insertBefore reloads otherwise
-        self.assertIn("if(grid.children[index]!==cell)grid.insertBefore(", page)
+        self.assertIn("const order=[...grid.querySelectorAll(':scope > .cell')]", page)
         self.assertNotIn("grid.innerHTML=state.panes.map(", page)
+
+    def test_switching_between_canvas_and_grid_never_remounts_a_window(self):
+        """切换布局不能重新插入 cell —— 重插一次 iframe 就等于把终端/聊天重新加载一遍。"""
+        page = self.client.get("/grid").text
+        # 顺序只在 .cell 之间比较（参考线层、徽标、分隔线都不是窗口）
+        self.assertIn("const order=[...grid.querySelectorAll(':scope > .cell')]", page)
+        self.assertIn("if(ref!==cell)grid.insertBefore(cell,ref)", page)
+        self.assertNotIn("if(grid.children[index]!==cell)grid.insertBefore(", page)
+        # 退出画布时把参考线层真删掉，否则它夹在 cell 之间同样会打乱下标
+        self.assertIn("layer.classList.remove('show');layer.innerHTML='';layer.remove();", page)
 
     def test_the_window_picker_gets_its_hosts_from_the_shared_sidebar(self):
         """The page only builds the picker from state.hosts; the shell callback has to fill it."""

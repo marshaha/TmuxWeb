@@ -95,11 +95,54 @@
     .grip.row::after{inset:2px 0}
     .grip:hover::after,.grip.dragging::after{background:#c9a227}
     .grid.mode-grid .cell{margin:0;min-width:0;height:100%}
+    /* ---- 画布：窗口是自由摆的矩形，拖标题栏移动、拖边角改大小 */
+    .grid.mode-canvas{display:block;position:relative;overflow:auto;padding:0;background:var(--page)}
+    .grid.mode-canvas .cell{position:absolute;margin:0;min-width:0;min-height:0;height:auto;will-change:left,top,width,height}
+    .grid.mode-canvas .cell-head{cursor:grab}
+    .grid.mode-canvas .cell.dragging .cell-head{cursor:grabbing}
+    .grid.mode-canvas .cell.dragging{box-shadow:0 10px 30px #0002;z-index:5}
+    .cell .rh{position:absolute;z-index:4;touch-action:none;opacity:0;transition:opacity .12s}
+    .grid.mode-canvas .cell:hover .rh,.grid.mode-canvas .cell.dragging .rh{opacity:1}
+    .cell .rh::after{content:'';position:absolute;border-radius:2px;background:transparent;transition:background .12s}
+    .cell .rh:hover::after{background:var(--accent)}
+    .cell .rh[data-resize="n"]{top:-3px;left:10px;right:10px;height:8px;cursor:ns-resize}
+    .cell .rh[data-resize="s"]{bottom:-3px;left:10px;right:10px;height:8px;cursor:ns-resize}
+    .cell .rh[data-resize="w"]{left:-3px;top:10px;bottom:10px;width:8px;cursor:ew-resize}
+    .cell .rh[data-resize="e"]{right:-3px;top:10px;bottom:10px;width:8px;cursor:ew-resize}
+    .cell .rh[data-resize="nw"],.cell .rh[data-resize="ne"],.cell .rh[data-resize="sw"],.cell .rh[data-resize="se"]{width:14px;height:14px}
+    .cell .rh[data-resize="nw"]{left:-4px;top:-4px;cursor:nwse-resize}
+    .cell .rh[data-resize="ne"]{right:-4px;top:-4px;cursor:nesw-resize}
+    .cell .rh[data-resize="sw"]{left:-4px;bottom:-4px;cursor:nesw-resize}
+    .cell .rh[data-resize="se"]{right:-4px;bottom:-4px;cursor:nwse-resize}
+    .cell .rh[data-resize="n"]::after,.cell .rh[data-resize="s"]::after{inset:3px 0}
+    .cell .rh[data-resize="w"]::after,.cell .rh[data-resize="e"]::after{inset:0 3px}
+    .cell .rh[data-resize="nw"]::after,.cell .rh[data-resize="ne"]::after,.cell .rh[data-resize="sw"]::after,.cell .rh[data-resize="se"]::after{inset:4px}
+    /* 对齐参考线：停在同一位置一会儿才淡入，拖得快的时候不会一直闪 */
+    .canvas-guides{position:absolute;inset:0;pointer-events:none;z-index:8;opacity:0;transition:opacity .14s}
+    .canvas-guides.show{opacity:1}
+    .canvas-guides i{position:absolute;display:block}
+    .canvas-guides i.v{border-left:1px dashed var(--accent);top:0;bottom:0;width:0}
+    .canvas-guides i.h{border-top:1px dashed var(--accent);left:0;right:0;height:0}
+    .canvas-badge{position:absolute;z-index:9;padding:2px 6px;border-radius:6px;background:#292825;color:#fff;
+      font:10.5px ui-monospace,monospace;pointer-events:none;white-space:nowrap}
+    /* 行列挑选器：像 Word 插入表格那样悬停预览 */
+    .pop{position:absolute;z-index:30;min-width:196px;padding:10px;border:1px solid var(--line);border-radius:12px;
+      background:var(--surface);box-shadow:0 12px 30px #0002;display:flex;flex-direction:column;gap:8px}
+    .pop[hidden]{display:none}
+    .pop-grid{display:grid;grid-template-columns:repeat(6,22px);gap:3px}
+    .pop-grid button{width:22px;height:22px;padding:0;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+    .pop-grid button.in{border-color:var(--accent);background:rgba(201,100,66,.16)}
+    .pop-grid button.edge{border-color:var(--accent)}
+    .pop-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .pop-foot span{color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+    .pop-foot .btn{height:26px;padding:0 9px;font-size:11.5px}
     .cell-head{cursor:grab}
     .grid.maximized .cell:not(.max){display:none!important}
     .grid.maximized .splitter{display:none}
     .grid.maximized .cell.max{flex:1 1 auto!important;width:auto!important;height:100%;margin:8px}
     .grid.mode-grid.maximized .cell.max{grid-column:1/-1;height:100%}
+    .grid.mode-canvas.maximized .cell.max{left:8px!important;top:8px!important;right:8px!important;bottom:8px!important;
+      width:auto!important;height:auto!important}
     .presets{display:flex;flex-direction:column;gap:10px}
     .shape-row{display:flex;align-items:flex-end;gap:10px;padding:4px 0 2px}
     .shape-row label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
@@ -144,7 +187,10 @@
       /* a phone never gets a 2- or 3-column grid: one window per row */
       .grid.mode-grid{grid-template-columns:minmax(0,1fr)!important;grid-auto-rows:auto;overflow-y:auto}
       .grid.mode-grid .cell{height:calc(100dvh - 64px)}
-      .splitter,.grip{display:none}
+      .splitter,.grip,.cell .rh{display:none}
+      .grid.mode-canvas{display:flex;flex-direction:column;overflow-y:auto;width:auto!important;height:auto!important}
+      .grid.mode-canvas .cell{position:relative!important;left:auto!important;top:auto!important;
+        width:auto!important;height:calc(100dvh - 64px)!important;margin:8px 10px 0}
       .empty{padding:16px}
     }
   </style>
@@ -173,6 +219,8 @@
   <symbol id="i-console" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="m7.4 9.4 2.6 2.6-2.6 2.6M12.6 14.8h4"></path></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.6v2.2M12 18.2v2.2M4.6 12h2.2M17.2 12h2.2M6.9 6.9l1.6 1.6M15.5 15.5l1.6 1.6M17.1 6.9l-1.6 1.6M8.5 15.5l-1.6 1.6"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="M4.5 10.6 12 4.4l7.5 6.2V19a1.4 1.4 0 0 1-1.4 1.4H5.9A1.4 1.4 0 0 1 4.5 19Z"></path></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-layout" viewBox="0 0 24 24"><rect x="3.6" y="4.6" width="16.8" height="14.8" rx="2"/><path d="M3.6 10.1h16.8M10.4 10.1v9.3"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="1.9" y="5.7" width="14.6" height="17.1" rx="2.7"/><path d="M8.4 5.7V3.9A2.7 2.7 0 0 1 11.1 1.2h8.4a2.7 2.7 0 0 1 2.7 2.7v11.3a2.7 2.7 0 0 1-2.7 2.7h-3.3"/></g></symbol>
   
 </defs></svg>
@@ -209,8 +257,20 @@
   <div class="seg" id="layout" role="group" aria-label="布局">
     <button type="button" data-layout="strip">并排</button>
     <button type="button" data-layout="grid">网格</button>
+    <button type="button" data-layout="canvas">画布</button>
   </div>
-  <div class="seg" id="grid-size" role="group" aria-label="网格行列" hidden></div>
+  <div class="grid-size-wrap">
+    <button class="btn" id="shape-btn" type="button" title="选择行列" aria-label="选择行列" aria-haspopup="dialog" aria-expanded="false">
+      <svg class="ico"><use href="#i-grid"/></svg><span class="lbl" id="shape-label">2×2</span>
+    </button>
+    <div class="pop" id="shape-pop" hidden role="dialog" aria-label="选择行列">
+      <div class="pop-grid" id="shape-grid"></div>
+      <div class="pop-foot"><span id="shape-hint">2 × 2</span><button class="btn" id="shape-custom" type="button">自定义…</button></div>
+    </div>
+  </div>
+  <button class="btn" id="tidy" type="button" title="把窗口重新按行列排整齐" aria-label="整理窗口" hidden>
+    <svg class="ico"><use href="#i-layout"/></svg><span class="lbl">整理</span>
+  </button>
   <button class="btn primary" id="add" type="button" title="添加窗口" aria-label="添加窗口"><svg class="ico"><use href="#i-plus"/></svg><span class="lbl">添加窗口</span></button>
   <button class="btn" id="preset-btn" type="button" title="布局预设" aria-label="布局预设"><svg class="ico"><use href="#i-preset"/></svg><span class="lbl">预设</span></button>
   <a class="btn" id="home" href="/home" title="返回主页" aria-label="返回主页"><svg class="ico"><use href="#i-home"/></svg><span class="lbl">主页</span></a>
@@ -266,12 +326,14 @@
   const KEY='tmux-grid-v1';
   // widths are keyed by pane id: unset columns share the leftover space equally, so adding or
   // removing a window never leaves a column pinned at the width it had when it was alone
-  const state={panes:[], widths:{}, layout:'strip', modes:{}, explicit:{}, max:null, presets:{}, titles:new Map(), statuses:new Map(), hosts:null};
+  const state={panes:[], widths:{}, layout:'strip', modes:{}, explicit:{}, max:null, presets:{}, titles:new Map(), statuses:new Map(), hosts:null,
+    cells:{}, canvasFocus:null};
   // 上一次用过的自定义行列：留在工具栏里，一键就能回到那个形状
   const SHAPE_MAX_COLS=6, SHAPE_MAX_ROWS=6;
   const PRESET_KEY='tmux-grid-presets-v1';
-  const LAYOUTS=['strip','grid'];
-  const GRID_PRESETS=[{cols:2,rows:1},{cols:2,rows:2},{cols:3,rows:2},{cols:2,rows:3},{cols:3,rows:3}];
+  const LAYOUTS=['strip','grid','canvas'];
+  // 画布：最小尺寸、吸附阈值、参考线延迟
+  const CANVAS_MIN_W=240, CANVAS_MIN_H=160, SNAP=6, GUIDE_DELAY=140;
   const MIN=260;
   const GRID_MIN=170;
 
@@ -281,6 +343,153 @@
     const out=Array.isArray(list)?list.slice(0,count).map(v=>Number(v)):[];
     while(out.length<count)out.push(1);
     return out.map(v=>Number.isFinite(v)&&v>=0.1?v:1);
+  }
+  // ---- canvas: resize handles, snapping guides, and the drag itself
+  const HANDLES=['n','s','e','w','ne','nw','se','sw'];
+  function attachHandles(cell){
+    if(cell.dataset.handles==='1')return;
+    for(const dir of HANDLES){
+      const handle=document.createElement('div');
+      handle.className='rh';
+      handle.dataset.resize=dir;
+      cell.appendChild(handle);
+    }
+    cell.dataset.handles='1';
+  }
+  function detachHandles(cell){
+    if(cell.dataset.handles!=='1')return;
+    for(const handle of cell.querySelectorAll('.rh'))handle.remove();
+    delete cell.dataset.handles;
+  }
+  function ensureGuides(){
+    let layer=$('grid').querySelector('.canvas-guides');
+    if(!layer){
+      layer=document.createElement('div');
+      layer.className='canvas-guides';
+      $('grid').appendChild(layer);
+    }
+    return layer;
+  }
+  function hideGuides(){
+    clearTimeout(guideTimer);
+    guideLines=[];
+    const layer=$('grid').querySelector('.canvas-guides');
+    if(layer){layer.classList.remove('show');layer.innerHTML='';layer.remove();}
+    const badge=$('grid').querySelector('.canvas-badge');
+    if(badge)badge.remove();
+  }
+  // 参考线有延迟：停在同一位置 GUIDE_DELAY 毫秒才淡入，快速拖动时不会一路闪
+  let guideTimer=0, guideLines=[];
+  function queueGuides(lines){
+    const key=lines.map(line=>line.axis+Math.round(line.pos)).join(',');
+    if(key===guideKey){return;}
+    guideKey=key;
+    clearTimeout(guideTimer);
+    if(!lines.length){guideLines=[];const layer=$('grid').querySelector('.canvas-guides');if(layer){layer.classList.remove('show');layer.innerHTML='';}return;}
+    guideLines=lines;
+    guideTimer=setTimeout(()=>{
+      const layer=ensureGuides();
+      layer.innerHTML=lines.map(line=>line.axis==='x'
+        ? `<i class="v" style="left:${Math.round(line.pos)}px"></i>`
+        : `<i class="h" style="top:${Math.round(line.pos)}px"></i>`).join('');
+      layer.classList.add('show');
+    },GUIDE_DELAY);
+  }
+  let guideKey='';
+
+  function snapTargets(ignorePane){
+    const grid=$('grid');
+    const xs=[8,Math.max(8,grid.clientWidth-8)], ys=[8,Math.max(8,grid.clientHeight-8)];
+    for(const pane of state.panes){
+      if(pane===ignorePane)continue;
+      const rect=state.cells[pane];
+      if(!rect)continue;
+      xs.push(rect.x,rect.x+rect.w,rect.x+rect.w/2);
+      ys.push(rect.y,rect.y+rect.h,rect.y+rect.h/2);
+    }
+    return {xs,ys};
+  }
+  function nearest(value,targets){
+    let best=null;
+    for(const target of targets){
+      if(Math.abs(value-target)>SNAP)continue;
+      if(best===null||Math.abs(value-target)<Math.abs(value-best))best=target;
+    }
+    return best;
+  }
+  function showBadge(text,x,y){
+    const grid=$('grid');
+    let badge=grid.querySelector('.canvas-badge');
+    if(!badge){badge=document.createElement('div');badge.className='canvas-badge';grid.appendChild(badge);}
+    badge.textContent=text;
+    badge.style.left=Math.max(0,Math.min(x,grid.clientWidth-90))+'px';
+    badge.style.top=Math.max(0,y-22)+'px';
+  }
+
+  // ---- canvas geometry: {pane: {x,y,w,h}} in canvas pixels, plus a canvas size
+  function canvasArea(){
+    const grid=$('grid');
+    const width=Math.max(grid?grid.clientWidth:0,320), height=Math.max(grid?grid.clientHeight:0,240);
+    let right=width, bottom=height;
+    for(const pane of state.panes){
+      const rect=state.cells[pane];
+      if(rect){right=Math.max(right,rect.x+rect.w+16);bottom=Math.max(bottom,rect.y+rect.h+16);}
+    }
+    return {width:Math.ceil(right),height:Math.ceil(bottom)};
+  }
+  function slotRect(index,cols,rows){
+    const grid=$('grid');
+    const gap=8;
+    const area=Math.max(360,(grid?grid.clientWidth:900)-16);
+    const perRow=Math.max(1,cols||1);
+    const cellW=Math.floor((area-gap*(perRow-1)-16)/perRow);
+    const rowsCount=Math.max(1,rows||Math.ceil((index+1)/perRow));
+    const cellH=Math.max(CANVAS_MIN_H,Math.floor(((grid?grid.clientHeight:600)-gap*(rowsCount-1)-16)/rowsCount));
+    const col=index%perRow, row=Math.floor(index/perRow);
+    return {x:8+col*(cellW+gap),y:8+row*(cellH+gap),w:cellW,h:cellH};
+  }
+  function tileCanvas(cols,rows){
+    // 把当前窗口按 cols×rows 平铺进画布（新窗口、切换行列、"整理" 都用它）
+    // 先清掉内联尺寸再量：画布会被拖大，拿被撑大的宽度去平铺只会越铺越小
+    const box=$('grid');
+    if(box){box.style.removeProperty('width');box.style.removeProperty('height');}
+    const count=Math.max(1,state.panes.length);
+    const useCols=Math.max(1,Math.min(cols||Math.ceil(Math.sqrt(count))||1,count));
+    const useRows=Math.max(1,rows||Math.ceil(count/useCols));
+    state.cells={};
+    state.panes.forEach((pane,index)=>{
+      state.cells[pane]=slotRect(index,useCols,useRows);
+    });
+    state.canvasCols=useCols;
+    state.canvasRows=useRows;
+  }
+  function ensureCanvasCells(){
+    const shapeCols=()=>Math.max(1,state.canvasCols||state.cols||2);
+    const shapeRows=(cols)=>Math.max(1,state.canvasRows||Math.ceil(state.panes.length/cols));
+    if(!state.panes.length){state.cells={};return;}
+    // 丢掉已经不在的窗口
+    for(const pane of Object.keys(state.cells)){
+      if(!state.panes.includes(pane))delete state.cells[pane];
+    }
+    const missing=state.panes.filter(pane=>!state.cells[pane]);
+    if(!missing.length)return;
+    const cols=shapeCols();
+    const rows=shapeRows(cols);
+    const tiled=state.panes.some(pane=>state.cells[pane]);
+    // 现有窗口是否还是"自动平铺"的样子：是就整体重排，动过手脚的就不碰
+    const pure=tiled&&state.panes.filter(pane=>state.cells[pane]).every((pane)=>{
+      const rect=state.cells[pane], seat=state.panes.indexOf(pane), slot=slotRect(seat,cols,rows);
+      return Math.abs(rect.x-slot.x)<2&&Math.abs(rect.y-slot.y)<2;
+    });
+    if(!tiled||pure){tileCanvas(cols,rows);return;}
+    // 手动摆过的画布：新窗口落到"下一个格子"，不重排已经放好的
+    missing.forEach(pane=>{
+      state.cells[pane]=slotRect(state.panes.indexOf(pane),cols,Math.max(rows,Math.ceil(state.panes.length/cols)));
+    });
+  }
+  function canvasRectStyle(pane){
+    const rect=state.cells[pane]||{x:8,y:8,w:CANVAS_MIN_W,h:CANVAS_MIN_H};
+    return `left:${Math.round(rect.x)}px;top:${Math.round(rect.y)}px;width:${Math.round(rect.w)}px;height:${Math.round(rect.h)}px`;
   }
   function applyGridShape(){
     const cols=Math.max(1,Math.min(SHAPE_MAX_COLS,Math.round(Number(state.cols)||2)));
@@ -302,6 +511,16 @@
       state.rows=Number(saved.rows)||2;
       state.colFr=Array.isArray(saved.colFr)?saved.colFr:null;
       state.rowFr=Array.isArray(saved.rowFr)?saved.rowFr:null;
+      state.cells={};
+      if(saved.cells&&typeof saved.cells==='object'){
+        for(const [pane,rect] of Object.entries(saved.cells)){
+          if(!rect||!Number.isFinite(Number(rect.x))||!Number.isFinite(Number(rect.y)))continue;
+          state.cells[pane]={x:Number(rect.x),y:Number(rect.y),
+            w:Math.max(CANVAS_MIN_W,Number(rect.w)||CANVAS_MIN_W),h:Math.max(CANVAS_MIN_H,Number(rect.h)||CANVAS_MIN_H)};
+        }
+      }
+      state.canvasCols=Number(saved.canvasCols)||0;
+      state.canvasRows=Number(saved.canvasRows)||0;
       const custom=saved.custom;
       state.custom=(custom&&Number(custom.cols)>=1&&Number(custom.rows)>=1)
         ?{cols:Math.min(SHAPE_MAX_COLS,Math.round(Number(custom.cols))),rows:Math.min(SHAPE_MAX_ROWS,Math.round(Number(custom.rows)))}
@@ -325,7 +544,7 @@
   }
   function save(){
     try{
-      localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout,cols:state.cols,rows:state.rows,colFr:state.colFr,rowFr:state.rowFr,modes:state.modes,explicit:state.explicit,custom:state.custom||null}));
+      localStorage.setItem(KEY,JSON.stringify({panes:state.panes,widths:state.widths,layout:state.layout,cols:state.cols,rows:state.rows,colFr:state.colFr,rowFr:state.rowFr,modes:state.modes,explicit:state.explicit,custom:state.custom||null,cells:state.cells,canvasCols:state.canvasCols||0,canvasRows:state.canvasRows||0}));
     }catch{}
   }
   function widthOf(pane){
@@ -399,9 +618,24 @@
   function render(){
     const grid=$('grid');
     $('count').textContent=state.panes.length?`${state.panes.length} 个窗口`:'';
-    const gridded=state.layout!=='strip';
+    const canvas=state.layout==='canvas';
+    const gridded=state.layout==='grid';
     grid.classList.toggle('mode-grid',gridded);
+    grid.classList.toggle('mode-canvas',canvas);
     grid.classList.toggle('maximized',!!state.max);
+    if(canvas){
+      grid.style.removeProperty('--col-tpl');
+      grid.style.removeProperty('--row-tpl');
+      ensureCanvasCells();
+      const area=canvasArea();
+      grid.style.width=area.width+'px';
+      grid.style.height=area.height+'px';
+      ensureGuides();
+    }else{
+      grid.style.removeProperty('width');
+      grid.style.removeProperty('height');
+      hideGuides();
+    }
     if(gridded){
       applyGridShape();
       grid.style.setProperty('--col-tpl',state.colFr.map(v=>v+'fr').join(' '));
@@ -414,6 +648,8 @@
       button.classList.toggle('active',button.dataset.layout===state.layout);
     }
     syncSizeUi();
+    const tidy=$('tidy');
+    if(tidy)tidy.hidden=!canvas;
     if(!state.panes.length){
       cells.clear();
       grid.innerHTML='<div class="empty"><div><b>还没有窗口</b>点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。</div></div>';
@@ -429,16 +665,31 @@
     for(const old of grid.querySelectorAll('.splitter'))old.remove();
     // 空状态是上一轮 render 留下的节点，有窗口以后必须摘掉（以前整块 innerHTML 重写顺带清掉了）
     for(const old of grid.querySelectorAll('.empty'))old.remove();
-    state.panes.forEach((pane,index)=>{
+    if(!canvas)state.panes.forEach((pane,index)=>{
       const status=state.statuses.get(pane)||'unknown';
       const mode=state.modes[pane]==='term'?'term':'chat';
       const cell=cellFor(pane,mode,status,gridded);
       cell.style.cssText=gridded?'':cellStyle(pane);
+      detachHandles(cell);
       // Only move a cell when it is actually in the wrong place: re-inserting an iframe
       // (even into the same parent) makes the browser reload the document inside it.
-      if(grid.children[index]!==cell)grid.insertBefore(cell,grid.children[index]||null);
+      // Compare against the other .cell nodes only -- guides/badge/splitter are not part of the order.
+      const order=[...grid.querySelectorAll(':scope > .cell')];
+      const current=order.indexOf(cell);
+      if(current!==index){
+        const ref=current<index?(order[index+1]||null):(order[index]||null);
+        if(ref!==cell)grid.insertBefore(cell,ref);
+      }
     });
-    if(!gridded){
+    if(canvas)state.panes.forEach(pane=>{
+      const status=state.statuses.get(pane)||'unknown';
+      const mode=state.modes[pane]==='term'?'term':'chat';
+      const cell=cellFor(pane,mode,status,true);
+      cell.style.cssText=canvasRectStyle(pane)+';position:absolute';
+      attachHandles(cell);
+      if(!cell.isConnected)grid.appendChild(cell);
+    });
+    if(state.layout==='strip'){
       const sections=state.panes.map(pane=>cells.get(pane));
       for(let index=0;index<sections.length-1;index+=1){
         const splitter=document.createElement('div');
@@ -452,32 +703,81 @@
     syncTreeMarks();
   }
 
-  // ---- grid mode: a size picker in the toolbar plus seams you can drag
+  // ---- shape picker: one button, a Word-style hover grid, and the drag seams
+  const SHAPE_MAX=6;
+  function shapeText(){
+    if(state.layout==='canvas')return state.canvasCols?`${state.canvasCols}×${state.canvasRows||'?'}`:'自由';
+    return `${state.cols}×${state.rows}`;
+  }
+  function shapeGrid(){
+    const box=$('shape-grid');
+    if(!box)return;
+    if(box.dataset.ready!=='1'){
+      box.innerHTML=Array.from({length:SHAPE_MAX*SHAPE_MAX},(_,index)=>{
+        const cols=index%SHAPE_MAX+1, rows=Math.floor(index/SHAPE_MAX)+1;
+        return `<button type="button" data-cols="${cols}" data-rows="${rows}" aria-label="${cols} 列 ${rows} 行"></button>`;
+      }).join('');
+      box.dataset.ready='1';
+    }
+  }
+  function paintShapeGrid(cols,rows){
+    const box=$('shape-grid');
+    if(!box)return;
+    for(const button of box.querySelectorAll('[data-cols]')){
+      const on=Number(button.dataset.cols)<=cols&&Number(button.dataset.rows)<=rows;
+      button.classList.toggle('in',on);
+      button.classList.toggle('edge',Number(button.dataset.cols)===cols&&Number(button.dataset.rows)===rows);
+    }
+    const hint=$('shape-hint');
+    if(hint)hint.textContent=`${cols} × ${rows}`;
+  }
   function syncSizeUi(){
-    const bar=$('grid-size');
-    if(!bar)return;
-    bar.hidden=state.layout!=='grid';
-    const chips=GRID_PRESETS.map(({cols,rows})=>{
-      const active=cols===state.cols&&rows===state.rows;
-      const label=rows>1||cols>1?`${cols}×${rows}`:`1×1`;
-      return `<button type="button" data-cols="${cols}" data-rows="${rows}"${active?' class="active"':''}`
-        +` title="${cols} 列 × ${rows} 行" aria-label="${cols} 列 ${rows} 行">${label}</button>`;
-    }).join('');
-    // 上次的自定义形状单独占一个 chip：内置里没有它时才显示，避免和预设重复
-    const custom=state.custom;
-    const builtin=custom&&GRID_PRESETS.some(p=>p.cols===custom.cols&&p.rows===custom.rows);
-    const customChip=(custom&&!builtin)
-      ?`<button type="button" data-cols="${custom.cols}" data-rows="${custom.rows}"`
-        +`${custom.cols===state.cols&&custom.rows===state.rows?' class="active"':''}`
-        +` title="自定义 ${custom.cols} 列 × ${custom.rows} 行" aria-label="自定义 ${custom.cols} 列 ${custom.rows} 行">`
-        +`${custom.cols}×${custom.rows}</button>`
-      :'';
-    bar.innerHTML=chips+customChip
-      +`<button type="button" id="grid-custom-open" class="custom" title="自定义行列" aria-label="自定义行列">自定义…</button>`;
+    const button=$('shape-btn');
+    if(!button)return;
+    button.hidden=state.layout==='strip';
+    const label=$('shape-label');
+    if(label)label.textContent=shapeText();
+    shapeGrid();
+    if(state.layout==='canvas')paintShapeGrid(state.canvasCols||state.cols||2,state.canvasRows||state.rows||2);
+    else paintShapeGrid(state.cols,state.rows);
+  }
+  function applyShape(cols,rows){
+    if(state.layout==='canvas'){
+      state.canvasCols=cols;
+      state.canvasRows=rows;
+      tileCanvas(cols,rows);
+      save();render();
+      return;
+    }
+    const same=state.layout==='grid'&&state.cols===cols&&state.rows===rows;
+    state.layout='grid';
+    state.cols=cols;
+    state.rows=rows;
+    // 形状没变就别动比例：用户拖了半天接缝，再点一下同一个格子不该回到等分
+    if(!same){
+      state.colFr=Array.from({length:cols},()=>1);
+      state.rowFr=Array.from({length:rows},()=>1);
+    }
+    save();render();
+  }
+  function closeShapePop(){
+    const pop=$('shape-pop');
+    if(!pop)return;
+    pop.hidden=true;
+    $('shape-btn').setAttribute('aria-expanded','false');
+  }
+  function openShapePop(){
+    const pop=$('shape-pop');
+    if(!pop)return;
+    syncSizeUi();
+    pop.hidden=false;
+    $('shape-btn').setAttribute('aria-expanded','true');
+    const rect=$('shape-btn').getBoundingClientRect();
+    const top=rect.bottom+6;
+    pop.style.top=`${Math.round(top)}px`;
+    pop.style.left=`${Math.round(Math.min(rect.left,window.innerWidth-220))}px`;
   }
 
-  // ---- custom shape: open the dialog seeded with whatever is on screen now
-  // 输入时就把结果算给用户看：窗口比格子多时行数会自动长，不留意外
   function updateShapeHint(){
     const cols=Math.max(1,Math.min(SHAPE_MAX_COLS,Math.round(Number($('gc-cols').value)||1)));
     const rows=Math.max(1,Math.min(SHAPE_MAX_ROWS,Math.round(Number($('gc-rows').value)||1)));
@@ -504,6 +804,16 @@
   function applyCustomShape(){
     const cols=Math.max(1,Math.min(SHAPE_MAX_COLS,Math.round(Number($('gc-cols').value)||state.cols)));
     const rows=Math.max(1,Math.min(SHAPE_MAX_ROWS,Math.round(Number($('gc-rows').value)||state.rows)));
+    if(state.layout==='canvas'){
+      state.custom={cols,rows};
+      state.canvasCols=cols;
+      state.canvasRows=rows;
+      tileCanvas(cols,rows);
+      const dialogBox=$('grid-custom');
+      if(dialogBox&&dialogBox.open)dialogBox.close();
+      save();render();
+      return;
+    }
     const same=state.layout==='grid'&&state.cols===cols&&state.rows===rows;
     state.layout='grid';
     state.cols=cols;
@@ -516,7 +826,7 @@
     const dialog=$('grid-custom');
     if(dialog&&dialog.open)dialog.close();
     save();render();
-    const opener=$('grid-custom-open');
+    const opener=$('shape-btn');
     if(opener)opener.focus();     // 键盘用户的焦点回到按钮上，而不是掉到页面开头
   }
 
@@ -566,7 +876,10 @@
   }
   $('grid').addEventListener('scroll',queueVisibility,{passive:true});
   window.addEventListener('resize',queueVisibility);
-  window.addEventListener('resize',()=>{clearTimeout(window.__gripTimer);
+  window.addEventListener('resize',()=>{
+    const grid=$('grid');
+    if(grid&&window.innerWidth<=760){grid.style.removeProperty('width');grid.style.removeProperty('height');}
+    clearTimeout(window.__gripTimer);
     window.__gripTimer=setTimeout(()=>{if(state.layout==='grid')positionGrips();},120);});
 
   async function loadMeta(){
@@ -653,28 +966,11 @@
     if(row){event.preventDefault();addPane(row.dataset.add);$('picker').close();return;}
     const layout=event.target.closest('[data-layout]');
     if(layout){event.preventDefault();state.layout=layout.dataset.layout;save();render();return;}
-    if(event.target.closest('#grid-custom-open')){
-      event.preventDefault();openCustomShape();return;
-    }
     if(event.target.closest('#gc-apply')){
       event.preventDefault();applyCustomShape();return;
     }
-    const size=event.target.closest('[data-cols][data-rows]');
-    if(size){
-      event.preventDefault();
-      const cols=Number(size.dataset.cols);
-      const rows=Number(size.dataset.rows);
-      const same=state.layout==='grid'&&state.cols===cols&&state.rows===rows;
-      state.layout='grid';
-      state.cols=cols;
-      state.rows=rows;
-      // 形状没变就别动比例：用户拖了半天接缝，再点一下同一个按钮不该回到等分
-      if(!same){
-        state.colFr=Array.from({length:cols},()=>1);
-        state.rowFr=Array.from({length:rows},()=>1);
-      }
-      save();render();return;
-    }
+    // 形状按钮已经由 #shape-grid 自己的处理器接管（并且要区分画布/网格），
+    // 这里不再兜 `[data-cols][data-rows]`，否则点挑选器会被当成"切到网格"。
     const toggle=event.target.closest('[data-mode-toggle]');
     if(toggle){event.preventDefault();setMode(toggle.dataset.modeToggle);return;}
   });
@@ -750,6 +1046,47 @@
     if(event.key==='Escape'&&state.max){toggleMax(state.max);}
   });
   $('add').onclick=()=>{renderPicker('');$('pq').value='';$('picker').showModal();$('pq').focus();};
+
+  // 行列挑选器：像 Word 插入表格，悬停预览、点一下生成
+  $('shape-btn').addEventListener('click',event=>{
+    event.preventDefault();
+    const pop=$('shape-pop');
+    if(pop&&!pop.hidden)closeShapePop(); else openShapePop();
+  });
+  $('shape-grid').addEventListener('pointerover',event=>{
+    const button=event.target.closest('[data-cols]');
+    if(!button)return;
+    paintShapeGrid(Number(button.dataset.cols),Number(button.dataset.rows));
+  });
+  $('shape-grid').addEventListener('pointerleave',()=>{
+    if(state.layout==='canvas')paintShapeGrid(state.canvasCols||state.cols||2,state.canvasRows||state.rows||2);
+    else paintShapeGrid(state.cols,state.rows);
+  });
+  $('shape-grid').addEventListener('click',event=>{
+    const button=event.target.closest('[data-cols]');
+    if(!button)return;
+    event.preventDefault();
+    applyShape(Number(button.dataset.cols),Number(button.dataset.rows));
+    closeShapePop();
+  });
+  $('shape-custom').addEventListener('click',()=>{closeShapePop();openCustomShape();});
+  document.addEventListener('pointerdown',event=>{
+    const pop=$('shape-pop');
+    if(!pop||pop.hidden)return;
+    if(event.target.closest('#shape-pop')||event.target.closest('#shape-btn'))return;
+    closeShapePop();
+  },true);
+  document.addEventListener('keydown',event=>{
+    if(event.key!=='Escape')return;
+    const pop=$('shape-pop');
+    if(pop&&!pop.hidden)closeShapePop();
+  });
+  $('tidy').addEventListener('click',()=>{
+    state.canvasCols=state.canvasCols||Math.ceil(Math.sqrt(Math.max(1,state.panes.length)));
+    state.canvasRows=Math.ceil(state.panes.length/Math.max(1,state.canvasCols));
+    tileCanvas(state.canvasCols,state.canvasRows);
+    save();render();
+  });
 
   // 自定义形状：边输边算，回车直接应用（表单是 method=dialog，不退化成"回车就关掉"）
   for(const id of ['gc-cols','gc-rows']){
@@ -865,11 +1202,122 @@
     }
     return null;
   }
+  // ---- canvas drag: move by the title bar, resize by any of the 8 handles
+  let cdrag=null;
+  document.addEventListener('pointerdown',event=>{
+    if(state.layout!=='canvas'||window.innerWidth<=760||state.max)return;
+    const cell=event.target.closest('.cell');
+    if(!cell)return;
+    const handle=event.target.closest('[data-resize]');
+    const head=event.target.closest('.cell-head');
+    if(!handle&&!head)return;
+    if(head&&event.target.closest('.cell-btn,a,button:not([data-resize])'))return;
+    const pane=cell.dataset.pane;
+    const rect={...(state.cells[pane]||{x:0,y:0,w:CANVAS_MIN_W,h:CANVAS_MIN_H})};
+    event.preventDefault();
+    state.canvasFocus=pane;
+    cdrag={pane,mode:handle?'resize':'move',dir:handle?handle.dataset.resize:'',
+      startX:event.clientX,startY:event.clientY,rect,pointerId:event.pointerId};
+    cell.classList.add('dragging');
+    const capture=handle||cell;
+    capture.setPointerCapture&&capture.setPointerCapture(event.pointerId);
+    document.body.classList.add('canvas-dragging');
+  });
+
+  document.addEventListener('pointermove',event=>{
+    if(!cdrag)return;
+    const grid=$('grid');
+    const area=snapTargets(cdrag.pane);
+    const dx=event.clientX-cdrag.startX, dy=event.clientY-cdrag.startY;
+    let {x,y,w,h}=cdrag.rect;
+    const lines=[];
+    if(cdrag.mode==='move'){
+      x=Math.max(0,cdrag.rect.x+dx); y=Math.max(0,cdrag.rect.y+dy);
+      const byLeft=nearest(x,area.xs), byCenter=nearest(x+w/2,area.xs), byRight=nearest(x+w,area.xs);
+      if(byLeft!==null){x=byLeft;lines.push({axis:'x',pos:byLeft});}
+      else if(byCenter!==null){x=byCenter-w/2;lines.push({axis:'x',pos:byCenter});}
+      else if(byRight!==null){x=byRight-w;lines.push({axis:'x',pos:byRight});}
+      const byTop=nearest(y,area.ys), byMiddle=nearest(y+h/2,area.ys), byBottom=nearest(y+h,area.ys);
+      if(byTop!==null){y=byTop;lines.push({axis:'y',pos:byTop});}
+      else if(byMiddle!==null){y=byMiddle-h/2;lines.push({axis:'y',pos:byMiddle});}
+      else if(byBottom!==null){y=byBottom-h;lines.push({axis:'y',pos:byBottom});}
+    }else{
+      if(cdrag.dir.includes('e')){
+        let right=cdrag.rect.x+cdrag.rect.w+dx;
+        const snap=nearest(right,area.xs);
+        if(snap!==null){right=snap;lines.push({axis:'x',pos:snap});}
+        w=Math.max(CANVAS_MIN_W,right-cdrag.rect.x);
+      }
+      if(cdrag.dir.includes('s')){
+        let bottom=cdrag.rect.y+cdrag.rect.h+dy;
+        const snap=nearest(bottom,area.ys);
+        if(snap!==null){bottom=snap;lines.push({axis:'y',pos:snap});}
+        h=Math.max(CANVAS_MIN_H,bottom-cdrag.rect.y);
+      }
+      if(cdrag.dir.includes('w')){
+        let left=cdrag.rect.x+dx;
+        const snap=nearest(left,area.xs);
+        if(snap!==null){left=snap;lines.push({axis:'x',pos:snap});}
+        left=Math.min(left,cdrag.rect.x+cdrag.rect.w-CANVAS_MIN_W);
+        w=Math.max(CANVAS_MIN_W,cdrag.rect.x+cdrag.rect.w-left);
+        x=Math.max(0,left);
+      }
+      if(cdrag.dir.includes('n')){
+        let top=cdrag.rect.y+dy;
+        const snap=nearest(top,area.ys);
+        if(snap!==null){top=snap;lines.push({axis:'y',pos:snap});}
+        top=Math.min(top,cdrag.rect.y+cdrag.rect.h-CANVAS_MIN_H);
+        h=Math.max(CANVAS_MIN_H,cdrag.rect.y+cdrag.rect.h-top);
+        y=Math.max(0,top);
+      }
+    }
+    state.cells[cdrag.pane]={x,y,w,h};
+    const cell=grid.querySelector(`.cell[data-pane="${CSS.escape(cdrag.pane)}"]`);
+    if(cell)cell.style.cssText=canvasRectStyle(cdrag.pane)+';position:absolute';
+    // 拖到右/下边缘时把画布撑大，滚动条跟着长
+    if(window.innerWidth>760){
+      if(x+w+16>grid.clientWidth)grid.style.width=(x+w+16)+'px';
+      if(y+h+16>grid.clientHeight)grid.style.height=(y+h+16)+'px';
+    }
+    queueGuides(lines);
+    showBadge(`${Math.round(w)}×${Math.round(h)}`,x,y);
+  });
+
+  document.addEventListener('pointerup',event=>{
+    if(!cdrag)return;
+    const pane=cdrag.pane;
+    const cell=$('grid').querySelector(`.cell[data-pane="${CSS.escape(pane)}"]`);
+    if(cell)cell.classList.remove('dragging');
+    const rect=state.cells[pane];
+    if(rect){rect.x=Math.round(rect.x);rect.y=Math.round(rect.y);rect.w=Math.round(rect.w);rect.h=Math.round(rect.h);}
+    cdrag=null;
+    document.body.classList.remove('canvas-dragging');
+    guideKey='';
+    hideGuides();
+    save();render();loadStatus();
+  });
+
+  // 方向键微调（画布里选中过的窗口）
+  document.addEventListener('keydown',event=>{
+    if(state.layout!=='canvas'||!state.canvasFocus)return;
+    if(!(event.altKey||event.metaKey))return;
+    const step=event.shiftKey?40:8;
+    const rect=state.cells[state.canvasFocus];
+    if(!rect)return;
+    const moves={ArrowLeft:[-step,0],ArrowRight:[step,0],ArrowUp:[0,-step],ArrowDown:[0,step]};
+    const move=moves[event.key];
+    if(!move)return;
+    event.preventDefault();
+    rect.x=Math.max(0,rect.x+move[0]);
+    rect.y=Math.max(0,rect.y+move[1]);
+    save();render();
+  });
+
   document.addEventListener('pointerdown',event=>{
     const head=event.target.closest('.cell-head');
     if(!head||event.target.closest('.cell-btn'))return;
     const cell=head.closest('.cell');
-    if(!cell)return;
+    if(!cell||state.layout==='canvas')return;
     mover={pane:cell.dataset.pane,startX:event.clientX,startY:event.clientY,active:false};
   });
   document.addEventListener('pointermove',event=>{
