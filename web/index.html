@@ -55,6 +55,9 @@
     .recent-row:hover .when,.recent-row:focus-within .when{opacity:1}
     /* 固定区和"最近"之间一条细线：固定项再多也只占自己那截，其余靠滚动 */
     .recent-row.pinned .label{font-weight:600}
+    .recent-rename{flex:1;min-width:0;height:24px;padding:0 6px;border:1px solid var(--accent);border-radius:6px;
+      background:var(--surface);color:var(--ink);font:12px inherit;outline:none}
+    .recent-row.renaming{background:rgba(201,100,66,.08)}
     .recent-split{flex:none;height:1px;margin:3px 6px;background:var(--line)}
     /* 手指点得准一点：手机上这一条不算图标，行高单独给到 40 */
     @media (pointer:coarse){
@@ -62,6 +65,7 @@
       .recent{padding:8px 4px 6px;max-height:46vh}
       /* 触屏没有悬停：两个动作按钮常显，行高按 44 给手指 */
       .recent-open{padding:10px 4px 10px 8px;min-height:44px;font-size:13px}
+      .recent-rename{height:34px;font-size:16px}
       .recent-act{opacity:.8;width:30px;height:30px}
       .recent-act .ico{width:14px;height:14px}
       .recent-list{padding-bottom:2px}
@@ -233,6 +237,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2.2"/></symbol>
     <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19.5v-15M12 4.5 6.6 9.9M12 4.5l5.4 5.4"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16.5V3.8M12 3.8 7.8 8M12 3.8 16.2 8M4 16.5v2.2A1.5 1.5 0 0 0 5.5 20.2h13a1.5 1.5 0 0 0 1.5-1.5v-2.2"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4.6 19.4h3.2L19 8.2a2.1 2.1 0 0 0-3-3L4.8 16.4Z"/><path d="m14.6 6.6 3 3"/></symbol>
     <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9.5 3.5h5M12 3.5v6.2M8.4 9.7h7.2l1.4 3.4H7l1.4-3.4ZM12 13.1v7.4"/></symbol>
     <symbol id="i-pin-fill" viewBox="0 0 24 24"><path d="M9.5 3.5h5M12 3.5v6.2M8.4 9.7h7.2l1.4 3.4H7l1.4-3.4Z" fill="currentColor" stroke="currentColor"/><path d="M12 13.1v7.4"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
@@ -695,6 +700,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     if(seconds<86400)return `${Math.floor(seconds/3600)} 小时`;
     return `${Math.floor(seconds/86400)} 天`;
   }
+  let recentSignature='';
   function renderRecents(){
     const block=$('recent-block'),box=$('recent-list');
     if(!block||!box)return;
@@ -717,17 +723,38 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
       }
       rows.push(entry);
     }
-    if(state.filesMode||!rows.some(row=>!row.split)){block.hidden=true;box.innerHTML='';return;}
+    if(state.filesMode||!rows.some(row=>!row.split)){block.hidden=true;box.innerHTML='';recentSignature='';return;}
     block.hidden=false;
+    const signature=rows.map(row=>row.split?'|':`${row.pane}|${row.pinned?'p':''}|${row.label||''}|${row.title||''}|${row.favorite?'f':''}`).join(',');
+    // 正在改名时绝不能走这条捷径：它会保留那个 input，也可能把用户刚输入的值冲掉
+    if(signature===recentSignature&&box.children.length&&!renaming){
+      // 只是选中项/状态变了：就地改 class 和圆点，不要重建成新节点（重绘会把编辑中的输入框冲掉，
+      // 也会让双击的第二下打在不同元素上）
+      for(const row of box.querySelectorAll('.recent-row')){
+        row.classList.toggle('active',row.dataset.row===state.selected);
+        const dot=row.querySelector('.dot');
+        if(dot){
+          const found=paneById(row.dataset.row);
+          dot.className='dot '+(found?(state.paneState.get(row.dataset.row)||''):'offline');
+        }
+      }
+      syncRecentPinButton();
+      return;
+    }
+    recentSignature=signature;
     box.innerHTML=rows.map(entry=>{
       if(entry.split)return '<div class="recent-split" aria-hidden="true"></div>';
       const found=paneById(entry.pane);
-      const label=found?recentLabel(entry.pane).text:(entry.label||entry.pane);
+      const fallback=found?recentLabel(entry.pane).text:entry.pane;
+      // 一个 pane 只有一个名字：钉住时自己起的名字，或收藏卡片上的名字
+      const custom=(entry.label||entry.title||'').trim();
+      const label=custom||fallback;
       const status=found?(state.paneState.get(entry.pane)||''):'offline';
       const active=entry.pane===state.selected?' active':'';
       const on=entry.pinned;
-      return `<div class="recent-row${on?' pinned':''}${active}">
-        <button class="recent-open" type="button" data-recent="${esc(entry.pane)}" title="${esc(entry.pane)}">
+      const hint=on?`${label} · ${entry.pane} · 双击改名`:`${fallback} · ${entry.pane}`;
+      return `<div class="recent-row${on?' pinned':''}${active}" data-row="${esc(entry.pane)}">
+        <button class="recent-open" type="button" data-recent="${esc(entry.pane)}" title="${esc(hint)}">
           <span class="dot ${esc(status)}"></span>
           <span class="label">${esc(label)}</span>
           ${on?'':`<span class="when">${relativeTime(entry.visited_at)}</span>`}
@@ -736,6 +763,9 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
           title="${on?'取消固定':'固定到上面'}" aria-label="${on?'取消固定':'固定到上面'}">
           <svg class="ico"><use href="${on?'#i-pin-fill':'#i-pin'}"/></svg>
         </button>
+        ${on?`<button class="recent-act" type="button" data-rename="${esc(entry.pane)}" title="改名" aria-label="改名">
+          <svg class="ico"><use href="#i-pencil"/></svg>
+        </button>`:''}
         <button class="recent-act${state.favorites.has(entry.pane)?' on':''}" type="button" data-star="${esc(entry.pane)}"
           aria-pressed="${state.favorites.has(entry.pane)?'true':'false'}" title="${state.favorites.has(entry.pane)?'取消收藏':'收藏到主页'}"
           aria-label="${state.favorites.has(entry.pane)?'取消收藏':'收藏到主页'}">
@@ -744,6 +774,59 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
       </div>`;
     }).join('');
     syncRecentPinButton();
+  }
+  // 改名：钉住的那几条双击（触屏长按）就地改；收藏着的同一名字由服务端一起改掉
+  let renaming=null;
+  let suppressClickAt=0;
+  function recentEntry(pane){return recents.find(entry=>entry.pane===pane);}
+  function finishRename(pane,save,value){
+    renaming=null;
+    recentSignature='';            // 强制重建一次：把 input 换回文本
+    if(!save){renderRecents();return;}
+    const entry=recentEntry(pane);
+    if(!entry){renderRecents();return;}
+    const label=(value||'').trim().slice(0,80);
+    if(label===(entry.label||'').trim()){renderRecents();return;}
+    entry.label=label;
+    if(entry.favorite)entry.title=label;      // 收藏卡片的名字同步改（空 = 回到默认）
+    renderRecents();
+    api(`/api/home/recent/pin/${encodeURIComponent(pane)}`,{method:'PATCH',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({label})})
+      .then(()=>loadRecents())                  // 以服务端为准收一次尾（清空名字就是这里回去的）
+      .catch(error=>{showError(error.message);loadRecents();});
+  }
+  function startRename(pane){
+    if(renaming)return;
+    const row=document.querySelector(`.recent-row[data-row="${CSS.escape(pane)}"]`);
+    if(!row||!row.classList.contains('pinned'))return;
+    const label=row.querySelector('.label');
+    if(!label)return;
+    const entry=recentEntry(pane)||{};
+    const input=document.createElement('input');
+    input.className='recent-rename';
+    input.type='text';
+    input.maxLength=80;
+    input.value=(entry.label||entry.title||label.textContent||'').trim();
+    input.setAttribute('aria-label','改名');
+    input.spellcheck=false;
+    renaming={pane,done:false};
+    row.classList.add('renaming');
+    label.replaceWith(input);
+    input.focus();
+    input.select();
+    const close=(save)=>{
+      if(!renaming||renaming.done)return;
+      renaming.done=true;
+      const value=input.value;
+      finishRename(pane,save,value);
+    };
+    input.addEventListener('keydown',event=>{
+      if(event.key==='Enter'){event.preventDefault();close(true);}
+      else if(event.key==='Escape'){event.preventDefault();close(false);}
+      event.stopPropagation();
+    });
+    input.addEventListener('blur',()=>close(true));
+    input.addEventListener('pointerdown',event=>event.stopPropagation());
   }
   // 钉住/取消钉住：服务端记在 pins 表里（跟账号走），本地先乐观重排一次
   async function togglePin(pane){
@@ -755,7 +838,8 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
         body:JSON.stringify({pane,pinned:!on,label:label?label.text:''})});
     }catch(e){showError(e.message);return;}
     if(!on){
-      recents=[{...(entry||{}),pane,label:label?label.text:'',pinned:true,favorite:state.favorites.has(pane),
+      // 钉住时服务端会沿用收藏卡片上的名字，本地也按同一个规则走
+      recents=[{...(entry||{}),pane,label:(entry&&entry.label)||'',pinned:true,favorite:state.favorites.has(pane),
         visited_at:entry?entry.visited_at:Math.round(Date.now()/1000)},...recents.filter(item=>item.pane!==pane)];
     }else{
       const pins=recents.filter(item=>item.pinned&&item.pane!==pane);
@@ -780,11 +864,13 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     renderRecents();
   }
   async function loadRecents(){
+    renaming=null;
     try{
       const data=await api('/api/home/recent?limit=12');
       recents=(data.recent||[]).filter(entry=>entry&&entry.pane).map(entry=>({
         pane:entry.pane,
         label:entry.label||'',
+        title:entry.title||'',
         pinned:!!entry.pinned,
         favorite:!!entry.favorite,
         visited_at:Number(entry.visited_at)||0,
@@ -1475,7 +1561,40 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   list.addEventListener('click',e=>{const add=e.target.closest('[data-new-session]');if(!add)return;
     e.preventDefault();e.stopPropagation();state.sessionHost=add.dataset.newSession;
     openSessionDialog(add.dataset.newSession,add.dataset.sessionPath||'');},true);
+  $('recent-list').addEventListener('dblclick',e=>{
+    const open=e.target.closest('.recent-open');
+    if(!open)return;
+    const row=open.closest('.recent-row');
+    if(!row||!row.classList.contains('pinned'))return;
+    e.preventDefault();
+    startRename(row.dataset.row);
+  });
+  // 触屏没有双击：长按 480ms 改名，松手/滑动就取消
+  let pressTimer=0,pressPane='';
+  $('recent-list').addEventListener('pointerdown',e=>{
+    const open=e.target.closest('.recent-open');
+    if(!open||e.pointerType==='mouse')return;
+    const row=open.closest('.recent-row');
+    if(!row||!row.classList.contains('pinned'))return;
+    pressPane=row.dataset.row;
+    clearTimeout(pressTimer);
+    pressTimer=setTimeout(()=>{
+      suppressClickAt=Date.now();
+      startRename(pressPane);
+    },480);
+  },{passive:true});
+  for(const type of ['pointerup','pointercancel','pointermove']){
+    $('recent-list').addEventListener(type,()=>{clearTimeout(pressTimer);},{passive:true});
+  }
+  $('recent-list').addEventListener('contextmenu',e=>{
+    const row=e.target.closest('.recent-row.pinned');
+    if(row)e.preventDefault();
+  });
   $('recent-list').addEventListener('click',e=>{
+    if(Date.now()-suppressClickAt<600){e.preventDefault();e.stopPropagation();return;}
+    if(renaming)return;
+    const rename=e.target.closest('[data-rename]');
+    if(rename){e.preventDefault();e.stopPropagation();startRename(rename.dataset.rename);return;}
     const pin=e.target.closest('[data-pin]');
     if(pin){e.preventDefault();e.stopPropagation();togglePin(pin.dataset.pin);return;}
     const star=e.target.closest('[data-star]');

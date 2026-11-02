@@ -172,6 +172,12 @@ tree and the preview page use). Clicking the pin again unpins; on touch, where t
 always visible at a 44 px row height. Opening a pinned conversation only refreshes its timestamp — it is never
 dragged out of the pinned set.
 
+**A pinned row can be renamed**: double-click its title (long-press for 480 ms on touch, or the pencil button on
+that row) and edit in place — Enter saves, Esc abandons, an empty name falls back to the generated
+«host · session:window». A pane has exactly one name: if it is also on the board, that card's title is renamed
+with it, and renaming on the board renames the sidebar row too (`PATCH /api/home/recent/pin/{pane}` and
+`PATCH /api/home/favorites/{pane}` sync each other in one transaction).
+
 The header carries a pin of its own that pins/unpins the **currently selected** conversation, and the × clears the
 ordinary recents only, leaving pins alone. When the block outgrows its box it scrolls with the wheel or a finger
 (`overscroll-behavior:contain`, so the page behind does not bounce). It caps at 32vh (46vh on a phone) and steps

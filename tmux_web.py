@@ -439,6 +439,10 @@ class HomePinRequest(BaseModel):
     pinned: bool = True
 
 
+class HomePinRenameRequest(BaseModel):
+    label: str = ""
+
+
 class HomeFavoriteRequest(BaseModel):
     pane: str = Field(min_length=1, max_length=400)
     note: str = ""
@@ -2586,7 +2590,9 @@ def create_app(
         require_auth(request)
         rows = await asyncio.to_thread(home.recent, max(1, min(int(limit), 20)))
         pins = await asyncio.to_thread(home.pins)
-        favorites = {row["pane_id"] for row in await asyncio.to_thread(home.favorites)}
+        favorite_rows = await asyncio.to_thread(home.favorites)
+        favorites = {row["pane_id"] for row in favorite_rows}
+        titles = {row["pane_id"]: (row.get("title") or "") for row in favorite_rows}
         seen: set[str] = set()
         entries: list[dict] = []
         visits = {row["pane_id"]: row["visited_at"] for row in rows}
@@ -2598,6 +2604,7 @@ def create_app(
                 "label": pin.get("label", ""),
                 "pinned": True,
                 "favorite": pane in favorites,
+                "title": titles.get(pane, ""),
                 "visited_at": visits.get(pane, 0),
             })
         for row in rows:
@@ -2608,6 +2615,7 @@ def create_app(
                 "label": "",
                 "pinned": False,
                 "favorite": row["pane_id"] in favorites,
+                "title": titles.get(row["pane_id"], ""),
                 "visited_at": row["visited_at"],
             })
         return {"recent": entries, "pinned": [pin["pane_id"] for pin in pins]}
@@ -2625,6 +2633,23 @@ def create_app(
             return {"pane": row["pane_id"], "pinned": True, "label": row["label"]}
         removed = await asyncio.to_thread(home.unpin, payload.pane)
         return {"pane": payload.pane, "pinned": False, "removed": removed}
+
+    @app.patch("/api/home/recent/pin/{pane_id}")
+    async def rename_home_pin(request: Request, pane_id: str, payload: HomePinRenameRequest):
+        """Give a pinned pane its own name (empty restores the generated one).
+
+        A pane has one name: when it is also on the board the card title is updated
+        in the same step, so renaming from the sidebar or from the board stays in step.
+        """
+        require_auth(request)
+        try:
+            row = await asyncio.to_thread(home.rename_pin, pane_id, payload.label)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="pane is not pinned") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        forget_home_entry(pane_id)
+        return {"pane": row["pane_id"], "label": row["label"], "pinned": True}
 
     @app.post("/api/home/recent", status_code=202)
     async def touch_home_recent(request: Request, payload: HomeRecentRequest):

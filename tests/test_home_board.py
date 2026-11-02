@@ -188,6 +188,59 @@ class HomeBoardTests(unittest.TestCase):
         self.assertFalse(store.unpin("%0"))          # 取消两次不报错
         store.close()
 
+    def test_a_pinned_pane_can_be_renamed_and_the_card_follows(self):
+        """一个 pane 只有一个名字：侧栏改名要同步到收藏卡片，反过来也一样。"""
+        self.client.post("/api/home/recent", json={"pane": "%4"})
+        self.client.post("/api/home/recent/pin", json={"pane": "%4", "label": "localhost · codex"})
+        self.favourite("%4")
+        resp = self.client.patch("/api/home/recent/pin/%254", json={"label": "Codex 主力"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["label"], "Codex 主力")
+        data = self.client.get("/api/home/recent?limit=8").json()
+        self.assertEqual(data["recent"][0]["label"], "Codex 主力")
+        self.assertEqual(data["recent"][0]["title"], "Codex 主力")      # 收藏卡片的标题
+        board = self.client.get("/api/home").json()
+        self.assertEqual([f.get("title") for f in board["favorites"] if f.get("pane") == "%4"], ["Codex 主力"])
+        # 在看板上改名，钉住的那条跟着改
+        self.assertEqual(self.client.patch("/api/home/favorites/%254", json={"title": "看板改的"}).status_code, 200)
+        data = self.client.get("/api/home/recent?limit=8").json()
+        self.assertEqual(data["recent"][0]["label"], "看板改的")
+        # 清空名字 = 回到自动生成的那个
+        self.assertEqual(self.client.patch("/api/home/recent/pin/%254", json={"label": ""}).status_code, 200)
+        self.assertEqual(self.client.get("/api/home/recent").json()["recent"][0]["label"], "")
+        # 没钉住的不给改名；空白 pane 直接拒
+        self.assertEqual(self.client.patch("/api/home/recent/pin/%255", json={"label": "x"}).status_code, 404)
+        self.assertEqual(self.client.patch("/api/home/recent/pin/%20", json={"label": "x"}).status_code, 422)
+
+    def test_pinning_inherits_the_name_a_card_already_has(self):
+        self.favourite("%6")
+        self.client.patch("/api/home/favorites/%256", json={"title": "HERMES 板子"})
+        self.client.post("/api/home/recent/pin", json={"pane": "%6", "label": "localhost · hermes"})
+        data = self.client.get("/api/home/recent?limit=8").json()
+        self.assertEqual(data["recent"][0]["label"], "HERMES 板子")
+
+    def test_renaming_a_pin_needs_it_to_be_pinned(self):
+        store = __import__("home_store").HomeStore(":memory:")
+        with self.assertRaises(KeyError):
+            store.rename_pin("%7", "x")
+        store.pin("%7", "a")
+        self.assertEqual(store.rename_pin("%7", "b")["label"], "b")
+        with self.assertRaises(ValueError):
+            store.rename_pin("", "b")
+        store.close()
+
+    def test_the_sidebar_renames_a_pinned_row_in_place(self):
+        page = self.client.get("/").text
+        for marker in ('data-rename="', "#i-pencil", "recent-rename", "function startRename(pane)",
+                       "startRename(row.dataset.row)", "PATCH", "/api/home/recent/pin/", "双击改名"):
+            self.assertIn(marker, page)
+        # 双击 / 触屏长按都能进编辑，Esc 放弃
+        self.assertIn("addEventListener('dblclick'", page)
+        self.assertIn("480", page)
+        # 只更新高亮时不重建行，但正在改名时必须重建（否则输入框被留着或值被冲掉）
+        self.assertIn("&&box.children.length&&!renaming", page)
+        self.assertIn("recentSignature='';", page)
+
     def test_the_recent_rows_carry_a_pin_and_a_star(self):
         page = self.client.get("/").text
         # 一行里三个动作：打开、固定、收藏；钉子有描边/实心两种状态

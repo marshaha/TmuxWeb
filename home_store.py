@@ -129,12 +129,18 @@ class HomeStore:
         return dict(row)
 
     def set_favorite_title(self, pane_id: str, title: str) -> dict:
-        """Rename a card. An empty title falls back to the generated default."""
+        """Rename a card. An empty title falls back to the generated default.
+
+        A pane has exactly one name: if it is also pinned, the pin's label follows,
+        so the sidebar and the board never disagree.
+        """
         pane_id = pane_id.strip()
+        clean = (title or "").strip()[:MAX_TITLE]
         with self._lock:
             cursor = self._conn.execute(
-                "UPDATE favorites SET title = ? WHERE pane_id = ?", ((title or "").strip()[:MAX_TITLE], pane_id)
+                "UPDATE favorites SET title = ? WHERE pane_id = ?", (clean, pane_id)
             )
+            self._conn.execute("UPDATE pins SET label = ? WHERE pane_id = ?", (clean, pane_id))
             self._conn.commit()
             if not cursor.rowcount:
                 raise KeyError(pane_id)
@@ -191,6 +197,12 @@ class HomeStore:
             raise ValueError("pane_id is required")
         now = _now()
         with self._lock:
+            # 已经收藏过的沿用卡片上的名字，钉住的那一刻两边就是同一个名字
+            favorite = self._conn.execute(
+                "SELECT title FROM favorites WHERE pane_id = ?", (pane_id,)
+            ).fetchone()
+            if favorite and (favorite["title"] or "").strip():
+                label = favorite["title"]
             self._conn.execute(
                 """INSERT INTO pins (pane_id, label, created_at) VALUES (?, ?, ?)
                    ON CONFLICT(pane_id) DO UPDATE SET
@@ -202,6 +214,25 @@ class HomeStore:
                 " (SELECT pane_id FROM pins ORDER BY created_at DESC LIMIT ?)",
                 (MAX_PINS,),
             )
+            self._conn.commit()
+            row = self._conn.execute("SELECT * FROM pins WHERE pane_id = ?", (pane_id,)).fetchone()
+        return dict(row)
+
+    def rename_pin(self, pane_id: str, label: str) -> dict:
+        """Give a pinned pane its own name; an empty label goes back to the default.
+
+        If the same pane also sits on the board, the card's title is updated in the
+        same transaction -- the user asked for one name, not two.
+        """
+        pane_id = (pane_id or "").strip()
+        if not pane_id:
+            raise ValueError("pane_id is required")
+        clean = (label or "").strip()[:MAX_TITLE]
+        with self._lock:
+            cursor = self._conn.execute("UPDATE pins SET label = ? WHERE pane_id = ?", (clean, pane_id))
+            if not cursor.rowcount:
+                raise KeyError(pane_id)
+            self._conn.execute("UPDATE favorites SET title = ? WHERE pane_id = ?", (clean, pane_id))
             self._conn.commit()
             row = self._conn.execute("SELECT * FROM pins WHERE pane_id = ?", (pane_id,)).fetchone()
         return dict(row)
