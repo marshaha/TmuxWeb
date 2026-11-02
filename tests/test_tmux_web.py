@@ -1205,8 +1205,13 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("id=\"file-panel\"", page)          # 控制台页面本身，不是登录页
         self.assertNotIn("localStorage.getItem('tmux-files-mode')", page)
         self.assertNotIn("localStorage.setItem('tmux-files-mode'", page)
-        # the panel still follows the pane while it is open
-        self.assertIn("if(state.filesMode)openFiles(null)", page)
+        # 默认（设置里没开「按 pane 记住」）每次加载都从会话列表开始
+        self.assertIn("filesMode:false", page)
+        # 面板开着时切 pane 仍然跟随
+        self.assertIn("else if(state.filesMode){openFiles(null);}", page)
+        # 开启记忆后按 pane 读写
+        self.assertIn("readFilesView(id)", page)
+        self.assertIn("writeFilesView()", page)
 
     def test_refresh_on_a_local_pane_does_not_500(self):
         """The API passes refresh=1 for every transport; the local one has no cache to bypass."""

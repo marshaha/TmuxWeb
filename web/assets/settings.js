@@ -23,6 +23,9 @@
   .ts-row:hover{color:var(--accent,#c96442)}
   /* rows can be links (server / share management): same look, no underline, a chevron instead of a caret */
   .ts-row.ts-link{text-decoration:none}
+  .ts-row.ts-static{cursor:default}
+  .ts-row.ts-static:hover{color:var(--ink,#242421)}
+  .ts-row.ts-static + .ts-hint{margin:0 0 4px;padding-bottom:6px}
   .ts-go{flex:none;width:7px;height:7px;border-top:1.6px solid currentColor;border-right:1.6px solid currentColor;
     transform:rotate(45deg)}
   /* the panel focus goes to the dialog itself, so nothing is ringed when it opens; keyboard users still
@@ -172,6 +175,17 @@
         <div class="ts-themes" id="ts-themes"></div>
         <p class="ts-hint">主题记在本浏览器里；插件自己的页面也会跟着变。</p>
       </div>
+    </section>
+
+    <section class="ts-block">
+      <div class="ts-row ts-static">
+        <span>侧栏</span>
+        <span class="ts-tail">
+          <button class="ts-switch" type="button" role="switch" id="ts-sidebar-memory" aria-checked="false"
+            title="按 pane 记住侧栏视图" aria-label="按 pane 记住侧栏视图"></button>
+        </span>
+      </div>
+      <p class="ts-hint" id="ts-sidebar-hint">关闭时每次进控制台都从会话列表开始；开启后每个 pane 记住自己上次是会话列表还是文件面板（含目录）。</p>
     </section>
 
     <div class="ts-actions">
@@ -412,6 +426,55 @@
     $('ts-import').hidden = name !== 'import';
   }
 
+  // ---------------------------------------------------------------- sidebar memory
+  const SIDEBAR_PREF_KEY = 'tmux-sidebar-memory';
+
+  function paintSidebarPref(enabled) {
+    const toggle = $('ts-sidebar-memory');
+    if (!toggle) return;
+    toggle.setAttribute('aria-checked', enabled ? 'true' : 'false');
+    toggle.title = enabled ? '按 pane 记住（点击关闭）' : '不记住（点击开启）';
+    toggle.setAttribute('aria-label', toggle.title);
+    const hint = $('ts-sidebar-hint');
+    if (hint) {
+      hint.textContent = enabled
+        ? '已开启：每个 pane 记住自己上次是会话列表还是文件面板（含目录），重新打开控制台也恢复。'
+        : '关闭时每次进控制台都从会话列表开始；打开后每个 pane 记住自己上次的视图。';
+    }
+  }
+
+  async function loadSidebarPref() {
+    let enabled = false;
+    try { enabled = localStorage.getItem(SIDEBAR_PREF_KEY) === 'pane'; } catch {}
+    paintSidebarPref(enabled);
+    try {
+      const data = await api('/api/prefs');
+      const stored = (data.prefs || {}).sidebar;
+      if (stored === 'pane' || stored === 'none') {
+        enabled = stored === 'pane';
+        try { localStorage.setItem(SIDEBAR_PREF_KEY, stored); } catch {}
+        paintSidebarPref(enabled);
+      }
+    } catch { /* offline: the local mirror is what the console reads */ }
+  }
+
+  async function toggleSidebarMemory() {
+    const toggle = $('ts-sidebar-memory');
+    if (!toggle) return;
+    const next = toggle.getAttribute('aria-checked') !== 'true';
+    paintSidebarPref(next);
+    try { localStorage.setItem(SIDEBAR_PREF_KEY, next ? 'pane' : 'none'); } catch {}
+    try {
+      await api('/api/prefs', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sidebar: next ? 'pane' : 'none' }),
+      });
+    } catch {
+      note($('ts-sidebar-hint'), '保存到账号失败，已记在本浏览器', 'bad');
+    }
+  }
+
   // ---------------------------------------------------------------- themes
   function renderThemes() {
     const box = $('ts-themes');
@@ -502,6 +565,7 @@
     $('ts-pw-source').textContent = '读取中…';
     dialog.showModal();
     renderThemes();
+    loadSidebarPref();
     loadPlugins();          // fills the row's counter; the list itself stays collapsed
     // Chrome/Firefox auto-focus the first control, Safari draws its blue ring on it: park the focus on
     // the dialog instead, so opening 设置 never comes with a highlighted row
@@ -553,6 +617,7 @@
     }
     for (const button of buttons) button.onclick = () => open();
     $('ts-close').onclick = () => dialog.close();
+    $('ts-sidebar-memory').addEventListener('click', () => toggleSidebarMemory());
     $('ts-themes').addEventListener('click', event => {
       const button = event.target.closest('[data-theme]');
       if (button) chooseTheme(button.dataset.theme);

@@ -1220,13 +1220,17 @@ def create_app(
             raise HTTPException(status_code=400, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="expected an object of preferences")
-        allowed = {"theme"}
+        allowed = {"theme", "sidebar"}
+        choices = {"sidebar": {"pane", "none"}}
         saved = home.get_prefs()
         for key, value in payload.items():
             if key not in allowed:
                 raise HTTPException(status_code=400, detail=f"unknown preference {key}")
             if not isinstance(value, str) or not value.strip():
                 raise HTTPException(status_code=400, detail=f"preference {key} must be a non-empty string")
+            if key in choices and value not in choices[key]:
+                raise HTTPException(status_code=400,
+                                    detail=f"preference {key} must be one of {sorted(choices[key])}")
             stored = home.set_pref(key, value)
             saved = stored
         response = JSONResponse({"prefs": saved})

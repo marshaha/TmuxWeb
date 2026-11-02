@@ -303,6 +303,27 @@ class PluginLoadingTests(unittest.TestCase):
         self.assertIn("tmux_theme=chatgpt", login.headers.get("set-cookie", ""))
         self.assertEqual(elsewhere.get("/api/prefs").json()["prefs"]["theme"], "chatgpt")
 
+    def test_the_sidebar_memory_preference_is_stored_per_account(self):
+        client = make_app()
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertEqual(client.put("/api/prefs", json={"sidebar": "pane"}).json()["prefs"]["sidebar"], "pane")
+        self.assertEqual(client.put("/api/prefs", json={"sidebar": "none"}).json()["prefs"]["sidebar"], "none")
+        # only the two choices, like every other preference
+        self.assertEqual(client.put("/api/prefs", json={"sidebar": "pane-mode"}).status_code, 400)
+
+    def test_the_panel_offers_the_sidebar_memory_switch(self):
+        script = self.client_public().get("/assets/settings.js").text
+        self.assertIn('id="ts-sidebar-memory"', script)
+        self.assertIn("SIDEBAR_PREF_KEY", script)
+        self.assertIn("/api/prefs", script)
+        # 控制台读取同一个 key，并按 pane 记住视图
+        page = self.client_public()
+        page.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        console = page.get("/").text
+        self.assertIn("tmux-sidebar-memory", console)
+        self.assertIn("tmux-files-view", console)
+        self.assertIn("readFilesView", console)
+
     def test_prefs_reject_junk_and_need_a_login(self):
         client = make_app()
         self.assertEqual(client.get("/api/prefs").status_code, 401)

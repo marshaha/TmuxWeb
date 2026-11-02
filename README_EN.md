@@ -160,6 +160,13 @@ again) goes back to the sessions. The choice is **not remembered across page loa
 `localStorage`, so a chat opened from the board, the grid or a link could start with 文件管理 instead of the
 server list, which looked random. The board and the grid only have the session tree, no file panel.
 
+To remember it per session, turn on **设置 → 侧栏 → 按 pane 记住**: each pane then keeps its own
+last choice — session list or file panel, including the directory you were browsing — across page loads and pane
+switches; a pane you never opened files for still starts on the session list. The preference lives with the
+account like the theme (`/api/prefs`, key `sidebar`, values `pane` / `none`) with a mirror in
+`localStorage['tmux-sidebar-memory']` for the synchronous read at load, and the per-pane views are kept in
+`localStorage['tmux-files-view']` (capped at 60 panes).
+
 Identical on the console, the board and the multi-window page (the latter two share `shell.css`).
 
 ### Message time
