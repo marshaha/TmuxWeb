@@ -102,7 +102,12 @@
     /* ---- 画布：窗口是自由摆的矩形，拖标题栏移动、拖边角改大小 */
     .grid.mode-canvas{display:block;position:relative;overflow:auto;padding:0;background:var(--page)}
     .grid.mode-canvas .cell{position:absolute;margin:0;min-width:0;min-height:0;height:auto;will-change:left,top,width,height}
-    .grid.mode-canvas .cell-head{cursor:grab}
+    /* 触屏拖标题栏：别让浏览器把它当成"滚动画布"，也别选中文字 */
+    .grid.mode-canvas .cell-head{cursor:grab;touch-action:none;-webkit-user-select:none;user-select:none;
+      -webkit-touch-callout:none}
+    body.canvas-dragging{user-select:none;-webkit-user-select:none}
+    body.canvas-dragging .grid{overflow:hidden;touch-action:none}
+    body.canvas-dragging .cell iframe{pointer-events:none}
     .grid.mode-canvas .cell.dragging .cell-head{cursor:grabbing}
     .grid.mode-canvas .cell.dragging{box-shadow:0 10px 30px #0002;z-index:5}
     .cell .rh{position:absolute;z-index:4;touch-action:none;opacity:0;transition:opacity .12s}
@@ -121,6 +126,16 @@
     .cell .rh[data-resize="n"]::after,.cell .rh[data-resize="s"]::after{inset:3px 0}
     .cell .rh[data-resize="w"]::after,.cell .rh[data-resize="e"]::after{inset:0 3px}
     .cell .rh[data-resize="nw"]::after,.cell .rh[data-resize="ne"]::after,.cell .rh[data-resize="sw"]::after,.cell .rh[data-resize="se"]::after{inset:4px}
+    /* 触屏没有 hover：把手一直隐约可见，热区也放大到手指能按住 */
+    @media (pointer:coarse){
+      .grid.mode-canvas .cell .rh{opacity:.6}
+      .cell .rh[data-resize="n"],.cell .rh[data-resize="s"]{height:16px;top:-4px}
+      .cell .rh[data-resize="s"]{top:auto;bottom:-4px}
+      .cell .rh[data-resize="w"],.cell .rh[data-resize="e"]{width:16px;left:-4px}
+      .cell .rh[data-resize="e"]{left:auto;right:-4px}
+      .cell .rh[data-resize="nw"],.cell .rh[data-resize="ne"],.cell .rh[data-resize="sw"],.cell .rh[data-resize="se"]{
+        width:22px;height:22px}
+    }
     /* 对齐参考线：停在同一位置一会儿才淡入，拖得快的时候不会一直闪 */
     .canvas-guides{position:absolute;inset:0;pointer-events:none;z-index:8;opacity:0;transition:opacity .14s}
     .canvas-guides.show{opacity:1}
@@ -1392,16 +1407,22 @@
     const rect={...(state.cells[pane]||{x:0,y:0,w:CANVAS_MIN_W,h:CANVAS_MIN_H})};
     event.preventDefault();
     state.canvasFocus=pane;
+    // 手指刚按下先不做任何视觉变化：可能只是想点一下窗口，抖一下很难受
     cdrag={pane,mode:handle?'resize':'move',dir:handle?handle.dataset.resize:'',
-      startX:event.clientX,startY:event.clientY,rect,pointerId:event.pointerId};
-    cell.classList.add('dragging');
+      startX:event.clientX,startY:event.clientY,rect,pointerId:event.pointerId,cell,active:false};
     const capture=handle||cell;
-    capture.setPointerCapture&&capture.setPointerCapture(event.pointerId);
-    document.body.classList.add('canvas-dragging');
+    try{capture.setPointerCapture&&capture.setPointerCapture(event.pointerId);}catch{}
   });
 
   document.addEventListener('pointermove',event=>{
     if(!cdrag)return;
+    if(!cdrag.active){
+      // 4px 之内当点击；超过才进入拖动，并在这时才锁住画布滚动/iframe
+      if(Math.hypot(event.clientX-cdrag.startX,event.clientY-cdrag.startY)<4)return;
+      cdrag.active=true;
+      cdrag.cell&&cdrag.cell.classList.add('dragging');
+      document.body.classList.add('canvas-dragging');
+    }
     const grid=$('grid');
     const area=snapTargets(cdrag.pane);
     const dx=event.clientX-cdrag.startX, dy=event.clientY-cdrag.startY;
@@ -1456,19 +1477,21 @@
     showBadge(`${Math.round(w)}×${Math.round(h)}`,x,y);
   });
 
-  document.addEventListener('pointerup',event=>{
+  function finishCanvasDrag(){
     if(!cdrag)return;
-    const pane=cdrag.pane;
-    const cell=$('grid').querySelector(`.cell[data-pane="${CSS.escape(pane)}"]`);
-    if(cell)cell.classList.remove('dragging');
-    const rect=state.cells[pane];
-    if(rect){rect.x=Math.round(rect.x);rect.y=Math.round(rect.y);rect.w=Math.round(rect.w);rect.h=Math.round(rect.h);}
+    const {pane,cell,active}=cdrag;
     cdrag=null;
+    if(cell)cell.classList.remove('dragging');
     document.body.classList.remove('canvas-dragging');
     guideKey='';
     hideGuides();
+    if(!active)return;                 // 只是点了一下，窗口不该动
+    const rect=state.cells[pane];
+    if(rect){rect.x=Math.round(rect.x);rect.y=Math.round(rect.y);rect.w=Math.round(rect.w);rect.h=Math.round(rect.h);}
     save();render();loadStatus();
-  });
+  }
+  document.addEventListener('pointerup',finishCanvasDrag);
+  document.addEventListener('pointercancel',finishCanvasDrag);
 
   // 方向键微调（画布里选中过的窗口）
   document.addEventListener('keydown',event=>{

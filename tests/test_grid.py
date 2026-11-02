@@ -153,6 +153,23 @@ class GridPageTests(unittest.TestCase):
         page = self.client.get("/grid").text
         self.assertIn("calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))", page)
 
+    def test_touch_drag_in_the_canvas_moves_only_that_window(self):
+        """触控板/平板上拖标题栏：只有这一格动，画布不跟着滚；点一下不许抖。"""
+        page = self.client.get("/grid").text
+        # 标题栏禁止浏览器接管手势；拖动期间锁住画布滚动、iframe 不吃事件
+        self.assertIn(".grid.mode-canvas .cell-head{cursor:grab;touch-action:none;", page)
+        self.assertIn("body.canvas-dragging .grid{overflow:hidden;touch-action:none}", page)
+        self.assertIn("body.canvas-dragging .cell iframe{pointer-events:none}", page)
+        # 4px 死区：按下不立刻加 dragging，超过阈值才真正开始
+        self.assertIn("if(Math.hypot(event.clientX-cdrag.startX,event.clientY-cdrag.startY)<4)return;", page)
+        self.assertIn("cdrag.active=true;", page)
+        self.assertIn("function finishCanvasDrag(){", page)
+        self.assertIn("if(!active)return;                 // 只是点了一下，窗口不该动", page)
+        self.assertIn("document.addEventListener('pointercancel',finishCanvasDrag);", page)
+        # 触屏把手常显 + 放大（放在基础尺寸规则之后才能生效）
+        self.assertIn(".grid.mode-canvas .cell .rh{opacity:.6}", page)
+        self.assertIn('width:22px;height:22px}', page)
+
     def test_a_phone_can_move_between_stacked_windows(self):
         """手机竖屏：外壳必须正好一屏，否则 .grid 的 overflow 不触发，只能看到最后一格。"""
         page = self.client.get("/grid").text
