@@ -93,6 +93,27 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(result["session_id"], session_id)
         self.assertEqual([item["id"] for item in result["messages"]], ["m1", "m2"])
 
+    def test_codex_transcript_prefers_the_resume_hint(self):
+        """`codex resume <id>` is the pane's own answer; title/cwd are guesses."""
+        sessions = self.home / ".codex" / "sessions"
+        sessions.mkdir(parents=True)
+        wanted = "0199bbbb-1111-2222-3333-444455556666"
+        decoy = "0199aaaa-9999-8888-7777-666655554444"
+        for session_id, text in ((decoy, "隔壁会话"), (wanted, "本 pane 的问题")):
+            path = sessions / f"rollout-2026-01-01T00-00-00-{session_id}.jsonl"
+            path.write_text("".join(json.dumps(record, ensure_ascii=False) + "\n" for record in [
+                {"type": "session_meta", "payload": {"id": session_id, "cwd": "/work/repo"}},
+                {"type": "response_item", "payload": {"type": "message", "role": "user", "id": "m1",
+                                                      "content": [{"type": "input_text", "text": text}]}},
+            ]))
+        # decoy 更新，标题索引也指向 decoy：只有 hint 能把它们掰回来
+        (self.home / ".codex" / "session_index.jsonl").write_text(
+            json.dumps({"id": decoy, "thread_name": "Review"}) + "\n")
+        result = transcript_reader.read_transcript("codex", "/work/repo", "Review | repo", 10,
+                                                  home=self.home, hint=wanted)
+        self.assertEqual(result["session_id"], wanted)
+        self.assertEqual(result["messages"][0]["text"], "本 pane 的问题")
+
     def test_hermes_transcript_reads_read_only_database(self):
         hermes = self.home / ".hermes"
         hermes.mkdir()
@@ -189,6 +210,22 @@ class FixtureTests(unittest.TestCase):
             (proc / "11" / "cmdline").write_bytes(b"node\x00server.js\x00")
             hint = transcript_reader.resume_session_hint(10, proc_root=proc)
         self.assertEqual(hint, "99999999-8888-7777-6666-555555555555")
+
+    def test_resume_hint_understands_the_codex_resume_subcommand(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "4242").mkdir()
+            (proc / "4242" / "cmdline").write_bytes(
+                b"node\x00/usr/local/bin/codex\x00resume\x000199aaaa-bbbb-cccc-dddd-eeeeffff0000\x00")
+            hint = transcript_reader.resume_session_hint(4242, proc_root=proc)
+        self.assertEqual(hint, "0199aaaa-bbbb-cccc-dddd-eeeeffff0000")
+
+    def test_resume_hint_ignores_codex_resume_last(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "4242").mkdir()
+            (proc / "4242" / "cmdline").write_bytes(b"codex\x00resume\x00--last\x00")
+            self.assertIsNone(transcript_reader.resume_session_hint(4242, proc_root=proc))
 
     def test_unknown_provider_is_rejected(self):
         with self.assertRaises(transcript_reader.TranscriptError):

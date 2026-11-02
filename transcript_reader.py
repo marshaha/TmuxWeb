@@ -156,6 +156,9 @@ def resume_session_hint(pane_pid, proc_root=None):
         match = re.search(r"--resume\s+([0-9A-Za-z][0-9A-Za-z_-]{7,63})", cmdline)
         if match is None:
             match = re.search(r"(?:^|\s)-r\s+([0-9a-f-]{36})", cmdline)
+        if match is None:
+            # `codex resume <id>` is a subcommand, not a flag
+            match = re.search(r"(?:^|\s)resume\s+([0-9A-Za-z][0-9A-Za-z_-]{7,63})", cmdline)
         if match:
             return match.group(1)
         try:
@@ -242,7 +245,7 @@ def read_claude(home, cwd, title, limit, hint=None, screen=None):
     return parse_claude(reverse_lines(path), limit, path.stem, _mtime(path))
 
 
-def _codex_session_path(home, cwd, title):
+def _codex_session_path(home, cwd, title, hint=None):
     codex_home = Path(home) / ".codex"
     title = (title or "").split(" | ", 1)[0].strip()
     session_id = None
@@ -256,6 +259,11 @@ def _codex_session_path(home, cwd, title):
             if entry.get("thread_name") == title:
                 session_id = entry.get("id")
     files = list((codex_home / "sessions").rglob("*.jsonl"))
+    if hint:
+        # the pane's own argv beats both the title index and the cwd guess
+        matches = [path for path in files if str(hint) in path.name]
+        if matches:
+            return str(hint), max(matches, key=_mtime)
     if session_id:
         matches = [path for path in files if session_id in path.name]
         if matches:
@@ -302,8 +310,8 @@ def parse_codex(lines, limit, session_id="", mtime=0):
             "messages": records[-cap:], "mtime": mtime, "has_more": len(records) > cap}
 
 
-def read_codex(home, cwd, title, limit):
-    session_id, path = _codex_session_path(home, cwd, title)
+def read_codex(home, cwd, title, limit, hint=None):
+    session_id, path = _codex_session_path(home, cwd, title, hint)
     with path.open(errors="replace") as handle:
         return parse_codex(handle, limit, session_id, _mtime(path))
 
@@ -511,6 +519,8 @@ def read_transcript(provider, cwd, title, limit=200, home=None, hint=None, scree
         data = read_claude(home, cwd, title, limit, hint=hint, screen=screen)
     elif provider == "hermes":
         data = read_hermes(home, cwd, limit, hint=hint)
+    elif provider == "codex":
+        data = read_codex(home, cwd, title, limit, hint=hint)
     else:
         data = READERS[provider](home, cwd, title, limit)
     if not data.get("messages"):

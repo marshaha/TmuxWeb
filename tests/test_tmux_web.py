@@ -77,7 +77,7 @@ class FakeTmux(TmuxBackend):
             if match:
                 self.output = "hello\n" + match.group(0) + ' "' + self.auto_reply + '"\n'
 
-    def transcript(self, pane_id, limit=200):
+    def transcript(self, pane_id, limit=200, refresh=False):
         self.validate_pane(pane_id)
         if self.panes[0]["command"] != "claude":
             raise RuntimeError("not claude")
@@ -181,7 +181,7 @@ class FakeSSHRunner:
         content = self.capture_ansi(pane_id, history)
         digest = hashlib.sha1(content.encode()).hexdigest()
         return digest, (None if digest == known_digest else content)
-    def transcript(self, pane_id, limit=200):
+    def transcript(self, pane_id, limit=200, refresh=False):
         return {"pane": pane_id, "provider": "claude", "session_id": "remote-session-1", "mtime": 7,
                 "messages": [{"id": "r1", "role": "user", "text": "远端问题", "timestamp": None}]}
     def zip_files(self, paths, base, max_bytes, max_files):
@@ -1195,6 +1195,14 @@ class TmuxWebTests(unittest.TestCase):
                                         headers={"X-TmuxWeb-Token": "relay-token-value"}).status_code, 200)
             self.assertEqual(client.get("/api/panes", headers={
                 "Authorization": "Bearer relay-token-value"}).status_code, 200)
+
+    def test_refresh_on_a_local_pane_does_not_500(self):
+        """The API passes refresh=1 for every transport; the local one has no cache to bypass."""
+        self.login()
+        code = self.client.get("/api/panes/%254/transcript?limit=5&refresh=1").status_code
+        # 200 or a typed 409 ("no messages") are fine -- a 500 is not
+        self.assertNotEqual(code, 500)
+        self.assertIn(code, (200, 409))
 
     def test_api_session_mints_a_cookie_from_the_api_token(self):
         # Browser clients cannot send an Authorization header on a WebSocket

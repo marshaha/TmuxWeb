@@ -158,12 +158,13 @@ session_hint() {
     [ -n "$pid" ] || continue
     args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
     case "$args" in
-      *--resume*|*--session-id*) ;;
+      *--resume*|*--session-id*|*" resume "*) ;;
       *) continue ;;
     esac
     id=$(printf '%s\n' "$args" | sed -n \
       -e 's/.*--resume[ =][/-]*\([0-9A-Za-z][0-9A-Za-z_-]\{5,\}\).*/\1/p' \
-      -e 's/.*--session-id[ =][/-]*\([0-9A-Za-z][0-9A-Za-z_-]\{5,\}\).*/\1/p' | head -1)
+      -e 's/.*--session-id[ =][/-]*\([0-9A-Za-z][0-9A-Za-z_-]\{5,\}\).*/\1/p' \
+      -e 's/.*[ ]resume[ ]\{1,\}\([0-9A-Za-z][0-9A-Za-z_-]\{5,\}\).*/\1/p' | head -1)
     if [ -n "$id" ]; then printf '%s' "$id"; return 0; fi
   done
   return 1
@@ -243,21 +244,58 @@ fi
 if [ "$provider" = codex ]; then
   id=""
   file=""
+  # `codex resume <id>` names the session outright; the title index and the cwd scan
+  # below both guess, and the guess picks a sibling session when several run here
+  pane_pid=$(${TMUX_BIN:-tmux} display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null)
+  hint=$(session_hint "$pane_pid") || hint=""
+  if [ -n "$hint" ]; then
+    exact=$(find "$HOME/.codex/sessions" -name "*$hint*.jsonl" 2>/dev/null | head -1)
+    if [ -n "$exact" ]; then
+      file=$exact
+      id=$hint
+    fi
+  fi
   short=$(printf '%s' "$title" | sed 's/ |.*//')
-  if [ -n "$short" ] && [ -f "$HOME/.codex/session_index.jsonl" ]; then
-    id=$(grep -F "\"thread_name\": \"$short\"" "$HOME/.codex/session_index.jsonl" 2>/dev/null \
+  if [ -z "$file" ] && [ -n "$short" ] && [ -f "$HOME/.codex/session_index.jsonl" ]; then
+    # codex writes compact JSON (no space after the colon), so match both spellings;
+    # only the spaced form used to be tried, which silently disabled this whole lookup
+    id=$(grep -F -e "\"thread_name\":\"$short\"" -e "\"thread_name\": \"$short\"" \
+      "$HOME/.codex/session_index.jsonl" 2>/dev/null \
       | tail -1 | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   fi
-  [ -n "$id" ] && file=$(find "$HOME/.codex/sessions" -name "*$id*.jsonl" 2>/dev/null | head -1)
+  [ -z "$file" ] && [ -n "$id" ] && file=$(find "$HOME/.codex/sessions" -name "*$id*.jsonl" 2>/dev/null | head -1)
   if [ -z "$file" ]; then
+    # newest first: a fresh session in this cwd is the one just written, and `find`
+    # hands back directory order, which picked older siblings
     candidates=$(find "$HOME/.codex/sessions" -name '*.jsonl' -mtime -30 2>/dev/null | head -300)
+    candidates=$(ls -t $candidates 2>/dev/null)
+    matches=""
     for candidate in $candidates; do
       if head -c 2000 -- "$candidate" 2>/dev/null | grep -qF -- "\"cwd\": \"$cwd\"" \
         || head -c 2000 -- "$candidate" 2>/dev/null | grep -qF -- "\"cwd\":\"$cwd\""; then
-        file=$candidate
-        break
+        matches="$matches $candidate"
       fi
     done
+    count=$(printf '%s\n' $matches | grep -c . 2>/dev/null)
+    if [ "${count:-0}" -eq 1 ]; then
+      file=$(printf '%s\n' $matches | head -1)
+    elif [ "${count:-0}" -gt 1 ]; then
+      # several fresh sessions in one directory: pick the one whose tail the screen
+      # actually shows, the same scoring the Claude branch uses
+      probes=$(${TMUX_BIN:-tmux} capture-pane -p -J -t "$pane" -S -80 2>/dev/null | awk 'length($0) >= 24' | tail -20)
+      probe_file=$(mktemp 2>/dev/null || printf '/tmp/tmuxweb-probes.%s' "$$")
+      printf '%s\n' "$probes" > "$probe_file" 2>/dev/null
+      best=""
+      best_score=0
+      for candidate in $matches; do
+        score=$(tail -c 262144 -- "$candidate" 2>/dev/null | grep -c -F -f "$probe_file" 2>/dev/null)
+        [ -n "$score" ] || score=0
+        if [ "$score" -gt "$best_score" ]; then best=$candidate; best_score=$score; fi
+      done
+      rm -f "$probe_file" 2>/dev/null
+      [ -n "$best" ] && [ "$best_score" -gt 0 ] && file=$best
+      [ -n "$file" ] || file=$(printf '%s\n' $matches | head -1)
+    fi
   fi
   [ -n "$file" ] || error "no Codex transcript for $cwd" 23
   [ "${TMUXWEB_STATUS_ONLY:-0}" = 1 ] && status_emit "$file"

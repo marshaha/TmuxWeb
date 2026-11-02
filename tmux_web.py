@@ -224,7 +224,9 @@ class TmuxBackend:
     def pane_pid(self, pane_id: str) -> str:
         return self._run("display-message", "-p", "-t", pane_id, "#{pane_pid}").strip()
 
-    def transcript(self, pane_id: str, limit: int = 200) -> dict:
+    def transcript(self, pane_id: str, limit: int = 200, refresh: bool = False) -> dict:
+        # `refresh` exists so the API can pass it for every transport: remote hosts cache
+        # the pulled bytes, the local read is always fresh, so it is accepted and ignored.
         # Discovery and parsing live in transcript_reader so the exact same code
         # produces transcripts here and on SSH remote hosts.
         pane = self.validate_pane(pane_id)

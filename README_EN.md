@@ -205,10 +205,12 @@ capabilities, it is not a kernel sandbox, so run untrusted plugins inside a cont
 - Chat mode never keeps a `tmux attach` client alive, avoiding terminal-size interference between devices.
 - Only terminal mode attaches through a PTY; the attachment is released after WebSocket disconnect.
 - Remote structured transcripts need no remote `python3` either: a POSIX shell snippet locates the session file (Claude project dir + title/screen probe, Codex `session_index`, Kimi `state.json`, Hermes `--resume` session jsonl or `sqlite3`), the bytes are pulled here and parsed by the **same local parsers** — the `scp` model. When discovery fails the pane falls back to `capture-pane`. Remote transcripts are polled at the same 1s cadence: the server caches the parsed result per (host, pane, limit), serves repeats for 2s without touching the host, then uses a single `stat` probe and only re-pulls when the file changed — so a remote conversation follows the remote file live at almost no cost while idle.
-- A remote Claude pane's session file is located from **`--resume <id>` / `--session-id <id>` in the pane's own
-  process argv**, and only falls back to "newest file in the cwd + title/screen scoring" when there is no such
+- A remote **Claude / Codex** pane's session file is located from **`--resume <id>` / `--session-id <id>` /
+  `codex resume <id>` in the pane's own process argv**, and only falls back to "newest file in the cwd + title/screen scoring" when there is no such
   flag. With several Claude sessions running side by side in one directory that fallback picks the neighbour's
-  transcript — the chat then sits on another conversation and looks frozen.
+  transcript — the chat then sits on another conversation and looks frozen. Codex additionally needs the compact
+  `session_index.jsonl` (`"thread_name":"…"`, no space after the colon) to be matched — only the spaced spelling was
+  grepped, so that whole index was dead.
 - The UI caches each pane's transcript, scroll offset and unsent draft: switching back paints instantly from cache
   (0.02-0.14s measured) and revalidates in the background, repainting only when the signature (mtime + message count +
   last id) changes. The working set is capped at eight panes.
