@@ -873,6 +873,8 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
         visited_at:Math.round(Date.now()/1000)},...rest]].flat();
     }
     renderRecents();
+    // 新钉的那条在最上面：滚回顶部，别让它藏在滚动位置之外
+    if(!on){const list=$('recent-list');if(list)list.scrollTop=0;}
   }
   function touchRecent(id){
     if(!id||!paneById(id))return;
@@ -1608,8 +1610,12 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     try{localStorage.setItem(RECENT_H_KEY,String(Math.min(RECENT_H_MAX,Math.max(RECENT_H_MIN,ratio/total))));}catch{}
   }
   function setRecentCollapsed(on,persist){
-    const block=$('recent-block'),button=$('recent-fold');
+    const block=$('recent-block'),button=$('recent-fold'),list=$('recent-list');
+    const wasCollapsed=block?block.classList.contains('collapsed'):false;
     if(block)block.classList.toggle('collapsed',!!on);
+    // 展开时回到顶部：折叠期间浏览器会记住滚动位置，展开后固定区直接被滚出视野，
+    // 看起来就像"钉住的记录消失了"
+    if(!on&&wasCollapsed&&list)list.scrollTop=0;
     if(button){
       button.setAttribute('aria-expanded',on?'false':'true');
       const title=on?'展开最近':'折叠最近';

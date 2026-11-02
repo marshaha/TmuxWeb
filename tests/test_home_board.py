@@ -285,6 +285,11 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("removeItem(RECENT_H_KEY)", page)
         # 手机上把手更高一点，好按住
         self.assertIn(".recent-grip{top:-8px;height:16px}", page)
+        # 展开时把列表滚回顶部：折叠期间浏览器记住的滚动位置会把固定区推到视野外，
+        # 看起来像"钉住的记录消失了"；新钉一条也一样回顶
+        self.assertIn("if(!on&&wasCollapsed&&list)list.scrollTop=0;", page)
+        self.assertIn("const wasCollapsed=block?block.classList.contains('collapsed'):false;", page)
+        self.assertIn("if(!on){const list=$('recent-list');if(list)list.scrollTop=0;}", page)
 
     def test_the_console_opens_on_the_board_when_there_is_nothing_to_restore(self):
         page = self.client.get("/").text
