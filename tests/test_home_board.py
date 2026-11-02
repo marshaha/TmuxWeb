@@ -290,6 +290,11 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("if(!on&&wasCollapsed&&list)list.scrollTop=0;", page)
         self.assertIn("const wasCollapsed=block?block.classList.contains('collapsed'):false;", page)
         self.assertIn("if(!on){const list=$('recent-list');if(list)list.scrollTop=0;}", page)
+        # 最近块会自己补数据（切回标签页/定时），重建时保住滚动位置
+        self.assertIn("const keepScroll=box.scrollTop;", page)
+        self.assertIn("box.scrollTop=keepScroll;", page)
+        self.assertIn("Date.now()-lastRecentsAt>15000", page)
+        self.assertIn("setInterval(()=>{if(!document.hidden)loadRecents();},120000);", page)
 
     def test_the_console_opens_on_the_board_when_there_is_nothing_to_restore(self):
         page = self.client.get("/").text

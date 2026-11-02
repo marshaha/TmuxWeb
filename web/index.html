@@ -795,10 +795,12 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
         </button>
       </div>`;
     };
+    const keepScroll=box.scrollTop;
     // 钉住的自成一块浅底，卷在一起也一眼看得出边界；下面才是普通最近的流水
     const pinned=rows.filter(entry=>entry.pinned);
     const rest=rows.filter(entry=>!entry.pinned);
     box.innerHTML=(pinned.length?`<div class="recent-pins">${pinned.map(rowHtml).join('')}</div>`:'')+rest.map(rowHtml).join('');
+    box.scrollTop=keepScroll;
     syncRecentPinButton();
   }
   // 改名：钉住的那几条双击（触屏长按）就地改；收藏着的同一名字由服务端一起改掉
@@ -890,8 +892,10 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     }
     renderRecents();
   }
+  let lastRecentsAt=0;
   async function loadRecents(){
     renaming=null;
+    lastRecentsAt=Date.now();
     try{
       const data=await api('/api/home/recent?limit=12');
       recents=(data.recent||[]).filter(entry=>entry&&entry.pane).map(entry=>({
@@ -1748,6 +1752,11 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
     if(!wanted&&!last)location.replace('/home');
   })();
   loadRecents();loadPanes();setInterval(()=>{if(!document.hidden)loadPanes();},20000);
+  // 「最近」块：切回标签页/窗口时补一次（换设备钉的、别处改的名字都能看到），
+  // 页面一直开着也每 2 分钟对一次；重建时保住滚动位置，不会把位置弹回顶部。
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-lastRecentsAt>15000)loadRecents();});
+  window.addEventListener('focus',()=>{if(Date.now()-lastRecentsAt>15000)loadRecents();});
+  setInterval(()=>{if(!document.hidden)loadRecents();},120000);
   if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 })();
 (function initSidebarResize(){
