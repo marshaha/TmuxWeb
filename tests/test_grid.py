@@ -149,6 +149,10 @@ class GridPageTests(unittest.TestCase):
         # 手机上画布退回单列（绝对定位会把超出屏幕的窗口全藏起来）
         self.assertIn(".grid.mode-canvas .cell{position:relative!important", page)
 
+    def test_the_sidebar_footer_keeps_clear_of_a_phones_corner(self):
+        page = self.client.get("/grid").text
+        self.assertIn("calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))", page)
+
     def test_a_phone_can_move_between_stacked_windows(self):
         """手机竖屏：外壳必须正好一屏，否则 .grid 的 overflow 不触发，只能看到最后一格。"""
         page = self.client.get("/grid").text

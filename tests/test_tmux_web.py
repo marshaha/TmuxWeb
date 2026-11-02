@@ -722,6 +722,18 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".msg-tools .msg-time{", preview)
         self.assertIn(".msg-tools{display:flex;align-items:center;", preview)
 
+    def test_a_block_copy_button_shows_its_label(self):
+        """块顶栏的「复制 / 源码」按钮：图标没有宽高时 svg 是 300×150，会把文字顶出按钮。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn(".msg-copy .ico,.block-btn .ico{width:11px;height:11px;", page)
+        self.assertIn(".msg-copy,.block-btn{display:inline-flex;align-items:center}", page)
+        # 文字单独一层：复制成功只换字，不会把图标删掉
+        self.assertEqual(page.count('<span class="btn-label">复制全部</span>'), 2)
+        self.assertIn('<span class="btn-label">复制</span>', page)
+        self.assertIn("const label=button.querySelector('.btn-label')||button;", page)
+        self.assertIn("label.textContent=ok?'已复制':'复制失败';", page)
+
     def test_a_wide_table_cannot_push_the_copy_row_off_screen(self):
         """手机上宽表格：表格在自己的框里横滚，气泡宽度被夹住，复制行留在气泡里且不会被挤出去。"""
         self.login()

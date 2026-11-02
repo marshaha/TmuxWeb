@@ -70,7 +70,7 @@ body.recent-resizing{cursor:row-resize;user-select:none}
 /* 手指点得准一点：手机上这一条不算图标，行高单独给到 40 */
 @media (pointer:coarse){
   /* 手机：行高按触控 44，整块留够 6 行的高度，别让最后一条被自己滚掉一半 */
-  .recent{padding:8px 4px 6px}
+  .recent{padding:8px calc(4px + env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left))}
   .recent-grip{top:-8px;height:16px}
   .recent-fold{width:26px;height:26px}
   /* 触屏没有悬停：两个动作按钮常显，行高按 44 给手指 */

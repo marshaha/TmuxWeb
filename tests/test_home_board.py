@@ -288,11 +288,16 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn(".recent-pins{", styles)
         self.assertIn('class="recent-pins"', page)
         self.assertIn("color-mix(in srgb,var(--green) 16%,transparent)", styles)   # 固定区是淡绿（跟主题走）
+        self.assertIn("padding:8px calc(4px + env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left))", styles)
         self.assertNotIn("color-mix(in srgb,var(--accent) 9%,transparent)", styles)
         self.assertIn("overscroll-behavior:contain", styles)
         self.assertIn("-webkit-overflow-scrolling:touch", styles)
         # 清空只清普通最近，固定的不动
         self.assertIn("state.entries.filter(entry => !entry.pinned)", page)
+
+    def test_the_footer_keeps_clear_of_a_phones_bottom_left_corner(self):
+        page = self.client.get("/").text
+        self.assertIn(".side-foot{padding:10px 12px calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))}", page)
 
     def test_the_recent_block_has_an_adjustable_height_and_folds(self):
         """最近这块默认占侧栏 2/5，上边缘可拖，双击回默认；标题行能整个折叠。"""

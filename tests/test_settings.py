@@ -197,7 +197,7 @@ class SettingsPageWiringTests(unittest.TestCase):
         page = self.client.get("/?pane=%251").text
         self.assertIn('<symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7"', page)
         self.assertIn('rect x="1.9" y="5.7"', page)
-        self.assertIn('<svg class="ico"><use href="#i-copy"/></svg>复制全部', page)
+        self.assertIn('<svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span>', page)
         # the share button keeps the original out-of-a-box arrow
         self.assertIn('<use href="#i-external"/>', page)
         self.assertNotIn('<use href="#i-share"/>', page)
