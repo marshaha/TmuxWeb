@@ -1563,6 +1563,18 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "theme.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/recents.css")
+    async def recents_stylesheet() -> FileResponse:
+        """The shared 「最近」 block: one stylesheet for console, board and grid."""
+        return FileResponse(WEB_DIR / "assets" / "recents.css", media_type="text/css",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/recents.js")
+    async def recents_script() -> FileResponse:
+        """The shared 「最近」 block: pins, favourites, rename, height and folding in one place."""
+        return FileResponse(WEB_DIR / "assets" / "recents.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/plugins-ui.js")
     async def plugins_ui_script():
         """Sidebar buttons contributed by plugins; no-store so a plugin edit shows up on reload."""

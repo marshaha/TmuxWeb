@@ -135,16 +135,46 @@ class HomeBoardTests(unittest.TestCase):
 
     def test_the_console_sidebar_lists_recent_chats_under_the_tree(self):
         page = self.client.get("/").text
-        self.assertIn('id="recent-block"', page)
-        self.assertIn('id="recent-list"', page)
-        self.assertIn("data-recent=", page)
-        self.assertIn("function loadRecents()", page)
-        self.assertIn("function touchRecent(", page)
-        self.assertIn("/api/home/recent?limit=", page)
-        # 文件面板打开时这块要跟着让位
-        self.assertIn("if(state.filesMode||!rows.length)", page)
-        # 过滤只决定显示哪些，不能回写 recents（启动时 hosts 还没到，回写会把历史裁掉）
-        self.assertNotIn("recents=live.slice(", page)
+        # 标记和逻辑都在共用模块里（三个页面同一份），控制台只负责挂载
+        self.assertIn("/assets/recents.js", page)
+        self.assertIn("/assets/recents.css", page)
+        self.assertIn("TmuxRecents.mount(", page)
+        self.assertIn("hideWhenFiles: true", page)
+        self.assertNotIn('id="recent-block"', page)      # 页面里不再抄一份标记
+        recent = self.recent_script()
+        self.assertIn("section.id = 'recent-block'", recent)
+        self.assertIn('id="recent-list"', recent)
+        self.assertIn("data-recent=", recent)
+        self.assertIn("/api/home/recent?limit=", recent)
+        # 文件面板打开时这块让位（控制台的行内实现也是这个规则）
+        self.assertIn("filesOpen()", recent)
+        self.assertIn("attributeFilter: ['hidden']", recent)
+
+    def recent_script(self):
+        return self.client.get("/assets/recents.js").text
+
+    def recent_styles(self):
+        return self.client.get("/assets/recents.css").text
+
+    def test_the_recent_block_is_one_implementation_for_all_three_pages(self):
+        """控制台 / 主页 / 多窗口 用同一份最近块，页面只决定点一行做什么。"""
+        for path in ("/", "/home", "/grid"):
+            page = self.client.get(path).text
+            self.assertIn("/assets/recents.js", page, path)
+            self.assertIn("/assets/recents.css", page, path)
+            self.assertNotIn('id="recent-block"', page, path)   # 谁都不许再抄一份
+        shell = self.client.get("/assets/shell.js").text
+        self.assertIn("TmuxRecents.mount(", shell)
+        self.assertIn("TmuxRecents.touch(pane)", shell)          # 点一行先记一次访问
+        self.assertIn("if (state.hooks.onPane) state.hooks.onPane(pane)", shell)
+        self.assertIn("TmuxRecents.setHosts(state.hosts)", shell)
+        self.assertIn("TmuxRecents.setStates(state.states)", shell)
+        self.assertIn("TmuxRecents.setFavorites", shell)
+        self.assertIn("tmuxweb:favorites", shell)
+        # 三个页面的点击行为不同：控制台切会话、主页跳控制台、多窗口加窗口
+        self.assertIn("onPick: pane => { selectPane(pane);", self.client.get("/").text)
+        self.assertIn("onPane:paneId=>{location=consoleUrl(paneId);}", self.client.get("/home").text)
+        self.assertIn("onPane: paneId => openPane(paneId)", self.client.get("/grid").text)
 
     def test_pinned_panes_sit_on_top_of_the_recent_block(self):
         """钉住 = 跟账号走的置顶，掉出最近 30 条也还在；普通最近里不再重复出现。"""
@@ -237,7 +267,7 @@ class HomeBoardTests(unittest.TestCase):
         store.close()
 
     def test_the_sidebar_renames_a_pinned_row_in_place(self):
-        page = self.client.get("/").text
+        page = self.recent_script()
         for marker in ('data-rename="', "#i-pencil", "recent-rename", "function startRename(pane)",
                        "startRename(row.dataset.row)", "PATCH", "/api/home/recent/pin/", "双击改名"):
             self.assertIn(marker, page)
@@ -245,63 +275,59 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("addEventListener('dblclick'", page)
         self.assertIn("480", page)
         # 只更新高亮时不重建行，但正在改名时必须重建（否则输入框被留着或值被冲掉）
-        self.assertIn("&&box.children.length&&!renaming", page)
-        self.assertIn("recentSignature='';", page)
+        self.assertIn("&& state.list.children.length && !state.renaming", page)
+        self.assertIn("state.signature = '';", page)
 
     def test_the_recent_rows_carry_a_pin_and_a_star(self):
-        page = self.client.get("/").text
-        # 一行里三个动作：打开、固定、收藏；钉子有描边/实心两种状态
-        for marker in ('data-pin="', 'data-star="', "function togglePin(pane)", "#i-pin", "#i-pin-fill"):
+        page = self.recent_script()
+        for marker in ('data-pin="', 'data-star="', "async function togglePin(pane)", "#i-pin", "#i-pin-fill",
+                       "recent-act", "touch: noteVisit"):
             self.assertIn(marker, page)
-        self.assertIn("recent-act", page)
-        # 触屏没有悬停，两个按钮必须常显；手机上 44 行高
-        self.assertIn("[data-pin]", page)
-        self.assertIn("if(state.filesMode||!rows.length)", page)
-        # 固定区自成一块浅底（跟下面的普通"最近"一眼分开）+ 列表可滚（不够显示就滚/滑）
-        self.assertIn(".recent-pins{", page)
+        # 固定区自成一块浅底 + 列表可滚（不够显示就滚/滑）
+        styles = self.recent_styles()
+        self.assertIn(".recent-pins{", styles)
         self.assertIn('class="recent-pins"', page)
-        self.assertIn("color-mix(in srgb,var(--accent) 9%,transparent)", page)
-        self.assertIn("overscroll-behavior:contain", page)
-        self.assertIn("-webkit-overflow-scrolling:touch", page)
+        self.assertIn("color-mix(in srgb,var(--accent) 9%,transparent)", styles)
+        self.assertIn("overscroll-behavior:contain", styles)
+        self.assertIn("-webkit-overflow-scrolling:touch", styles)
         # 清空只清普通最近，固定的不动
-        self.assertIn("recents.filter(entry=>!entry.pinned)", page)
+        self.assertIn("state.entries.filter(entry => !entry.pinned)", page)
 
     def test_the_recent_block_has_an_adjustable_height_and_folds(self):
         """最近这块默认占侧栏 2/5，上边缘可拖，双击回默认；标题行能整个折叠。"""
-        page = self.client.get("/").text
+        page = self.recent_script()
+        styles = self.recent_styles()
         self.assertIn('id="recent-grip"', page)
         self.assertIn('id="recent-fold"', page)
-        self.assertIn("height:var(--recent-h,40%)", page)
-        self.assertIn("const RECENT_H_DEFAULT=0.4", page)      # 2/5
-        self.assertIn("RECENT_H_MIN=0.15", page)
-        self.assertIn("RECENT_H_MAX=0.75", page)
-        self.assertIn("localStorage.setItem(RECENT_H_KEY", page)
-        self.assertIn("localStorage.setItem(RECENT_FOLD_KEY", page)
-        self.assertIn(".recent.collapsed{height:auto", page)
-        self.assertIn(".recent.collapsed .recent-list{display:none}", page)
+        self.assertIn("height:var(--recent-h,40%)", styles)
+        self.assertIn("const H_DEFAULT = 0.4", page)      # 2/5
+        self.assertIn("H_MIN = 0.15", page)
+        self.assertIn("H_MAX = 0.75", page)
+        self.assertIn("localStorage.setItem(H_KEY", page)
+        self.assertIn("localStorage.setItem(FOLD_KEY", page)
+        self.assertIn(".recent.collapsed{height:auto", styles)
+        self.assertIn(".recent.collapsed .recent-list{display:none}", styles)
         # 拖拽是 row-resize，向上拖变高；双击恢复默认
-        self.assertIn("cursor:row-resize", page)
-        self.assertIn("recentDrag.startH-(e.clientY-recentDrag.startY)", page)
-        self.assertIn("removeItem(RECENT_H_KEY)", page)
+        self.assertIn("cursor:row-resize", styles)
+        self.assertIn("state.drag.startH - (event.clientY - state.drag.startY)", page)
+        self.assertIn("removeItem(H_KEY)", page)
         # 手机上把手更高一点，好按住
-        self.assertIn(".recent-grip{top:-8px;height:16px}", page)
-        # 展开时把列表滚回顶部：折叠期间浏览器记住的滚动位置会把固定区推到视野外，
-        # 看起来像"钉住的记录消失了"；新钉一条也一样回顶
-        self.assertIn("if(!on&&wasCollapsed&&list)list.scrollTop=0;", page)
-        self.assertIn("const wasCollapsed=block?block.classList.contains('collapsed'):false;", page)
-        self.assertIn("if(!on){const list=$('recent-list');if(list)list.scrollTop=0;}", page)
+        self.assertIn(".recent-grip{top:-8px;height:16px}", styles)
+        # 展开时把列表滚回顶部：折叠期间记住的滚动位置会把固定区推到视野外
+        self.assertIn("if (!on && was && state.list) state.list.scrollTop = 0;", page)
         # 最近块会自己补数据（切回标签页/定时），重建时保住滚动位置
-        self.assertIn("const keepScroll=box.scrollTop;", page)
-        self.assertIn("box.scrollTop=keepScroll;", page)
-        self.assertIn("Date.now()-lastRecentsAt>15000", page)
-        self.assertIn("setInterval(()=>{if(!document.hidden)loadRecents();},120000);", page)
+        self.assertIn("const keepScroll = state.list.scrollTop;", page)
+        self.assertIn("state.list.scrollTop = keepScroll;", page)
+        self.assertIn("Date.now() - lastAt > 15000", page)
+        self.assertIn("setInterval(() => { if (!document.hidden) load(); }, 120000);", page)
 
     def test_the_console_opens_on_the_board_when_there_is_nothing_to_restore(self):
         page = self.client.get("/").text
         self.assertIn("landOnBoard", page)
         self.assertIn("location.replace('/home')", page)
-        self.assertIn("noteRecentVisit", page)
-        self.assertIn("/api/home/recent", page)
+        # 访问记录搬进共用模块，控制台在 selectPane 里调它
+        self.assertIn("TmuxRecents.touch(id)", page)
+        self.assertIn("body: JSON.stringify({pane})", self.recent_script())
 
     def test_every_host_row_offers_a_refresh(self):
         page = self.client.get("/home").text

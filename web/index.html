@@ -18,85 +18,6 @@
     :root{color-scheme:light;--page:#f7f7f5;--sidebar:#eeeDE8;--surface:#fff;--surface2:#f4f3ee;--ink:#242421;--muted:#73716b;--faint:#a09d95;--line:#dddcd5;--accent:#c96442;--green:#4f9a65;--danger:#b34b43;--shadow:0 8px 30px rgba(32,31,28,.08);--visual-height:100dvh;--visual-top:0px}
     *{box-sizing:border-box}html,body{height:100%}body{margin:0;overflow:hidden;background:var(--page);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}button,textarea{font:inherit}
     .app{display:grid;grid-template-columns:var(--side-w,280px) minmax(0,1fr);height:100dvh;transition:grid-template-columns .18s ease}.sidebar{display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden;border-right:1px solid var(--line);background:var(--sidebar);transition:opacity .15s ease,transform .18s ease}.app.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}.app.sidebar-collapsed .sidebar{opacity:0;pointer-events:none}.brand{display:flex;align-items:center;justify-content:space-between;padding:18px 15px 13px}.brand-name{font-family:Georgia,serif;font-size:20px}.brand-sub{color:var(--muted);font-size:11px;margin-top:1px}.brand-actions{display:flex;gap:6px}.icon-btn,.logout{min-width:36px;min-height:36px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.5);color:var(--muted);cursor:pointer}.icon-btn:hover,.logout:hover{background:#fff;color:var(--ink)}
-    /* 会话树下面那条「最近」：分隔线 + 最多 6 条，够了就自己滚 */
-    /* 高度由用户拖（默认 2/5 侧栏高），--recent-h 记的是比例 */
-    .recent{flex:0 0 auto;height:var(--recent-h,40%);min-height:70px;display:flex;flex-direction:column;
-      padding:6px 6px 4px;border-top:1px solid var(--line);overflow:hidden;position:relative}
-    .recent[hidden]{display:none}
-    .recent.collapsed{height:auto;min-height:0;padding-bottom:4px}
-    .recent.collapsed .recent-list{display:none}
-    /* 上边缘的拖拽把手：往上拖变高 */
-    .recent-grip{position:absolute;left:0;right:0;top:-5px;height:10px;cursor:row-resize;touch-action:none;z-index:3}
-    .recent-grip::after{content:'';position:absolute;left:14px;right:14px;top:4px;height:2px;border-radius:2px;
-      background:transparent;transition:background .12s}
-    .recent-grip:hover::after,.recent-grip.dragging::after{background:var(--accent);opacity:.55}
-    .recent.collapsed .recent-grip{display:none}
-    body.recent-resizing{cursor:row-resize;user-select:none}
-    .recent-head{display:flex;align-items:center;gap:4px;padding:0 6px 4px;
-      color:var(--faint);font-size:10.5px;letter-spacing:.06em}
-    .recent-title{flex:1;min-width:0}
-    .recent-fold{display:grid;place-items:center;width:18px;height:18px;padding:0;border:0;border-radius:6px;
-      background:transparent;color:var(--faint);cursor:pointer}
-    .recent-fold:hover{background:rgba(0,0,0,.06);color:var(--ink)}
-    .recent-fold .ico{width:12px;height:12px;transition:transform .15s}
-    .recent.collapsed .recent-fold .ico{transform:rotate(-90deg)}
-    .recent-clear{display:grid;place-items:center;width:20px;height:20px;padding:0;border:0;border-radius:6px;
-      background:transparent;color:var(--faint);cursor:pointer;opacity:.7}
-    .recent-clear:hover{opacity:1;background:rgba(0,0,0,.06)}
-    .recent-clear .ico{width:11px;height:11px}
-    .recent-tools{display:flex;align-items:center;gap:2px}
-    #recent-pin-selected.on{color:var(--accent);opacity:1}
-    #recent-pin-selected.on .ico{fill:none}
-    .recent-list{display:flex;flex-direction:column;gap:1px;overflow-y:auto;min-height:0;
-      overscroll-behavior:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
-    .recent-row{display:flex;align-items:center;gap:1px;border-radius:7px;padding-right:2px}
-    .recent-row:hover,.recent-row:focus-within{background:rgba(0,0,0,.05)}
-    .recent-row.active{background:rgba(201,100,66,.10)}
-    /* 一行里两个动作：钉子（固定到最上面）和星（收藏到主页），只在悬停/聚焦时露出来 */
-    .recent-open{flex:1;min-width:0;display:flex;align-items:center;gap:6px;padding:5px 4px 5px 6px;
-      border:0;border-radius:7px;background:transparent;color:var(--ink);font:12px inherit;text-align:left;cursor:pointer}
-    .recent-open:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-    .recent-act{flex:none;display:grid;place-items:center;width:20px;height:22px;padding:0;border:0;border-radius:6px;
-      background:transparent;color:var(--faint);cursor:pointer;opacity:.4;transition:opacity .12s,color .12s}
-    .recent-row:hover .recent-act,.recent-row:focus-within .recent-act{opacity:.85}
-    .recent-act:hover{opacity:1;background:rgba(0,0,0,.07);color:var(--ink)}
-    .recent-act.on{opacity:1;color:var(--accent)}
-    .recent-act .ico{width:12px;height:12px}
-    .recent-row .dot{width:6px;height:6px;border-radius:50%;flex:none;background:#c3c1b8}
-    .recent-row .dot.busy{background:#c9a227}
-    .recent-row .dot.idle{background:#4f9a65}
-    .recent-row .dot.offline{background:#b8544a}
-    .recent-row .label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .recent-row .when{flex:none;color:var(--faint);font-size:10.5px;opacity:0;transition:opacity .12s}
-    .recent-row:hover .when,.recent-row:focus-within .when{opacity:1}
-    /* 固定区单独一块浅底：跟下面的普通"最近"一眼分得开，又不抢标题的字重 */
-    .recent-pins{display:flex;flex-direction:column;gap:1px;padding:2px;border-radius:9px;
-      background:rgba(201,100,66,.06);box-shadow:inset 0 0 0 1px rgba(201,100,66,.09)}
-    @supports (background:color-mix(in srgb, red 8%, transparent)){
-      /* 深色/其它主题下跟着各自的强调色走，浅底不会变成一块脏灰 */
-      .recent-pins{background:color-mix(in srgb,var(--accent) 9%,transparent);
-        box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 14%,transparent)}
-    }
-    .recent-list>.recent-pins+.recent-row{margin-top:5px}
-    .recent-row.pinned .label{font-weight:600}
-    .recent-rename{flex:1;min-width:0;height:24px;padding:0 6px;border:1px solid var(--accent);border-radius:6px;
-      background:var(--surface);color:var(--ink);font:12px inherit;outline:none}
-    .recent-row.renaming{background:rgba(201,100,66,.08)}
-    /* 手指点得准一点：手机上这一条不算图标，行高单独给到 40 */
-    @media (pointer:coarse){
-      /* 手机：行高按触控 44，整块留够 6 行的高度，别让最后一条被自己滚掉一半 */
-      .recent{padding:8px 4px 6px}
-      .recent-grip{top:-8px;height:16px}
-      .recent-fold{width:26px;height:26px}
-      /* 触屏没有悬停：两个动作按钮常显，行高按 44 给手指 */
-      .recent-open{padding:10px 4px 10px 8px;min-height:44px;font-size:13px}
-      .recent-rename{height:34px;font-size:16px}
-      .recent-act{opacity:.8;width:30px;height:30px}
-      .recent-act .ico{width:14px;height:14px}
-      .recent-list{padding-bottom:2px}
-      .recent-clear{width:28px;height:28px}
-      .recent-clear .ico{width:13px;height:13px}
-    }
     .mode-switch{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.55)}.mode-btn{display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted);cursor:pointer}.mode-btn .ico{width:16px;height:16px}.mode-btn:hover{color:var(--ink)}.mode-btn.active{background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.08)}.mode-btn.active .ico{fill:none;stroke:var(--ink)}.tree-tools{display:flex;align-items:center;gap:6px;padding:2px 10px 2px}.tree-tools-label{flex:1;min-width:0;color:var(--faint);font-size:11px;letter-spacing:.06em}.tree-tool{display:grid;place-items:center;width:24px;height:24px;padding:0;border:1px solid var(--line);border-radius:7px;background:rgba(255,255,255,.6);color:var(--muted);cursor:pointer}.tree-tool:hover{background:#fff;color:var(--ink)}.tree-tool .ico{width:14px;height:14px}.pane-list{flex:1;min-height:0;overflow:auto;padding:5px 9px 12px}.pane{display:block;width:100%;padding:11px 12px;margin:2px 0;border:0;border-radius:10px;background:transparent;color:var(--ink);text-align:left;cursor:pointer}.pane:hover{background:rgba(255,255,255,.58)}.pane.selected{background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.05)}.pane-row{display:flex;align-items:center;gap:8px;min-width:0}.dot{width:7px;height:7px;border-radius:50%;background:var(--faint);flex:none}.dot.active{background:var(--green)}.pane-star{flex:none;display:grid;place-items:center;width:20px;height:20px;margin:0 2px 0 auto;padding:0;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer;opacity:.55;transition:opacity .12s,color .12s,background .12s}.pane:hover .pane-star,.pane-star.on{opacity:1}.pane-star:hover{background:rgba(201,100,66,.12);color:var(--accent)}.pane-star.on{color:var(--accent)}.pane-star .ico{width:14px;height:14px;stroke-width:1.6}.pane-star.on .ico{fill:currentColor}.pane-state{width:6px;height:6px;margin-left:6px;margin-left:auto;border-radius:50%;flex:none;background:var(--faint);transition:background .2s}.pane-state.idle{background:var(--green)}.pane-state.busy{background:#d89a3c}.pane-state.unknown{background:#cfccc4}.file-panel{display:flex;flex:1;min-height:0;flex-direction:column}.file-panel[hidden],.pane-list[hidden]{display:none!important}.file-bar{display:flex;align-items:center;gap:4px;padding:6px 7px;border-bottom:1px solid var(--line)}.file-bar .icon-btn{min-width:32px;min-height:32px}.file-bar .icon-btn .ico{width:16px;height:16px}.chip-btn.active{background:#292825;border-color:#292825;color:#fff}.file-host{flex:none;max-width:76px;margin-right:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 5px;border:1px solid #cbc9c0;border-radius:5px;background:#fff;color:var(--ink);font:10px ui-monospace,SFMono-Regular,Menlo,monospace;vertical-align:1px}.file-host[hidden]{display:none}.file-foot{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px}.file-foot>#file-status{min-width:0;overflow:hidden;text-overflow:ellipsis}.file-path{flex:1;min-width:0;width:100%;padding:3px 6px;border:1px solid #d8d6cf;border-radius:6px;background:rgba(255,255,255,.6);color:var(--muted);font:11px ui-monospace,SFMono-Regular,Menlo,monospace;text-overflow:clip;cursor:text}.file-path:hover{background:#fff;color:var(--ink)}.file-path:focus{outline:none;background:#fff;border-color:var(--accent);color:var(--ink);box-shadow:0 0 0 2px rgba(201,100,66,.18)}.file-check{flex:none;width:14px;height:14px;margin:0 2px 0 0;accent-color:var(--accent);cursor:pointer}.file-row.picked{background:rgba(201,100,66,.1)}.file-actions{display:flex;gap:6px;margin-left:auto;flex:none;max-width:100%}.chip-btn{height:23px;padding:0 9px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink);font-size:11px;cursor:pointer}.chip-btn.primary{background:#292825;border-color:#292825;color:#fff}.chip-btn:disabled{opacity:.45;cursor:default}.icon-btn.active{background:#fff;color:var(--ink);border-color:#cbc9c0}.file-list{flex:1;min-height:0;overflow:auto;padding:5px 7px 12px;-webkit-overflow-scrolling:touch}.file-row{display:flex;align-items:center;gap:8px;width:100%;padding:7px 8px;border:0;border-radius:8px;background:transparent;color:var(--ink);text-align:left;cursor:pointer;font:inherit}.file-row:hover{background:rgba(255,255,255,.58)}.file-icon{flex:none;width:17px;text-align:center;font-size:13px;line-height:1}.file-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.file-name.dir{font-weight:600}.file-meta{flex:none;color:var(--faint);font:10px ui-monospace,SFMono-Regular,Menlo,monospace}.file-foot{padding:6px 10px;border-top:1px solid var(--line);color:var(--muted);font-size:11px;min-height:26px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.file-panel.dragging{outline:2px dashed var(--accent);outline-offset:-6px;border-radius:10px}.file-upload{position:relative;display:grid;place-items:center;overflow:hidden}.file-upload input{position:absolute;inset:0;opacity:0;cursor:pointer}.pane-target{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pane-title{margin:4px 0 0 15px;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pane-meta{margin:2px 0 0 15px;color:var(--faint);font:11px ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.side-foot{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}.logout{padding:0 11px}
     .tree-group{margin:2px 0}.tree-group>summary{display:flex;align-items:center;gap:7px;min-height:32px;padding:5px 8px;border-radius:8px;color:var(--ink);cursor:pointer;list-style:none;user-select:none}.tree-group>summary::-webkit-details-marker{display:none}.tree-group>summary::before{content:'›';width:10px;color:var(--faint);font-size:17px;line-height:1;transition:transform .15s}.tree-group[open]>summary::before{transform:rotate(90deg)}.tree-group>summary:hover{background:rgba(255,255,255,.5)}.tree-host>summary{font-weight:650;padding-right:4px}.tree-host .host-add{margin-left:6px}.tree-session{margin-left:10px}.tree-session>summary{font-size:13px}.tree-window{margin-left:13px}.tree-window>summary{font-size:12px;color:var(--muted)}.tree-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-count{margin-left:auto;color:var(--faint);font-size:10px}.tree-children{position:relative}.tree-session>.tree-children,.tree-window>.tree-children{margin-left:8px;border-left:1px solid #d8d6cf}.tree-window .pane{padding:8px 9px 8px 17px;margin:1px 0;border-radius:8px}.tree-window .pane-title{margin-left:14px}.tree-window .pane-meta{margin-left:14px}.host-icon{display:grid;place-items:center;width:20px;height:20px;border-radius:6px;background:#292825;color:#fff;font-size:10px}.host-status{width:7px;height:7px;border-radius:50%;background:var(--green)}
     .share-btn.icon-only{width:34px;padding:0;display:inline-grid;place-items:center}.share-btn.icon-only .ico{width:16px;height:16px}.share-btn{height:34px;padding:0 12px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--muted);cursor:pointer}.share-btn:disabled{opacity:.4;cursor:not-allowed}.share-btn.on,.icon-btn.on{color:var(--accent);border-color:#d8c4b8}.share-btn.on .ico,.icon-btn.on .ico{fill:currentColor}.share-dialog{width:min(calc(100vw - 24px),520px);max-width:520px;max-height:86dvh;overflow:auto;padding:0;border:1px solid var(--line);border-radius:18px;background:#fff;color:var(--ink);box-shadow:0 24px 80px #0003}.share-dialog::backdrop{background:#0006}.share-form{padding:22px}.share-form h2{margin:0 0 4px}.share-form p{margin:0 0 17px;color:var(--muted);font-size:12px}.share-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.share-field{display:grid;gap:5px;color:var(--muted);font-size:11px}.share-field.full{grid-column:1/-1}
@@ -235,6 +156,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     /* iOS zooms the page when a field under 16px takes focus and never zooms back out */
     @media(max-width:760px){input,textarea,select{font-size:16px!important}}
   </style>
+<link rel="stylesheet" href="/assets/recents.css">
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
 </head>
@@ -295,11 +217,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   <aside class="sidebar" id="sidebar">
     <header class="brand"><div><div class="brand-name">Tmux Chat</div><div class="brand-sub">本机实时会话</div></div><div class="brand-actions"><a class="icon-btn" href="/home" title="主页（收藏与看板）" aria-label="主页" style="text-decoration:none"><svg class="ico"><use href="#i-home"/></svg></a><a class="icon-btn" href="/grid" title="多窗口（几个会话并排）" aria-label="多窗口" style="text-decoration:none"><svg class="ico"><use href="#i-grid"/></svg></a><button class="icon-btn" id="files-toggle" title="文件（当前 pane 目录）" aria-label="文件"><svg class="ico"><use href="#i-folder"/></svg></button><a class="icon-btn" href="/hosts" title="远程主机" aria-label="远程主机" style="text-decoration:none"><svg class="ico"><use href="#i-server"/></svg></a><a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享" style="text-decoration:none"><svg class="ico"><use href="#i-external"/></svg></a><button class="icon-btn" id="refresh" title="刷新窗口" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button><button class="icon-btn" id="sidebar-close" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-chevron-left"/></svg></button></div></header>
     <div class="tree-tools"><span class="tree-tools-label">会话</span><button class="tree-tool" id="tree-expand" type="button" title="展开全部" aria-label="展开全部"><svg class="ico"><use href="#i-tree-open"/></svg></button><button class="tree-tool" id="tree-collapse" type="button" title="折叠全部" aria-label="折叠全部"><svg class="ico"><use href="#i-tree-close"/></svg></button></div><nav class="pane-list" id="pane-list" aria-label="Tmux panes"></nav>
-    <section class="recent" id="recent-block" hidden aria-label="最近的会话">
-      <div class="recent-grip" id="recent-grip" role="separator" aria-label="拖动调整最近的高度" title="拖动调整高度，双击恢复 2/5"></div>
-      <div class="recent-head"><button class="recent-fold" id="recent-fold" type="button" aria-expanded="true" title="折叠最近" aria-label="折叠最近"><svg class="ico"><use href="#i-chevron"/></svg></button><span class="recent-title">最近</span><span class="recent-tools"><button class="recent-clear" id="recent-pin-selected" type="button" title="固定当前会话" aria-label="固定当前会话" aria-pressed="false"><svg class="ico"><use href="#i-pin"/></svg></button><button class="recent-clear" id="recent-clear" type="button" title="清空最近记录（固定的不动）" aria-label="清空最近记录"><svg class="ico"><use href="#i-close"/></svg></button></span></div>
-      <div class="recent-list" id="recent-list"></div>
-    </section><nav class="file-panel" id="file-panel" hidden aria-label="Pane files"><div class="file-bar"><input class="file-path" id="file-path" type="text" spellcheck="false" autocomplete="off" aria-label="当前路径，可直接修改" title=""><button class="icon-btn" id="file-download" title="打包下载当前目录" aria-label="打包下载"><svg class="ico"><use href="#i-download"/></svg></button><label class="icon-btn file-upload" id="file-choose" title="上传文件" aria-label="上传文件"><svg class="ico"><use href="#i-upload"/></svg><input type="file" id="file-input" multiple></label><button class="icon-btn" id="file-reload" title="刷新" aria-label="刷新目录"><svg class="ico"><use href="#i-refresh"/></svg></button><button class="icon-btn" id="file-close" title="隐藏文件面板" aria-label="隐藏文件面板"><svg class="ico"><use href="#i-close"/></svg></button></div><div class="file-list" id="file-list"></div><div class="file-foot"><span class="file-host" id="file-host" title="当前主机" hidden></span><span id="file-status">拖拽文件到此处上传</span><span class="file-actions" id="file-actions"><button class="chip-btn" id="file-pick-all" type="button" hidden>全选</button><button class="chip-btn" id="file-pick-none" type="button" hidden>清空</button><button class="chip-btn primary" id="file-zip" type="button" hidden>下载 zip</button></span></div></nav>
+<nav class="file-panel" id="file-panel" hidden aria-label="Pane files"><div class="file-bar"><input class="file-path" id="file-path" type="text" spellcheck="false" autocomplete="off" aria-label="当前路径，可直接修改" title=""><button class="icon-btn" id="file-download" title="打包下载当前目录" aria-label="打包下载"><svg class="ico"><use href="#i-download"/></svg></button><label class="icon-btn file-upload" id="file-choose" title="上传文件" aria-label="上传文件"><svg class="ico"><use href="#i-upload"/></svg><input type="file" id="file-input" multiple></label><button class="icon-btn" id="file-reload" title="刷新" aria-label="刷新目录"><svg class="ico"><use href="#i-refresh"/></svg></button><button class="icon-btn" id="file-close" title="隐藏文件面板" aria-label="隐藏文件面板"><svg class="ico"><use href="#i-close"/></svg></button></div><div class="file-list" id="file-list"></div><div class="file-foot"><span class="file-host" id="file-host" title="当前主机" hidden></span><span id="file-status">拖拽文件到此处上传</span><span class="file-actions" id="file-actions"><button class="chip-btn" id="file-pick-all" type="button" hidden>全选</button><button class="chip-btn" id="file-pick-none" type="button" hidden>清空</button><button class="chip-btn primary" id="file-zip" type="button" hidden>下载 zip</button></span></div></nav>
     <footer class="side-foot"><span id="pane-count">0 panes</span><span style="display:flex;align-items:center;gap:6px"><button class="chip-btn" id="settings-open" type="button" title="设置：改密码、导入导出、退出登录"><svg class="ico"><use href="#i-gear"/></svg>设置</button></span></footer>
     <div class="side-resizer" id="side-resizer" title="拖动调整侧边栏宽度（双击恢复默认）"></div>
   </aside>
@@ -407,16 +325,16 @@ import {marked} from '/assets/marked.esm.js';
     }catch(e){showError(e.message);}
     finally{if(button)button.classList.remove('busy');}
   }
-  function applyHosts(d){state.hosts=d.hosts||[];state.panes=state.hosts.flatMap(host=>(host.panes||[]).map(p=>({...p,host_id:p.host_id||host.id})));$('pane-count').textContent=`${state.hosts.length} hosts · ${state.panes.length} panes`;renderList();applyWantedPane();loadFavorites();refreshPaneStates();}
-  async function loadPanes(force){try{const d=await api('/api/hosts'+(force?'?refresh=1':''));state.hosts=d.hosts||[];state.panes=state.hosts.flatMap(host=>(host.panes||[]).map(p=>({...p,host_id:p.host_id||host.id})));const valid=new Set();for(const host of state.hosts){valid.add(host.id);for(const p of host.panes||[]){valid.add(`${host.id}/${p.session}`);valid.add(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}state.treeOpen=new Set([...state.treeOpen].filter(key=>valid.has(key)));localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));$('pane-count').textContent=`${state.hosts.length} hosts · ${state.panes.length} panes`;renderList();applyWantedPane();loadFavorites();refreshPaneStates();if(state.selected&&!state.panes.some(p=>p.id===state.selected))selectPane(null);if(!state.restored){state.restored=true;const last=localStorage.getItem('tmux-last-pane');const wanted=new URLSearchParams(location.search).get('pane');const wantedMode=new URLSearchParams(location.search).get('mode');state.wantedPane=wanted||null;state.wantedMode=wantedMode||null;
+  function applyHosts(d){state.hosts=d.hosts||[];if(window.TmuxRecents)TmuxRecents.setHosts(state.hosts);state.panes=state.hosts.flatMap(host=>(host.panes||[]).map(p=>({...p,host_id:p.host_id||host.id})));$('pane-count').textContent=`${state.hosts.length} hosts · ${state.panes.length} panes`;renderList();applyWantedPane();loadFavorites();refreshPaneStates();}
+  async function loadPanes(force){try{const d=await api('/api/hosts'+(force?'?refresh=1':''));state.hosts=d.hosts||[];if(window.TmuxRecents)TmuxRecents.setHosts(state.hosts);state.panes=state.hosts.flatMap(host=>(host.panes||[]).map(p=>({...p,host_id:p.host_id||host.id})));const valid=new Set();for(const host of state.hosts){valid.add(host.id);for(const p of host.panes||[]){valid.add(`${host.id}/${p.session}`);valid.add(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}state.treeOpen=new Set([...state.treeOpen].filter(key=>valid.has(key)));localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));$('pane-count').textContent=`${state.hosts.length} hosts · ${state.panes.length} panes`;renderList();applyWantedPane();loadFavorites();refreshPaneStates();if(state.selected&&!state.panes.some(p=>p.id===state.selected))selectPane(null);if(!state.restored){state.restored=true;const last=localStorage.getItem('tmux-last-pane');const wanted=new URLSearchParams(location.search).get('pane');const wantedMode=new URLSearchParams(location.search).get('mode');state.wantedPane=wanted||null;state.wantedMode=wantedMode||null;
       if(wanted&&state.panes.some(p=>p.id===wanted)){selectPane(wanted);if(wantedMode==='terminal')setMode('terminal');history.replaceState(null,'','/');}else if(last&&!state.selected&&state.panes.some(p=>p.id===last))selectPane(last);}}catch(e){showError(e.message);}}
   function applyWantedPane(){const target=state.wantedPane;if(!target)return;if(state.panes.some(p=>p.id===target)){state.wantedPane=null;selectPane(target);if(state.wantedMode==='terminal')setMode('terminal');state.wantedMode=null;history.replaceState(null,'','/');}}
 function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButton=$('grid-add');if(gridButton)gridButton.disabled=!state.selected;const on=!!state.selected&&state.favorites.has(state.selected);btn.disabled=!state.selected;btn.classList.toggle('on',on);btn.setAttribute('aria-pressed',on?'true':'false');btn.title=on?'取消收藏':'收藏到主页';btn.setAttribute('aria-label',btn.title);const use=btn.querySelector('use');if(use)use.setAttribute('href',on?'#i-star-fill':'#i-star');}
   function syncStars(){syncFavButton();document.querySelectorAll('[data-star]').forEach(node=>{const on=state.favorites.has(node.dataset.star);node.classList.toggle('on',on);node.title=on?'取消收藏':'收藏到主页';const use=node.querySelector('use');if(use)use.setAttribute('href',on?'#i-star-fill':'#i-star');});}
-  async function loadFavorites(){try{const d=await api('/api/home/favorites');state.favorites=new Set(d.favorites||[]);syncStars();}catch{}}
-  async function toggleFavorite(id){const on=state.favorites.has(id);try{if(on){await api(`/api/home/favorites/${encodeURIComponent(id)}`,{method:'DELETE'});state.favorites.delete(id);}else{await api('/api/home/favorites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane:id})});state.favorites.add(id);}syncStars();}catch(e){showError(e.message);}}
+  async function loadFavorites(){try{const d=await api('/api/home/favorites');state.favorites=new Set(d.favorites||[]);syncStars();if(window.TmuxRecents)TmuxRecents.setFavorites([...state.favorites]);}catch{}}
+  async function toggleFavorite(id){const on=state.favorites.has(id);try{if(on){await api(`/api/home/favorites/${encodeURIComponent(id)}`,{method:'DELETE'});state.favorites.delete(id);}else{await api('/api/home/favorites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane:id})});state.favorites.add(id);}syncStars();if(window.TmuxRecents)TmuxRecents.setFavorites([...state.favorites]);}catch(e){showError(e.message);}}
   async function refreshPaneStates(){const now=Date.now();if(now-(state.stateAt||0)<9000)return;state.stateAt=now;try{const d=await api('/api/panes/status');state.paneState=new Map((d.panes||[]).map(p=>[p.id,p.status]));applyPaneStates();syncProgress();}catch{}}
-  function applyPaneStates(){renderRecents();document.querySelectorAll('[data-pane]').forEach(button=>{const dot=button.querySelector('.pane-state');if(!dot)return;const status=state.paneState.get(button.dataset.pane)||'unknown',name='pane-state '+status;if(dot.className!==name){dot.className=name;dot.title=status==='idle'?'空闲，可接收中继':status==='busy'?'正在运行':'状态未知';}});}
+  function applyPaneStates(){if(window.TmuxRecents)TmuxRecents.setStates(state.paneState);document.querySelectorAll('[data-pane]').forEach(button=>{const dot=button.querySelector('.pane-state');if(!dot)return;const status=state.paneState.get(button.dataset.pane)||'unknown',name='pane-state '+status;if(dot.className!==name){dot.className=name;dot.title=status==='idle'?'空闲，可接收中继':status==='busy'?'正在运行':'状态未知';}});}
   function formatSize(bytes){if(!bytes)return '0 B';const units=['B','KB','MB','GB','TB'];let value=bytes,index=0;while(value>=1024&&index<units.length-1){value/=1024;index++;}return (index?(value<10?value.toFixed(1):Math.round(value)):value)+' '+units[index];}
   function setFileStatus(message){$('file-status').textContent=message||'拖拽文件到此处上传';}
   // per-pane sidebar memory: only consulted when 设置 → 侧栏 打开了「按 pane 记住」
@@ -435,7 +353,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
       localStorage.setItem(FILES_VIEW_KEY,JSON.stringify(all));
     }catch{}
   }
-  function syncFilesPanel(){const panel=$('file-panel');panel.hidden=!state.filesMode;$('pane-list').hidden=state.filesMode;$('files-toggle').classList.toggle('active',state.filesMode);$('files-toggle').title=state.filesMode?'隐藏文件面板':'显示文件面板';renderRecents();if(!state.filesMode){setFileStatus('');}writeFilesView();}
+  function syncFilesPanel(){const panel=$('file-panel');panel.hidden=!state.filesMode;$('pane-list').hidden=state.filesMode;$('files-toggle').classList.toggle('active',state.filesMode);$('files-toggle').title=state.filesMode?'隐藏文件面板':'显示文件面板';if(!state.filesMode){setFileStatus('');}writeFilesView();}
   async function openFiles(path){if(!state.selected){setFileStatus('先选择一个 pane');return;}state.filesMode=true;syncFilesPanel();setFileStatus('读取目录…');const query=[`hidden=${state.filesHidden?1:0}`];if(path)query.push(`path=${encodeURIComponent(path)}`);const pane=state.selected;try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/files?${query.join('&')}`);if(!state.filesMode||pane!==state.selected)return;state.filesPane=pane;state.filesData=d;state.filesPath=d.path;state.filesPicked.clear();writeFilesView();showPath(d.path);syncFileSelection();const owner=state.hosts.find(h=>(h.panes||[]).some(x=>x.id===pane));$('file-host').textContent=owner?owner.name:pane.includes('~')?'remote':'localhost';$('file-host').hidden=false;renderFiles();syncFileSelection();setFileStatus(`${d.entries.length} 项${d.truncated?'（已截断）':''} · 拖拽文件可上传`);}catch(e){setFileStatus(e.message);}}
   function showPath(path){const field=$('file-path');field.value=path||'';field.title=path||'';field.scrollLeft=field.scrollWidth;}
   function togglePick(path){if(!path)return;if(state.filesPicked.has(path))state.filesPicked.delete(path);else state.filesPicked.add(path);state.filesAnchor=path;syncFileSelection();}
@@ -479,7 +397,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     + ` title="刷新这台主机的 pane 列表" aria-label="刷新主机"><svg class="ico"><use href="#i-refresh"/></svg></button>`);}).join('');
     // replacing an identical tree swallows clicks and resets the scroll position
     if(list.dataset.sig!==html){list.dataset.sig=html;list.innerHTML=html;}
-    renderRecents();}
+    if(window.TmuxRecents){TmuxRecents.markActive(state.selected||null);}}
   function syncLiveButton(){const btn=$('live-toggle');btn.disabled=!state.selected;btn.title=state.livePaused?'继续实时刷新':'暂停实时刷新';
     const use=btn.querySelector('use');if(use)use.setAttribute('href',state.livePaused?'#i-play':'#i-pause');}
   function pauseLive(){if(!state.selected||state.livePaused)return;state.livePaused=true;closeConnections(true);
@@ -702,221 +620,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     state.transcriptMtime=entry.mtime;state.transcriptSig=entry.sig;state.transcriptProvider=entry.provider||'';renderTranscript(entry.messages);
     $('status-dot').className='status-dot live';$('status-text').textContent=`${entry.provider||'缓存'} · 更新中…`;
     restorePaneUi(id);return true;}
-  // Tell the board which pane was opened: the console is the only place that knows.
-  // ---- 最近的会话：会话树下面的一条快捷入口
-  let recents=[];
-  function paneById(id){
-    for(const host of state.hosts||[]){
-      for(const pane of host.panes||[]){
-        if(pane.id===id)return {pane,host};
-      }
-    }
-    return null;
-  }
-  function recentLabel(id){
-    const found=paneById(id);
-    if(!found)return null;
-    const {pane,host}=found;
-    const window=`${pane.session}${pane.window_name?': '+pane.window_name:''}`;
-    return {text:`${host.name||host.id} · ${window}`, sub:pane.command||'', pane};
-  }
-  function relativeTime(stamp){
-    const seconds=Math.max(0,Math.round(Date.now()/1000-Number(stamp||0)));
-    if(seconds<60)return '刚刚';
-    if(seconds<3600)return `${Math.floor(seconds/60)} 分钟`;
-    if(seconds<86400)return `${Math.floor(seconds/3600)} 小时`;
-    return `${Math.floor(seconds/86400)} 天`;
-  }
-  let recentSignature='';
-  function renderRecents(){
-    const block=$('recent-block'),box=$('recent-list');
-    if(!block||!box)return;
-    // 只过滤"要显示哪些"，不要回写 recents：控制台启动时 hosts 还没到，回写会把整份记录
-    // 永久裁成当时能匹配的那一两条。
-    // 固定项即使当前主机离线/盘上找不到也要留着（它本来就带着记下来的标题），
-    // 普通"最近"才要求能对上真实 pane。
-    const rows=[];
-    let recentCount=0;
-    for(const entry of recents){
-      const found=paneById(entry.pane);
-      if(!found&&!entry.pinned)continue;
-      if(!entry.pinned){
-        if(recentCount>=8)continue;
-        recentCount+=1;
-      }
-      rows.push(entry);
-    }
-    if(state.filesMode||!rows.length){block.hidden=true;box.innerHTML='';recentSignature='';return;}
-    block.hidden=false;
-    const signature=rows.map(row=>`${row.pane}|${row.pinned?'p':''}|${row.label||''}|${row.title||''}|${row.favorite?'f':''}`).join(',');
-    // 正在改名时绝不能走这条捷径：它会保留那个 input，也可能把用户刚输入的值冲掉
-    if(signature===recentSignature&&box.children.length&&!renaming){
-      // 只是选中项/状态变了：就地改 class 和圆点，不要重建成新节点（重绘会把编辑中的输入框冲掉，
-      // 也会让双击的第二下打在不同元素上）
-      for(const row of box.querySelectorAll('.recent-row')){
-        row.classList.toggle('active',row.dataset.row===state.selected);
-        const dot=row.querySelector('.dot');
-        if(dot){
-          const found=paneById(row.dataset.row);
-          dot.className='dot '+(found?(state.paneState.get(row.dataset.row)||''):'offline');
-        }
-      }
-      syncRecentPinButton();
-      return;
-    }
-    recentSignature=signature;
-    const rowHtml=entry=>{
-      const found=paneById(entry.pane);
-      const fallback=found?recentLabel(entry.pane).text:entry.pane;
-      // 只认钉子自己的名字：收藏卡片上的标题不会漏到最近列表里（两边是分开的两份数据）
-      const custom=(entry.label||'').trim();
-      const label=custom||fallback;
-      const status=found?(state.paneState.get(entry.pane)||''):'offline';
-      const active=entry.pane===state.selected?' active':'';
-      const on=entry.pinned;
-      const hint=on?`${label} · ${entry.pane} · 双击改名`:`${fallback} · ${entry.pane}`;
-      return `<div class="recent-row${on?' pinned':''}${active}" data-row="${esc(entry.pane)}">
-        <button class="recent-open" type="button" data-recent="${esc(entry.pane)}" title="${esc(hint)}">
-          <span class="dot ${esc(status)}"></span>
-          <span class="label">${esc(label)}</span>
-          ${on?'':`<span class="when">${relativeTime(entry.visited_at)}</span>`}
-        </button>
-        <button class="recent-act${on?' on':''}" type="button" data-pin="${esc(entry.pane)}" aria-pressed="${on?'true':'false'}"
-          title="${on?'取消固定':'固定到上面'}" aria-label="${on?'取消固定':'固定到上面'}">
-          <svg class="ico"><use href="${on?'#i-pin-fill':'#i-pin'}"/></svg>
-        </button>
-        ${on?`<button class="recent-act" type="button" data-rename="${esc(entry.pane)}" title="改名" aria-label="改名">
-          <svg class="ico"><use href="#i-pencil"/></svg>
-        </button>`:''}
-        <button class="recent-act${state.favorites.has(entry.pane)?' on':''}" type="button" data-star="${esc(entry.pane)}"
-          aria-pressed="${state.favorites.has(entry.pane)?'true':'false'}" title="${state.favorites.has(entry.pane)?'取消收藏':'收藏到主页'}"
-          aria-label="${state.favorites.has(entry.pane)?'取消收藏':'收藏到主页'}">
-          <svg class="ico"><use href="${state.favorites.has(entry.pane)?'#i-star-fill':'#i-star'}"/></svg>
-        </button>
-      </div>`;
-    };
-    const keepScroll=box.scrollTop;
-    // 钉住的自成一块浅底，卷在一起也一眼看得出边界；下面才是普通最近的流水
-    const pinned=rows.filter(entry=>entry.pinned);
-    const rest=rows.filter(entry=>!entry.pinned);
-    box.innerHTML=(pinned.length?`<div class="recent-pins">${pinned.map(rowHtml).join('')}</div>`:'')+rest.map(rowHtml).join('');
-    box.scrollTop=keepScroll;
-    syncRecentPinButton();
-  }
-  // 改名：钉住的那几条双击（触屏长按）就地改；收藏着的同一名字由服务端一起改掉
-  let renaming=null;
-  let suppressClickAt=0;
-  function recentEntry(pane){return recents.find(entry=>entry.pane===pane);}
-  function finishRename(pane,save,value){
-    renaming=null;
-    recentSignature='';            // 强制重建一次：把 input 换回文本
-    if(!save){renderRecents();return;}
-    const entry=recentEntry(pane);
-    if(!entry){renderRecents();return;}
-    const label=(value||'').trim().slice(0,80);
-    if(label===(entry.label||'').trim()){renderRecents();return;}
-    entry.label=label;
-    if(entry.favorite)entry.title=label;      // 只有"用户主动改名"这一条路径会让两边同名
-    renderRecents();
-    api(`/api/home/recent/pin/${encodeURIComponent(pane)}`,{method:'PATCH',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify({label})})
-      .then(()=>loadRecents())                  // 以服务端为准收一次尾（清空名字就是这里回去的）
-      .catch(error=>{showError(error.message);loadRecents();});
-  }
-  function startRename(pane){
-    if(renaming)return;
-    const row=document.querySelector(`.recent-row[data-row="${CSS.escape(pane)}"]`);
-    if(!row||!row.classList.contains('pinned'))return;
-    const label=row.querySelector('.label');
-    if(!label)return;
-    const entry=recentEntry(pane)||{};
-    const input=document.createElement('input');
-    input.className='recent-rename';
-    input.type='text';
-    input.maxLength=80;
-    input.value=(entry.label||label.textContent||'').trim();
-    input.setAttribute('aria-label','改名');
-    input.spellcheck=false;
-    renaming={pane,done:false};
-    row.classList.add('renaming');
-    label.replaceWith(input);
-    input.focus();
-    input.select();
-    const close=(save)=>{
-      if(!renaming||renaming.done)return;
-      renaming.done=true;
-      const value=input.value;
-      finishRename(pane,save,value);
-    };
-    input.addEventListener('keydown',event=>{
-      if(event.key==='Enter'){event.preventDefault();close(true);}
-      else if(event.key==='Escape'){event.preventDefault();close(false);}
-      event.stopPropagation();
-    });
-    input.addEventListener('blur',()=>close(true));
-    input.addEventListener('pointerdown',event=>event.stopPropagation());
-  }
-  // 钉住/取消钉住：服务端记在 pins 表里（跟账号走），本地先乐观重排一次
-  async function togglePin(pane){
-    const entry=recents.find(item=>item.pane===pane);
-    const on=!!(entry&&entry.pinned);
-    const label=recentLabel(pane);
-    try{
-      await api('/api/home/recent/pin',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({pane,pinned:!on,label:label?label.text:''})});
-    }catch(e){showError(e.message);return;}
-    if(!on){
-      recents=[{...(entry||{}),pane,label:(entry&&entry.label)||'',pinned:true,favorite:state.favorites.has(pane),
-        visited_at:entry?entry.visited_at:Math.round(Date.now()/1000)},...recents.filter(item=>item.pane!==pane)];
-    }else{
-      const pins=recents.filter(item=>item.pinned&&item.pane!==pane);
-      const rest=recents.filter(item=>!item.pinned&&item.pane!==pane);
-      recents=[[...pins],[{...(entry||{pane}),pane,pinned:false,label:'',
-        visited_at:Math.round(Date.now()/1000)},...rest]].flat();
-    }
-    renderRecents();
-    // 新钉的那条在最上面：滚回顶部，别让它藏在滚动位置之外
-    if(!on){const list=$('recent-list');if(list)list.scrollTop=0;}
-  }
-  function touchRecent(id){
-    if(!id||!paneById(id))return;
-    const existing=recents.find(entry=>entry.pane===id);
-    const stamp=Math.round(Date.now()/1000);
-    if(existing&&existing.pinned){
-      // 钉住的项一直在最上面，点它只更新时间，不把它从固定区拖下来
-      recents=recents.map(entry=>entry.pane===id?{...entry,visited_at:stamp}:entry);
-    }else{
-      const pins=recents.filter(entry=>entry.pinned);
-      const rest=recents.filter(entry=>!entry.pinned&&entry.pane!==id);
-      recents=[...pins,{...(existing||{}),pane:id,visited_at:stamp},...rest].slice(0,24);
-    }
-    renderRecents();
-  }
-  let lastRecentsAt=0;
-  async function loadRecents(){
-    renaming=null;
-    lastRecentsAt=Date.now();
-    try{
-      const data=await api('/api/home/recent?limit=12');
-      recents=(data.recent||[]).filter(entry=>entry&&entry.pane).map(entry=>({
-        pane:entry.pane,
-        label:entry.label||'',
-        title:entry.title||'',
-        pinned:!!entry.pinned,
-        favorite:!!entry.favorite,
-        visited_at:Number(entry.visited_at)||0,
-      }));
-      renderRecents();
-    }catch{renderRecents();}
-  }
-  function noteRecentVisit(id){
-    if(!id)return;
-    try{
-      fetch('/api/home/recent',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({pane:id}),keepalive:true}).catch(()=>{});
-    }catch{}
-  }
-  function selectPane(id){if(state.selected&&state.selected!==id)savePaneUi(state.selected);touchRecent(id);closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');if(id)noteRecentVisit(id);state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedIds=[];$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();return;}const p=state.panes.find(x=>x.id===id);$('selected-title').textContent=p.title||p.target;$('selected-sub').textContent=`${p.target} · ${p.command} · ${p.path}`;$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);syncLiveButton();syncFavButton();
+  function selectPane(id){if(state.selected&&state.selected!==id)savePaneUi(state.selected);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedIds=[];$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();return;}const p=state.panes.find(x=>x.id===id);$('selected-title').textContent=p.title||p.target;$('selected-sub').textContent=`${p.target} · ${p.command} · ${p.path}`;$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);syncLiveButton();syncFavButton();
     if(state.mode==='terminal'){connectTerminal(id);}
     else if(paintCachedTranscript(id)){refreshTranscript(id);}  // instant paint, then revalidate
     else {connectTranscript(id,true);}
@@ -1592,149 +1296,8 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   list.addEventListener('click',e=>{const add=e.target.closest('[data-new-session]');if(!add)return;
     e.preventDefault();e.stopPropagation();state.sessionHost=add.dataset.newSession;
     openSessionDialog(add.dataset.newSession,add.dataset.sessionPath||'');},true);
-  // ---- 最近这块的高度：默认占侧栏 2/5，拖上边缘改，双击回到 2/5；也可以整个折叠
-  const RECENT_H_KEY='tmux-recent-h';
-  const RECENT_FOLD_KEY='tmux-recent-fold';
-  const RECENT_H_DEFAULT=0.4;
-  const RECENT_H_MIN=0.15, RECENT_H_MAX=0.75;
-  function recentRatio(){
-    try{
-      const value=Number(localStorage.getItem(RECENT_H_KEY));
-      if(Number.isFinite(value)&&value>=RECENT_H_MIN&&value<=RECENT_H_MAX)return value;
-    }catch{}
-    return RECENT_H_DEFAULT;
-  }
-  function applyRecentRatio(ratio){
-    const block=$('recent-block');
-    if(!block)return;
-    const clamped=Math.min(RECENT_H_MAX,Math.max(RECENT_H_MIN,ratio));
-    block.style.setProperty('--recent-h',`${(clamped*100).toFixed(2)}%`);
-  }
-  function saveRecentRatio(ratio,total){
-    try{localStorage.setItem(RECENT_H_KEY,String(Math.min(RECENT_H_MAX,Math.max(RECENT_H_MIN,ratio/total))));}catch{}
-  }
-  function setRecentCollapsed(on,persist){
-    const block=$('recent-block'),button=$('recent-fold'),list=$('recent-list');
-    const wasCollapsed=block?block.classList.contains('collapsed'):false;
-    if(block)block.classList.toggle('collapsed',!!on);
-    // 展开时回到顶部：折叠期间浏览器会记住滚动位置，展开后固定区直接被滚出视野，
-    // 看起来就像"钉住的记录消失了"
-    if(!on&&wasCollapsed&&list)list.scrollTop=0;
-    if(button){
-      button.setAttribute('aria-expanded',on?'false':'true');
-      const title=on?'展开最近':'折叠最近';
-      button.title=title;button.setAttribute('aria-label',title);
-    }
-    if(persist){try{localStorage.setItem(RECENT_FOLD_KEY,on?'1':'0');}catch{}}
-  }
-  function recentCollapsed(){
-    try{return localStorage.getItem(RECENT_FOLD_KEY)==='1';}catch{return false;}
-  }
-  let recentDrag=null;
-  $('recent-grip').addEventListener('pointerdown',e=>{
-    const block=$('recent-block');
-    if(!block||block.hidden||block.classList.contains('collapsed'))return;
-    e.preventDefault();
-    const total=block.parentElement?block.parentElement.getBoundingClientRect().height:window.innerHeight;
-    recentDrag={startY:e.clientY,startH:block.getBoundingClientRect().height,total};
-    $('recent-grip').classList.add('dragging');
-    document.body.classList.add('recent-resizing');
-    if($('recent-grip').setPointerCapture)$('recent-grip').setPointerCapture(e.pointerId);
-  });
-  window.addEventListener('pointermove',e=>{
-    if(!recentDrag)return;
-    const height=recentDrag.startH-(e.clientY-recentDrag.startY);   // 往上拖 = 变高
-    applyRecentRatio(height/Math.max(1,recentDrag.total));
-  });
-  const endRecentDrag=()=>{
-    if(!recentDrag)return;
-    const block=$('recent-block');
-    if(block)saveRecentRatio(block.getBoundingClientRect().height,recentDrag.total);
-    recentDrag=null;
-    $('recent-grip').classList.remove('dragging');
-    document.body.classList.remove('recent-resizing');
-  };
-  window.addEventListener('pointerup',endRecentDrag);
-  window.addEventListener('pointercancel',endRecentDrag);
-  // 双击把手 = 回到默认的 2/5
-  $('recent-grip').addEventListener('dblclick',()=>{
-    applyRecentRatio(RECENT_H_DEFAULT);
-    try{localStorage.removeItem(RECENT_H_KEY);}catch{}
-  });
-  $('recent-fold').onclick=()=>{
-    const block=$('recent-block');
-    setRecentCollapsed(!(block&&block.classList.contains('collapsed')),true);
-  };
-  applyRecentRatio(recentRatio());
-  setRecentCollapsed(recentCollapsed(),false);
-
-  $('recent-list').addEventListener('dblclick',e=>{
-    const open=e.target.closest('.recent-open');
-    if(!open)return;
-    const row=open.closest('.recent-row');
-    if(!row||!row.classList.contains('pinned'))return;
-    e.preventDefault();
-    startRename(row.dataset.row);
-  });
-  // 触屏没有双击：长按 480ms 改名，松手/滑动就取消
-  let pressTimer=0,pressPane='';
-  $('recent-list').addEventListener('pointerdown',e=>{
-    const open=e.target.closest('.recent-open');
-    if(!open||e.pointerType==='mouse')return;
-    const row=open.closest('.recent-row');
-    if(!row||!row.classList.contains('pinned'))return;
-    pressPane=row.dataset.row;
-    clearTimeout(pressTimer);
-    pressTimer=setTimeout(()=>{
-      suppressClickAt=Date.now();
-      startRename(pressPane);
-    },480);
-  },{passive:true});
-  for(const type of ['pointerup','pointercancel','pointermove']){
-    $('recent-list').addEventListener(type,()=>{clearTimeout(pressTimer);},{passive:true});
-  }
-  $('recent-list').addEventListener('contextmenu',e=>{
-    const row=e.target.closest('.recent-row.pinned');
-    if(row)e.preventDefault();
-  });
-  $('recent-list').addEventListener('click',e=>{
-    if(Date.now()-suppressClickAt<600){e.preventDefault();e.stopPropagation();return;}
-    if(renaming)return;
-    const rename=e.target.closest('[data-rename]');
-    if(rename){e.preventDefault();e.stopPropagation();startRename(rename.dataset.rename);return;}
-    const pin=e.target.closest('[data-pin]');
-    if(pin){e.preventDefault();e.stopPropagation();togglePin(pin.dataset.pin);return;}
-    const star=e.target.closest('[data-star]');
-    if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}
-    const row=e.target.closest('[data-recent]');
-    if(!row)return;
-    e.preventDefault();
-    selectPane(row.dataset.recent);
-    if(isMobile())closeSidebar();
-  });
-  // 清空只清"最近"，钉住的不动：把它们删掉才需要一个个取消固定
-  function syncRecentPinButton(){
-    const button=$('recent-pin-selected');
-    if(!button)return;
-    const entry=state.selected?recents.find(item=>item.pane===state.selected):null;
-    const on=!!(entry&&entry.pinned);
-    button.disabled=!state.selected;
-    button.classList.toggle('on',on);
-    button.setAttribute('aria-pressed',on?'true':'false');
-    const title=on?'取消固定当前会话':'固定当前会话';
-    button.title=title;button.setAttribute('aria-label',title);
-    const use=button.querySelector('use');
-    if(use)use.setAttribute('href',on?'#i-pin-fill':'#i-pin');
-  }
-  $('recent-pin-selected').onclick=()=>{if(state.selected)togglePin(state.selected);};
-  $('recent-clear').onclick=async()=>{
-    const panes=recents.filter(entry=>!entry.pinned).map(entry=>entry.pane);
-    recents=recents.filter(entry=>entry.pinned);
-    renderRecents();
-    for(const pane of panes){
-      try{await fetch(`/api/home/recent/${encodeURIComponent(pane)}`,{method:'DELETE'});}catch{}
-    }
-  };
+  // 「最近」块里的星和树上的星是同一份收藏：谁改了都要通知另一边
+  window.addEventListener('tmuxweb:favorites',()=>{loadFavorites();});
   list.addEventListener('toggle',e=>{const d=e.target.closest('details[data-tree]');if(!d)return;d.open?state.treeOpen.add(d.dataset.tree):state.treeOpen.delete(d.dataset.tree);saveTree();},true);list.onclick=e=>{const star=e.target.closest('[data-star]');if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}const refresh=e.target.closest('[data-refresh-host]');if(refresh){e.preventDefault();e.stopPropagation();refreshHost(refresh.dataset.refreshHost,refresh);return;}const b=e.target.closest('[data-pane]');if(b){selectPane(b.dataset.pane);if(isMobile())closeSidebar();}};function saveTree(){try{localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));}catch{}}function treeKeys(){const keys=[];for(const host of state.hosts||[]){keys.push(host.id);for(const p of host.panes||[]){keys.push(`${host.id}/${p.session}`);keys.push(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}return keys;}$('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();renderList();};$('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();renderList();};$('grid-add').onclick=()=>{if(!state.selected){showError('先选择一个 pane');return;}location='/grid?add='+encodeURIComponent(state.selected);};$('session-form').onsubmit=e=>{e.preventDefault();submitSessionForm();};$('session-cancel').onclick=()=>$('session-dialog').close();
 $('live-toggle').onclick=()=>{state.livePaused?resumeLive():pauseLive();};$('fav-toggle').onclick=()=>{if(state.selected)toggleFavorite(state.selected);};
   $('refresh').onclick=()=>{if(state.selected&&state.mode==='chat')refreshTranscript(state.selected,{force:true,refresh:true});loadPanes(true);};$('menu').onclick=openSidebar;$('sidebar-close').onclick=closeSidebar;$('drawer-backdrop').onclick=closeSidebar;$('chat-mode').onclick=()=>setMode('chat');$('terminal-mode-button').onclick=()=>setMode('terminal');$('fullscreen').onclick=toggleFullscreen;$('share-button').onclick=()=>{$('share-result').textContent='';$('share-slug').value=`share-${Date.now().toString(36)}`;$('share-dialog').showModal();};$('share-cancel').onclick=()=>$('share-dialog').close();$('share-form').onsubmit=createShare;document.addEventListener('fullscreenchange',syncFullscreen);document.addEventListener('visibilitychange',()=>{clearTimeout(state.hiddenTimer);if(document.hidden&&state.mode==='terminal')state.hiddenTimer=setTimeout(()=>{if(document.hidden&&state.mode==='terminal')setMode('chat');},15000);});window.addEventListener('beforeunload',closeConnections);document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('sidebar').classList.contains('open'))closeSidebar();else if($('main').classList.contains('fullscreen-fallback'))toggleFullscreen();}});send.onclick=()=>{if(state.mode==='chat'&&state.selected&&agentWorking()&&!input.value.trim()){stopAgent();return;}sendInput();};input.addEventListener('focus',()=>setComposing(true));input.addEventListener('blur',()=>setTimeout(()=>setComposing(keyboardWanted()),120));input.oninput=()=>{syncSendButton();input.style.height='auto';input.style.height=Math.min(input.scrollHeight,82)+'px';if(state.selected)state.drafts.set(state.selected,input.value);};input.onkeydown=e=>{if(e.key==='Escape'&&state.mode==='chat'&&state.selected&&agentWorking()){e.preventDefault();stopAgent();return;}
@@ -1751,12 +1314,16 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
     try{last=localStorage.getItem('tmux-last-pane')||'';}catch{}
     if(!wanted&&!last)location.replace('/home');
   })();
-  loadRecents();loadPanes();setInterval(()=>{if(!document.hidden)loadPanes();},20000);
-  // 「最近」块：切回标签页/窗口时补一次（换设备钉的、别处改的名字都能看到），
-  // 页面一直开着也每 2 分钟对一次；重建时保住滚动位置，不会把位置弹回顶部。
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-lastRecentsAt>15000)loadRecents();});
-  window.addEventListener('focus',()=>{if(Date.now()-lastRecentsAt>15000)loadRecents();});
-  setInterval(()=>{if(!document.hidden)loadRecents();},120000);
+  // 「最近」块现在是三个页面共用的一份实现（assets/recents.js）
+  if(window.TmuxRecents){
+    TmuxRecents.mount({
+      onPick: pane => { selectPane(pane); if(isMobile())closeSidebar(); },
+      hideWhenFiles: true,
+    });
+    TmuxRecents.setHosts(state.hosts);
+  }
+  loadPanes();setInterval(()=>{if(!document.hidden)loadPanes();},20000);
+
   if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 })();
 (function initSidebarResize(){
@@ -1827,6 +1394,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
       </section>
     </div>
 <script src="/assets/plugins-ui.js"></script>
+<script src="/assets/recents.js"></script>
 <script src="/assets/settings.js"></script>
 </body>
 </html>

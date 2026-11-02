@@ -110,6 +110,7 @@
       const data = await api('/api/hosts');
       state.hosts = data.hosts || [];
       renderTree();
+      if (window.TmuxRecents) TmuxRecents.setHosts(state.hosts);
       if (state.hooks.onHosts) state.hooks.onHosts(state.hosts);
       refreshStates().catch(() => {});
       loadFavorites().catch(() => {});
@@ -123,6 +124,7 @@
     try {
       const data = await api('/api/panes/status');
       state.states = new Map((data.panes || []).map(item => [item.id, item.status]));
+      if (window.TmuxRecents) TmuxRecents.setStates(state.states);
       for (const button of document.querySelectorAll('#tree [data-pane]')) {
         const dot = button.querySelector('.tstate');
         if (dot) dot.className = 'tstate ' + (state.states.get(button.dataset.pane) || 'unknown');
@@ -134,6 +136,7 @@
   // /api/home does return objects) — accept both, or every star reads as unstarred.
   function setFavorites(list) {
     state.favorites = new Set((list || []).map(item => typeof item === 'string' ? item : item.pane).filter(Boolean));
+    if (window.TmuxRecents) TmuxRecents.setFavorites([...state.favorites]);
     for (const star of document.querySelectorAll('#tree [data-star]')) {
       const on = state.favorites.has(star.dataset.star);
       star.classList.toggle('on', on);
@@ -276,6 +279,7 @@
       const data = await api(`/api/hosts?refresh=1&host=${encodeURIComponent(hostId)}`);
       state.hosts = data.hosts || [];
       renderTree();
+      if (window.TmuxRecents) TmuxRecents.setHosts(state.hosts);
       if (state.hooks.onHosts) state.hooks.onHosts(state.hosts);
       toast('已刷新');
     } catch (error) {
@@ -290,6 +294,7 @@
   function setHosts(hosts) {
     state.hosts = hosts || [];
     renderTree();
+    if (window.TmuxRecents) TmuxRecents.setHosts(state.hosts);
   }
 
   // A page may own some of these panes (the multi-window page does); mark those rows so the tree
@@ -299,6 +304,7 @@
     for (const row of document.querySelectorAll('#tree [data-pane]')) {
       row.classList.toggle('in-grid', wanted.has(row.dataset.pane));
     }
+    if (window.TmuxRecents) TmuxRecents.markActive([...wanted]);
   }
 
   window.TmuxShell = {
@@ -309,6 +315,18 @@
       state.hooks = hooks;
       loadOpen();
       bind();
+      // 「最近」块：三个页面同一份实现（assets/recents.js），点一行交给页面自己处理
+      if (window.TmuxRecents) {
+        TmuxRecents.mount({
+          onPick: pane => {
+            TmuxRecents.touch(pane);
+            if (state.hooks.onPane) state.hooks.onPane(pane);
+          },
+        });
+        TmuxRecents.setHosts(state.hosts);
+      }
+      // 侧栏自己的星和"最近"里的星是同一份收藏，谁点了都要同步
+      window.addEventListener('tmuxweb:favorites', () => loadFavorites().catch(() => {}));
       loadHosts();
       setInterval(() => { if (!document.hidden) loadHosts(); }, 20000);
       setInterval(() => { if (!document.hidden) refreshStates(); }, 10000);

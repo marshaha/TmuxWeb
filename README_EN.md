@@ -159,6 +159,14 @@ The sidebar header is two stacked rows: the title on top, the icons on a full-wi
   carries a fade in the sidebar's own colour (only visible once an icon slides under it) — the "there is
   more" hint.
 
+**The sidebar is one implementation**: `assets/recents.js` + `assets/recents.css` own the 「最近」 block —
+markup, data, pins, favourites, renaming, height and folding — and each page mounts it once
+(`TmuxShell.mount()` / `TmuxRecents.mount()`); no page carries a second copy. The only difference between pages is
+what a click does: the console switches to that conversation, the board jumps to the console with it selected, and
+the multi-window page adds it as a new cell (flashing the cell if it is already open). A star in the tree and a star
+on a recent row are the same favourite, so either one updates the other at once. On the console the block steps
+aside while the file panel is open.
+
 **「最近」 under the session tree**: a divider, then up to six recently opened conversations (from
 `/api/home/recent`, per account) showing «host · session:window», the command and a relative time (shown on hover
 so the title keeps the width), with the status dot (busy / idle / offline) on the left. Clicking one switches to it
