@@ -722,6 +722,22 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".msg-tools .msg-time{", preview)
         self.assertIn(".msg-tools{display:flex;align-items:center;", preview)
 
+    def test_a_wide_table_cannot_push_the_copy_row_off_screen(self):
+        """手机上一张宽表格：表格在自己的框里横滚，复制行固定在气泡下面，不能被挤走。"""
+        self.login()
+        page = self.client.get("/").text
+        # 复制行挪出气泡，两个构造消息的地方都要用外层 wrap
+        self.assertIn('.assistant-wrap{display:flex;flex-direction:column;align-items:flex-start;min-width:0;', page)
+        self.assertIn('.assistant-wrap>.msg-actions{', page)
+        self.assertNotIn('${markdown(message.text)}${copyButton(message)}</div></article>', page)
+        self.assertNotIn('${markdown(message.text)}${copy}</div></article>', page)
+        self.assertEqual(page.count('class="assistant-wrap"><div class="assistant-body">'), 2)
+        # 气泡自己限制宽度并裁掉溢出；宽表格留在自己的容器里滚
+        self.assertIn(".assistant-body{width:fit-content;max-width:100%;min-width:0;overflow-x:clip;", page)
+        self.assertIn(".block-wrap{position:relative;margin:10px 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fbfaf7;max-width:100%;min-width:0}", page)
+        self.assertIn(".table-holder{padding:8px 10px;overflow:auto;max-width:100%;", page)
+        self.assertIn(".assistant-body .table-holder table{display:table;width:max-content;min-width:100%;max-width:none;", page)
+
     def test_an_agent_pane_does_not_fall_back_to_its_screen(self):
         """Streaming a full-screen TUI is what used to lock up the browser."""
         self.login()
