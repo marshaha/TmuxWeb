@@ -144,6 +144,30 @@ header() {
   printf 'TMUXWEB_PAYLOAD\n'
 }
 error() { printf 'TMUXWEB_ERROR%s%s\n' "$sep" "$1"; exit "${2:-20}"; }
+
+# A pane's own process knows which session it runs: `--resume <id>` / `--session-id <id>`
+# carry it in argv. Guessing by cwd + title is what the probes below do, and in a
+# directory where several agents run side by side it guesses *another* conversation --
+# the chat then sits on a transcript nobody is writing to and looks frozen.
+# `ps -o args=` instead of /proc: remote hosts include macOS, which has no /proc.
+session_hint() {
+  root=${1:-0}
+  [ -n "$root" ] || return 1
+  for pid in $root $(pgrep -P "$root" 2>/dev/null) \
+      $(for child in $(pgrep -P "$root" 2>/dev/null); do pgrep -P "$child" 2>/dev/null; done); do
+    [ -n "$pid" ] || continue
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+    case "$args" in
+      *--resume*|*--session-id*) ;;
+      *) continue ;;
+    esac
+    id=$(printf '%s\n' "$args" | sed -n \
+      -e 's/.*--resume[ =][/-]*\([0-9A-Za-z][0-9A-Za-z_-]\{5,\}\).*/\1/p' \
+      -e 's/.*--session-id[ =][/-]*\([0-9A-Za-z][0-9A-Za-z_-]\{5,\}\).*/\1/p' | head -1)
+    if [ -n "$id" ]; then printf '%s' "$id"; return 0; fi
+  done
+  return 1
+}
 payload_bytes=${TMUXWEB_PAYLOAD_BYTES:-4194304}
 encoding=none
 if command -v gzip >/dev/null 2>&1; then encoding=gzip; fi
@@ -169,10 +193,18 @@ if [ "$provider" = claude ]; then
   proj=$HOME/.claude/projects/$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')
   [ -d "$proj" ] || error "no Claude project directory for $cwd" 23
   file=""
+  # exact match first: the id from argv, searched in every project dir because a resumed
+  # session may have been started from a different cwd
+  pane_pid=$(${TMUX_BIN:-tmux} display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null)
+  hint=$(session_hint "$pane_pid") || hint=""
+  if [ -n "$hint" ]; then
+    exact=$(ls "$HOME"/.claude/projects/*/"$hint".jsonl 2>/dev/null | head -1)
+    [ -n "$exact" ] && file=$exact
+  fi
   # Only the newest few files can belong to a live pane, and only their tail is
   # scanned: grepping whole 300 MB transcripts once per probe line took 50s+.
   candidates=$(ls -t "$proj"/*.jsonl 2>/dev/null | head -3)
-  if [ -n "$title" ]; then
+  if [ -z "$file" ] && [ -n "$title" ]; then
     for candidate in $candidates; do
       if tail -c 262144 -- "$candidate" 2>/dev/null | grep -qF -- "$title"; then
         file=$candidate
@@ -181,18 +213,24 @@ if [ "$provider" = claude ]; then
     done
   fi
   if [ -z "$file" ]; then
+    # Score every candidate by how many on-screen lines appear in its tail and take the
+    # best one. Taking the first candidate that matches a single line is how the wrong
+    # session got picked: two agents on the same topic share plenty of lines.
     probes=$(${TMUX_BIN:-tmux} capture-pane -p -J -t "$pane" -S -80 2>/dev/null | awk 'length($0) >= 24' | tail -20)
-    while IFS= read -r probe; do
-      [ -n "$probe" ] || continue
-      for candidate in $candidates; do
-        if tail -c 262144 -- "$candidate" 2>/dev/null | grep -qF -e "$probe"; then
-          file=$candidate
-          break 2
-        fi
-      done
-    done <<PROBES
-$probes
-PROBES
+    probe_file=$(mktemp 2>/dev/null || printf '/tmp/tmuxweb-probes.%s' "$$")
+    printf '%s\n' "$probes" > "$probe_file" 2>/dev/null
+    best=""
+    best_score=0
+    for candidate in $candidates; do
+      score=$(tail -c 524288 -- "$candidate" 2>/dev/null | grep -c -F -f "$probe_file" 2>/dev/null)
+      [ -n "$score" ] || score=0
+      if [ "$score" -gt "$best_score" ]; then
+        best=$candidate
+        best_score=$score
+      fi
+    done
+    rm -f "$probe_file" 2>/dev/null
+    [ -n "$best" ] && [ "$best_score" -gt 0 ] && file=$best
   fi
   [ -n "$file" ] || file=$(printf '%s\n' "$candidates" | head -1)
   [ -n "$file" ] || error "no Claude transcript for $cwd" 23
@@ -284,13 +322,7 @@ fi
 
 # hermes: prefer the per-session jsonl the CLI keeps, else query state.db
 pane_pid=$(${TMUX_BIN:-tmux} display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null)
-sid=""
-for candidate in $pane_pid $(pgrep -P "$pane_pid" 2>/dev/null) \
-    $(for child in $(pgrep -P "$pane_pid" 2>/dev/null); do pgrep -P "$child" 2>/dev/null; done); do
-  sid=$(tr '\0' ' ' < "/proc/$candidate/cmdline" 2>/dev/null \
-    | sed -n 's/.*--resume[ =]\([0-9A-Za-z][0-9A-Za-z_-]*\).*/\1/p')
-  [ -n "$sid" ] && break
-done
+sid=$(session_hint "$pane_pid") || sid=""
 if [ -n "$sid" ] && [ -f "$HOME/.hermes/sessions/$sid.jsonl" ]; then
   header "$sid" hermes-jsonl "$HOME/.hermes/sessions/$sid.jsonl"
   tail -c "$payload_bytes" -- "$HOME/.hermes/sessions/$sid.jsonl" 2>/dev/null | emit

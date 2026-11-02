@@ -102,6 +102,7 @@
 - 任何测试里 `create_app(...)` 都要带 `home_db=":memory:"`：不带就会读部署的 `home.db`，线上收藏的 pane 会插进断言里当第 0 条（`test_home_offline` 就是这样红的）。
 - 客户端打包壳：`python -m unittest tests.test_client_packaging`（CI 工作流里 `if:` 不得出现 secrets、macOS 两个 entitlements 必须有 `network.client`、web 清单与首页 meta 是产品名和品牌色）。
 - 客户端发送失败：消息留在记录里、旁边有「重发」，输入框清空，状态行转红（`chat_screen_test`、`chat_live_test` 钉这三条）。
+- 远端 Claude 会话定位：`API /api/panes/<host>~%25N/transcript` 返回的 `session_id` 必须等于该 pane 进程`ps -o args= --ppid <pane_pid>` 里的 `--resume <id>`（oracle 的 claude:0 曾经指到隔壁 pane 的会话，表现为 chat 停在另一段对话、看起来不刷新）。`tests/test_remote_transcript_locator.py` 用假 `ps` 覆盖了这两种参数。
 - 自定义网格：`/grid` → 网格 → 「自定义…」填 4×2 → 列/行模板变成 4 列 2 行、按钮条多出一个 `4×2` chip；刷新页面后这个 chip 和形状都还在；窗口比格子多时行数自动长，弹窗提示里会写明要几行。
 - 换形状不重载窗口：给 `iframe` 打个 `dataset.mark`，切 3×2 / 自定义 4×2，`load` 事件计数应保持 0（之前每次都会重载）。
 - 添加窗口的选择器：`/grid` 点「添加窗口」应列出全部 pane（共享侧栏的 `onHosts` 现在会把 hosts 也存下来）。
