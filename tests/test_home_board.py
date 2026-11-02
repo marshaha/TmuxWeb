@@ -287,7 +287,8 @@ class HomeBoardTests(unittest.TestCase):
         styles = self.recent_styles()
         self.assertIn(".recent-pins{", styles)
         self.assertIn('class="recent-pins"', page)
-        self.assertIn("color-mix(in srgb,var(--accent) 9%,transparent)", styles)
+        self.assertIn("color-mix(in srgb,var(--green) 16%,transparent)", styles)   # 固定区是淡绿（跟主题走）
+        self.assertNotIn("color-mix(in srgb,var(--accent) 9%,transparent)", styles)
         self.assertIn("overscroll-behavior:contain", styles)
         self.assertIn("-webkit-overflow-scrolling:touch", styles)
         # 清空只清普通最近，固定的不动

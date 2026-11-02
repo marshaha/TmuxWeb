@@ -723,20 +723,23 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".msg-tools{display:flex;align-items:center;", preview)
 
     def test_a_wide_table_cannot_push_the_copy_row_off_screen(self):
-        """手机上一张宽表格：表格在自己的框里横滚，复制行固定在气泡下面，不能被挤走。"""
+        """手机上宽表格：表格在自己的框里横滚，气泡宽度被夹住，复制行留在气泡里且不会被挤出去。"""
         self.login()
         page = self.client.get("/").text
-        # 复制行挪出气泡，两个构造消息的地方都要用外层 wrap
-        self.assertIn('.assistant-wrap{display:flex;flex-direction:column;align-items:flex-start;min-width:0;', page)
-        self.assertIn('.assistant-wrap>.msg-actions{', page)
-        self.assertNotIn('${markdown(message.text)}${copyButton(message)}</div></article>', page)
-        self.assertNotIn('${markdown(message.text)}${copy}</div></article>', page)
-        self.assertEqual(page.count('class="assistant-wrap"><div class="assistant-body">'), 2)
-        # 气泡自己限制宽度并裁掉溢出；宽表格留在自己的容器里滚
-        self.assertIn(".assistant-body{width:fit-content;max-width:100%;min-width:0;overflow-x:clip;", page)
+        # 复制行仍在气泡里（两个构造消息的地方都是这个结构）
+        self.assertEqual(page.count('${markdown(message.text)}${copy}'), 1)
+        self.assertEqual(page.count('${markdown(message.text)}${copyButton(message)}'), 1)
+        self.assertNotIn('class="assistant-wrap"', page)
+        self.assertIn(".assistant-body>.msg-actions{margin-top:12px;padding-top:8px;border-top:1px solid var(--line)}", page)
+        # 气泡自己限制宽度并裁掉溢出（fit-content 不会再被宽内容撑大）
+        self.assertIn(".assistant-body{width:fit-content;max-width:min(92%,820px);min-width:0;overflow-x:clip;", page)
         self.assertIn(".block-wrap{position:relative;margin:10px 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fbfaf7;max-width:100%;min-width:0}", page)
         self.assertIn(".table-holder{padding:8px 10px;overflow:auto;max-width:100%;", page)
         self.assertIn(".assistant-body .table-holder table{display:table;width:max-content;min-width:100%;max-width:none;", page)
+        # 触屏没有悬停：复制行常显（0.45 的透明度在手机上像"没有了"）
+        self.assertIn(".msg-actions{display:flex;align-items:center;gap:6px;margin-top:8px;justify-content:flex-end;opacity:.62;", page)
+        self.assertIn("@media (hover:none){.msg-actions{opacity:1}}", page)
+
 
     def test_an_agent_pane_does_not_fall_back_to_its_screen(self):
         """Streaming a full-screen TUI is what used to lock up the browser."""

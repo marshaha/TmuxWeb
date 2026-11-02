@@ -52,13 +52,15 @@ body.recent-resizing{cursor:row-resize;user-select:none}
 .recent-row .label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .recent-row .when{flex:none;color:var(--faint);font-size:10.5px;opacity:0;transition:opacity .12s}
 .recent-row:hover .when,.recent-row:focus-within .when{opacity:1}
-/* 固定区单独一块浅底：跟下面的普通"最近"一眼分得开，又不抢标题的字重 */
+/* 固定区单独一块浅底：淡绿，跟下面的普通"最近"一眼分得开，又不抢标题的字重。
+ * 颜色取自主题的 --green（每个主题各有一套），深色主题下自动变成低饱和的深绿。 */
 .recent-pins{display:flex;flex-direction:column;gap:1px;padding:2px;border-radius:9px;
-  background:rgba(201,100,66,.06);box-shadow:inset 0 0 0 1px rgba(201,100,66,.09)}
+  background:rgba(79,154,101,.14);box-shadow:inset 0 0 0 1px rgba(79,154,101,.22)}
 @supports (background:color-mix(in srgb, red 8%, transparent)){
-  /* 深色/其它主题下跟着各自的强调色走，浅底不会变成一块脏灰 */
-  .recent-pins{background:color-mix(in srgb,var(--accent) 9%,transparent);
-    box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 14%,transparent)}
+  .recent-pins{
+    background:color-mix(in srgb,var(--green) 16%,transparent);
+    box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--green) 30%,transparent);
+  }
 }
 .recent-list>.recent-pins+.recent-row{margin-top:5px}
 .recent-row.pinned .label{font-weight:600}
