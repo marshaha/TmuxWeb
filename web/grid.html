@@ -151,7 +151,9 @@
     .grid-pager{display:none}
     @media(max-width:760px){
       .grid.mode-grid,.grid.mode-canvas{scroll-snap-type:y proximity}
-      .grid-pager{position:fixed;right:8px;bottom:10px;z-index:7;display:flex;align-items:center;gap:0;
+      /* iPhone 右下角有圆角 + home indicator：抬到安全区之上，别贴着角落 */
+      .grid-pager{position:fixed;right:calc(10px + env(safe-area-inset-right,0px));
+        bottom:calc(18px + env(safe-area-inset-bottom,0px));z-index:7;display:flex;align-items:center;gap:0;
         padding:2px;border:1px solid var(--line);border-radius:999px;background:var(--surface);box-shadow:0 4px 12px #0001}
       .grid-pager[hidden]{display:none}
       .grid-pager button{display:grid;place-items:center;width:26px;height:26px;padding:0;border:0;border-radius:999px;

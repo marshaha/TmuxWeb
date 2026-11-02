@@ -165,6 +165,9 @@ class GridPageTests(unittest.TestCase):
         # 按钮小（26px）但热区外扩，且点击/lastTap 去重 + scrollTo 失败时直接赋值
         self.assertIn(".grid-pager button{display:grid;place-items:center;width:26px;height:26px", page)
         self.assertIn(".grid-pager button::after{content:'';position:absolute;inset:-5px", page)
+        # 贴着 iPhone 右下角的圆角会被切掉：抬到安全区之上
+        self.assertIn("bottom:calc(18px + env(safe-area-inset-bottom,0px))", page)
+        self.assertIn("right:calc(10px + env(safe-area-inset-right,0px))", page)
         self.assertIn("touch-action:manipulation", page)
         self.assertIn("if(dir===lastDir&&now-lastTap<500)return;", page)
         self.assertIn("try{grid.scrollTo({top:target,behavior:'smooth'});}catch{grid.scrollTop=target;}", page)
