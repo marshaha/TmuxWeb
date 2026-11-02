@@ -69,6 +69,9 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
   new pane is expanded and selected afterwards, and a missing directory is rejected up front.
 - **Remote SSH**: password, private-key, or "local keys / SSH Agent" authentication (no credential at all when the remote already authorises your public key), pinned host-key fingerprints, and Fernet-encrypted credentials at rest.
 - **Conversation sharing**: slug, password, expiration, extension, password reset, stop, and delete controls, plus a **read-only vs. interactive** choice. **Any pane** can be shared: agent sessions render as messages, plain shell panes render as screen text and still accept input.
+- On a phone the grid is always one column, one window per screen: the shell is exactly one viewport tall and the
+  window list scrolls. Because the iframes inside swallow vertical drags, a small `↑ 1/2 ↓` pager sits in the
+  bottom-right corner too — tap to glide to the previous/next window, with the arrows greying out at the ends.
 - **Mobile/PWA support**: every page (console, board, grid, terminal, hosts, shares) ships `manifest`, `apple-touch-icon`,
   `apple-mobile-web-app-*` and `theme-color`, so "add to home screen" opens a standalone window; the manifest carries
   `shortcuts` for the board and the multi-window page. Above 760px — a desktop browser — the terminal has **no key bar**, the

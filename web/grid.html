@@ -21,6 +21,9 @@
     html,body{height:100%}
     body{margin:0;background:var(--page);color:var(--ink);
       font:14px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif;overflow:hidden;height:100dvh}
+    /* 外壳必须正好一屏：body 是 overflow:hidden，用 min-height 的话内容一高，
+       .grid 的 overflow 永远不触发（手机竖屏两格就只能看到最后一格、滑不动） */
+    .shell{height:100dvh;min-height:0;overflow:hidden}
     .main{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
     .main-menu{display:none}
     .side-hint{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font-size:11px}
@@ -144,6 +147,19 @@
     .grid.mode-grid.maximized .cell.max{grid-column:1/-1;height:100%}
     .grid.mode-canvas.maximized .cell.max{left:8px!important;top:8px!important;right:8px!important;bottom:8px!important;
       width:auto!important;height:auto!important}
+    /* 手机上 iframe 会吃掉竖向手势：给一个固定的翻页器，不依赖滑动 */
+    .grid-pager{display:none}
+    @media(max-width:760px){
+      .grid.mode-grid,.grid.mode-canvas{scroll-snap-type:y proximity}
+      .grid-pager{position:fixed;right:10px;bottom:14px;z-index:7;display:flex;align-items:center;gap:2px;
+        padding:3px;border:1px solid var(--line);border-radius:999px;background:var(--surface);box-shadow:0 6px 18px #0002}
+      .grid-pager[hidden]{display:none}
+      .grid-pager button{display:grid;place-items:center;width:34px;height:34px;padding:0;border:0;border-radius:999px;
+        background:transparent;color:var(--ink);cursor:pointer}
+      .grid-pager button:disabled{opacity:.3;cursor:default}
+      .grid-pager span{min-width:44px;text-align:center;color:var(--muted);
+        font:11px ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+    }
     .presets{display:flex;flex-direction:column;gap:10px}
     .shape-row{display:flex;align-items:flex-end;gap:10px;padding:4px 0 2px}
     .shape-row label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
@@ -277,6 +293,11 @@
   <a class="btn" id="home" href="/home" title="返回主页" aria-label="返回主页"><svg class="ico"><use href="#i-home"/></svg><span class="lbl">主页</span></a>
 </div>
 
+<div class="grid-pager" id="grid-pager" hidden>
+  <button type="button" data-page="-1" title="上一条" aria-label="上一条"><svg class="ico"><use href="#i-chevron"/></svg></button>
+  <span id="grid-pager-text">1 / 1</span>
+  <button type="button" data-page="1" title="下一条" aria-label="下一条"><svg class="ico"><use href="#i-chevron"/></svg></button>
+</div>
 <div class="grid" id="grid"><div class="empty"><div><b>还没有窗口</b>点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。</div></div></div>
 
 </main>
@@ -429,16 +450,6 @@
   }
 
   // ---- canvas geometry: {pane: {x,y,w,h}} in canvas pixels, plus a canvas size
-  function canvasArea(){
-    const grid=$('grid');
-    const width=Math.max(grid?grid.clientWidth:0,320), height=Math.max(grid?grid.clientHeight:0,240);
-    let right=width, bottom=height;
-    for(const pane of state.panes){
-      const rect=state.cells[pane];
-      if(rect){right=Math.max(right,rect.x+rect.w+16);bottom=Math.max(bottom,rect.y+rect.h+16);}
-    }
-    return {width:Math.ceil(right),height:Math.ceil(bottom)};
-  }
   function slotRect(index,cols,rows){
     const grid=$('grid');
     const gap=8;
@@ -629,9 +640,6 @@
       grid.style.removeProperty('--col-tpl');
       grid.style.removeProperty('--row-tpl');
       ensureCanvasCells();
-      const area=canvasArea();
-      grid.style.width=area.width+'px';
-      grid.style.height=area.height+'px';
       ensureGuides();
     }else{
       grid.style.removeProperty('width');
@@ -703,6 +711,7 @@
     positionGrips();
     syncVisibility();
     syncTreeMarks();
+    syncPager();
   }
 
   // ---- shape picker: one button, a Word-style hover grid, and the drag seams
@@ -832,6 +841,52 @@
     if(opener)opener.focus();     // 键盘用户的焦点回到按钮上，而不是掉到页面开头
   }
 
+  // 手机上一屏一格；iframe 会吃掉竖向滑动，所以额外给一个翻页器（只有窄屏+多窗口才出现）
+  function pagerCells(){
+    return [...document.querySelectorAll('#grid > .cell')];
+  }
+  function pagerStep(){
+    const cells=pagerCells();
+    if(cells.length<2)return 0;
+    const first=cells[0].getBoundingClientRect();
+    const second=cells[1].getBoundingClientRect();
+    return Math.max(1,Math.round(second.top-first.top));
+  }
+  function syncPager(){
+    const pager=$('grid-pager');
+    if(!pager)return;
+    const cells=pagerCells();
+    const show=window.innerWidth<=760&&cells.length>=2&&!state.max;
+    pager.hidden=!show;
+    if(!show)return;
+    const grid=$('grid');
+    const step=pagerStep();
+    const index=step?Math.max(0,Math.min(cells.length-1,Math.round(grid.scrollTop/step))):0;
+    $('grid-pager-text').textContent=`${index+1} / ${cells.length}`;
+    for(const button of pager.querySelectorAll('[data-page]')){
+      const dir=Number(button.dataset.page);
+      button.disabled=(dir<0&&index<=0)||(dir>0&&index>=cells.length-1);
+      const icon=button.querySelector('.ico');
+      if(icon)icon.style.transform=dir>0?'':'rotate(180deg)';
+    }
+  }
+  function bindPager(){
+    const pager=$('grid-pager');
+    if(!pager)return;
+    pager.addEventListener('click',event=>{
+      const button=event.target.closest('[data-page]');
+      if(!button||button.disabled)return;
+      const grid=$('grid');
+      const step=pagerStep();
+      const index=step?Math.round(grid.scrollTop/step):0;
+      grid.scrollTo({top:(index+Number(button.dataset.page))*step,behavior:'smooth'});
+    });
+    let queued=0;
+    const kick=()=>{if(queued)return;queued=requestAnimationFrame(()=>{queued=0;syncPager();});};
+    $('grid').addEventListener('scroll',kick,{passive:true});
+    window.addEventListener('resize',kick);
+    window.addEventListener('orientationchange',()=>setTimeout(syncPager,150));
+  }
   function positionGrips(){
     const grid=$('grid');
     for(const old of grid.querySelectorAll('.grip'))old.remove();
@@ -1277,10 +1332,7 @@
     const cell=grid.querySelector(`.cell[data-pane="${CSS.escape(cdrag.pane)}"]`);
     if(cell)cell.style.cssText=canvasRectStyle(cdrag.pane)+';position:absolute';
     // 拖到右/下边缘时把画布撑大，滚动条跟着长
-    if(window.innerWidth>760){
-      if(x+w+16>grid.clientWidth)grid.style.width=(x+w+16)+'px';
-      if(y+h+16>grid.clientHeight)grid.style.height=(y+h+16)+'px';
-    }
+    // 画布不需要手动撑大：grid 是滚动容器，绝对定位的窗口自己贡献滚动范围
     queueGuides(lines);
     showBadge(`${Math.round(w)}×${Math.round(h)}`,x,y);
   });
@@ -1412,6 +1464,7 @@
   });
 
   loadPresets();
+  bindPager();
   load();
   const params=new URLSearchParams(location.search);
   const single=params.get('add');

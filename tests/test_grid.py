@@ -149,11 +149,27 @@ class GridPageTests(unittest.TestCase):
         # 手机上画布退回单列（绝对定位会把超出屏幕的窗口全藏起来）
         self.assertIn(".grid.mode-canvas .cell{position:relative!important", page)
 
+    def test_a_phone_can_move_between_stacked_windows(self):
+        """手机竖屏：外壳必须正好一屏，否则 .grid 的 overflow 不触发，只能看到最后一格。"""
+        page = self.client.get("/grid").text
+        self.assertIn(".shell{height:100dvh;min-height:0;overflow:hidden}", page)
+        # 画布不再给 #grid 设内联宽高：绝对定位的窗口自己撑出滚动范围
+        self.assertNotIn("grid.style.width=area.width", page)
+        self.assertNotIn("if(x+w+16>grid.clientWidth)", page)
+        # iframe 会吃掉竖向手势，所以窄屏多窗口时给一个翻页器
+        self.assertIn('id="grid-pager"', page)
+        self.assertIn('data-page="-1"', page)
+        self.assertIn("function syncPager(", page)
+        self.assertIn("function bindPager(", page)
+        self.assertIn("scroll-snap-type:y proximity", page)
+        self.assertIn("grid.scrollTo({top:(index+Number(button.dataset.page))*step", page)
+
     def test_the_canvas_still_falls_back_to_one_column_on_a_phone(self):
         """桌面上画布靠内联 width/height 撑大，手机上必须让位给单列，否则横向溢出。"""
         page = self.client.get("/grid").text
         self.assertIn(".grid.mode-canvas{display:flex;flex-direction:column;overflow-y:auto;width:auto!important", page)
-        self.assertIn("if(window.innerWidth>760){", page)
+        # 画布不再靠内联宽高撑大，手机上也就没有需要清掉的东西
+        self.assertNotIn("grid.style.width=(x+w+16)+'px'", page)
         self.assertIn("grid.style.removeProperty('width')", page)
         self.assertIn("grid.style.removeProperty('height')", page)
 
