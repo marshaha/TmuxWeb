@@ -152,6 +152,22 @@
   .hp-btn:hover{border-color:#c8c5bc;background:var(--surface2)}
   .hp-btn.primary{border-color:#292825;background:#292825;color:#fff}
   .hp-btn.primary:hover{background:#3a3934}
+  .hp-body.md{white-space:normal}
+  .hp-body.md>*:first-child{margin-top:0}
+  .hp-body.md>*:last-child{margin-bottom:0}
+  .hp-body.md p{margin:0 0 8px}
+  .hp-body.md h1,.hp-body.md h2,.hp-body.md h3,.hp-body.md h4{margin:10px 0 6px;font-size:13px;font-weight:650;line-height:1.35}
+  .hp-body.md ul,.hp-body.md ol{margin:6px 0 8px;padding-left:18px}
+  .hp-body.md li{margin:2px 0}
+  .hp-body.md code{background:var(--surface2);padding:1px 4px;border-radius:4px;font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .hp-body.md pre{margin:8px 0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface2);overflow:auto}
+  .hp-body.md pre code{background:transparent;padding:0;font-size:11.5px;line-height:1.5}
+  .hp-body.md table{display:block;width:max-content;min-width:100%;border-collapse:collapse;overflow:auto;margin:8px 0}
+  .hp-body.md th,.hp-body.md td{border:1px solid var(--line);padding:4px 7px;text-align:left;white-space:nowrap}
+  .hp-body.md th{background:var(--surface2);font-weight:600}
+  .hp-body.md blockquote{margin:8px 0;padding:2px 0 2px 9px;border-left:2px solid var(--line);color:var(--muted)}
+  .hp-body.md a{color:var(--accent)}
+  .hp-body.md img{max-width:100%}
   .hp-body{overflow:auto;min-height:0;font-size:12.5px;line-height:1.55;color:var(--ink);white-space:pre-wrap;word-break:break-word;overscroll-behavior:contain}
   .preview.cached{color:var(--muted)}
   #hover-preview.offline #hp-role{border-color:#eed6cf;background:color-mix(in srgb,var(--danger) 12%,var(--card));color:#8d4a3a}
@@ -317,6 +333,14 @@
 </div>
 <div class="toast shell-toast" id="toast"></div>
 
+<script type="module">
+  import {marked} from '/assets/marked.esm.js';
+  const escHtml = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  // markdown 里的原始 HTML 一律转义（和 /preview 同一套策略）
+  marked.use({renderer:{html(token){return escHtml(token && (token.text != null ? token.text : token.raw));}}});
+  // 悬浮/点击预览里渲染 markdown：以前是 textContent，`## 标题`、表格、代码块都原样怼出来
+  window.__md = value => marked.parse(String(value == null ? '' : value), {gfm:true, breaks:false, async:false});
+</script>
 <script src="/assets/recents.js"></script>
 <script src="/assets/shell.js"></script>
 <script>
@@ -347,6 +371,23 @@
   function writeCache(){
     if(!state.board)return;
     try{localStorage.setItem(CACHE_KEY,JSON.stringify({at:Date.now(),board:slimBoard(state.board),hosts:state.hosts||[]}));}catch{}
+  }
+  // 卡片摘要（4 行截断）不渲染 markdown，但也不能把 ** / ## / ` 原样露出来
+  function plainText(value){
+    return String(value==null?'':value)
+      .replace(/```[\s\S]*?```/g,' ')
+      .replace(/`([^`]+)`/g,'$1')
+      .replace(/!\[[^\]]*\]\([^)]*\)/g,'')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g,'$1')
+      .replace(/^\s*#{1,6}\s+/gm,'')
+      .replace(/(\*\*|__)(.*?)\1/g,'$2')
+      .replace(/(^|\s)[*_]([^*_\n]+)[*_](?=\s|$)/g,'$1$2')
+      .replace(/^\s*[-*+]\s+/gm,'')
+      .replace(/^\s*>\s?/gm,'')
+      .replace(/^\s*\|?[-: |]+\|?\s*$/gm,' ')
+      .replace(/\|/g,' ')
+      .replace(/\s+/g,' ')
+      .trim();
   }
   function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function toast(text){const el=$('toast');el.textContent=text;el.classList.add('show');clearTimeout(state.toastTimer);state.toastTimer=setTimeout(()=>el.classList.remove('show'),2200);}
@@ -432,7 +473,7 @@
       </div>
       <div class="card-title">${esc(favorite.title||favorite.default_title||favorite.pane_title||meta)}</div>
       <div class="card-meta">${esc([favorite.host,favorite.session,favorite.window].filter(Boolean).join(' · ')||favorite.path||meta)}</div>
-      ${preview?`<p class="preview${favorite.cached?' cached':''}"><b>${esc(preview.role||'')}</b> ${esc(preview.text)}</p>`:'<p class="preview" style="color:var(--faint)">还没有对话内容</p>'}
+      ${preview?`<p class="preview${favorite.cached?' cached':''}"><b>${esc(preview.role||'')}</b> ${esc(plainText(preview.text))}</p>`:'<p class="preview" style="color:var(--faint)">还没有对话内容</p>'}
       <div class="card-foot"><span class="grow">${esc(pane)}</span><span>${esc(favorite.command||'')}</span></div>
     </article>`;
   }
@@ -681,7 +722,13 @@
     $('hp-time').textContent=[origin,ago(preview.timestamp),preview.truncated?'已截断':''].filter(Boolean).join(' · ');
     hoverBox.classList.toggle('offline',!!preview.offline);
     hoverBox.classList.toggle('cached',!!preview.cached);
-    $('hp-body').textContent=preview.text;
+    if(window.__md){
+      $('hp-body').innerHTML=window.__md(preview.text);
+      $('hp-body').classList.add('md');
+    }else{
+      $('hp-body').textContent=preview.text;
+      $('hp-body').classList.remove('md');
+    }
     hoverBox.hidden=false;
     placeHover(card);
   }

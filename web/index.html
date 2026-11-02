@@ -290,6 +290,10 @@ import {marked} from '/assets/marked.esm.js';
   function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function showError(msg){const el=$('error');el.textContent=msg;el.style.display=msg?'block':'none';}
   function isMobile(){return matchMedia('(max-width:760px)').matches;}
+  // 触屏设备（含 iPad 这种宽度 > 760 的）一律不自动聚焦输入框：一进聊天就弹键盘很讨厌
+  function isTouch(){return matchMedia('(pointer:coarse)').matches
+      ||(matchMedia('(hover:none)').matches&&navigator.maxTouchPoints>0);}
+  function canAutoFocusComposer(){return !isMobile()&&!isTouch();}
   function openSidebar(){if(isMobile()){$('sidebar').classList.add('open');$('drawer-backdrop').classList.add('show');}else{document.querySelector('.app').classList.remove('sidebar-collapsed');localStorage.setItem('tmux-sidebar-collapsed','0');}}
   function closeSidebar(){if(isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');}else{document.querySelector('.app').classList.add('sidebar-collapsed');localStorage.setItem('tmux-sidebar-collapsed','1');}}
   // Terminal sizing. A soft keyboard firing visualViewport/resize/ResizeObserver for ~250ms used to refit and
@@ -650,7 +654,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     if(state.mode==='terminal'){connectTerminal(id);}
     else if(paintCachedTranscript(id)){refreshTranscript(id);}  // instant paint, then revalidate
     else {connectTranscript(id,true);}
-    if(state.mode==='chat'&&!isMobile())input.focus();
+    if(state.mode==='chat'&&canAutoFocusComposer())input.focus();
     const memory=filesMemoryOn();
     const remembered=memory?readFilesView(id):null;
     if(memory){
@@ -1290,7 +1294,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     });
     setInterval(sync,700);
   }
-  function setMode(mode){if(state.mode===mode)return;state.mode=mode;document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&!isMobile())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
+  function setMode(mode){if(state.mode===mode)return;state.mode=mode;document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
   function isFullscreen(){return document.fullscreenElement===$('main')||$('main').classList.contains('fullscreen-fallback');}
   function syncFullscreen(){const active=isFullscreen();const label=$('fullscreen').querySelector('span');if(label)label.textContent=active?'退出全屏':(state.mode==='terminal'?'终端全屏':'对话全屏');setTimeout(()=>{if(state.fit&&state.termWs?.readyState===WebSocket.OPEN){state.fit.fit();state.termWs.send(JSON.stringify({type:'resize',cols:state.xterm.cols,rows:state.xterm.rows}));}},80);}
   async function toggleFullscreen(){const main=$('main'),app=document.querySelector('.app');if(isFullscreen()){if(document.fullscreenElement)await document.exitFullscreen();main.classList.remove('fullscreen-fallback');app.classList.remove('fullscreen-fallback');}else if(main.requestFullscreen){try{await main.requestFullscreen();}catch{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}}else{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}syncFullscreen();}

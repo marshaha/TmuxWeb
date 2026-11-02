@@ -309,6 +309,23 @@ class HomeBoardTests(unittest.TestCase):
         # 预览面板里的「在控制台打开」保留（那是选中某个 pane 后的入口）
         self.assertIn('id="pd-console"', page)
 
+    def test_the_preview_panel_renders_markdown(self):
+        """home 的悬浮/点击预览以前是 textContent，`## 标题`、表格、代码块全原样怼出来。"""
+        page = self.client.get("/home").text
+        self.assertIn("import {marked} from '/assets/marked.esm.js'", page)
+        self.assertIn("window.__md = value => marked.parse(", page)
+        # 原始 HTML 要转义（和 /preview 同一套策略）
+        self.assertIn("marked.use({renderer:{html(token){return escHtml(", page)
+        self.assertIn("$('hp-body').innerHTML=window.__md(preview.text);", page)
+        self.assertIn("$('hp-body').classList.add('md');", page)
+        # markdown 模式下不能还保留 pre-wrap，并且代码/表格要有样式
+        self.assertIn(".hp-body.md{white-space:normal}", page)
+        self.assertIn(".hp-body.md pre{", page)
+        self.assertIn(".hp-body.md table{", page)
+        # 卡片上的 4 行摘要在不渲染 markdown 的前提下也要剥掉记号
+        self.assertIn("function plainText(value){", page)
+        self.assertIn("${esc(plainText(preview.text))}</p>", page)
+
     def test_renaming_a_pin_survives_a_second_click(self):
         """改名的输入框一失焦就 blur→保存→重绘，重绘会把紧随其后的 click 吞掉。
 

@@ -722,6 +722,16 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".msg-tools .msg-time{", preview)
         self.assertIn(".msg-tools{display:flex;align-items:center;", preview)
 
+    def test_a_touch_device_does_not_autofocus_the_composer(self):
+        """手机上点进聊天就弹键盘很烦；桌面上仍然自动聚焦。判据是粗指针/无悬停，不是宽度。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn("function isTouch(){return matchMedia('(pointer:coarse)').matches", page)
+        self.assertIn("function canAutoFocusComposer(){return !isMobile()&&!isTouch();}", page)
+        self.assertIn("if(state.mode==='chat'&&canAutoFocusComposer())input.focus();", page)
+        self.assertIn("if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();", page)
+        self.assertNotIn("if(state.mode==='chat'&&!isMobile())input.focus();", page)
+
     def test_fullscreen_follows_the_visual_viewport_on_a_phone(self):
         """手机上全屏写死 100vh，键盘一弹出输入框就被顶到键盘底下（只露出上半截）。"""
         self.login()
@@ -1029,8 +1039,8 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("visualViewport", response.text)
         self.assertIn("mobile-composing", response.text)
         self.assertIn("setComposing", response.text)
-        self.assertIn("state.mode==='chat'&&!isMobile()", response.text)
-        self.assertIn("mode==='chat'&&state.selected&&!isMobile()", response.text)
+        self.assertIn("state.mode==='chat'&&canAutoFocusComposer()", response.text)
+        self.assertIn("mode==='chat'&&state.selected&&canAutoFocusComposer()", response.text)
         self.assertIn("viewport-fit=cover", response.text)
         self.assertIn('rel="manifest"', response.text)
         self.assertIn("apple-mobile-web-app-capable", response.text)
