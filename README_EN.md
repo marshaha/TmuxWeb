@@ -174,9 +174,13 @@ dragged out of the pinned set.
 
 **A pinned row can be renamed**: double-click its title (long-press for 480 ms on touch, or the pencil button on
 that row) and edit in place — Enter saves, Esc abandons, an empty name falls back to the generated
-«host · session:window». A pane has exactly one name: if it is also on the board, that card's title is renamed
-with it, and renaming on the board renames the sidebar row too (`PATCH /api/home/recent/pin/{pane}` and
-`PATCH /api/home/favorites/{pane}` sync each other in one transaction).
+«host · session:window».
+
+**Pins and favourites are two independent lists** and never create or borrow from each other: starring a pane
+never grows a pin, pinning a pane never copies the card's title, and the recent list only shows a pin's own name.
+The single link is an explicit rename — when one pane is both pinned and starred, renaming it updates the other
+side in the same transaction (`PATCH /api/home/recent/pin/{pane}` and `PATCH /api/home/favorites/{pane}`), so the
+two never disagree; leave it alone and each keeps its own default name.
 
 Pinned rows sit in a tinted rounded panel, so they read as one group against the plain recents below (the tint is
 derived from the theme's accent, so dark themes get their own).

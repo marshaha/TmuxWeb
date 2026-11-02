@@ -212,12 +212,19 @@ class HomeBoardTests(unittest.TestCase):
         self.assertEqual(self.client.patch("/api/home/recent/pin/%255", json={"label": "x"}).status_code, 404)
         self.assertEqual(self.client.patch("/api/home/recent/pin/%20", json={"label": "x"}).status_code, 422)
 
-    def test_pinning_inherits_the_name_a_card_already_has(self):
+    def test_pinning_never_copies_the_card_title(self):
+        """钉住和收藏是两份独立的数据：钉的时候不从收藏卡片借名字。"""
         self.favourite("%6")
         self.client.patch("/api/home/favorites/%256", json={"title": "HERMES 板子"})
         self.client.post("/api/home/recent/pin", json={"pane": "%6", "label": "localhost · hermes"})
         data = self.client.get("/api/home/recent?limit=8").json()
-        self.assertEqual(data["recent"][0]["label"], "HERMES 板子")
+        self.assertEqual(data["recent"][0]["label"], "localhost · hermes")
+        self.assertEqual(data["recent"][0]["title"], "HERMES 板子")     # 各是各的
+        # 收藏本身也绝不会凭空长出一条钉子
+        store = __import__("home_store").HomeStore(":memory:")
+        store.add_favorite("%7", title="x")
+        self.assertEqual(store.pins(), [])
+        store.close()
 
     def test_renaming_a_pin_needs_it_to_be_pinned(self):
         store = __import__("home_store").HomeStore(":memory:")

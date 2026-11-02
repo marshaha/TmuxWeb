@@ -191,18 +191,17 @@ class HomeStore:
 
     # ------------------------------------------------------------------- pins
     def pin(self, pane_id: str, label: str = "") -> dict:
-        """Nail a pane to the top of 最近. Pinning twice just refreshes the label."""
+        """Nail a pane to the top of 最近. Pinning twice just refreshes the label.
+
+        Pinning deliberately ignores the board: a favourite and a pin are separate
+        lists, so pinning a pane that happens to be starred does not copy the card's
+        title over. Only an explicit rename links the two names (see rename_pin).
+        """
         pane_id = (pane_id or "").strip()
         if not pane_id:
             raise ValueError("pane_id is required")
         now = _now()
         with self._lock:
-            # 已经收藏过的沿用卡片上的名字，钉住的那一刻两边就是同一个名字
-            favorite = self._conn.execute(
-                "SELECT title FROM favorites WHERE pane_id = ?", (pane_id,)
-            ).fetchone()
-            if favorite and (favorite["title"] or "").strip():
-                label = favorite["title"]
             self._conn.execute(
                 """INSERT INTO pins (pane_id, label, created_at) VALUES (?, ?, ?)
                    ON CONFLICT(pane_id) DO UPDATE SET

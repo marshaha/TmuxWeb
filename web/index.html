@@ -768,8 +768,8 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     const rowHtml=entry=>{
       const found=paneById(entry.pane);
       const fallback=found?recentLabel(entry.pane).text:entry.pane;
-      // 一个 pane 只有一个名字：钉住时自己起的名字，或收藏卡片上的名字
-      const custom=(entry.label||entry.title||'').trim();
+      // 只认钉子自己的名字：收藏卡片上的标题不会漏到最近列表里（两边是分开的两份数据）
+      const custom=(entry.label||'').trim();
       const label=custom||fallback;
       const status=found?(state.paneState.get(entry.pane)||''):'offline';
       const active=entry.pane===state.selected?' active':'';
@@ -814,7 +814,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     const label=(value||'').trim().slice(0,80);
     if(label===(entry.label||'').trim()){renderRecents();return;}
     entry.label=label;
-    if(entry.favorite)entry.title=label;      // 收藏卡片的名字同步改（空 = 回到默认）
+    if(entry.favorite)entry.title=label;      // 只有"用户主动改名"这一条路径会让两边同名
     renderRecents();
     api(`/api/home/recent/pin/${encodeURIComponent(pane)}`,{method:'PATCH',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({label})})
@@ -832,7 +832,7 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
     input.className='recent-rename';
     input.type='text';
     input.maxLength=80;
-    input.value=(entry.label||entry.title||label.textContent||'').trim();
+    input.value=(entry.label||label.textContent||'').trim();
     input.setAttribute('aria-label','改名');
     input.spellcheck=false;
     renaming={pane,done:false};
@@ -864,7 +864,6 @@ function syncFavButton(){const btn=$('fav-toggle');if(!btn)return;const gridButt
         body:JSON.stringify({pane,pinned:!on,label:label?label.text:''})});
     }catch(e){showError(e.message);return;}
     if(!on){
-      // 钉住时服务端会沿用收藏卡片上的名字，本地也按同一个规则走
       recents=[{...(entry||{}),pane,label:(entry&&entry.label)||'',pinned:true,favorite:state.favorites.has(pane),
         visited_at:entry?entry.visited_at:Math.round(Date.now()/1000)},...recents.filter(item=>item.pane!==pane)];
     }else{
