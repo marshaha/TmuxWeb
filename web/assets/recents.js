@@ -348,16 +348,17 @@
     input.value = (entry.label || label.textContent || '').trim();
     input.setAttribute('aria-label', '改名');
     input.spellcheck = false;
-    state.renaming = {pane, done: false};
+    const mine = {pane, done: false, commit: null};   // 每次改名一个自己的标记：换了行别互相打架
+    state.renaming = mine;
     row.classList.add('renaming');
     label.replaceWith(input);
     input.focus();
     input.select();
     const finish = save => {
-      if (!state.renaming || state.renaming.done) return;
-      state.renaming.done = true;
+      if (mine.done) return;
+      mine.done = true;
       const value = input.value;
-      state.renaming = null;
+      if (state.renaming === mine) state.renaming = null;
       state.signature = '';                    // 强制重建，把 input 换回文本
       if (!save) { render(); return; }
       const current = entryFor(pane);
@@ -370,6 +371,7 @@
         method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({label: clean}),
       }).then(() => load()).catch(error => { toast(error.message); load(); });
     };
+    mine.commit = finish;
     input.addEventListener('keydown', event => {
       if (event.key === 'Enter') { event.preventDefault(); finish(true); }
       else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
@@ -419,9 +421,22 @@
       startRename(row.dataset.row);
     });
 
-    // 触屏没有双击：长按 480ms 改名
+    // 钉子 / 改名 / 收藏：在 pointerdown 上就执行。
+    // 原因：改名的输入框一旦失焦会 blur → 保存 → 重绘，重绘会把这次 click 吞掉，
+    // 表现就是"第二次点铅笔没反应"。
     let pressTimer = 0;
     state.list.addEventListener('pointerdown', event => {
+      const act = event.target.closest('[data-rename],[data-pin],[data-star]');
+      if (act) {
+        event.preventDefault();                  // 别把焦点交给按钮：刚建出来的输入框会被 blur 掉
+        const pending = state.renaming;
+        if (pending && !pending.done && pending.commit) pending.commit(true);   // 先把上一个改名存掉
+        state.suppressClickAt = Date.now();      // 紧随其后的 click 不要再触发一遍
+        if (act.dataset.rename) startRename(act.dataset.rename);
+        else if (act.dataset.pin) togglePin(act.dataset.pin);
+        else if (act.dataset.star) toggleStar(act.dataset.star);
+        return;
+      }
       const open = event.target.closest('.recent-open');
       if (!open || event.pointerType === 'mouse') return;
       const row = open.closest('.recent-row.pinned');
@@ -429,7 +444,7 @@
       const pane = row.dataset.row;
       clearTimeout(pressTimer);
       pressTimer = setTimeout(() => { state.suppressClickAt = Date.now(); startRename(pane); }, 480);
-    }, {passive: true});
+    });
     for (const type of ['pointerup', 'pointercancel', 'pointermove']) {
       state.list.addEventListener(type, () => clearTimeout(pressTimer), {passive: true});
     }

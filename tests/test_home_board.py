@@ -309,6 +309,24 @@ class HomeBoardTests(unittest.TestCase):
         # 预览面板里的「在控制台打开」保留（那是选中某个 pane 后的入口）
         self.assertIn('id="pd-console"', page)
 
+    def test_renaming_a_pin_survives_a_second_click(self):
+        """改名的输入框一失焦就 blur→保存→重绘，重绘会把紧随其后的 click 吞掉。
+
+        所以钉子/铅笔/星星这些动作都改在 pointerdown 上执行，并且必须先收掉
+        正在编辑的那一条（用每次改名自己的标记 mine，而不是共享的 state）。
+        """
+        script = self.client.get("/assets/recents.js").text
+        self.assertIn("event.target.closest('[data-rename],[data-pin],[data-star]')", script)
+        self.assertIn("event.preventDefault();                  // 别把焦点交给按钮", script)
+        self.assertIn("if (pending && !pending.done && pending.commit) pending.commit(true);", script)
+        self.assertIn("state.suppressClickAt = Date.now();      // 紧随其后的 click 不要再触发一遍", script)
+        # 每次改名一个自己的标记，切到别的行不会把新标记误标成 done
+        self.assertIn("const mine = {pane, done: false, commit: null};", script)
+        self.assertIn("if (mine.done) return;", script)
+        self.assertIn("if (state.renaming === mine) state.renaming = null;", script)
+        # 这个 pointerdown 监听器不能是 passive（要 preventDefault）
+        self.assertNotIn("}, {passive: true});\n    for (const type of ['pointerup'", script)
+
     def test_the_footer_keeps_clear_of_a_phones_bottom_left_corner(self):
         page = self.client.get("/").text
         self.assertIn(".side-foot{padding:10px 12px calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))}", page)
