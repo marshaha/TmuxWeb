@@ -151,10 +151,12 @@
     .grid-pager{display:none}
     @media(max-width:760px){
       .grid.mode-grid,.grid.mode-canvas{scroll-snap-type:y proximity}
-      /* iPhone 右下角有圆角 + home indicator：抬到安全区之上，别贴着角落 */
-      .grid-pager{position:fixed;right:calc(10px + env(safe-area-inset-right,0px));
-        bottom:calc(18px + env(safe-area-inset-bottom,0px));z-index:7;display:flex;align-items:center;gap:0;
-        padding:2px;border:1px solid var(--line);border-radius:999px;background:var(--surface);box-shadow:0 4px 12px #0001}
+      /* 默认贴在右下（安全区之内）；长按可以拖到顺手的位置，位置会记住 */
+      .grid-pager{position:fixed;right:calc(8px + env(safe-area-inset-right,0px));
+        bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:7;display:flex;align-items:center;gap:0;
+        padding:2px;border:1px solid var(--line);border-radius:999px;background:var(--surface);box-shadow:0 4px 12px #0001;
+        touch-action:none;user-select:none;-webkit-user-select:none;transition:box-shadow .15s}
+      .grid-pager.dragging{box-shadow:0 10px 26px #0003;opacity:.94}
       .grid-pager[hidden]{display:none}
       .grid-pager button{display:grid;place-items:center;width:26px;height:26px;padding:0;border:0;border-radius:999px;
         background:transparent;color:var(--muted);cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
@@ -877,9 +879,88 @@
       if(icon)icon.style.transform=dir>0?'':'rotate(180deg)';
     }
   }
+  const PAGER_POS_KEY='tmux-grid-pager-pos';
+  function pagerSavedPos(){
+    try{
+      const saved=JSON.parse(localStorage.getItem(PAGER_POS_KEY)||'null');
+      if(saved&&Number.isFinite(saved.left)&&Number.isFinite(saved.top))return saved;
+    }catch{}
+    return null;
+  }
+  function placePager(left,top){
+    const pager=$('grid-pager');
+    if(!pager)return;
+    const width=pager.offsetWidth||92, height=pager.offsetHeight||32;
+    const maxLeft=Math.max(0,window.innerWidth-width-4), maxTop=Math.max(0,window.innerHeight-height-4);
+    const x=Math.min(maxLeft,Math.max(0,Math.round(left)));
+    const y=Math.min(maxTop,Math.max(0,Math.round(top)));
+    pager.classList.add('floating');
+    pager.style.right='auto';
+    pager.style.bottom='auto';
+    pager.style.left=x+'px';
+    pager.style.top=y+'px';
+    return {left:x,top:y};
+  }
+  function resetPagerPos(){
+    const pager=$('grid-pager');
+    if(!pager)return;
+    pager.classList.remove('floating');
+    pager.style.left=pager.style.top=pager.style.right=pager.style.bottom='';
+    try{localStorage.removeItem(PAGER_POS_KEY);}catch{}
+  }
+  function applyPagerPos(){
+    const saved=pagerSavedPos();
+    if(saved)placePager(saved.left,saved.top);
+  }
   function bindPager(){
     const pager=$('grid-pager');
     if(!pager)return;
+    applyPagerPos();
+    // 长按 380ms 进入拖动；松手记住位置；拖动过的那一下不再当成翻页
+    let pressTimer=0, drag=null, suppress=false, lastTapAt=0;
+    pager.addEventListener('pointerdown',event=>{
+      if(event.pointerType==='mouse'&&event.button!==0)return;
+      const rect=pager.getBoundingClientRect();
+      pressTimer=setTimeout(()=>{
+        drag={dx:event.clientX-rect.left,dy:event.clientY-rect.top};
+        pager.classList.add('dragging');
+        placePager(rect.left,rect.top);
+        try{pager.setPointerCapture(event.pointerId);}catch{}
+        if(navigator.vibrate)navigator.vibrate(8);
+      },380);
+    });
+    const cancelPress=()=>{clearTimeout(pressTimer);pressTimer=0;};
+    pager.addEventListener('pointermove',event=>{
+      if(!drag)return;
+      event.preventDefault();
+      suppress=true;
+      placePager(event.clientX-drag.dx,event.clientY-drag.dy);
+    });
+    const endPress=()=>{
+      cancelPress();
+      if(!drag)return;
+      drag=null;
+      pager.classList.remove('dragging');
+      const rect=pager.getBoundingClientRect();
+      const pos=placePager(rect.left,rect.top);
+      if(pos){try{localStorage.setItem(PAGER_POS_KEY,JSON.stringify(pos));}catch{}}
+      // 拖动结束时浏览器还会补一个 click，别让它翻页
+      suppress=true;
+      setTimeout(()=>{suppress=false;},400);
+    };
+    pager.addEventListener('pointerup',endPress);
+    pager.addEventListener('pointercancel',endPress);
+    pager.addEventListener('pointerleave',()=>{if(!drag)cancelPress();});
+    // 双击胶囊空白处（不按箭头、不拖动）= 回到右下角默认位置
+    pager.addEventListener('click',event=>{
+      if(suppress){event.preventDefault();return;}
+      if(event.target.closest('[data-page]'))return;      // 连点箭头是翻页，不是复位
+      const now=Date.now();
+      if(now-lastTapAt<320){resetPagerPos();lastTapAt=0;return;}
+      lastTapAt=now;
+    },true);
+    // 转屏/改窗口大小后把记住的位置夹回屏幕内
+    window.addEventListener('resize',()=>{const saved=pagerSavedPos();if(saved)placePager(saved.left,saved.top);});
     let lastTap=0,lastDir=0;
     const go=button=>{
       if(!button||button.disabled)return;

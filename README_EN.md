@@ -72,6 +72,8 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - On a phone the grid is always one column, one window per screen: the shell is exactly one viewport tall and the
   window list scrolls. Because the iframes inside swallow vertical drags, a small `↑ 1/2 ↓` pager sits in the
   bottom-right corner too — tap to glide to the previous/next window, with the arrows greying out at the ends.
+  It sits inside `env(safe-area-inset-*)` so an iPhone's rounded corner never eats it; **long-press for 380 ms to
+  drag it anywhere** (the spot is remembered locally) and **double-tap the pill's blank area to reset**.
 - **Mobile/PWA support**: every page (console, board, grid, terminal, hosts, shares) ships `manifest`, `apple-touch-icon`,
   `apple-mobile-web-app-*` and `theme-color`, so "add to home screen" opens a standalone window; the manifest carries
   `shortcuts` for the board and the multi-window page. Above 760px — a desktop browser — the terminal has **no key bar**, the

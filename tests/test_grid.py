@@ -165,9 +165,15 @@ class GridPageTests(unittest.TestCase):
         # 按钮小（26px）但热区外扩，且点击/lastTap 去重 + scrollTo 失败时直接赋值
         self.assertIn(".grid-pager button{display:grid;place-items:center;width:26px;height:26px", page)
         self.assertIn(".grid-pager button::after{content:'';position:absolute;inset:-5px", page)
-        # 贴着 iPhone 右下角的圆角会被切掉：抬到安全区之上
-        self.assertIn("bottom:calc(18px + env(safe-area-inset-bottom,0px))", page)
-        self.assertIn("right:calc(10px + env(safe-area-inset-right,0px))", page)
+        # 默认贴在右下（安全区之内），长按可以拖到自己顺手的位置
+        self.assertIn("bottom:calc(10px + env(safe-area-inset-bottom,0px))", page)
+        self.assertIn("right:calc(8px + env(safe-area-inset-right,0px))", page)
+        self.assertIn("touch-action:none", page)
+        self.assertIn("const PAGER_POS_KEY='tmux-grid-pager-pos'", page)
+        self.assertIn("},380);", page)                       # 长按 380ms 进拖动
+        self.assertIn("localStorage.setItem(PAGER_POS_KEY,JSON.stringify(pos))", page)
+        self.assertIn("if(now-lastTapAt<320){resetPagerPos();", page)   # 双击空白回默认
+        self.assertIn("if(suppress){event.preventDefault();return;}", page)  # 拖完那一下不翻页
         self.assertIn("touch-action:manipulation", page)
         self.assertIn("if(dir===lastDir&&now-lastTap<500)return;", page)
         self.assertIn("try{grid.scrollTo({top:target,behavior:'smooth'});}catch{grid.scrollTop=target;}", page)
