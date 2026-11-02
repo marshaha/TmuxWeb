@@ -149,6 +149,13 @@ class GridPageTests(unittest.TestCase):
         # 手机上画布退回单列（绝对定位会把超出屏幕的窗口全藏起来）
         self.assertIn(".grid.mode-canvas .cell{position:relative!important", page)
 
+    def test_the_window_sidebar_uses_the_same_chat_bubble_as_home(self):
+        """/home 和 /grid 的侧栏「进聊天」必须是同一个入口：气泡图标 + 「聊天」提示。"""
+        for path in ("/home", "/grid"):
+            page = self.client.get(path).text
+            self.assertIn('href="/" title="聊天（控制台）" aria-label="聊天"><svg class="ico"><use href="#i-chat"/>', page, path)
+            self.assertNotIn('title="控制台" aria-label="控制台"', page, path)
+
     def test_the_sidebar_footer_keeps_clear_of_a_phones_corner(self):
         page = self.client.get("/grid").text
         self.assertIn("calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))", page)
