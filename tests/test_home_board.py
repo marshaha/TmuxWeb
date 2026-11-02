@@ -295,10 +295,13 @@ class HomeBoardTests(unittest.TestCase):
         # 清空只清普通最近，固定的不动
         self.assertIn("state.entries.filter(entry => !entry.pinned)", page)
 
-    def test_the_home_sidebar_does_not_duplicate_the_console_entry(self):
-        """home 的卡片、会话树、「最近」都能进控制台，侧栏那个「控制台」按钮是重复的，去掉。"""
+    def test_the_home_sidebar_keeps_one_chat_entry(self):
+        """home 侧栏只留一个"去聊天"的入口，图标用聊天气泡。"""
         page = self.client.get("/home").text
         head = page[:page.index('id="preview"')] if 'id="preview"' in page else page
+        # 保留"去聊天"的入口，但图标是聊天气泡、提示写"聊天"，不再叫"控制台"
+        self.assertIn('href="/" title="聊天（控制台）" aria-label="聊天"', head)
+        self.assertIn('<use href="#i-chat"/>', head)
         self.assertNotIn('title="控制台" aria-label="控制台"', head)
         self.assertIn('title="多窗口" aria-label="多窗口"', head)
         self.assertIn('title="远程主机" aria-label="远程主机"', head)

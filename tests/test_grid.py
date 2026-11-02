@@ -160,7 +160,7 @@ class GridPageTests(unittest.TestCase):
         终端形状，也不能借用「管理分享」的出框箭头。
         """
         page = self.client.get("/grid").text
-        self.assertIn('<symbol id="i-page" viewBox="0 0 24 24"><path d="M6.2 4.2h7.6l5.2 5.2', page)
+        self.assertIn('<symbol id="i-page" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="16" rx="2.4"/><path d="M8.8 8.8h6.4"/></symbol>', page)
         self.assertIn('data-mode-toggle="${esc(pane)}"><svg class="ico"><use href="#i-chat"/></svg>', page)
         self.assertIn('aria-label="在控制台打开"><svg class="ico"><use href="#i-page"/></svg>', page)
         self.assertIn('aria-label="移出多窗口"><svg class="ico"><use href="#i-close"/></svg>', page)

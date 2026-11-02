@@ -220,7 +220,8 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   .ico{width:17px;height:17px;flex:none;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
   .icon-btn{display:grid;place-items:center;padding:0}
   .icon-btn .ico{width:18px;height:18px}
-  .share-btn,.fullscreen-btn{display:inline-flex;align-items:center;gap:6px}
+  /* 带文字的按钮一律不许被挤压：否则「对话全屏」四个字会顶出边框 */
+  .share-btn,.fullscreen-btn{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap}
   .share-btn .ico,.fullscreen-btn .ico{width:16px;height:16px;transform:translateY(-.5px)}
   .file-icon{display:grid;place-items:center;width:17px;height:17px}
   .file-icon .ico{width:16px;height:16px;color:var(--muted)}

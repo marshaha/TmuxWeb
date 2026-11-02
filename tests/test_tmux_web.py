@@ -722,6 +722,15 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".msg-tools .msg-time{", preview)
         self.assertIn(".msg-tools{display:flex;align-items:center;", preview)
 
+    def test_labelled_buttons_cannot_be_squeezed_into_overflow(self):
+        """带字的按钮一律 flex:0 0 auto + nowrap：窄屏时被挤扁，文字就会顶出边框（对话全屏 那次）。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn(".share-btn,.fullscreen-btn{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap}", page)
+        # 手机上仍然是图标按钮（文字藏起来），不会挤
+        self.assertIn(".fullscreen-btn{width:34px;padding:0;justify-content:center}", page)
+        self.assertIn(".fullscreen-btn span{display:none}", page)
+
     def test_a_block_copy_button_shows_its_label(self):
         """块顶栏的「复制 / 源码」按钮：图标没有宽高时 svg 是 300×150，会把文字顶出按钮。"""
         self.login()
