@@ -142,7 +142,9 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("function touchRecent(", page)
         self.assertIn("/api/home/recent?limit=", page)
         # 文件面板打开时这块要跟着让位
-        self.assertIn("if(state.filesMode||!recents.length){block.hidden=true", page)
+        self.assertIn("if(state.filesMode||!live.length){block.hidden=true", page)
+        # 过滤只决定显示哪些，不能回写 recents（启动时 hosts 还没到，回写会把历史裁掉）
+        self.assertNotIn("recents=live.slice(", page)
 
     def test_the_console_opens_on_the_board_when_there_is_nothing_to_restore(self):
         page = self.client.get("/").text
