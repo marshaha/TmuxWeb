@@ -142,9 +142,67 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("function touchRecent(", page)
         self.assertIn("/api/home/recent?limit=", page)
         # 文件面板打开时这块要跟着让位
-        self.assertIn("if(state.filesMode||!live.length){block.hidden=true", page)
+        self.assertIn("if(state.filesMode||!rows.some(", page)
         # 过滤只决定显示哪些，不能回写 recents（启动时 hosts 还没到，回写会把历史裁掉）
         self.assertNotIn("recents=live.slice(", page)
+
+    def test_pinned_panes_sit_on_top_of_the_recent_block(self):
+        """钉住 = 跟账号走的置顶，掉出最近 30 条也还在；普通最近里不再重复出现。"""
+        for pane in ("%4", "%5"):
+            self.client.post("/api/home/recent", json={"pane": pane})
+        resp = self.client.post("/api/home/recent/pin", json={"pane": "%4", "label": "localhost · codex"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["pinned"])
+        data = self.client.get("/api/home/recent?limit=8").json()
+        self.assertEqual(data["pinned"], ["%4"])
+        panes = [row["pane"] for row in data["recent"]]
+        self.assertEqual(panes, ["%4", "%5"])       # 固定的排最前，且不重复
+        self.assertTrue(data["recent"][0]["pinned"])
+        self.assertEqual(data["recent"][0]["label"], "localhost · codex")
+        self.assertFalse(data["recent"][1]["pinned"])
+        # 收藏状态跟着一起来，侧栏那一行不用再单独请求
+        self.favourite("%5")
+        data = self.client.get("/api/home/recent?limit=8").json()
+        self.assertEqual({row["pane"]: row["favorite"] for row in data["recent"]}, {"%4": False, "%5": True})
+        # 取消固定
+        self.assertTrue(self.client.post("/api/home/recent/pin", json={"pane": "%4", "pinned": False}).json()["removed"])
+        data = self.client.get("/api/home/recent?limit=8").json()
+        self.assertEqual(data["pinned"], [])
+        self.assertFalse(any(row["pinned"] for row in data["recent"]))
+        # 垃圾 pane 引用 / 未登录
+        self.assertEqual(self.client.post("/api/home/recent/pin", json={"pane": "nonsense"}).status_code, 422)
+        self.assertEqual(self.client.post("/api/home/recent/pin", json={"pane": ""}).status_code, 422)
+
+    def test_a_pin_survives_the_recent_cap_and_a_missing_host(self):
+        """固定的项不该被最近 30 条挤掉，主机掉线时也还能看见它当初的标题。"""
+        store = __import__("home_store").HomeStore(":memory:")
+        for index in range(40):
+            store.touch_recent(f"%{index}")
+        store.pin("%0", "oracle · claude")
+        self.assertIn("%0", [row["pane_id"] for row in store.pins()])
+        self.assertTrue(store.is_pinned("%0"))
+        store.pin("%0", "oracle · claude: main")     # 再钉一次只更新标签
+        self.assertEqual(store.pins()[0]["label"], "oracle · claude: main")
+        self.assertEqual(len(store.pins()), 1)
+        self.assertTrue(store.unpin("%0"))
+        self.assertFalse(store.unpin("%0"))          # 取消两次不报错
+        store.close()
+
+    def test_the_recent_rows_carry_a_pin_and_a_star(self):
+        page = self.client.get("/").text
+        # 一行里三个动作：打开、固定、收藏；钉子有描边/实心两种状态
+        for marker in ('data-pin="', 'data-star="', "function togglePin(pane)", "#i-pin", "#i-pin-fill"):
+            self.assertIn(marker, page)
+        self.assertIn("recent-act", page)
+        # 触屏没有悬停，两个按钮必须常显；手机上 44 行高
+        self.assertIn("[data-pin]", page)
+        self.assertIn("if(state.filesMode||!rows.some(", page)
+        # 固定区与最近之间那条细线 + 列表可滚（不够显示就滚/滑）
+        self.assertIn(".recent-split", page)
+        self.assertIn("overscroll-behavior:contain", page)
+        self.assertIn("-webkit-overflow-scrolling:touch", page)
+        # 清空只清普通最近，固定的不动
+        self.assertIn("recents.filter(entry=>!entry.pinned)", page)
 
     def test_the_console_opens_on_the_board_when_there_is_nothing_to_restore(self):
         page = self.client.get("/").text

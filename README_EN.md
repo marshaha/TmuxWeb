@@ -160,10 +160,22 @@ The sidebar header is two stacked rows: the title on top, the icons on a full-wi
   more" hint.
 
 **「最近」 under the session tree**: a divider, then up to six recently opened conversations (from
-`/api/home/recent`, per account) showing «host · session:window», the command and a relative time, with the
-status dot (busy / idle / offline) on the left. Clicking one switches to it and moves it to the top; the × clears
-the list (and the server-side records). The block steps aside while the file panel is open and caps itself at
-32vh with its own scroll, so a narrow sidebar is not crowded.
+`/api/home/recent`, per account) showing «host · session:window», the command and a relative time (shown on hover
+so the title keeps the width), with the status dot (busy / idle / offline) on the left. Clicking one switches to it
+and moves it to the top.
+
+Each row has two small buttons on the right: a **pin** that nails it to the top of the block
+(`/api/home/recent/pin`, a `pins` table server-side, per account; it does not eat a slot in the 30-entry recent
+cap, survives a host going offline by showing the title recorded when it was pinned, and a hairline separates the
+pinned set from the ordinary recents) and a **star** that favourites it onto the board (the same favourites the
+tree and the preview page use). Clicking the pin again unpins; on touch, where there is no hover, both buttons are
+always visible at a 44 px row height. Opening a pinned conversation only refreshes its timestamp — it is never
+dragged out of the pinned set.
+
+The header carries a pin of its own that pins/unpins the **currently selected** conversation, and the × clears the
+ordinary recents only, leaving pins alone. When the block outgrows its box it scrolls with the wheel or a finger
+(`overscroll-behavior:contain`, so the page behind does not bounce). It caps at 32vh (46vh on a phone) and steps
+aside while the file panel is open.
 
 **Sessions or files in the sidebar?** The console's (`/`) sidebar shows one of the two, and the rule is
 **the session list is always what you start with**. Clicking the folder icon in the header (or a directory in

@@ -6,6 +6,8 @@ Small sqlite store with two tables:
   ``localhost~%7`` or ``1d7ef54375eaabc3~%69``), with an optional note.
 * ``cards`` — free-form cards an agent (or a person) publishes to the board via
   ``publish_home_card`` / ``POST /api/home/cards``.
+* ``pins`` — panes the user nailed to the top of the sidebar's 最近 block. Pins
+  survive the recents cap, so a pinned pane stays even after 30 other visits.
 
 The store is deliberately independent of tmux/shares so it can be unit tested
 without a server.
@@ -24,6 +26,7 @@ MAX_TITLE = 200
 MAX_BODY = 20000
 MAX_CARDS = 200
 MAX_RECENT = 30
+MAX_PINS = 20
 
 
 def _now() -> float:
@@ -69,6 +72,13 @@ class HomeStore:
                 """CREATE TABLE IF NOT EXISTS recent (
                        pane_id TEXT PRIMARY KEY,
                        visited_at REAL NOT NULL
+                   )"""
+            )
+            self._conn.execute(
+                """CREATE TABLE IF NOT EXISTS pins (
+                       pane_id TEXT PRIMARY KEY,
+                       label TEXT NOT NULL DEFAULT '',
+                       created_at REAL NOT NULL
                    )"""
             )
             # small key/value bag for UI preferences that should follow the account, not the browser
@@ -172,6 +182,46 @@ class HomeStore:
                 "SELECT * FROM recent ORDER BY visited_at DESC LIMIT ?", (max(1, int(limit)),)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------- pins
+    def pin(self, pane_id: str, label: str = "") -> dict:
+        """Nail a pane to the top of 最近. Pinning twice just refreshes the label."""
+        pane_id = (pane_id or "").strip()
+        if not pane_id:
+            raise ValueError("pane_id is required")
+        now = _now()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO pins (pane_id, label, created_at) VALUES (?, ?, ?)
+                   ON CONFLICT(pane_id) DO UPDATE SET
+                       label = CASE WHEN excluded.label = '' THEN pins.label ELSE excluded.label END""",
+                (pane_id, (label or "").strip()[:MAX_TITLE], now),
+            )
+            self._conn.execute(
+                "DELETE FROM pins WHERE pane_id NOT IN"
+                " (SELECT pane_id FROM pins ORDER BY created_at DESC LIMIT ?)",
+                (MAX_PINS,),
+            )
+            self._conn.commit()
+            row = self._conn.execute("SELECT * FROM pins WHERE pane_id = ?", (pane_id,)).fetchone()
+        return dict(row)
+
+    def unpin(self, pane_id: str) -> bool:
+        with self._lock:
+            cursor = self._conn.execute("DELETE FROM pins WHERE pane_id = ?", ((pane_id or "").strip(),))
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    def pins(self) -> list[dict]:
+        """Newest pin first: the thing you just nailed to the top is the thing you want to see."""
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM pins ORDER BY created_at DESC, pane_id ASC").fetchall()
+        return [dict(row) for row in rows]
+
+    def is_pinned(self, pane_id: str) -> bool:
+        with self._lock:
+            row = self._conn.execute("SELECT 1 FROM pins WHERE pane_id = ?", ((pane_id or "").strip(),)).fetchone()
+        return row is not None
 
     def forget_recent(self, pane_id: str) -> bool:
         with self._lock:

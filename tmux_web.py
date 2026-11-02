@@ -433,6 +433,12 @@ class HomeRecentRequest(BaseModel):
     pane: str = ""
 
 
+class HomePinRequest(BaseModel):
+    pane: str = ""
+    label: str = ""
+    pinned: bool = True
+
+
 class HomeFavoriteRequest(BaseModel):
     pane: str = Field(min_length=1, max_length=400)
     note: str = ""
@@ -2571,10 +2577,54 @@ def create_app(
 
     @app.get("/api/home/recent")
     async def home_recent(request: Request, limit: int = 8):
-        """Recent pane visits, cheapest form for the sidebar's 最近 block."""
+        """Recent pane visits plus the pinned ones, for the sidebar's 最近 block.
+
+        Pinned panes come first (newest pin first) and are left out of the recent
+        tail so a row never shows up twice; ``favorite`` lets the row render its
+        star without a second request.
+        """
         require_auth(request)
         rows = await asyncio.to_thread(home.recent, max(1, min(int(limit), 20)))
-        return {"recent": [{"pane": row["pane_id"], "visited_at": row["visited_at"]} for row in rows]}
+        pins = await asyncio.to_thread(home.pins)
+        favorites = {row["pane_id"] for row in await asyncio.to_thread(home.favorites)}
+        seen: set[str] = set()
+        entries: list[dict] = []
+        visits = {row["pane_id"]: row["visited_at"] for row in rows}
+        for pin in pins:
+            pane = pin["pane_id"]
+            seen.add(pane)
+            entries.append({
+                "pane": pane,
+                "label": pin.get("label", ""),
+                "pinned": True,
+                "favorite": pane in favorites,
+                "visited_at": visits.get(pane, 0),
+            })
+        for row in rows:
+            if row["pane_id"] in seen:
+                continue
+            entries.append({
+                "pane": row["pane_id"],
+                "label": "",
+                "pinned": False,
+                "favorite": row["pane_id"] in favorites,
+                "visited_at": row["visited_at"],
+            })
+        return {"recent": entries, "pinned": [pin["pane_id"] for pin in pins]}
+
+    @app.post("/api/home/recent/pin")
+    async def pin_home_recent(request: Request, payload: HomePinRequest):
+        """Nail a pane to the top of 最近 (or let it go again)."""
+        require_auth(request)
+        try:
+            split_pane_ref(payload.pane)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid pane reference") from exc
+        if payload.pinned:
+            row = await asyncio.to_thread(home.pin, payload.pane, payload.label)
+            return {"pane": row["pane_id"], "pinned": True, "label": row["label"]}
+        removed = await asyncio.to_thread(home.unpin, payload.pane)
+        return {"pane": payload.pane, "pinned": False, "removed": removed}
 
     @app.post("/api/home/recent", status_code=202)
     async def touch_home_recent(request: Request, payload: HomeRecentRequest):
