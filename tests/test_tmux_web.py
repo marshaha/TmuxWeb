@@ -1411,6 +1411,14 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(missing.status_code, 404)
         self.assertIn("9999", missing.json()["detail"])
 
+        # read_agent / 任意 /api/panes/<ref> 也认 #N（MCP 工具不是只走 relay_target）
+        capture = self.client.get(f"/api/panes/{handle.replace('#', '%23')}/capture?history=5")
+        self.assertEqual(capture.status_code, 200, capture.text)
+        self.assertEqual(capture.json()["pane"], handle)
+        transcript = self.client.get(f"/api/panes/{handle}/transcript?limit=2")
+        self.assertEqual(transcript.status_code, 200, transcript.text)
+        self.assertEqual(self.client.get("/api/panes/%239999/capture").status_code, 404)
+
         page = self.client.get("/").text
         self.assertIn('class="pane-num"', page)
         self.assertIn("/^#?\\d{1,5}$/.test(wanted.trim())", page)

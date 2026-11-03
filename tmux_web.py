@@ -888,7 +888,24 @@ def create_app(
         if not authenticated(request):
             raise HTTPException(status_code=401, detail="authentication required")
 
+    PANE_NUMBER_RE = re.compile(r"^#?(\d{1,5})$")
+
+    def pane_ref_for(number: int) -> str:
+        """编号 → 带主机作用域的 pane 引用；没分出去的号就是 404。"""
+        pane_id = home.pane_for_number(number)
+        if not pane_id:
+            raise HTTPException(status_code=404,
+                                detail=f"没有 #{number} 这个窗口（编号按首次出现分配，不会回收）")
+        return pane_id
+
+    def resolve_pane_ref(pane_ref: str) -> str:
+        """`#12` / `12` 解析成真正的 pane 引用，其他写法原样返回。"""
+        text = str(pane_ref or "").strip()
+        match = PANE_NUMBER_RE.match(text)
+        return pane_ref_for(int(match.group(1))) if match else text
+
     def pane_or_404(pane_id: str) -> dict:
+        pane_id = resolve_pane_ref(pane_id)
         try:
             host_id, actual_pane_id = split_pane_ref(pane_id)
         except ValueError as exc:
@@ -909,6 +926,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     def pane_transport(pane_ref: str):
+        pane_ref = resolve_pane_ref(pane_ref)
         try:
             host_id, pane_id = split_pane_ref(pane_ref)
         except ValueError as exc:
@@ -921,27 +939,9 @@ def create_app(
             raise HTTPException(status_code=404, detail="remote host not found") from exc
         return runner_for(host), pane_id
 
-    PANE_NUMBER_RE = re.compile(r"^#?(\d{1,5})$")
-
-    def pane_ref_for(number: int) -> str:
-        """编号 → 带主机作用域的 pane 引用；编号没分出去过就是 404。"""
-        pane_id = home.pane_for_number(number)
-        if not pane_id:
-            raise HTTPException(status_code=404,
-                                detail=f"没有 #{number} 这个窗口（编号按首次出现分配，不会回收）")
-        return pane_id
-
-    def resolve_target(target: str) -> str:
-        """`#12` / `12` → `localhost~%7` 之类；其他写法原样返回（旧行为）。"""
-        text = str(target or "").strip()
-        match = PANE_NUMBER_RE.match(text)
-        if match:
-            return pane_ref_for(int(match.group(1)))
-        return text
-
     def relay_target(target: str):
         """Resolve a relay target to (transport, pane_id, pane, host_name)."""
-        target = resolve_target(target)
+        target = resolve_pane_ref(target)
         try:
             host_id, pane_id = split_pane_ref(target)
         except ValueError as exc:
