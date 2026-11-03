@@ -1953,7 +1953,14 @@ class TmuxWebTests(unittest.TestCase):
         module = self.client.get("/assets/path-links.js").text
         self.assertIn("function activateAt(x, y, scope)", module)
         self.assertIn("__plinkOpen", module)
-        for marker in ("window.TmuxPaths = {enhance, rawHref, lookup, activateAt};",
+        # 悬停气泡：文件名 + 大小 + 预览/下载；log/txt 这类点开是预览而不是直接下载
+        self.assertIn("TEXT_EXT", module)
+        self.assertIn("plink-card-actions", module)
+        self.assertIn('data-plink-act="download"', module)
+        self.assertIn("downloadHref", module)
+        self.assertIn("onPreview:path=>openMarkdownViewer(", page)
+        self.assertIn(".plink-card{position:fixed", self.client.get("/assets/path-links.css").text)
+        for marker in ("window.TmuxPaths = {enhance, rawHref, lookup, activateAt, downloadHref, hideCard};",
                        "files/stat?path=", "onDir", "onMd", "onMissing", "dataset.plinkPath"):
             self.assertIn(marker, module)
         # 中文标点也是边界：`本地文件：/Users/...` 这类纯文本必须能识别

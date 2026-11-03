@@ -541,6 +541,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       onDir:path=>{openFiles(path);},
       onFile:path=>{const dir=path.replace(/[^/]*$/,'')||path;openFiles(dir);downloadFile(path);},
       onMd:path=>openMarkdownViewer(`/api/panes/${encodeURIComponent(state.selected)}/files/raw?path=${encodeURIComponent(path)}`,path.split('/').pop()),
+      onPreview:path=>openMarkdownViewer(`/api/panes/${encodeURIComponent(state.selected)}/files/raw?path=${encodeURIComponent(path)}`,path.split('/').pop()),
       onMissing:path=>showError(`找不到：${path}`),
       onError:message=>showError(message),
     });

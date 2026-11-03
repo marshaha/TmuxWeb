@@ -22,6 +22,8 @@
   const RELATIVE = new RegExp('(^|' + BOUNDARY + ')((?:\\.{1,2}\\/)?(?:[\\w@%+.-]+\\/)+[\\w@%+.-]+\\.[A-Za-z0-9]{1,8})', 'g');
   const SKIP_TAGS = new Set(['A', 'PRE', 'SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'BUTTON', 'SVG']);
   const MD_EXT = /\.(md|markdown|mdx)$/i;
+  // 可以直接看内容、也可以下载的文本类
+  const TEXT_EXT = /\.(md|markdown|mdx|txt|log|json|ya?ml|csv|tsv|ini|conf|cfg|env|toml|xml|html?|css|js|ts|py|sh|sql)$/i;
   const TRAILING = /[.,;:!?)}\]】。，；：！？]+$/;
 
   // 至少两段（/a/b）或者以 ~/ ./ ../ 开头，才算"像路径"：/grid、/OUT-OF-BAND 这种就放过
@@ -93,6 +95,14 @@
         event.stopPropagation();
         link.__plinkOpen();
       });
+      // 鼠标悬停 380ms 弹小卡片：文件名 + 大小 + 预览/下载（触摸不弹，免得一点就冒出来）
+      link.addEventListener('pointerenter', event => {
+        if (event.pointerType && event.pointerType !== 'mouse') return;
+        clearTimeout(hideTimer);
+        clearTimeout(cardTimer);
+        cardTimer = setTimeout(() => { showCard(link, pane, options, cwd); }, 380);
+      });
+      link.addEventListener('pointerleave', scheduleHide);
       link.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
@@ -125,8 +135,125 @@
     const target = info.path || path;
     if (!info.exists) { if (options.onMissing) options.onMissing(target); return; }
     if (info.kind === 'dir') { if (options.onDir) options.onDir(target); return; }
-    if (MD_EXT.test(target) && options.onMd) { options.onMd(target); return; }
+    if (TEXT_EXT.test(target)) {
+      if (options.onPreview) { options.onPreview(target); return; }
+      if (MD_EXT.test(target) && options.onMd) { options.onMd(target); return; }
+    }
     if (options.onFile) options.onFile(target);
+  }
+
+  // ---------------------------------------------------------------- 悬停气泡
+  let card = null;
+  let cardTimer = 0;
+  let hideTimer = 0;
+  const statCache = new Map();
+
+  function downloadHref(pane, path) {
+    return `/api/panes/${encodeURIComponent(pane)}/files/download?path=${encodeURIComponent(path)}`;
+  }
+
+  function ensureCard() {
+    if (card) return card;
+    card = document.createElement('div');
+    card.className = 'plink-card';
+    card.hidden = true;
+    card.innerHTML = '<div class="plink-card-name"></div><div class="plink-card-meta"></div>'
+      + '<div class="plink-card-actions">'
+      + '<button type="button" class="plink-card-btn" data-plink-act="preview">预览</button>'
+      + '<button type="button" class="plink-card-btn primary" data-plink-act="download">下载</button>'
+      + '</div>';
+    card.addEventListener('pointerenter', () => clearTimeout(hideTimer));
+    card.addEventListener('pointerleave', scheduleHide);
+    card.addEventListener('click', event => {
+      const button = event.target.closest('[data-plink-act]');
+      if (!button || !card.__target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const {path, pane, options, href, exists, previewable} = card.__target;
+      if (button.dataset.plinkAct === 'download') {
+        const link = document.createElement('a');
+        link.href = downloadHref(pane, path);
+        link.download = '';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      } else if (exists) {
+        if (previewable && options.onPreview) options.onPreview(path);
+        else if (options.onMd && /\.(md|markdown|mdx)$/i.test(path)) options.onMd(path);
+        else if (options.onFile) options.onFile(path);
+      }
+      hideCard();
+      void href;
+    });
+    document.body.appendChild(card);
+    return card;
+  }
+
+  function hideCard() {
+    clearTimeout(cardTimer);
+    if (card) card.hidden = true;
+  }
+
+  function scheduleHide() {
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(hideCard, 180);
+  }
+
+  function placeCard(link) {
+    const box = link.getBoundingClientRect();
+    const panel = ensureCard();
+    panel.style.left = '0px';
+    panel.style.top = '0px';
+    const width = panel.offsetWidth || 220;
+    const height = panel.offsetHeight || 86;
+    let left = box.left;
+    if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+    let top = box.bottom + 6;
+    if (top + height > window.innerHeight - 8) top = Math.max(8, box.top - height - 6);
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.hidden = false;
+  }
+
+  async function showCard(link, pane, options, cwd) {
+    const path = link.dataset.plinkPath;
+    if (!path || !pane) return;
+    const absolute = path.startsWith('/') || path.startsWith('~/');
+    const query = absolute ? path : `${(cwd || '').replace(/\/+$/, '')}/${path}`;
+    const key = `${pane}|${query}`;
+    let info = statCache.get(key);
+    if (!info) {
+      try {
+        info = await lookup(pane, query);
+        statCache.set(key, info);
+      } catch (_error) {
+        return;
+      }
+    }
+    if (card && !card.hidden && card.__link !== link) return;
+    const panel = ensureCard();
+    panel.__link = link;
+    panel.__target = {path: info.path || query, pane, options, exists: info.exists,
+      previewable: TEXT_EXT.test(info.path || query)};
+    panel.querySelector('.plink-card-name').textContent = info.name || path;
+    panel.querySelector('.plink-card-meta').textContent = !info.exists ? '找不到这个路径'
+      : info.kind === 'dir' ? '目录'
+      : `${info.kind === 'link' ? '符号链接 · ' : ''}${human(info.size)}`;
+    const preview = panel.querySelector('[data-plink-act="preview"]');
+    if (preview) {
+      const canPreview = info.exists && info.kind !== 'dir' && TEXT_EXT.test(info.path || query);
+      preview.hidden = !canPreview;
+      preview.textContent = canPreview ? '预览' : '打开';
+      if (info.exists && info.kind === 'dir') { preview.hidden = false; preview.textContent = '打开目录'; }
+    }
+    placeCard(link);
+  }
+
+  function human(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
   }
 
   function enhance(root, options) {
@@ -175,5 +302,5 @@
     return true;
   }
 
-  window.TmuxPaths = {enhance, rawHref, lookup, activateAt};
+  window.TmuxPaths = {enhance, rawHref, lookup, activateAt, downloadHref, hideCard};
 })();

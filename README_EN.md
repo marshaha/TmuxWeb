@@ -131,6 +131,10 @@ console and `/preview`, and usable on any subtree:
 - **lazy**: nothing is scanned at render time — a message is processed when the pointer enters it,
   a finger touches it or it receives focus, and the result is marked with `data-paths`. On touch the
   freshly created link is opened by the same gesture, so one tap is enough.
+- **hover card**: resting the pointer on a path for ~0.4s shows the file name, its size (or "directory")
+  and 预览 / 下载 buttons. Text-like files (`log`, `txt`, `json`, `yaml`, `csv`, source) open in the
+  viewer (which has its own download button) instead of downloading silently; binaries still download.
+  The card is not shown on touch devices.
 
 ### Attaching files from the chat composer
 

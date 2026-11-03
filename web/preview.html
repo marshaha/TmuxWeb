@@ -274,6 +274,7 @@ function enhancePaths(root){
     onDir:path=>toast(`目录：${path}`),
     onFile:path=>downloadPath(path),
     onMd:path=>downloadPath(path),
+    onPreview:path=>downloadPath(path),
     onMissing:path=>toast(`找不到：${path}`),
     onError:message=>toast(message),
   });
