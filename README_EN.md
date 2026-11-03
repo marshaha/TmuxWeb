@@ -21,6 +21,11 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Cross-server relay**: an agent in any pane can ask an agent pane on another host and receive its answer through the HTTP API or `relay_client.py`.
 - **Remote rendering performance**: SSH connection multiplexing, remote content digests, idle backoff — and non-ASCII pane titles no longer arrive as `_`.
 - **File panel**: browse the selected pane's working directory in the sidebar (enter/leave folders, scroll), download with a click and upload by drag-and-drop, on localhost and over SSH alike.
+- **File panel: rename and delete**: pick one entry and the toolbar shows 重命名 (renames inside the same directory,
+  never overwrites); pick one or more and it shows 删除 (a non-empty directory needs the "remove its contents too"
+  checkbox). Desktop can right-click and a phone can long-press (520 ms) for the same menu
+  (open / download / rename / delete); `F2` renames and `Delete` deletes from the keyboard. Backed by
+  `POST /api/panes/<pane>/files/rename` and `/files/delete`, which refuse `/`, `$HOME` and top-level directories.
 - **Wide tables cannot blow up a bubble**: markdown tables live in a `.table-holder` that scrolls sideways (keeping
   natural column widths instead of squeezing every cell into one character per line), and the bubble itself is
   `max-width:min(92%,820px)` + `overflow-x:clip`, so wide content can never widen it. The per-message

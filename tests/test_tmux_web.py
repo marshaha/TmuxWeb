@@ -1125,7 +1125,8 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("filesPane:null", response.text)
         self.assertIn("state.filesPane&&state.filesPane!==id", response.text)
         self.assertIn("state.filesPane===state.selected?state.filesPath:null", response.text)
-        self.assertIn("pane!==state.selected)return", response.text)
+        # 目录列表请求带序号：后发的赢，快速切目录不会被慢响应覆盖
+        self.assertIn("pane!==state.selected||seq!==state.filesSeq)return", response.text)
         # the path bar names the machine the listing came from
         self.assertIn('id="file-host"', response.text)
 
@@ -1179,8 +1180,8 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn('id="file-download"', response.text)
         self.assertIn('<symbol id="i-download"', response.text)
         self.assertIn("$('file-download').onclick", response.text)
-        # definition + footer button + toolbar button (which has two call sites)
-        self.assertEqual(response.text.count("downloadArchive("), 4)
+        # definition + footer button + toolbar button (two call sites) + 右键/长按菜单
+        self.assertEqual(response.text.count("downloadArchive("), 5)
         self.assertIn("/files/zip", response.text)
         self.assertIn("function syncFileSelection()", response.text)
 
@@ -1922,6 +1923,67 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("/files/download?path=", shared)
         self.assertIn("method: 'DELETE'", shared)
         self.assertEqual(self.client.get("/assets/composer-files.css").status_code, 200)
+
+    def test_file_panel_can_rename_and_delete(self):
+        """文件面板的删除/重命名：目录内改名、不覆盖同名、非空目录要显式递归、护栏挡住家目录。"""
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            Path(directory, "notes.md").write_text("hi")
+            Path(directory, "other.md").write_text("x")
+            Path(directory, "empty").mkdir()
+            Path(directory, "full").mkdir()
+            Path(directory, "full", "inner.txt").write_text("deep")
+            endpoint = "/api/panes/%254/files/rename"
+
+            renamed = self.client.post(endpoint, json={"path": f"{directory}/notes.md", "name": "readme.md"})
+            self.assertEqual(renamed.status_code, 200, renamed.text)
+            self.assertEqual(renamed.json()["path"], f"{directory}/readme.md")
+            self.assertTrue(Path(directory, "readme.md").exists())
+
+            clash = self.client.post(endpoint, json={"path": f"{directory}/readme.md", "name": "other.md"})
+            self.assertEqual(clash.status_code, 409)
+            self.assertTrue(Path(directory, "other.md").exists())
+            self.assertTrue(Path(directory, "readme.md").exists())
+
+            traversal = self.client.post(endpoint, json={"path": f"{directory}/readme.md", "name": "../evil"})
+            self.assertEqual(traversal.status_code, 422)
+            missing = self.client.post(endpoint, json={"path": f"{directory}/nope.md", "name": "x.md"})
+            self.assertEqual(missing.status_code, 409)
+
+            delete = "/api/panes/%254/files/delete"
+            self.assertEqual(self.client.post(delete, json={"paths": [f"{directory}/readme.md"]}).status_code, 200)
+            self.assertFalse(Path(directory, "readme.md").exists())
+            self.assertEqual(self.client.post(delete, json={"paths": [f"{directory}/empty"]}).status_code, 200)
+            self.assertFalse(Path(directory, "empty").exists())
+
+            refused = self.client.post(delete, json={"paths": [f"{directory}/full"]})
+            self.assertEqual(refused.status_code, 409)
+            self.assertIn("递归", refused.json()["detail"])
+            forced = self.client.post(delete, json={"paths": [f"{directory}/full"], "recursive": True})
+            self.assertEqual(forced.status_code, 200, forced.text)
+            self.assertFalse(Path(directory, "full").exists())
+
+            # 护栏：家目录 / 顶层目录不许动
+            self.assertEqual(self.client.post(delete, json={"paths": [os.path.expanduser("~")]}).status_code, 422)
+            self.assertEqual(self.client.post(delete, json={"paths": ["/tmp"]}).status_code, 422)
+            self.assertEqual(self.client.post(delete, json={"paths": []}).status_code, 422)
+            guest = TestClient(create_app(self.tmux, password="unit-test-admin-password",
+                                           session_secret="test-secret", terminal_factory=self.terminals,
+                                           remote_store=self.remote_store, home_db=":memory:"))
+            self.assertEqual(guest.post(endpoint, json={"path": "/tmp/x", "name": "y"}).status_code, 401)
+            self.assertEqual(guest.post(delete, json={"paths": ["/tmp/x"]}).status_code, 401)
+
+    def test_file_panel_exposes_rename_and_delete_controls(self):
+        """面板里的入口：选中栏按钮、右键/长按菜单、F2 与 Delete 键。"""
+        self.login()
+        page = self.client.get("/").text
+        for marker in ('id="file-rename"', 'id="file-delete"', 'id="file-dialog"', 'id="file-menu"',
+                       'id="fd-input"', 'id="fd-recursive"', "fileDialog(options)", "function renameFile(path)",
+                       "async function deleteFiles(paths)", "function setupFileMenu()",
+                       "/files/rename`", "/files/delete`", "contextmenu", "event.pointerType==='mouse'",
+                       "520)", "event.key==='F2'", "symbol id=\"i-trash\""):
+            self.assertIn(marker, page)
 
     def test_chat_paths_can_be_looked_up_before_opening(self):
         """聊天气泡里的路径：先问服务器这是目录还是文件，再决定打开面板/下载/预览。"""

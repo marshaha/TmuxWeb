@@ -1696,6 +1696,46 @@ class SSHRunner:
             detail = completed.stderr.decode(errors="replace").strip()
             raise RuntimeError(detail or "remote file could not be removed")
 
+    def rename_path(self, path: str, new_name: str) -> str:
+        """Rename in place on the remote host: one shell test, then ``mv -n`` semantics."""
+        if "\x00" in path or "\x00" in new_name or "\n" in new_name:
+            raise ValueError("invalid path")
+        name = new_name.strip()
+        if not name or name in {".", ".."} or "/" in name or "\\" in name:
+            raise ValueError("invalid file name")
+        target = f"{path.rstrip('/').rsplit('/', 1)[0]}/{name}" if "/" in path.rstrip("/") else name
+        script = (
+            f"src={shlex.quote(path)}; dst={shlex.quote(target)}; "
+            'if [ ! -e "$src" ] && [ ! -L "$src" ]; then echo "路径不存在" >&2; exit 3; fi; '
+            'if [ -e "$dst" ] || [ -L "$dst" ]; then echo "同名文件已存在" >&2; exit 4; fi; '
+            'mv -- "$src" "$dst"'
+        )
+        completed = self.run(script, timeout=60)
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(errors="replace").strip()
+            raise RuntimeError(detail or "remote rename failed")
+        return target
+
+    def delete_path(self, path: str, recursive: bool = False) -> str:
+        """Delete a remote file/symlink, or a directory (recursively only when asked)."""
+        if "\x00" in path or "\n" in path:
+            raise ValueError("invalid path")
+        if recursive:
+            script = f"rm -rf -- {shlex.quote(path)}"
+        else:
+            script = (
+                f"target={shlex.quote(path)}; "
+                'if [ -L "$target" ] || [ -f "$target" ]; then rm -f -- "$target"; '
+                'elif [ -d "$target" ]; then rmdir -- "$target" 2>/dev/null '
+                '|| { echo "目录不是空的，需要确认递归删除" >&2; exit 5; }; '
+                'else echo "路径不存在" >&2; exit 3; fi'
+            )
+        completed = self.run(script, timeout=120)
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(errors="replace").strip()
+            raise RuntimeError(detail or "remote delete failed")
+        return path
+
     def capture(self, pane_id: str, history: int = 5000, pane: dict | None = None) -> str:
         return ANSI_RE.sub("", self.capture_ansi(pane_id, history))
 

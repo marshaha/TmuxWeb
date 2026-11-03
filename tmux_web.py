@@ -322,6 +322,18 @@ class TmuxBackend:
         if resolved.is_file() or resolved.is_symlink():
             resolved.unlink()
 
+    def rename_path(self, path: str, new_name: str) -> str:
+        try:
+            return file_browser.rename_path(path, new_name)
+        except (file_browser.FileBrowserError, OSError, ValueError) as exc:
+            raise TmuxError(str(exc)) from exc
+
+    def delete_path(self, path: str, recursive: bool = False) -> str:
+        try:
+            return file_browser.remove_path(path, recursive)
+        except (file_browser.FileBrowserError, OSError, ValueError) as exc:
+            raise TmuxError(str(exc)) from exc
+
     def send_key(self, pane_id: str, key: str, pane: dict | None = None) -> None:
         if pane is None:
             self.validate_pane(pane_id)
@@ -365,8 +377,28 @@ def interrupt_key(provider: str | None) -> str:
     return "C-q" if provider == "hermes" else "Escape"
 
 
+def guard_panel_path(path: str) -> str:
+    """File-panel deletes and renames must not aim at a root, home, or a top-level dir."""
+    cleaned = os.path.normpath(os.path.expanduser(str(path or "").strip()))
+    if cleaned in {"", os.sep} or cleaned == os.path.expanduser("~"):
+        raise ValueError("拒绝操作文件系统根目录或整个家目录")
+    if cleaned.count(os.sep) < 2:
+        raise ValueError("路径范围太大，拒绝操作")
+    return cleaned
+
+
 class KeyRequest(BaseModel):
     key: str = Field(min_length=1, max_length=16)
+
+
+class FileRenameRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+    name: str = Field(min_length=1, max_length=255)
+
+
+class FileDeleteRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=200)
+    recursive: bool = False
 
 
 class ShareCreateRequest(BaseModel):
@@ -2498,6 +2530,55 @@ def create_app(
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"status": "deleted", "path": target}
+
+    @app.post("/api/panes/{pane_id}/files/rename")
+    async def rename_pane_file(request: Request, pane_id: str, payload: FileRenameRequest):
+        """Rename one entry inside its own directory (no moves, never overwrites)."""
+        require_auth(request)
+        try:
+            source = guard_panel_path(payload.path)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        name = payload.name.strip()
+        if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+            raise HTTPException(status_code=422, detail="invalid file name")
+        try:
+            transport, _actual, _pane = await file_target(pane_id)
+            target = await asyncio.to_thread(transport.rename_path, source, name)
+        except HTTPException:
+            raise
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"status": "renamed", "path": target, "name": name}
+
+    @app.post("/api/panes/{pane_id}/files/delete")
+    async def delete_pane_files(request: Request, pane_id: str, payload: FileDeleteRequest):
+        """Delete selected entries; a non-empty directory needs ``recursive``."""
+        require_auth(request)
+        wanted: list[str] = []
+        for raw in payload.paths:
+            try:
+                wanted.append(guard_panel_path(raw))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            transport, _actual, _pane = await file_target(pane_id)
+        except HTTPException:
+            raise
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        deleted: list[str] = []
+        failed: list[dict] = []
+        for target in wanted:
+            try:
+                await asyncio.to_thread(transport.delete_path, target, payload.recursive)
+                deleted.append(target)
+            except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+                failed.append({"path": target, "error": str(exc)})
+        if not deleted and failed:
+            raise HTTPException(status_code=409, detail=failed[0]["error"])
+        return {"status": "deleted" if not failed else "partial",
+                "deleted": deleted, "failed": failed}
 
     def host_label(pane_id: str) -> str:
         try:

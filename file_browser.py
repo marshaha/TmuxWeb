@@ -12,6 +12,7 @@ interpreter can execute the uploaded copy.
 import io
 import json
 import os
+import shutil
 import stat
 import sys
 import tarfile
@@ -49,6 +50,47 @@ def resolve_path(relative, base=None):
             raise FileBrowserError("relative path without a base directory")
         path = Path(check_path(base)).expanduser() / path
     return path
+
+
+def check_name(value):
+    """A single path component: no separators, no traversal, nothing empty."""
+    name = check_path(value).strip()
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise FileBrowserError("文件名不合法")
+    return name
+
+
+def rename_path(path, new_name, base=None):
+    """Rename inside the same directory; never overwrites an existing target."""
+    source = resolve_path(path, base)
+    name = check_name(new_name)
+    if not source.exists() and not source.is_symlink():
+        raise FileBrowserError("路径不存在")
+    target = source.with_name(name)
+    if target == source:
+        return str(source)
+    if target.exists() or target.is_symlink():
+        raise FileBrowserError("同名文件已存在")
+    source.rename(target)
+    return str(target)
+
+
+def remove_path(path, recursive=False, base=None):
+    """Delete a file, a symlink, or a directory (only recursively when asked)."""
+    target = resolve_path(path, base)
+    if target.is_symlink() or target.is_file():
+        target.unlink()
+        return str(target)
+    if not target.is_dir():
+        raise FileBrowserError("路径不存在")
+    if recursive:
+        shutil.rmtree(target)
+    else:
+        try:
+            target.rmdir()
+        except OSError as exc:
+            raise FileBrowserError("目录不是空的，需要确认递归删除") from exc
+    return str(target)
 
 
 def _entry(directory, name):

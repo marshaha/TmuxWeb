@@ -181,7 +181,44 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
       .side-foot{padding:10px 12px calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))}
       .recent{padding-bottom:calc(6px + env(safe-area-inset-bottom))}
     }
-  </style>
+  
+    /* 文件面板：重命名 / 删除（对话框 + 右键菜单） */
+    .chip-btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 42%,var(--line))}
+    .chip-btn.danger:hover{background:color-mix(in srgb,var(--danger) 12%,var(--card))}
+    .file-dialog{position:fixed;inset:0;z-index:94;display:flex;align-items:center;justify-content:center;padding:20px;
+      background:rgba(12,10,9,.42);opacity:0;transition:opacity .14s ease}
+    .file-dialog[hidden]{display:none}
+    .file-dialog.on{opacity:1}
+    .fd-card{width:100%;max-width:360px;background:var(--card);color:var(--ink);border:1px solid var(--line);
+      border-radius:14px;padding:16px;box-shadow:var(--shadow)}
+    .fd-title{font-size:13px;font-weight:600}
+    .fd-msg{margin-top:6px;font-size:11.5px;line-height:1.55;color:var(--muted);overflow-wrap:anywhere}
+    .fd-msg strong{color:var(--ink);font-weight:600}
+    .fd-warn{display:block;margin-top:4px;color:var(--danger)}
+    .fd-input{margin-top:10px;width:100%;height:34px;padding:0 10px;border:1px solid var(--line);border-radius:9px;
+      background:var(--surface2);color:var(--ink);font:12.5px inherit}
+    .fd-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 22%,transparent)}
+    .fd-check{display:flex;align-items:center;gap:7px;margin-top:10px;font-size:11.5px;color:var(--ink)}
+    .fd-check[hidden]{display:none}
+    .fd-actions{display:flex;gap:10px;margin-top:14px}
+    .fd-actions .dl-btn{flex:1;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--card);
+      color:var(--ink);font:12.5px inherit;cursor:pointer}
+    .fd-actions .dl-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+    .fd-actions .dl-btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+    .fd-actions .dl-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .file-menu{position:fixed;z-index:95;min-width:132px;padding:5px;border:1px solid var(--line);border-radius:10px;
+      background:var(--card);color:var(--ink);box-shadow:var(--shadow);font-size:12px}
+    .file-menu[hidden]{display:none}
+    .file-menu button{display:block;width:100%;height:28px;padding:0 9px;border:0;border-radius:7px;background:none;
+      color:var(--ink);font:12px inherit;text-align:left;cursor:pointer}
+    .file-menu button:hover{background:var(--card-hover)}
+    .file-menu button.danger{color:var(--danger)}
+    .file-menu .fm-sep{height:1px;margin:4px 6px;background:var(--line)}
+    @media(max-width:760px){.file-menu button{height:34px;font-size:13.5px}
+      /* iOS 会自动放大 <16px 的输入框，重命名输入框必须 16px */
+      .fd-input{height:40px;font-size:16px}.fd-actions .dl-btn{height:40px;font-size:14px}
+      .file-dialog{padding:16px;align-items:flex-end}.fd-card{max-width:none;border-radius:16px 16px 14px 14px}}
+</style>
 <link rel="stylesheet" href="/assets/recents.css">
 <link rel="stylesheet" href="/assets/path-links.css">
 <link rel="stylesheet" href="/assets/composer-files.css">
@@ -226,6 +263,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     <symbol id="i-parent" viewBox="0 0 24 24"><path d="M9.5 14.5 4.5 9.5l5-5M4.5 9.5h9.7a5.3 5.3 0 0 1 0 10.6H8.2"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.8v11.4M12 15.2l4.2-4.2M12 15.2 7.8 11"/><path d="M4.5 19.6h15"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="1.9" y="5.7" width="14.6" height="17.1" rx="2.7"/><path d="M8.4 5.7V3.9A2.7 2.7 0 0 1 11.1 1.2h8.4a2.7 2.7 0 0 1 2.7 2.7v11.3a2.7 2.7 0 0 1-2.7 2.7h-3.3"/></g></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.8 6.9h14.4"/><path d="M9.4 6.9V5.2c0-.7.6-1.3 1.3-1.3h2.6c.7 0 1.3.6 1.3 1.3v1.7"/><path d="M6.7 6.9l.8 12.1c0 .8.7 1.4 1.5 1.4h6c.8 0 1.5-.6 1.5-1.4l.8-12.1"/><path d="M10.6 10.5v6M13.4 10.5v6"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
     <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="M20.4 11.6 12 20a5.2 5.2 0 0 1-7.4-7.4l8.9-8.9a3.5 3.5 0 0 1 4.9 5l-8.9 8.9a1.8 1.8 0 0 1-2.5-2.5l8.2-8.2"/></symbol>
     <symbol id="i-select" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><path d="M8 12.3l2.8 2.7L16.2 9"/></symbol>
@@ -251,7 +289,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   <aside class="sidebar" id="sidebar">
     <header class="brand"><div><div class="brand-name">Tmux Chat</div><div class="brand-sub">本机实时会话</div></div><div class="brand-actions"><a class="icon-btn" href="/home" title="主页（收藏与看板）" aria-label="主页" style="text-decoration:none"><svg class="ico"><use href="#i-home"/></svg></a><a class="icon-btn" href="/grid" title="多窗口（几个会话并排）" aria-label="多窗口" style="text-decoration:none"><svg class="ico"><use href="#i-grid"/></svg></a><button class="icon-btn" id="files-toggle" title="文件（当前 pane 目录）" aria-label="文件"><svg class="ico"><use href="#i-folder"/></svg></button><a class="icon-btn" href="/hosts" title="远程主机" aria-label="远程主机" style="text-decoration:none"><svg class="ico"><use href="#i-server"/></svg></a><a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享" style="text-decoration:none"><svg class="ico"><use href="#i-external"/></svg></a><button class="icon-btn" id="refresh" title="刷新窗口" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button><button class="icon-btn" id="sidebar-close" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-chevron-left"/></svg></button></div></header>
     <div class="tree-tools"><span class="tree-tools-label">会话</span><button class="tree-tool" id="tree-expand" type="button" title="展开全部" aria-label="展开全部"><svg class="ico"><use href="#i-tree-open"/></svg></button><button class="tree-tool" id="tree-collapse" type="button" title="折叠全部" aria-label="折叠全部"><svg class="ico"><use href="#i-tree-close"/></svg></button></div><nav class="pane-list" id="pane-list" aria-label="Tmux panes"></nav>
-<nav class="file-panel" id="file-panel" hidden aria-label="Pane files"><div class="file-bar"><input class="file-path" id="file-path" type="text" spellcheck="false" autocomplete="off" aria-label="当前路径，可直接修改" title=""><button class="icon-btn" id="file-download" title="打包下载当前目录" aria-label="打包下载"><svg class="ico"><use href="#i-download"/></svg></button><label class="icon-btn file-upload" id="file-choose" title="上传文件" aria-label="上传文件"><svg class="ico"><use href="#i-upload"/></svg><input type="file" id="file-input" multiple></label><button class="icon-btn" id="file-reload" title="刷新" aria-label="刷新目录"><svg class="ico"><use href="#i-refresh"/></svg></button><button class="icon-btn" id="file-close" title="隐藏文件面板" aria-label="隐藏文件面板"><svg class="ico"><use href="#i-close"/></svg></button></div><div class="file-list" id="file-list"></div><div class="file-foot"><span class="file-host" id="file-host" title="当前主机" hidden></span><span id="file-status">拖拽文件到此处上传</span><span class="file-actions" id="file-actions"><button class="chip-btn" id="file-pick-all" type="button" hidden>全选</button><button class="chip-btn" id="file-pick-none" type="button" hidden>清空</button><button class="chip-btn primary" id="file-zip" type="button" hidden>下载 zip</button></span></div></nav>
+<nav class="file-panel" id="file-panel" hidden aria-label="Pane files"><div class="file-bar"><input class="file-path" id="file-path" type="text" spellcheck="false" autocomplete="off" aria-label="当前路径，可直接修改" title=""><button class="icon-btn" id="file-download" title="打包下载当前目录" aria-label="打包下载"><svg class="ico"><use href="#i-download"/></svg></button><label class="icon-btn file-upload" id="file-choose" title="上传文件" aria-label="上传文件"><svg class="ico"><use href="#i-upload"/></svg><input type="file" id="file-input" multiple></label><button class="icon-btn" id="file-reload" title="刷新" aria-label="刷新目录"><svg class="ico"><use href="#i-refresh"/></svg></button><button class="icon-btn" id="file-close" title="隐藏文件面板" aria-label="隐藏文件面板"><svg class="ico"><use href="#i-close"/></svg></button></div><div class="file-list" id="file-list"></div><div class="file-foot"><span class="file-host" id="file-host" title="当前主机" hidden></span><span id="file-status">拖拽文件到此处上传</span><span class="file-actions" id="file-actions"><button class="chip-btn" id="file-pick-all" type="button" hidden>全选</button><button class="chip-btn" id="file-pick-none" type="button" hidden>清空</button><button class="chip-btn" id="file-rename" type="button" hidden>重命名</button><button class="chip-btn danger" id="file-delete" type="button" hidden>删除</button><button class="chip-btn primary" id="file-zip" type="button" hidden>下载 zip</button></span></div></nav>
     <footer class="side-foot"><span id="pane-count">0 panes</span><span style="display:flex;align-items:center;gap:6px"><button class="chip-btn" id="settings-open" type="button" title="设置：改密码、导入导出、退出登录"><svg class="ico"><use href="#i-gear"/></svg>设置</button></span></footer>
     <div class="side-resizer" id="side-resizer" title="拖动调整侧边栏宽度（双击恢复默认）"></div>
   </aside>
@@ -411,11 +449,11 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     }catch{}
   }
   function syncFilesPanel(){const panel=$('file-panel');panel.hidden=!state.filesMode;$('pane-list').hidden=state.filesMode;$('files-toggle').classList.toggle('active',state.filesMode);$('files-toggle').title=state.filesMode?'隐藏文件面板':'显示文件面板';if(!state.filesMode){setFileStatus('');}writeFilesView();}
-  async function openFiles(path){if(!state.selected){setFileStatus('先选择一个 pane');return;}state.filesMode=true;syncFilesPanel();setFileStatus('读取目录…');const query=[`hidden=${state.filesHidden?1:0}`];if(path)query.push(`path=${encodeURIComponent(path)}`);const pane=state.selected;try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/files?${query.join('&')}`);if(!state.filesMode||pane!==state.selected)return;state.filesPane=pane;state.filesData=d;state.filesPath=d.path;state.filesPicked.clear();writeFilesView();showPath(d.path);syncFileSelection();const owner=state.hosts.find(h=>(h.panes||[]).some(x=>x.id===pane));$('file-host').textContent=owner?owner.name:pane.includes('~')?'remote':'localhost';$('file-host').hidden=false;renderFiles();syncFileSelection();setFileStatus(`${d.entries.length} 项${d.truncated?'（已截断）':''} · 拖拽文件可上传`);}catch(e){setFileStatus(e.message);}}
+  async function openFiles(path){if(!state.selected){setFileStatus('先选择一个 pane');return;}state.filesMode=true;syncFilesPanel();setFileStatus('读取目录…');const query=[`hidden=${state.filesHidden?1:0}`];if(path)query.push(`path=${encodeURIComponent(path)}`);const pane=state.selected;const seq=(state.filesSeq||0)+1;state.filesSeq=seq;try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/files?${query.join('&')}`);if(!state.filesMode||pane!==state.selected||seq!==state.filesSeq)return;state.filesPane=pane;state.filesData=d;state.filesPath=d.path;state.filesPicked.clear();writeFilesView();showPath(d.path);syncFileSelection();const owner=state.hosts.find(h=>(h.panes||[]).some(x=>x.id===pane));$('file-host').textContent=owner?owner.name:pane.includes('~')?'remote':'localhost';$('file-host').hidden=false;renderFiles();syncFileSelection();setFileStatus(`${d.entries.length} 项${d.truncated?'（已截断）':''} · 拖拽文件可上传`);}catch(e){setFileStatus(e.message);}}
   function showPath(path){const field=$('file-path');field.value=path||'';field.title=path||'';field.scrollLeft=field.scrollWidth;}
   function togglePick(path){if(!path)return;if(state.filesPicked.has(path))state.filesPicked.delete(path);else state.filesPicked.add(path);state.filesAnchor=path;syncFileSelection();}
   function selectRange(path){const entries=(state.filesData&&state.filesData.entries)||[];const order=entries.map(entry=>entry.path);const anchor=order.indexOf(state.filesAnchor);const target=order.indexOf(path);if(anchor<0||target<0){togglePick(path);return;}const [from,to]=anchor<target?[anchor,target]:[target,anchor];for(let index=from;index<=to;index+=1)state.filesPicked.add(order[index]);state.filesAnchor=path;syncFileSelection();}
-  function syncFileSelection(){const picked=state.filesPicked;const download=$('file-download');if(download)download.title=picked.size?`打包下载选中的 ${picked.size} 项`:'打包下载当前目录';const total=((state.filesData&&state.filesData.entries)||[]).length;const all=total>0&&picked.size===total;$('file-pick-all').hidden=!picked.size;$('file-pick-all').textContent=all?'取消全选':'全选';$('file-pick-none').hidden=!picked.size||all;$('file-zip').hidden=!picked.size;const zip=$('file-zip');if(zip){zip.disabled=!picked.size;zip.textContent=picked.size?`下载 zip (${picked.size})`:'下载 zip';}document.querySelectorAll('.file-row[data-entry]').forEach(row=>{const on=picked.has(row.dataset.entry);row.classList.toggle('picked',on);const box=row.querySelector('.file-check');if(box)box.checked=on;});}
+  function syncFileSelection(){const picked=state.filesPicked;const download=$('file-download');if(download)download.title=picked.size?`打包下载选中的 ${picked.size} 项`:'打包下载当前目录';const total=((state.filesData&&state.filesData.entries)||[]).length;const all=total>0&&picked.size===total;$('file-pick-all').hidden=!picked.size;$('file-pick-all').textContent=all?'取消全选':'全选';$('file-pick-none').hidden=!picked.size||all;$('file-zip').hidden=!picked.size;const renameBtn=$('file-rename');if(renameBtn)renameBtn.hidden=picked.size!==1;const deleteBtn=$('file-delete');if(deleteBtn)deleteBtn.hidden=!picked.size;const zip=$('file-zip');if(zip){zip.disabled=!picked.size;zip.textContent=picked.size?`下载 zip (${picked.size})`:'下载 zip';}document.querySelectorAll('.file-row[data-entry]').forEach(row=>{const on=picked.has(row.dataset.entry);row.classList.toggle('picked',on);const box=row.querySelector('.file-check');if(box)box.checked=on;});}
   function renderFiles(){const data=state.filesData;if(!data)return;$('file-list').innerHTML=(data.parent?`<button class="file-row" data-dir="${esc(data.parent)}"><span class="file-icon dir"><svg class="ico"><use href="#i-parent"/></svg></span><span class="file-name dir">..</span></button>`:'')+data.entries.map(entry=>{const isDir=entry.type==='dir';return `<button class="file-row${state.filesPicked.has(entry.path)?' picked':''}" data-entry="${esc(entry.path)}" data-type="${esc(entry.type)}"><input class="file-check" type="checkbox" tabindex="-1" aria-label="选择 ${esc(entry.name)}"><span class="file-icon${isDir?' dir':''}"><svg class="ico"><use href="#i-${isDir?'folder':(entry.type==='link'?'link':'file')}"/></svg></span><span class="file-name${isDir?' dir':''}">${esc(entry.name)}</span><span class="file-meta">${isDir?'':formatSize(entry.size)}</span></button>`;}).join('');}
   function downloadFile(path){const href=`/api/panes/${encodeURIComponent(state.selected)}/files/download?path=${encodeURIComponent(path)}`;
     const name=String(path||'').split('/').filter(Boolean).pop()||'文件';
@@ -424,6 +462,163 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     setFileStatus(`下载 ${name}`);return ask;}
   async function downloadArchive(paths,label){if(!paths.length||!state.selected)return;const button=$('file-zip');if(button)button.disabled=true;setFileStatus(`打包 ${label}…`);try{const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/zip`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base:state.filesPath||'',paths:paths})});if(!response.ok){let detail=`HTTP ${response.status}`;try{detail=(await response.json()).detail||detail;}catch{}throw new Error(detail);}const blob=await response.blob();const stem=((state.filesPath||'files').split('/').filter(Boolean).pop())||'files';const url=URL.createObjectURL(blob);TmuxDownload.maybe(url,{name:`${stem}.zip`,meta:formatSize(blob.size)});setTimeout(()=>URL.revokeObjectURL(url),60000);setFileStatus(`已打包 ${label} · ${formatSize(blob.size)}`);}catch(e){setFileStatus(`打包失败：${e.message}`);}finally{if(button)button.disabled=false;syncFileSelection();}}
   async function uploadFiles(files,directory){if(!files.length||!state.selected)return;for(const file of files){setFileStatus(`上传 ${file.name}…`);try{const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/upload?dir=${encodeURIComponent(directory)}&name=${encodeURIComponent(file.name)}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:file});if(!response.ok){let detail=`HTTP ${response.status}`;try{const parsed=await response.json();detail=parsed.detail||detail;}catch{}throw new Error(detail);}}catch(e){setFileStatus(`${file.name}: ${e.message}`);return;}}setFileStatus(`已上传 ${files.length} 个文件`);openFiles(directory);}
+  // ---- 文件面板：重命名 / 删除 ----
+  function fileBase(path){return String(path||'').split('/').filter(Boolean).pop()||String(path||'');}
+  function fileEntry(path){const entries=(state.filesData&&state.filesData.entries)||[];return entries.find(entry=>entry.path===path)||null;}
+
+  function fileDialog(options){
+    return new Promise(resolve=>{
+      const box=$('file-dialog'),input=$('fd-input'),recRow=$('fd-check'),recBox=$('fd-recursive'),ok=$('fd-ok');
+      $('fd-title').textContent=options.title||'';
+      const names=(options.names||[]).filter(Boolean);
+      $('fd-msg').innerHTML=names.length
+        ? `<strong>${names.map(esc).join('、')}</strong>${options.warning?`<span class="fd-warn">${esc(options.warning)}</span>`:''}`
+        : esc(options.message||'');
+      $('fd-msg').hidden=!options.message && !names.length;
+      input.hidden=!options.input;
+      if(options.input)input.value=options.value||'';
+      recRow.hidden=!options.recursive;
+      recBox.checked=!!options.recursive;
+      ok.textContent=options.confirmLabel||'确定';
+      ok.className='dl-btn '+(options.danger?'danger':'primary');
+      box.hidden=false;requestAnimationFrame(()=>box.classList.add('on'));
+      const finish=accepted=>{
+        box.hidden=true;box.classList.remove('on');
+        box.onclick=null;box.onkeydown=null;ok.onclick=null;
+        box.querySelector('[data-fd="cancel"]').onclick=null;
+        resolve(accepted?{ok:true,value:input.value.trim(),recursive:recBox.checked}:{ok:false});
+      };
+      box.querySelector('[data-fd="cancel"]').onclick=()=>finish(false);
+      ok.onclick=()=>finish(true);
+      box.onclick=event=>{if(event.target===box)finish(false);};
+      box.onkeydown=event=>{
+        if(event.key==='Escape'){event.preventDefault();finish(false);}
+        else if(event.key==='Enter'){event.preventDefault();finish(true);}
+      };
+      setTimeout(()=>{
+        if(options.input){
+          input.focus();
+          const dot=input.value.lastIndexOf('.');           // 只选主名，扩展名留着
+          const end=dot>0?dot:input.value.length;
+          try{input.setSelectionRange(0,end);}catch{}
+        }else ok.focus();
+      },30);
+    });
+  }
+
+  async function renameFile(path){
+    if(!path||!state.selected)return false;
+    const before=fileBase(path);
+    const answer=await fileDialog({title:'重命名',message:path,input:true,value:before,confirmLabel:'重命名'});
+    if(!answer.ok)return false;
+    const name=answer.value;
+    if(!name||name===before)return false;
+    try{
+      const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/rename`,{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({path,name})});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(data.detail||`HTTP ${response.status}`);
+      setFileStatus(`已重命名 → ${data.name||name}`);
+      state.filesPicked.delete(path);
+      await openFiles(state.filesPath);
+      return true;
+    }catch(error){setFileStatus(`重命名失败：${error.message}`);return false;}
+  }
+
+  async function deleteFiles(paths){
+    const list=(paths||[]).filter(Boolean);
+    if(!list.length||!state.selected)return false;
+    const entries=list.map(fileEntry);
+    const hasDir=entries.some(entry=>entry&&entry.type==='dir');
+    const names=list.map(fileBase);
+    const preview=names.slice(0,5).join('、')+(names.length>5?` 等 ${names.length} 项`:'');
+    const answer=await fileDialog({title:names.length>1?`删除 ${names.length} 项`:'删除',
+      names:names.length>5?[...names.slice(0,5),`等 ${names.length} 项`]:names,
+      message:names.slice(0,5).join('、'),warning:'删除后无法恢复。',
+      confirmLabel:'删除',danger:true,recursive:hasDir});
+    if(!answer.ok)return false;
+    try{
+      const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/delete`,{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({paths:list,recursive:answer.recursive})});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(data.detail||`HTTP ${response.status}`);
+      setFileStatus(`已删除 ${(data.deleted||[]).length} 项`);
+      list.forEach(path=>state.filesPicked.delete(path));
+      await openFiles(state.filesPath);
+      return true;
+    }catch(error){setFileStatus(`删除失败：${error.message}`);return false;}
+  }
+
+  let fileMenuTarget=null;
+  function hideFileMenu(){const menu=$('file-menu');if(menu)menu.hidden=true;fileMenuTarget=null;}
+  function showFileMenu(x,y,path){
+    const menu=$('file-menu');if(!menu)return;
+    const entry=fileEntry(path)||{type:'file',path,name:fileBase(path)};
+    fileMenuTarget=entry;
+    menu.querySelector('[data-fm="open"]').hidden=entry.type!=='dir';
+    menu.querySelector('[data-fm="download"]').textContent=entry.type==='dir'?'打包下载':'下载';
+    menu.hidden=false;
+    const width=menu.offsetWidth||140,height=menu.offsetHeight||132;
+    menu.style.left=`${Math.round(Math.max(6,Math.min(x,window.innerWidth-width-8)))}px`;
+    menu.style.top=`${Math.round(Math.max(6,Math.min(y,window.innerHeight-height-8)))}px`;
+  }
+
+  function setupFileMenu(){
+    const list=$('file-list'),menu=$('file-menu');
+    if(!list||!menu)return;
+    list.addEventListener('contextmenu',event=>{
+      const row=event.target.closest('.file-row[data-entry]');
+      if(!row)return;
+      event.preventDefault();
+      showFileMenu(event.clientX,event.clientY,row.dataset.entry);
+    });
+    // 触摸：长按 520ms 弹同一个菜单（移动端没有右键）
+    let timer=0,origin=null;
+    list.addEventListener('pointerdown',event=>{
+      if(event.pointerType==='mouse')return;
+      const row=event.target.closest('.file-row[data-entry]');
+      if(!row)return;
+      origin={x:event.clientX,y:event.clientY,path:row.dataset.entry};
+      clearTimeout(timer);
+      timer=setTimeout(()=>{if(origin)showFileMenu(origin.x,origin.y,origin.path);origin=null;},520);
+    },{passive:true});
+    const stop=event=>{
+      if(event.type==='pointermove'&&origin&&Math.hypot(event.clientX-origin.x,event.clientY-origin.y)<8)return;
+      clearTimeout(timer);
+      if(event.type!=='pointermove')origin=null;
+    };
+    ['pointerup','pointercancel','pointermove'].forEach(type=>list.addEventListener(type,stop,{passive:true}));
+    menu.addEventListener('click',event=>{
+      const button=event.target.closest('[data-fm]');
+      if(!button||!fileMenuTarget)return;
+      const entry=fileMenuTarget;
+      hideFileMenu();
+      const action=button.dataset.fm;
+      if(action==='open')openFiles(entry.path);
+      else if(action==='download'){
+        if(entry.type==='dir')downloadArchive([entry.path],entry.name||fileBase(entry.path));
+        else downloadFile(entry.path);
+      }else if(action==='rename')renameFile(entry.path);
+      else if(action==='delete')deleteFiles([entry.path]);
+    });
+    document.addEventListener('pointerdown',event=>{
+      if(!menu.hidden&&!event.target.closest('#file-menu'))hideFileMenu();
+    },true);
+    document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!menu.hidden)hideFileMenu();});
+    list.addEventListener('keydown',event=>{
+      const row=event.target.closest('.file-row[data-entry]');
+      const picked=[...state.filesPicked];
+      const focused=row&&row.dataset.entry;
+      if(event.key==='F2'){
+        const path=picked.length===1?picked[0]:focused;
+        if(path){event.preventDefault();renameFile(path);}
+      }else if(event.key==='Delete'){
+        const paths=picked.length?picked:(focused?[focused]:[]);
+        if(paths.length){event.preventDefault();deleteFiles(paths);}
+      }
+    });
+  }
+
   function setupFiles(){$('files-toggle').onclick=()=>{state.filesMode=!state.filesMode;syncFilesPanel();if(state.filesMode)openFiles(state.filesPane===state.selected?state.filesPath:null);};
     $('file-reload').onclick=()=>{if(state.filesMode)openFiles(state.filesPath);};
     $('file-close').onclick=()=>{state.filesMode=false;syncFilesPanel();};
@@ -433,6 +628,9 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
         $('file-pick-all').onclick=()=>{const entries=(state.filesData&&state.filesData.entries)||[];const all=entries.length>0&&state.filesPicked.size===entries.length;state.filesPicked.clear();if(!all)entries.forEach(entry=>state.filesPicked.add(entry.path));syncFileSelection();};
     $('file-pick-none').onclick=()=>{state.filesPicked.clear();state.filesAnchor=null;syncFileSelection();};
     $('file-zip').onclick=()=>downloadArchive([...state.filesPicked],`${state.filesPicked.size} 项`);
+    $('file-rename').onclick=()=>{const picked=[...state.filesPicked];renameFile(picked[0]||state.filesAnchor||'');};
+    $('file-delete').onclick=()=>deleteFiles([...state.filesPicked]);
+    setupFileMenu();
     $('file-download').onclick=()=>{const picked=[...state.filesPicked];if(picked.length){downloadArchive(picked,`${picked.length} 项`);return;}if(!state.filesPath)return;downloadArchive([state.filesPath],`${state.filesPath.split('/').filter(Boolean).pop()||'目录'}`);};
     $('file-input').onchange=e=>{const files=Array.from(e.target.files||[]);e.target.value='';if(files.length)uploadFiles(files,state.filesPath||'');};
     $('file-list').onclick=e=>{const row=e.target.closest('.file-row');if(!row)return;
@@ -1513,6 +1711,25 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
         <div class="md-body" id="md-body"></div>
       </section>
     </div>
+<div class="file-dialog" id="file-dialog" hidden>
+  <div class="fd-card" role="dialog" aria-modal="true" aria-labelledby="fd-title">
+    <div class="fd-title" id="fd-title"></div>
+    <div class="fd-msg" id="fd-msg"></div>
+    <input class="fd-input" id="fd-input" type="text" spellcheck="false" autocomplete="off" hidden>
+    <label class="fd-check" id="fd-check" hidden><input type="checkbox" id="fd-recursive"> <span>连同目录内容一起删除</span></label>
+    <div class="fd-actions">
+      <button class="dl-btn" type="button" data-fd="cancel">取消</button>
+      <button class="dl-btn primary" type="button" data-fd="ok" id="fd-ok">确定</button>
+    </div>
+  </div>
+</div>
+<div class="file-menu" id="file-menu" role="menu" hidden>
+  <button type="button" data-fm="open">打开</button>
+  <button type="button" data-fm="download">下载</button>
+  <div class="fm-sep"></div>
+  <button type="button" data-fm="rename">重命名</button>
+  <button type="button" data-fm="delete" class="danger">删除</button>
+</div>
 <script src="/assets/plugins-ui.js"></script>
 <script src="/assets/recents.js"></script>
 <script src="/assets/settings.js"></script>
