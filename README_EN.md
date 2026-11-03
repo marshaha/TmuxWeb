@@ -117,6 +117,18 @@ pane was terminated by an external signal (no shutdown log ⇒ SIGKILL/SIGHUP) a
 Pinpointing the sender needs auditd (not installed); the three recorders above plus the auto-restart now make
 both the outage and the blind spot go away.
 
+### Paths in a message are clickable
+
+A post-processing pass (`/assets/path-links.js`) turns path-looking text into links — shared by the
+console and `/preview`, and usable on any subtree:
+
+- recognises `~/x`, `/a/b`, `./x`, `../x` and relative paths with an extension (`results/out.md`);
+- the kind is resolved on click via `GET /api/panes/<pane>/files/stat?path=…` (`~` expanded server-side,
+  relative paths resolved against the pane's cwd), so ordinary prose never becomes a dead link:
+  directory → the file panel navigates there; file → panel jumps to its folder and downloads it;
+  markdown → preview with a download button; missing → a `找不到` hint.
+- text nodes only: `<pre>` blocks, existing links and buttons are left alone; Tab + Enter work.
+
 ### Attaching files from the chat composer
 
 The 「附件」 button sits in the first row **inside** the composer card, separated from the textarea by a

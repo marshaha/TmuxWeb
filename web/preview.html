@@ -84,10 +84,12 @@
     /* iOS zooms the page when a field under 16px takes focus and never zooms back out */
     @media(max-width:760px){input,textarea,select{font-size:16px!important}}
   </style>
+<link rel="stylesheet" href="/assets/path-links.css">
 <link rel="stylesheet" href="/assets/composer-files.css">
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
 <script src="/assets/composer-files.js"></script>
+<script src="/assets/path-links.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -236,6 +238,26 @@ function render(){
         <div class="msg-tools">${clockTime(message.timestamp)?`<span class="msg-time">${clockTime(message.timestamp)}</span>`:''}<button class="copy" data-copy="${esc(message.id)}"><svg class="ico"><use href="#i-copy"/></svg>复制</button></div></div></article>`).join('')
     :'<div class="empty">这个会话还没有消息</div>';
   if(state.stick)requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;});
+  enhancePaths(host);
+}
+
+// 消息里的路径：目录 → 提示去控制台文件面板；文件 → 直接下载；md 也可以下载（这里没有查看器）
+function downloadPath(path){
+  const link=document.createElement('a');
+  link.href=`/api/panes/${encodeURIComponent(pane)}/files/download?path=${encodeURIComponent(path)}`;
+  link.download='';
+  document.body.appendChild(link);link.click();link.remove();
+}
+function enhancePaths(root){
+  if(!root||!window.TmuxPaths||!pane)return;
+  window.TmuxPaths.enhance(root,{
+    pane,cwd:(state.paneInfo&&state.paneInfo.path)||'',
+    onDir:path=>toast(`目录：${path}`),
+    onFile:path=>downloadPath(path),
+    onMd:path=>downloadPath(path),
+    onMissing:path=>toast(`找不到：${path}`),
+    onError:message=>toast(message),
+  });
 }
 
 async function load(info=false){

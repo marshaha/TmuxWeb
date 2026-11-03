@@ -183,10 +183,12 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     }
   </style>
 <link rel="stylesheet" href="/assets/recents.css">
+<link rel="stylesheet" href="/assets/path-links.css">
 <link rel="stylesheet" href="/assets/composer-files.css">
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
 <script src="/assets/composer-files.js"></script>
+<script src="/assets/path-links.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -507,6 +509,21 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     if(!absolute){if(!cwd)return value;path=cwd+'/'+path;}
     if(!state.selected)return value;
     return `/api/panes/${encodeURIComponent(state.selected)}/files/raw?path=${encodeURIComponent(path)}`;}
+  // 消息里的路径（/a/b、~/x、report.md）后处理成链接：目录 → 左侧文件面板，文件 → 下载，
+  // markdown → 预览（带下载按钮）。实现在 /assets/path-links.js。
+  function fileDownloadHref(path){return `/api/panes/${encodeURIComponent(state.selected)}/files/download?path=${encodeURIComponent(path)}`;}
+  function enhancePaths(root){
+    if(!root||!window.TmuxPaths||!state.selected)return;
+    const cwd=panePathOf(state.selected)||'';
+    window.TmuxPaths.enhance(root,{
+      pane:state.selected,cwd,
+      onDir:path=>{openFiles(path);},
+      onFile:path=>{const dir=path.replace(/[^/]*$/,'')||path;openFiles(dir);downloadFile(path);},
+      onMd:path=>openMarkdownViewer(`/api/panes/${encodeURIComponent(state.selected)}/files/raw?path=${encodeURIComponent(path)}`,path.split('/').pop()),
+      onMissing:path=>showError(`找不到：${path}`),
+      onError:message=>showError(message),
+    });
+  }
   function rewriteLocalLinks(root,baseCwd){if(!root)return;
     root.querySelectorAll('a[href]').forEach(link=>{const href=link.getAttribute('href')||'';
       const next=fileLinkHref(href,baseCwd);if(next===href)return;
@@ -537,6 +554,9 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     $('md-title').textContent=title||markdownViewerName(href);
     $('md-path').textContent='';
     $('md-open').setAttribute('href',href);
+    const path=new URL(href,location.origin).searchParams.get('path')||'';
+    const downloadButton=$('md-download');
+    if(downloadButton&&path)downloadButton.setAttribute('href',fileDownloadHref(path));
     toggle.hidden=false;toggle.textContent='源码';toggle.setAttribute('aria-pressed','false');
     body.className='md-body';body.innerHTML='<p class="md-hint">加载中…</p>';
     viewer.hidden=false;document.body.classList.add('viewer-open');
@@ -760,7 +780,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(canAppend){
       const holder=document.createElement('div');
       holder.innerHTML=messages.slice(rendered.length).map(transcriptBubble).join('');
-      enhanceBlocks(holder);rewriteLocalLinks(holder);
+      enhanceBlocks(holder);rewriteLocalLinks(holder);enhancePaths(holder);
       const fragment=document.createDocumentFragment();
       while(holder.firstChild)fragment.appendChild(holder.firstChild);
       host.appendChild(fragment);
@@ -772,7 +792,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     for(const item of pending){const index=Math.min(messages.length,pendingAnchorIndex(messages,item.pending));slots[index]=slots[index]||[];slots[index].push(item.html);}
     const ordered=messages.map((message,index)=>(slots[index]||[]).join('')+formal[index]).join('')
       +(slots[messages.length]||[]).join('');
-    host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);}
+    host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);enhancePaths(host);}
   const CODE_LANG_RE=/language-([\w+#-]+)/;
   async function copyText(text,button){const value=String(text==null?'':text);let ok=false;
     try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);ok=true;}}catch{}
@@ -1449,6 +1469,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
           <div class="md-title-wrap"><strong id="md-title">文件</strong><span class="md-path" id="md-path"></span></div>
           <div class="md-tools">
             <button class="md-btn" id="md-toggle" type="button" aria-pressed="false">源码</button>
+            <a class="md-btn" id="md-download" download>下载</a>
             <a class="md-btn" id="md-open" target="_blank" rel="noopener noreferrer">新标签打开</a>
             <button class="md-btn" id="md-close" type="button" data-md-close aria-label="关闭">关闭</button>
           </div>

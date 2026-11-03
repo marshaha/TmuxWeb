@@ -1907,6 +1907,49 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("method: 'DELETE'", shared)
         self.assertEqual(self.client.get("/assets/composer-files.css").status_code, 200)
 
+    def test_chat_paths_can_be_looked_up_before_opening(self):
+        """聊天气泡里的路径：先问服务器这是目录还是文件，再决定打开面板/下载/预览。"""
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            Path(directory, "notes.md").write_text("# hi")
+            Path(directory, "sub").mkdir()
+            for path, kind, exists in [(f"{directory}/sub", "dir", True),
+                                       (f"{directory}/notes.md", "file", True),
+                                       (f"{directory}/nope.txt", None, False)]:
+                response = self.client.get("/api/panes/%254/files/stat", params={"path": path})
+                self.assertEqual(response.status_code, 200, response.text)
+                body = response.json()
+                self.assertEqual(body["kind"], kind, path)
+                self.assertEqual(body["exists"], exists, path)
+            # ~ 交给服务端展开，相对路径按 pane 的 cwd 解析
+            self.assertEqual(self.client.get("/api/panes/%254/files/stat",
+                                             params={"path": "notes.md"}).json()["name"], "notes.md")
+            self.assertEqual(self.client.get("/api/panes/%254/files/stat",
+                                             params={"path": "~/definitely-missing"}).json()["exists"], False)
+            self.assertEqual(self.client.get("/api/panes/%254/files/stat", params={"path": ""}).status_code, 422)
+
+    def test_chat_messages_turn_paths_into_links(self):
+        """独立的路径后处理：/assets/path-links.js，控制台和 /preview 都用它。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn('/assets/path-links.css', page)
+        self.assertIn('/assets/path-links.js', page)
+        self.assertIn("function enhancePaths(root){", page)
+        self.assertIn("onDir:path=>{openFiles(path);}", page)
+        self.assertIn("onMd:path=>openMarkdownViewer(", page)
+        self.assertIn('id="md-download"', page)
+
+        preview = self.client.get("/preview?pane=%251").text
+        self.assertIn('/assets/path-links.js', preview)
+        self.assertIn("function enhancePaths(root){", preview)
+
+        module = self.client.get("/assets/path-links.js").text
+        for marker in ("window.TmuxPaths = {enhance, rawHref, lookup};",
+                       "files/stat?path=", "onDir", "onMd", "onMissing", "dataset.plinkPath"):
+            self.assertIn(marker, module)
+        self.assertEqual(self.client.get("/assets/path-links.css").status_code, 200)
+
     def test_the_embedded_preview_has_the_same_composer(self):
         """多窗口里那一格就是 /preview，不能没有附件（否则行为分叉）。"""
         self.login()

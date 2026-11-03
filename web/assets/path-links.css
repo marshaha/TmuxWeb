@@ -1,0 +1,5 @@
+/* Chat text that mentions a path: dotted underline, click opens the file panel / preview. */
+.plink{color:var(--accent);text-decoration:underline dotted;text-underline-offset:2px;
+  text-decoration-thickness:1px;cursor:pointer;word-break:break-all}
+.plink:hover{background:color-mix(in srgb,var(--accent) 12%,transparent);text-decoration-style:solid}
+.plink:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:3px}
