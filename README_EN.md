@@ -22,7 +22,7 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Remote rendering performance**: SSH connection multiplexing, remote content digests, idle backoff — and non-ASCII pane titles no longer arrive as `_`.
 - **File panel**: browse the selected pane's working directory in the sidebar (enter/leave folders, scroll), download with a click and upload by drag-and-drop, on localhost and over SSH alike.
 - **One short number per window (`#N`)**: shared across hosts (`pane_numbers` in `home.db`, assigned on first sight,
-  never reused), shown in the session tree and in 最近. It is the handle for `?pane=#12`, for the MCP relay
+  never reused), shown in the session tree, in 最近, in the console title bar, in every `/grid` cell header and in `/preview`. It is the handle for `?pane=#12`, for the MCP relay
   (`ask_agent` / `send_agent` / `read_agent` accept `target: "#12"`, and `list_agents` returns `handle`), and for talking
   about a specific agent in prose. A number whose window is gone answers 404 with an explanation instead of resolving to
   somebody else's session.
