@@ -258,6 +258,28 @@ class HomeBoardTests(unittest.TestCase):
         self.assertEqual(store.pins(), [])
         store.close()
 
+    def test_a_pinned_row_shows_the_favorite_name_when_it_has_no_label_of_its_own(self):
+        """钉子区 #6 这种：钉住但没单独改名 → 侧栏要显示收藏处的名字，不要退化成 claude · 0: main · oracle。"""
+        self.favourite("%6")
+        self.client.patch("/api/home/favorites/%256", json={"title": "DDR分析"})
+        self.client.post("/api/home/recent/pin", json={"pane": "%6", "label": ""})
+        row = next(r for r in self.client.get("/api/home/recent?limit=8").json()["recent"]
+                   if r["pane"] == "%6")
+        self.assertEqual(row["label"], "")          # 钉子自己没有名字
+        self.assertEqual(row["title"], "DDR分析")    # 收藏处有
+        self.assertTrue(row["pinned"])
+        # 渲染时的优先级：钉子名字 → 收藏名字 → 自动名
+        script = self.client.get("/assets/recents.js").text
+        self.assertIn("const favorite_name = (entry.title || '').trim();", script)
+        self.assertIn("const label = custom || favorite_name || fallback;", script)
+        # 一个 pane 的“人起的名字”只此一个出口，顶栏也用它
+        self.assertIn("function nameFor(id) {", script)
+        self.assertIn("return (entry.label || '').trim() || (entry.title || '').trim();", script)
+        self.assertIn("nameFor,", script)
+        page = self.client.get("/?pane=%2528").text
+        self.assertIn("TmuxRecents.nameFor(id)", page)
+        self.assertIn("const shownTitle=customName||p.title||p.target;", page)
+
     def test_renaming_a_pin_needs_it_to_be_pinned(self):
         store = __import__("home_store").HomeStore(":memory:")
         with self.assertRaises(KeyError):

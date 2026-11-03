@@ -109,6 +109,13 @@
     return null;
   }
 
+  // 一个 pane 的“人起的名字”：钉子上的 → 收藏处的（没有就空串）
+  function nameFor(id) {
+    const entry = state.entries.find(item => item.pane === id);
+    if (!entry) return '';
+    return (entry.label || '').trim() || (entry.title || '').trim();
+  }
+
   function labelFor(id) {
     const found = paneById(id);
     if (!found) return null;
@@ -172,6 +179,7 @@
     void html;
     state.list.scrollTop = keepScroll;
     refreshLiveBits();
+    if (state.hooks.onNames) state.hooks.onNames();     // 顶栏标题跟着名字走
   }
 
   function refreshLiveBits() {
@@ -209,9 +217,11 @@
   function rowHtml(entry) {
     const found = paneById(entry.pane);
     const fallback = found ? labelFor(entry.pane) : entry.pane;
-    // 只认钉子自己的名字：收藏卡片上的标题不会漏到最近列表里（两份数据互相独立）
+    // 名字优先级：钉子自己的名字 → 主页收藏处的名字 → 会话/窗口名
+    // （服务端已经把收藏的 title 一起带下来了，钉了但没单独改名的行不会退化成 claude · 0: main · oracle）
     const custom = (entry.label || '').trim();
-    const label = custom || fallback;
+    const favorite_name = (entry.title || '').trim();
+    const label = custom || favorite_name || fallback;
     const status = found ? (state.states.get(entry.pane) || '') : 'offline';
     const active = entry.pane === state.block.dataset.active ? ' active' : '';
     const on = !!entry.pinned;
@@ -567,6 +577,7 @@
 
   window.TmuxRecents = {
     mount,
+    nameFor,
     refresh: load,
     touch: noteVisit,
     setFavorites(list) {

@@ -1392,7 +1392,9 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("`#${number} · `:'')+`终端 · ${pane}`", term)
 
         # 控制台的浏览器/PWA 标题
-        self.assertIn("document.title=p.number?`#${p.number} · ${p.title||p.target} · Tmux Chat`", page)
+        # 标题优先用「最近 / 收藏」里的名字（钉子区的 #6），没有才用 pane 标题
+        self.assertIn("const shownTitle=customName||p.title||p.target;", page)
+        self.assertIn("document.title=p.number?`#${p.number} · ${shownTitle} · Tmux Chat`", page)
 
         # 多窗口：只有一个窗口或最大化时窗口标题带 #N，删空回到「多窗口」
         grid = self.client.get("/grid").text
