@@ -164,10 +164,16 @@ jobs:
         working-directory: client
         run: |
           flutter build ipa --release --no-pub --no-codesign
-          cd build/ios/iphoneos
+          # --no-codesign produces an .xcarchive (there is no build/ios/iphoneos/Runner.app
+          # any more); pack the .app out of the archive so the IPA always exists.
+          APP="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+          if [ ! -d "$APP" ]; then APP="build/ios/iphoneos/Runner.app"; fi
+          if [ ! -d "$APP" ]; then echo "no Runner.app to package"; exit 1; fi
+          rm -rf Payload tmuxweb-unsigned.ipa
           mkdir -p Payload
-          cp -R Runner.app Payload/
+          cp -R "$APP" Payload/
           zip -qry "$GITHUB_WORKSPACE/tmuxweb-unsigned.ipa" Payload
+          ls -la "$GITHUB_WORKSPACE/tmuxweb-unsigned.ipa"
 
       - name: Build signed IPA
         if: steps.signing.outputs.signed == 'true'
