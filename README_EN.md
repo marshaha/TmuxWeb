@@ -21,6 +21,10 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Cross-server relay**: an agent in any pane can ask an agent pane on another host and receive its answer through the HTTP API or `relay_client.py`.
 - **Remote rendering performance**: SSH connection multiplexing, remote content digests, idle backoff — and non-ASCII pane titles no longer arrive as `_`.
 - **File panel**: browse the selected pane's working directory in the sidebar (enter/leave folders, scroll), download with a click and upload by drag-and-drop, on localhost and over SSH alike.
+- **One name, one lookup order**: the pin's own label → the home favourite's title → the automatic
+  `session: window` name. The sidebar's pinned rows, the console title bar (and the browser window title),
+  every `/grid` cell and `/preview` all use it, so pinning a favourited pane never degrades to
+  `claude · 0: main · oracle`.
 - **One short number per window (`#N`)**: shared across hosts (`pane_numbers` in `home.db`, assigned on first sight,
   never reused), shown in the session tree, in 最近, in the console title bar, in every `/grid` cell header, and in the `/preview` and `/term` headers. The browser/PWA window title carries the same `#N` prefix (console, a single or maximised grid window, preview, terminal). It is the handle for `?pane=#12`, for the MCP relay
   (`ask_agent` / `send_agent` / `read_agent` accept `target: "#12"`, and `list_agents` returns `handle`), and for talking
