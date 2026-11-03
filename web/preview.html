@@ -150,7 +150,7 @@ import {marked} from '/assets/marked.esm.js';
 
 const $=id=>document.getElementById(id);
 const pane=new URLSearchParams(location.search).get('pane')||'';
-const state={messages:[],sig:null,pane,waiting:false,stick:true,timer:null,paneInfo:null};
+const state={messages:[],sig:null,pane,waiting:false,stick:true,timer:null,paneInfo:null,paneTitle:'',paneNumber:0};
 const scroll=$('scroll');
 // 附件：和控制台聊天共用 /assets/composer-files.js
 const files=window.TmuxFiles?window.TmuxFiles.mount({
@@ -349,12 +349,24 @@ async function applyCustomName(){
     const names=new Map();
     for(const item of favorites.favorites||[])if(item.pane&&item.title)names.set(item.pane,item.title.trim());
     for(const item of recent.recent||[])if(item.pane&&item.label)names.set(item.pane,item.label.trim());
+    // 最近条目顺带给出编号：hosts 还没回来时标题栏也能先显示 #N
+    for(const item of recent.recent||[])if(item.pane===pane&&item.number)state.paneNumber=item.number;
     const name=names.get(pane);
-    if(!name)return;
-    $('title').textContent=name;
-    document.title=`${name} · 对话预览`;
+    if(name)state.paneTitle=name;
+    if(name||state.paneNumber)paintTitle();
   }catch(_error){}
 }
+// 标题栏前面挂窗口编号（和侧栏、/grid 标题栏、relay 的 #N 是同一个号）
+// 编号有两个来源：/api/home/recent 很快就有，/api/hosts 慢一些但更权威
+function paintTitle(){
+  const number=state.paneNumber||(state.paneInfo&&state.paneInfo.number)||0;
+  const name=state.paneTitle||'对话预览';
+  const shown=number?`#${number} · ${name}`:name;
+  $('title').textContent=shown;
+  document.title=`${shown} · TmuxWeb`;
+  return shown;
+}
+
 async function loadPaneInfo(){
   try{
     const data=await api('/api/hosts');
@@ -363,8 +375,9 @@ async function loadPaneInfo(){
     state.paneInfo=meta||null;
     if(files)files.syncButton();
     if(!meta)return;
-    document.title=`${meta.title||pane} · 对话预览`;
-    $('title').textContent=meta.title||pane;
+    state.paneTitle=meta.title||pane;
+    if(meta.number)state.paneNumber=meta.number;
+    paintTitle();
     $('sub').textContent=[owner.name,meta.session,`${meta.window}:${meta.window_name||''}`,meta.command].filter(Boolean).join(' · ');
     await applyCustomName();
     $('open-chat').href=`/?pane=${encodeURIComponent(pane)}`;

@@ -181,7 +181,7 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("names:new Map(),", page)
         self.assertIn("async function loadNames(){", page)
         self.assertIn("const custom=(state.names.get(paneId)||'').trim();", page)
-        self.assertIn("if(custom)return custom;", page)
+        self.assertIn("if(custom)return prefix+custom;", page)
         self.assertIn("fetch('/api/home/recent?limit=60'", page)
         self.assertIn("fetch('/api/home/favorites'", page)
         self.assertIn("window.addEventListener('tmuxweb:favorites',loadNames);", page)

@@ -674,10 +674,12 @@
 
   function titleFor(paneId){
     // 最近/收藏里改过名字的，就用那边的名字（同一块 pane 只有一个名字）
-    const custom=(state.names.get(paneId)||'').trim();
-    if(custom)return custom;
     const meta=state.titles.get(paneId);
-    if(meta)return `${meta.session||paneId}${meta.window_name?':'+meta.window_name:''}${meta.command?' · '+meta.command:''}`;
+    // 标题栏最前面挂窗口编号：和侧栏、relay 里的 #N 是同一个号
+    const prefix=meta&&meta.number?`#${meta.number} · `:'';
+    const custom=(state.names.get(paneId)||'').trim();
+    if(custom)return prefix+custom;
+    if(meta)return prefix+`${meta.session||paneId}${meta.window_name?':'+meta.window_name:''}${meta.command?' · '+meta.command:''}`;
     return paneId;
   }
 

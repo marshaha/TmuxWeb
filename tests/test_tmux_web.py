@@ -1362,6 +1362,23 @@ class TmuxWebTests(unittest.TestCase):
         for pane_id, number in numbers.items():
             self.assertEqual(grown[pane_id], number)
 
+    def test_the_number_is_shown_in_every_title_bar(self):
+        """#N 不只挂在侧栏：控制台顶栏、/grid 每格标题、/preview 标题都要有。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn('class="session-num" id="selected-number"', page)
+        self.assertIn("$('selected-number')", page)
+        self.assertIn("num.textContent=p.number?`#${p.number}`", page)
+        self.assertIn(".session-num{flex:none", page)
+
+        grid = self.client.get("/grid").text
+        self.assertIn("const prefix=meta&&meta.number?`#${meta.number} · `:''", grid)
+
+        preview = self.client.get("/preview?pane=%2528").text
+        self.assertIn("function paintTitle(){", preview)
+        self.assertIn("state.paneNumber", preview)
+        self.assertIn("`#${number} · ${name}`", preview)
+
     def test_the_sidebar_and_relay_address_a_pane_by_its_number(self):
         """#N 能当 relay 目标，也能直接 ?pane=#N 打开；侧栏行显示同一个号。"""
         self.login()
