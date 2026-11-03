@@ -807,6 +807,47 @@ hermes mcp test tmuxweb        # -> Connected, 10 tools
 `curl http://100.x.y.z:8787/` returning 303 means the path is open (303 is the login redirect; `/mcp` without a token
 should return 401). Use the tailnet IP rather than a MagicDNS short name — `http://robo:8787/` answered 502 in testing.
 
+### When the machine cannot be reached at all: reverse tunnel or stdio over SSH
+
+A tailnet is the preferred answer. If the machine is neither on the tailnet nor reachable from outside
+(outbound NAT, it may only dial out), there are two ways, and neither needs a change to the remote sshd:
+
+**1) Reverse port forward** (this host dials the remote and hangs its 8787 on the remote's `127.0.0.1:8787`):
+
+```bash
+./scripts/reverse_tunnel.sh marscrazy@remote            # -R 8787:127.0.0.1:8787 by default
+./scripts/reverse_tunnel.sh marscrazy@remote --ssh-port 2222 --identity ~/.ssh/id_ed25519
+./scripts/reverse_tunnel.sh marscrazy@remote --print-systemd   # long-running unit for this host
+./scripts/reverse_tunnel.sh marscrazy@remote --print-launchd   # macOS plist for this host
+```
+
+- Uses `autossh` when installed, otherwise a supervised loop with exponential backoff (capped at 30 s).
+  `ExitOnForwardFailure=yes` fails fast when the forward cannot be set up; `ServerAliveInterval=20` /
+  `CountMax=3` catch a dead link.
+- The remote side binds `127.0.0.1` by default, so the remote sshd needs **no `GatewayPorts`** and the port
+  is not exposed on the remote LAN. `0.0.0.0` is opt-in.
+- On the remote, the MCP client then uses `http://127.0.0.1:8787/mcp`. The token is still required — the
+  tunnel only fixes reachability, it does not unlock auth.
+
+**2) stdio over SSH** (no listening port at all): MCP's stdio transport is just stdin/stdout, so the client can
+use `ssh` as the transport and the relay runs **on this host**:
+
+```bash
+# this host: a wrapper reads a 0600 env file, so the token never appears in argv (visible via ps)
+install -d -m 700 ~/.config/tmuxweb
+printf 'TMUXWEB_URL=http://127.0.0.1:8787\nTMUXWEB_TOKEN=%s\n' '<token>' > ~/.config/tmuxweb/relay.env
+chmod 600 ~/.config/tmuxweb/relay.env
+cat > ~/.local/bin/tmuxweb-relay-stdio <<'SH'
+#!/bin/sh
+set -a; . "$HOME/.config/tmuxweb/relay.env"; set +a
+exec python3 "$HOME/workspace/TmuxWeb/mcp_relay.py"
+SH
+chmod +x ~/.local/bin/tmuxweb-relay-stdio
+
+# the unreachable machine: the client spawns ssh; the relay runs here
+hermes mcp add tmuxweb --command /usr/bin/ssh --args <user>@<address> /home/<user>/.local/bin/tmuxweb-relay-stdio
+```
+
 For a LAN/Tailscale-only deployment set `TMUX_WEB_MCP_AUTH=off` in `.env` (default `on`): `/mcp` then needs no header and clients are configured with the URL alone. Anyone who can reach the port can drive panes in that mode — the startup log warns once — while `/api/*` and the web login keep their checks.
 
 ## Tests

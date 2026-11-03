@@ -705,6 +705,48 @@ hermes mcp test tmuxweb        # ✓ Connected · 10 tools
 `curl http://100.x.y.z:8787/` 回 303 就说明通（303 是未登录跳转），`/mcp` 不带 token 回 401 才是对的。
 别用 MagicDNS 短名（实测 `http://robo:8787/` 会 502），写 tailnet IP。
 
+### 机器连不回来时：反向隧道 / stdio over SSH
+
+tailnet 是首选。**如果那台机器既不在 tailnet、又从外面连不进来**（出站 NAT、只有它主动 dial 的权限），
+有两条路，都不需要改远端 sshd 配置：
+
+**1) 反向端口转发**（本机主动 dial 远端，把本机的 8787 挂到远端的 127.0.0.1:8787）：
+
+```bash
+./scripts/reverse_tunnel.sh marscrazy@远端地址            # 默认 -R 8787:127.0.0.1:8787
+./scripts/reverse_tunnel.sh marscrazy@远端 --ssh-port 2222 --identity ~/.ssh/id_ed25519
+./scripts/reverse_tunnel.sh marscrazy@远端 --print-systemd   # 本机常驻用
+./scripts/reverse_tunnel.sh marscrazy@远端 --print-launchd   # macOS 常驻用
+```
+
+- 脚本有 `autossh` 就用它，没有就自己循环重连（指数退避，最长 30 秒）；`ExitOnForwardFailure=yes`
+  保证转发没建起来时立刻报错，`ServerAliveInterval=20`、`CountMax=3` 保证假死能发现。
+- 远端监听地址默认 `127.0.0.1`（构建在远端 loopback 上），**不需要 `GatewayPorts`**，端口也不暴露给
+  远端的局域网；改成 `0.0.0.0` 才需要。
+- 远端 MCP 客户端这时写 `http://127.0.0.1:8787/mcp`，token 照旧必需（隧道只解决可达性，不解锁鉴权）。
+
+**2) stdio over SSH**（一个端口都不开）：MCP 的 stdio 传输本身就是 stdin/stdout，让客户端把
+`ssh` 当传输层，relay 在**本机**执行、只把 JSON-RPC 通过 SSH 管道送回去：
+
+```bash
+# 本机：wrapper 里读 0600 的 env，别把 token 写进 argv（argv 在 ps 里人人可见）
+install -d -m 700 ~/.config/tmuxweb
+printf 'TMUXWEB_URL=http://127.0.0.1:8787\nTMUXWEB_TOKEN=%s\n' '<token>' > ~/.config/tmuxweb/relay.env
+chmod 600 ~/.config/tmuxweb/relay.env
+cat > ~/.local/bin/tmuxweb-relay-stdio <<'SH'
+#!/bin/sh
+set -a; . "$HOME/.config/tmuxweb/relay.env"; set +a
+exec python3 "$HOME/workspace/TmuxWeb/mcp_relay.py"
+SH
+chmod +x ~/.local/bin/tmuxweb-relay-stdio
+
+# 远端（连不回来的那台）：客户端 spawn ssh，relay 在本机跑
+hermes mcp add tmuxweb --command /usr/bin/ssh --args <user>@<本机看得到的地址> /home/<user>/.local/bin/tmuxweb-relay-stdio
+```
+
+这条路适合“远端只有 ssh 出站权限”的场景，好处是不开监听端口、不用管隧道守护；代价是每次
+MCP 调用都走一条 SSH 会话（Hermes 会复用连接，实测握手一次十几毫秒）。
+
 没有 MCP 支持的场景（脚本、shell）可以用 `relay_client.py`，或用 stdio 版 `mcp_relay.py`（`--selftest` 自检）。
 内网/Tailscale 部署可以彻底免掉 header：在 `.env` 设 `TMUX_WEB_MCP_AUTH=off`（默认 `on`），`/mcp` 不再校验 token，客户端只填 URL；此时任何能访问该端口的人都能操作 pane，启动日志会打一条警告，`/api/*` 与网页登录仍按原样校验。
 

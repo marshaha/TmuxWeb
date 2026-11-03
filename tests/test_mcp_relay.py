@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -178,6 +179,40 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('DEFAULT_IP="127.0.0.1"', script)               # 回落分支还在
         # macOS 上 tailscale 是 App 里的二进制，不在 PATH
         self.assertIn("/Applications/Tailscale.app/Contents/MacOS/Tailscale", script)
+
+
+class ReverseTunnelTests(unittest.TestCase):
+    """反向隧道的脚本：默认参数、常驻模板、不泄露 token。"""
+
+    def run_script(self, *args):
+        return subprocess.run(["bash", "scripts/reverse_tunnel.sh", *args],
+                              capture_output=True, text=True, timeout=20)
+
+    def test_default_forward_is_loopback_to_loopback(self):
+        result = self.run_script("--print-launchd", "user@example", "--ssh-port", "2222")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("-R", result.stdout)
+        self.assertIn("8787:127.0.0.1:8787", result.stdout)
+        self.assertIn("<string>2222</string>", result.stdout)
+        self.assertIn("KeepAlive", result.stdout)
+        self.assertIn("user@example", result.stdout)
+
+    def test_systemd_template_keeps_the_tunnel_alive(self):
+        result = self.run_script("--print-systemd", "user@example", "--remote-port", "9000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("9000:127.0.0.1:8787", result.stdout)
+        self.assertIn("Restart=always", result.stdout)
+        self.assertIn("ExitOnForwardFailure=yes", result.stdout)
+
+    def test_script_refuses_to_run_without_a_target(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("missing target", result.stderr)
+
+    def test_the_tunnel_script_never_embeds_a_token(self):
+        script = Path("scripts/reverse_tunnel.sh").read_text()
+        self.assertNotIn("TMUXWEB_TOKEN", script)
+        self.assertNotIn("Authorization", script)
 
 
 class MissingTokenTests(unittest.TestCase):
