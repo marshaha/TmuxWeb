@@ -8,6 +8,10 @@ Small sqlite store with two tables:
   ``publish_home_card`` / ``POST /api/home/cards``.
 * ``pins`` — panes the user nailed to the top of the sidebar's 最近 block. Pins
   survive the recents cap, so a pinned pane stays even after 30 other visits.
+* ``pane_numbers`` — the short number every pane is addressed by (`#12`). Numbers
+  are assigned once, never reused, and outlive the pane: a stale `#12` must 404
+  instead of silently pointing at somebody else's session. That is what makes
+  "ask #12" usable in the MCP relay across hosts.
 
 The store is deliberately independent of tmux/shares so it can be unit tested
 without a server.
@@ -27,6 +31,8 @@ MAX_BODY = 20000
 MAX_CARDS = 200
 MAX_RECENT = 30
 MAX_PINS = 20
+# 编号不回收：给某个 agent 说过 "#12" 之后，这个号码不该变成别人
+MAX_PANE_NUMBERS = 5000
 
 
 def _now() -> float:
@@ -88,6 +94,13 @@ class HomeStore:
                        value TEXT NOT NULL DEFAULT ''
                    )"""
             )
+            self._conn.execute(
+                """CREATE TABLE IF NOT EXISTS pane_numbers (
+                       pane_id TEXT PRIMARY KEY,
+                       number INTEGER NOT NULL UNIQUE,
+                       assigned_at REAL NOT NULL
+                   )"""
+            )
             self._conn.commit()
 
     def close(self) -> None:
@@ -95,6 +108,59 @@ class HomeStore:
             self._conn.close()
 
     # ------------------------------------------------------------------- prefs
+    # ---------------------------------------------------------------- pane numbers
+    def pane_numbers(self) -> dict[str, int]:
+        """pane_id → 编号；没有分过号的 pane 不在里面。"""
+        with self._lock:
+            rows = self._conn.execute("SELECT pane_id, number FROM pane_numbers").fetchall()
+        return {row["pane_id"]: int(row["number"]) for row in rows}
+
+    def number_for(self, pane_id: str) -> int:
+        """给这个 pane 一个编号，第一次见到时分配；同一 pane 永远同一个号。"""
+        pane_id = (pane_id or "").strip()
+        if not pane_id:
+            raise ValueError("pane id is required")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT number FROM pane_numbers WHERE pane_id = ?", (pane_id,)
+            ).fetchone()
+            if row:
+                return int(row["number"])
+            row = self._conn.execute("SELECT MAX(number) AS top FROM pane_numbers").fetchone()
+            number = int(row["top"] or 0) + 1
+            self._conn.execute(
+                "INSERT INTO pane_numbers (pane_id, number, assigned_at) VALUES (?, ?, ?)",
+                (pane_id, number, _now()),
+            )
+            self._conn.commit()
+            # 老数据库不会无限长：超过上限就丢掉最久没被看到的编号（号码仍然不回收）
+            self._conn.execute(
+                "DELETE FROM pane_numbers WHERE pane_id NOT IN "
+                "(SELECT pane_id FROM pane_numbers ORDER BY assigned_at DESC LIMIT ?)",
+                (MAX_PANE_NUMBERS,),
+            )
+            self._conn.commit()
+            return number
+
+    def pane_for_number(self, number: int) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT pane_id FROM pane_numbers WHERE number = ?", (int(number),)
+            ).fetchone()
+        return row["pane_id"] if row else None
+
+    def ensure_numbers(self, pane_ids) -> dict[str, int]:
+        """一次给一批 pane 分号（侧栏每次刷新都会调，已分过的直接返回）。"""
+        wanted = [str(pane).strip() for pane in pane_ids if str(pane or "").strip()]
+        if not wanted:
+            return {}
+        with self._lock:
+            existing = self.pane_numbers()
+            missing = [pane for pane in wanted if pane not in existing]
+            for pane in missing:
+                existing[pane] = self.number_for(pane)
+        return {pane: existing[pane] for pane in wanted}
+
     def get_prefs(self) -> dict[str, str]:
         with self._lock:
             rows = self._conn.execute("SELECT key, value FROM prefs").fetchall()

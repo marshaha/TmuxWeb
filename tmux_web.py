@@ -921,8 +921,27 @@ def create_app(
             raise HTTPException(status_code=404, detail="remote host not found") from exc
         return runner_for(host), pane_id
 
+    PANE_NUMBER_RE = re.compile(r"^#?(\d{1,5})$")
+
+    def pane_ref_for(number: int) -> str:
+        """编号 → 带主机作用域的 pane 引用；编号没分出去过就是 404。"""
+        pane_id = home.pane_for_number(number)
+        if not pane_id:
+            raise HTTPException(status_code=404,
+                                detail=f"没有 #{number} 这个窗口（编号按首次出现分配，不会回收）")
+        return pane_id
+
+    def resolve_target(target: str) -> str:
+        """`#12` / `12` → `localhost~%7` 之类；其他写法原样返回（旧行为）。"""
+        text = str(target or "").strip()
+        match = PANE_NUMBER_RE.match(text)
+        if match:
+            return pane_ref_for(int(match.group(1)))
+        return text
+
     def relay_target(target: str):
         """Resolve a relay target to (transport, pane_id, pane, host_name)."""
+        target = resolve_target(target)
         try:
             host_id, pane_id = split_pane_ref(target)
         except ValueError as exc:
@@ -1749,7 +1768,12 @@ def create_app(
     async def list_panes(request: Request):
         require_auth(request)
         try:
-            return {"panes": [pane_metadata(pane) for pane in await asyncio.to_thread(tmux.list_panes)]}
+            panes = [pane_metadata(pane) for pane in await asyncio.to_thread(tmux.list_panes)]
+            numbers = await asyncio.to_thread(home.ensure_numbers, [pane["id"] for pane in panes])
+            for pane in panes:
+                if pane["id"] in numbers:
+                    pane["number"] = numbers[pane["id"]]
+            return {"panes": panes}
         except TmuxError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -1782,6 +1806,22 @@ def create_app(
         hosts_snapshot["at"] = time.time()
         return fresh
 
+    def number_panes(payload):
+        """给每台的每个 pane 补上短编号（跨主机唯一，首次见到时分配）。
+
+        接受 `[...hosts]` 或 `{"hosts": [...]}`，返回同样的形状 —— 快照里存的是后者。
+        """
+        hosts = payload.get("hosts") if isinstance(payload, dict) else payload
+        pane_ids = [pane.get("id") for host in hosts for pane in (host.get("panes") or [])
+                    if pane.get("id")]
+        numbers = home.ensure_numbers(pane_ids)
+        for host in hosts:
+            for pane in host.get("panes") or []:
+                number = numbers.get(pane.get("id"))
+                if number:
+                    pane["number"] = number
+        return payload
+
     @app.get("/api/hosts")
     async def list_hosts(request: Request, refresh: int = 0, host: str = ""):
         require_auth(request)
@@ -1792,9 +1832,9 @@ def create_app(
         if host and refresh and cached is not None:
             refreshed = await refresh_one_host(host, cached)
             if refreshed is not None:
-                return refreshed
+                return number_panes(refreshed)
         if cached is not None and not refresh and (time.time() - hosts_snapshot["at"]) < hosts_snapshot["ttl"]:
-            return cached
+            return number_panes(cached)
         hosts = []
         try:
             panes = [pane_metadata(pane) for pane in tmux.list_panes()]
@@ -1835,7 +1875,7 @@ def create_app(
         # Concurrently, so the slowest host sets the latency instead of the sum.
         await asyncio.gather(*(load_remote(public) for public in public_hosts))
         hosts.extend(public_hosts)
-        payload = {"hosts": hosts}
+        payload = {"hosts": number_panes(hosts)}      # 短编号：跨主机唯一的 #N
         hosts_snapshot["value"] = payload
         hosts_snapshot["at"] = time.time()
         return payload
@@ -1923,9 +1963,13 @@ def create_app(
             peers = await asyncio.to_thread(collect_pane_states)
             if not arguments.get("include_non_agents", False):
                 peers = [peer for peer in peers if peer.get("provider")]
+            numbers = await asyncio.to_thread(
+                home.ensure_numbers, [peer["id"] for peer in peers if peer.get("id")])
             return {"agents": [
                 {
                     "target": peer["id"],
+                    "number": numbers.get(peer["id"]),
+                    "handle": f"#{numbers.get(peer['id'])}" if numbers.get(peer["id"]) else peer["id"],
                     "host": peer.get("host_name") or peer.get("host_id"),
                     "session": (peer.get("target") or "").split(":")[0],
                     "window": peer.get("target"),
@@ -2874,6 +2918,10 @@ def create_app(
                 "title": titles.get(row["pane_id"], ""),
                 "visited_at": row["visited_at"],
             })
+        # 侧栏的每一行都带 #N：和会话树、MCP relay 用的是同一套编号
+        numbers = await asyncio.to_thread(home.ensure_numbers, [entry["pane"] for entry in entries])
+        for entry in entries:
+            entry["number"] = numbers.get(entry["pane"])
         return {"recent": entries, "pinned": [pin["pane_id"] for pin in pins]}
 
     @app.post("/api/home/recent/pin")

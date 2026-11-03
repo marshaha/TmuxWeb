@@ -219,6 +219,7 @@
     const hint = on ? `${label} · ${entry.pane} · 双击改名` : `${fallback} · ${entry.pane}`;
     return `<div class="recent-row${on ? ' pinned' : ''}${active}" data-row="${esc(entry.pane)}">
       <button class="recent-open" type="button" data-recent="${esc(entry.pane)}" title="${esc(hint)}">
+        <span class="pane-num">${entry.number ? '#' + entry.number : ''}</span>
         <span class="dot ${esc(status)}"></span>
         <span class="label">${esc(label)}</span>
         ${on ? '' : `<span class="when">${relativeTime(entry.visited_at)}</span>`}
@@ -250,6 +251,7 @@
       ]);
       state.entries = (recent.recent || []).filter(entry => entry && entry.pane).map(entry => ({
         pane: entry.pane,
+        number: Number(entry.number) || 0,
         label: entry.label || '',
         title: entry.title || '',
         pinned: !!entry.pinned,

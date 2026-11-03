@@ -1333,6 +1333,51 @@ class TmuxWebTests(unittest.TestCase):
         statuses = self.client.get("/api/panes/status").json()["panes"]
         self.assertEqual({item["id"] for item in statuses}, {"%4", remote["id"]})
 
+    def test_every_pane_gets_a_stable_short_number(self):
+        """多服务器场景：每个窗口一个 #N，和主机/pane id 无关，编号不回收。"""
+        self.login()
+        first = self.client.get("/api/panes").json()["panes"]
+        numbers = {pane["id"]: pane["number"] for pane in first}
+        self.assertTrue(numbers)
+        self.assertEqual(len(set(numbers.values())), len(numbers), "编号必须唯一")
+        # 同一个 pane 再来一次，号码不变
+        again = self.client.get("/api/panes").json()["panes"]
+        self.assertEqual({pane["id"]: pane["number"] for pane in again}, numbers)
+        # 新 pane 排在新号后面，旧号不动
+        self.tmux.panes.append({**self.tmux.panes[0], "id": "%99", "target": "sess:0.99"})
+        grown = {pane["id"]: pane["number"] for pane in self.client.get("/api/panes").json()["panes"]}
+        self.assertEqual(grown["%99"], max(numbers.values()) + 1)
+        for pane_id, number in numbers.items():
+            self.assertEqual(grown[pane_id], number)
+
+    def test_the_sidebar_and_relay_address_a_pane_by_its_number(self):
+        """#N 能当 relay 目标，也能直接 ?pane=#N 打开；侧栏行显示同一个号。"""
+        self.login()
+        panes = self.client.get("/api/panes").json()["panes"]
+        local = next(pane for pane in panes if pane["id"] == "%4")
+        handle = f"#{local['number']}"
+        self.tmux.auto_reply = "编号回答"
+        response = self.client.post("/api/relay/ask", json={
+            "target": handle, "question": "hi", "timeout": 5, "source": "unit-test"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["reply"], "编号回答")
+        # 不存在的号：404 且带解释，不会落到别人的会话
+        missing = self.client.post("/api/relay/ask", json={
+            "target": "#9999", "question": "hi", "timeout": 5})
+        self.assertEqual(missing.status_code, 404)
+        self.assertIn("9999", missing.json()["detail"])
+
+        page = self.client.get("/").text
+        self.assertIn('class="pane-num"', page)
+        self.assertIn("/^#?\\d{1,5}$/.test(wanted.trim())", page)
+        self.assertIn("state.panes.find(p=>p.number===number)", page)
+        self.assertIn("${p.number?`#${p.number}`:'—'}", page)
+        recents = self.client.get("/assets/recents.js").text
+        self.assertIn("entry.number ? '#' + entry.number", recents)
+        # 「最近」的行也带同一个编号
+        recent = self.client.get("/api/home/recent").json()["recent"]
+        self.assertTrue(all(entry.get("number") for entry in recent) or not recent)
+
     def test_relay_ask_returns_the_marked_reply(self):
         self.tmux.auto_reply = "本地回答"
         self.login()

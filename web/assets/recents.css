@@ -32,6 +32,8 @@ body.recent-resizing{cursor:row-resize;user-select:none}
 #recent-pin-selected.on .ico{fill:none}
 .recent-list{display:flex;flex-direction:column;gap:1px;overflow-y:auto;min-height:0;
   overscroll-behavior:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
+.recent-row .pane-num{flex:none;min-width:22px;color:var(--faint);font:10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+.recent-row:hover .pane-num,.recent-row.active .pane-num{color:var(--accent)}
 .recent-row{display:flex;align-items:center;gap:1px;border-radius:7px;padding-right:2px}
 .recent-row:hover,.recent-row:focus-within{background:rgba(0,0,0,.05)}
 .recent-row.active{background:rgba(201,100,66,.10)}

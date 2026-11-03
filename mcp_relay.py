@@ -55,6 +55,9 @@ class RelayTools:
         return {"agents": [
             {
                 "target": peer["id"],
+                # 短编号：跨主机统一，人/agent 之间可以直接说 "#12"
+                "number": peer.get("number"),
+                "handle": f"#{peer['number']}" if peer.get("number") else peer["id"],
                 "host": peer.get("host_name") or peer.get("host_id"),
                 "session": (peer.get("target") or "").split(":")[0],
                 "window": peer.get("target"),
@@ -196,8 +199,9 @@ def tool_schemas() -> list[dict]:
     return [
         {
             "name": "list_agents",
-            "description": ("List agent panes across every host this TmuxWeb server manages, with a target you can pass "
-                            "to the other tools, the host it lives on, the CLI running in it and whether it is idle or busy."),
+            "description": ("List agent panes across every host this TmuxWeb server manages: each carries `handle` "
+                            "(a short `#12` you can pass to the other tools), `target` (the host-scoped pane id), "
+                            "the host, the CLI and whether it is idle or busy."),
             "inputSchema": {
                 "type": "object",
                 "properties": {"include_non_agents": {"type": "boolean", "default": False}},
