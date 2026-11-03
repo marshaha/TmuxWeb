@@ -578,13 +578,30 @@ if [ ! -d "$dir" ]; then
   exit 3
 fi
 printf 'TMUXWEB_PATH\t%s\n' "$(cd "$dir" 2>/dev/null && pwd -P)"
-if find -L "$dir" -mindepth 1 -maxdepth 1 -printf '' 2>/dev/null; then
-  find -L "$dir" -mindepth 1 -maxdepth 1 -printf '%y\t%s\t%T@\t%p\n'
-elif stat -c %s / >/dev/null 2>&1; then
-  find -L "$dir" -mindepth 1 -maxdepth 1 -exec stat -c '%F\t%s\t%Y\t%n' {} +
-else
-  find -L "$dir" -mindepth 1 -maxdepth 1 -exec stat -f '%HT\t%z\t%m\t%N' {} +
-fi
+# 类型用 POSIX test 判断，大小/时间按平台挑 stat：
+# GNU 的 find 打印选项和 `stat -c` 在 macOS 上都没有，BSD `stat -f` 的 %H 系列也不稳，
+# 所以两边都试、都不依赖专有输出格式。
+find "$dir" -mindepth 1 -maxdepth 1 -exec sh -c '
+  for p in "$@"; do
+    if [ -L "$p" ]; then k=l
+    elif [ -d "$p" ]; then k=d
+    elif [ -f "$p" ]; then k=f
+    else k=o
+    fi
+    size=0
+    mtime=0
+    if stat -c %s "$p" >/dev/null 2>&1; then
+      size=$(stat -c %s "$p" 2>/dev/null)
+      mtime=$(stat -c %Y "$p" 2>/dev/null)
+    else
+      size=$(stat -f %z "$p" 2>/dev/null)
+      mtime=$(stat -f %m "$p" 2>/dev/null)
+    fi
+    [ -n "$size" ] || size=0
+    [ -n "$mtime" ] || mtime=0
+    printf "%s\t%s\t%s\t%s\n" "$k" "$size" "$mtime" "$p"
+  done
+' sh {} +
 """
 
 

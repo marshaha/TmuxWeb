@@ -650,7 +650,7 @@ class RemoteHostTests(unittest.TestCase):
         runner.run = fake_run
         data = runner.list_files("/srv/work")
         self.assertNotIn("python3", captured["command"])
-        self.assertIn("find -L", captured["command"])
+        self.assertIn('find "$dir" -mindepth 1 -maxdepth 1', captured["command"])
         self.assertEqual(data["path"], "/srv/work")
         self.assertEqual([entry["name"] for entry in data["entries"]], ["src", "notes.md"])
         self.assertEqual(data["entries"][1]["size"], 12)
@@ -695,6 +695,22 @@ class RemoteHostTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual([(entry["name"], entry["type"], entry["size"]) for entry in parsed["entries"]],
                          [("sub", "dir", 0), ("visible.txt", "file", 7)])
+
+    def test_the_listing_script_avoids_gnu_and_bsd_exclusive_formats(self):
+        """macOS 的 stat 没有 %HT、find 没有 -printf：都写死会让远端列表整个空掉。
+
+        之前 macmini 的文件面板就是空的 —— 脚本走了 BSD 分支，`stat -f '%HT…'` 打不出类型，
+        解析器扔掉所有行（fields != 4）。现在类型用 POSIX test 判断，stat 只用来取大小/时间。
+        """
+        self.assertNotIn("-printf", REMOTE_LIST_SCRIPT)
+        self.assertNotIn("%HT", REMOTE_LIST_SCRIPT)
+        self.assertIn('if [ -L "$p" ]; then k=l', REMOTE_LIST_SCRIPT)
+        self.assertIn('elif [ -d "$p" ]; then k=d', REMOTE_LIST_SCRIPT)
+        self.assertIn('elif [ -f "$p" ]; then k=f', REMOTE_LIST_SCRIPT)
+        # GNU 与 BSD 的 stat 各来一次，谁在前都行，但两边都得有
+        self.assertIn('stat -c %s "$p"', REMOTE_LIST_SCRIPT)
+        self.assertIn('stat -f %z "$p"', REMOTE_LIST_SCRIPT)
+        self.assertIn('printf "%s\\t%s\\t%s\\t%s\\n" "$k" "$size" "$mtime" "$p"', REMOTE_LIST_SCRIPT)
 
     def test_remote_file_size_limit_is_enforced_before_transfer(self):
         runner = self.make_runner()
