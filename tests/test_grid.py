@@ -160,15 +160,31 @@ class GridPageTests(unittest.TestCase):
         page = self.client.get("/grid").text
         self.assertIn("calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))", page)
 
-    def test_a_busy_window_still_shows_thinking_in_the_grid(self):
-        """内嵌的 /preview 把 header 藏了，顺手把"思考中…"也藏没了 —— 多窗口里看不出谁在跑。"""
+    def test_a_busy_window_shows_thinking_in_its_own_header(self):
+        """内嵌页把 header 藏了，所以"思考中"要画在格子标题栏上：轮询 + 内嵌页实时上报。"""
         grid = self.client.get("/grid").text
+        self.assertIn('<span class="cell-state" data-state="${esc(pane)}"></span>', grid)
+        self.assertIn("function syncStateChip(pane){", grid)
+        self.assertIn("if(data.type!=='tmuxweb:waiting'||!data.pane)return;", grid)
+        self.assertIn("if(event.origin!==location.origin)return;", grid)
+        self.assertIn("if(state.liveWaiting&&state.liveWaiting.get(pane))return '思考中';", grid)
+        self.assertIn(".cell-state.on{display:inline-block}", grid)
         self.assertIn(".dot.busy{background:var(--amber);animation:dot-pulse", grid)
+
         preview = self.client.get("/preview?pane=%251").text
-        self.assertIn("body.embed header .state{display:inline-flex!important", preview)
-        self.assertIn("body.embed header .state:not(.busy){display:none!important}", preview)
-        self.assertIn("body.embed.waiting main{padding-top:36px}", preview)
-        self.assertIn("document.body.classList.toggle('waiting',state.waiting);", preview)
+        self.assertIn("body.embed header{display:none}", preview)          # 内嵌页自己不再露头
+        self.assertIn("window.parent.postMessage({type:'tmuxweb:waiting',pane:pane,waiting:state.waiting},location.origin);", preview)
+
+    def test_window_titles_use_the_name_from_recent_or_favorites(self):
+        """最近/收藏里改过名字的，多窗口标题跟着用那边的名字。"""
+        page = self.client.get("/grid").text
+        self.assertIn("names:new Map(),", page)
+        self.assertIn("async function loadNames(){", page)
+        self.assertIn("const custom=(state.names.get(paneId)||'').trim();", page)
+        self.assertIn("if(custom)return custom;", page)
+        self.assertIn("fetch('/api/home/recent?limit=60'", page)
+        self.assertIn("fetch('/api/home/favorites'", page)
+        self.assertIn("window.addEventListener('tmuxweb:favorites',loadNames);", page)
 
     def test_tidy_can_be_undone(self):
         """「整理」会覆盖手动布局，必须能一步撤回（按钮 + Ctrl/⌘+Z）。"""
@@ -459,7 +475,7 @@ class GridPageTests(unittest.TestCase):
 
     def test_the_preview_page_can_be_embedded(self):
         page = self.client.get("/preview?pane=%254").text
-        self.assertIn("body.embed header{display:block;position:fixed;top:0;right:0;left:auto", page)
+        self.assertIn("body.embed header{display:none}", page)
         self.assertIn("get('embed')==='1'", page)
 
     def test_the_grid_is_linked_from_the_console_and_the_board(self):

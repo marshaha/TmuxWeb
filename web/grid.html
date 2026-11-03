@@ -53,6 +53,11 @@
     .cell:last-of-type{margin-right:8px}
     .cell-head{flex:none;display:flex;align-items:center;gap:7px;height:34px;padding:0 6px 0 10px;border-bottom:1px solid var(--line);background:var(--surface2)}
     .cell-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600}
+    /* 忙碌/离线时在标题旁边写出来，空闲不占位 */
+    .cell-state{flex:none;display:none;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.55;white-space:nowrap;
+      color:var(--amber);background:color-mix(in srgb,var(--amber) 14%,var(--card));
+      border:1px solid color-mix(in srgb,var(--amber) 32%,var(--line))}
+    .cell-state.on{display:inline-block}
     .dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--faint)}
     .dot.idle{background:var(--green)}.dot.busy{background:var(--amber);animation:dot-pulse 1.4s ease-in-out infinite}.dot.unknown{background:#cfccc4}
     @keyframes dot-pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--amber) 55%,transparent)}50%{box-shadow:0 0 0 3px color-mix(in srgb,var(--amber) 22%,transparent)}}
@@ -385,7 +390,7 @@
   const KEY='tmux-grid-v1';
   // widths are keyed by pane id: unset columns share the leftover space equally, so adding or
   // removing a window never leaves a column pinned at the width it had when it was alone
-  const state={panes:[], widths:{}, layout:'strip', modes:{}, explicit:{}, max:null, presets:{}, titles:new Map(), statuses:new Map(), hosts:null,
+  const state={panes:[], widths:{}, layout:'strip', modes:{}, explicit:{}, max:null, presets:{}, titles:new Map(), statuses:new Map(), names:new Map(), hosts:null,
     cells:{}, canvasFocus:null};
   // 上一次用过的自定义行列：留在工具栏里，一键就能回到那个形状
   const SHAPE_MAX_COLS=6, SHAPE_MAX_ROWS=6;
@@ -668,6 +673,9 @@
   const esc=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 
   function titleFor(paneId){
+    // 最近/收藏里改过名字的，就用那边的名字（同一块 pane 只有一个名字）
+    const custom=(state.names.get(paneId)||'').trim();
+    if(custom)return custom;
     const meta=state.titles.get(paneId);
     if(meta)return `${meta.session||paneId}${meta.window_name?':'+meta.window_name:''}${meta.command?' · '+meta.command:''}`;
     return paneId;
@@ -690,6 +698,7 @@
       cell.innerHTML=`<div class="cell-head">`
         +`<span class="dot" data-dot="${esc(pane)}"></span>`
         +`<span class="cell-title"></span>`
+        +`<span class="cell-state" data-state="${esc(pane)}"></span>`
         +`<button class="cell-btn" type="button" data-mode-toggle="${esc(pane)}"><svg class="ico"><use href="#i-chat"/></svg></button>`
         +`<a class="cell-btn" href="/?pane=${encodeURIComponent(pane)}" target="_self" title="在控制台打开" aria-label="在控制台打开"><svg class="ico"><use href="#i-page"/></svg></a>`
         +`<button class="cell-btn" type="button" data-remove="${esc(pane)}" title="移出多窗口" aria-label="移出多窗口"><svg class="ico"><use href="#i-close"/></svg></button>`
@@ -704,6 +713,7 @@
     cell.classList.toggle('max',state.max===pane);
     const dot=cell.querySelector('[data-dot]');
     if(dot)dot.className=`dot ${status}`;
+    syncStateChip(pane);
     const title=cell.querySelector('.cell-title');
     if(title){
       const label=titleFor(pane);
@@ -1172,6 +1182,50 @@
     }catch{}
   }
 
+  // 最近/收藏里的自定义名字（跟账号走），多窗口标题优先用它
+  async function loadNames(){
+    try{
+      const [recent,favorites]=await Promise.all([
+        fetch('/api/home/recent?limit=60',{headers:{'Accept':'application/json'}}).then(r=>r.ok?r.json():{recent:[]}).catch(()=>({recent:[]})),
+        fetch('/api/home/favorites',{headers:{'Accept':'application/json'}}).then(r=>r.ok?r.json():{favorites:[]}).catch(()=>({favorites:[]})),
+      ]);
+      const names=new Map();
+      for(const item of (favorites.favorites||[])){
+        const title=(item.title||'').trim();
+        if(item.pane&&title)names.set(item.pane,title);
+      }
+      for(const item of (recent.recent||[])){
+        const label=(item.label||'').trim();
+        if(item.pane&&label)names.set(item.pane,label);   // 最近里的钉子优先
+      }
+      const changed=[...names].some(([pane,label])=>state.names.get(pane)!==label)||state.names.size!==names.size;
+      state.names=names;
+      if(changed)render();
+    }catch{}
+  }
+  // 内嵌的 /preview 每 2 秒刷新一次等待状态，通过 postMessage 告诉这一格
+  window.addEventListener('message',event=>{
+    if(event.origin!==location.origin)return;
+    const data=event.data||{};
+    if(data.type!=='tmuxweb:waiting'||!data.pane)return;
+    state.liveWaiting=state.liveWaiting||new Map();
+    if(data.waiting)state.liveWaiting.set(data.pane,true);else state.liveWaiting.delete(data.pane);
+    syncStateChip(data.pane);
+  });
+  function statusText(pane){
+    if(state.liveWaiting&&state.liveWaiting.get(pane))return '思考中';
+    const status=state.statuses.get(pane);
+    if(status==='busy')return '思考中';
+    if(status==='offline')return '离线';
+    return '';
+  }
+  function syncStateChip(pane){
+    const chip=document.querySelector(`[data-state="${CSS.escape(pane)}"]`);
+    if(!chip)return;
+    const text=statusText(pane);
+    if(chip.textContent!==text)chip.textContent=text;
+    chip.classList.toggle('on',!!text);
+  }
   async function loadStatus(){
     try{
       const response=await fetch('/api/panes/status',{headers:{'Accept':'application/json'}});
@@ -1182,6 +1236,7 @@
         const status=state.statuses.get(dot.dataset.dot);
         if(status)dot.className='dot '+status;
       }
+      for(const chip of document.querySelectorAll('[data-state]'))syncStateChip(chip.dataset.state);
     }catch{}
   }
 
@@ -1702,6 +1757,10 @@
   render();
   loadStatus();
   setInterval(loadStatus,10000);
+  loadNames();
+  setInterval(loadNames,25000);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadNames();});
+  window.addEventListener('tmuxweb:favorites',loadNames);
   // the sidebar owns /api/hosts now: reuse its pane metadata instead of polling twice
   if(window.TmuxShell){
     TmuxShell.mount({
