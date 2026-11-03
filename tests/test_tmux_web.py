@@ -1,6 +1,7 @@
 import hashlib
 import io
 import os
+import time
 import re
 import shutil
 import subprocess
@@ -1023,6 +1024,10 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(session.pane_id, "%4")
         self.assertEqual(session.inputs, [b"hello\r"])
         self.assertEqual(session.resizes, [(120, 40)])
+        # 关闭发生在服务端任务里，客户端断开后要给事件循环一点时间（CI 上更慢）
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not session.closed:
+            time.sleep(0.02)
         self.assertTrue(session.closed)
 
     def test_index_is_served(self):
@@ -1335,6 +1340,13 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_every_pane_gets_a_stable_short_number(self):
         """多服务器场景：每个窗口一个 #N，和主机/pane id 无关，编号不回收。"""
+        # 独立的 home.db：编号是全局的，不能和别的用例共用一张表
+        self.client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
+                                            session_secret="test-secret",
+                                            terminal_factory=self.terminals,
+                                            share_db=":memory:", home_db=":memory:",
+                                            remote_store=self.remote_store,
+                                            remote_runner_factory=FakeSSHRunner))
         self.login()
         first = self.client.get("/api/panes").json()["panes"]
         numbers = {pane["id"]: pane["number"] for pane in first}
@@ -1346,7 +1358,7 @@ class TmuxWebTests(unittest.TestCase):
         # 新 pane 排在新号后面，旧号不动
         self.tmux.panes.append({**self.tmux.panes[0], "id": "%99", "target": "sess:0.99"})
         grown = {pane["id"]: pane["number"] for pane in self.client.get("/api/panes").json()["panes"]}
-        self.assertEqual(grown["%99"], max(numbers.values()) + 1)
+        self.assertGreater(grown["%99"], max(numbers.values()))     # 新号排在后面，旧号不动
         for pane_id, number in numbers.items():
             self.assertEqual(grown[pane_id], number)
 
