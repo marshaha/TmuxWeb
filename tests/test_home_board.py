@@ -612,7 +612,7 @@ class HomeBoardTests(unittest.TestCase):
 
     def test_the_hover_preview_skips_a_trailing_user_turn(self):
         self.tmux.panes[0]["command"] = "claude"
-        self.tmux.transcript = lambda pane_id, limit=200: {
+        self.tmux.transcript = lambda pane_id, limit=200, pane=None: {
             "pane": pane_id, "session_id": "s", "mtime": 1,
             "messages": [
                 {"id": "u1", "role": "user", "text": "先看一下", "timestamp": None},
@@ -633,7 +633,7 @@ class HomeBoardTests(unittest.TestCase):
 
     def test_the_hover_preview_is_capped(self):
         self.tmux.panes[0]["command"] = "claude"
-        self.tmux.transcript = lambda pane_id, limit=200: {
+        self.tmux.transcript = lambda pane_id, limit=200, pane=None: {
             "pane": pane_id, "session_id": "s", "mtime": 1,
             "messages": [{"id": "a1", "role": "assistant", "text": "x" * 9000, "timestamp": None}],
         }

@@ -13,13 +13,13 @@ class FakeTransport:
         self.sent = []
         self.captures = 0
 
-    def capture(self, pane_id, history=500):
+    def capture(self, pane_id, history=500, pane=None):
         self.captures += 1
         if self.replies:
             self.screen = self.replies.pop(0)
         return self.screen
 
-    def send(self, pane_id, text, submit=True):
+    def send(self, pane_id, text, submit=True, pane=None):
         self.sent.append((pane_id, text, submit))
 
 

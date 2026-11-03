@@ -61,15 +61,15 @@ class FakeTmux(TmuxBackend):
     def list_panes(self):
         return self.panes
 
-    def capture(self, pane_id, history=500):
+    def capture(self, pane_id, history=500, pane=None):
         self.validate_pane(pane_id)
         return self.output
 
-    def capture_ansi(self, pane_id, history=500):
+    def capture_ansi(self, pane_id, history=500, pane=None):
         self.validate_pane(pane_id)
         return "\x1b[32mhello\x1b[0m\n› Ask Codex to do anything\n"
 
-    def send(self, pane_id, text, submit=True):
+    def send(self, pane_id, text, submit=True, pane=None):
         self.validate_pane(pane_id)
         self.sent.append((pane_id, text, submit))
         if self.auto_reply:
@@ -77,7 +77,7 @@ class FakeTmux(TmuxBackend):
             if match:
                 self.output = "hello\n" + match.group(0) + ' "' + self.auto_reply + '"\n'
 
-    def transcript(self, pane_id, limit=200, refresh=False):
+    def transcript(self, pane_id, limit=200, refresh=False, pane=None):
         self.validate_pane(pane_id)
         if self.panes[0]["command"] != "claude":
             raise RuntimeError("not claude")
@@ -174,14 +174,14 @@ class FakeSSHRunner:
                  "target": "remote:0.0", "session": "remote", "window": "0", "window_name": "agent",
                  "index": "0", "command": "claude", "title": "Remote Claude", "path": "/srv/work",
                  "active": True, "width": 100, "height": 30}]
-    def capture_ansi(self, pane_id, history=5000): return FakeSSHRunner.screen
-    def capture(self, pane_id, history=5000):
+    def capture_ansi(self, pane_id, history=5000, pane=None): return FakeSSHRunner.screen
+    def capture(self, pane_id, history=5000, pane=None):
         return ANSI_RE.sub("", FakeSSHRunner.screen)
-    def snapshot_ansi(self, pane_id, history=5000, known_digest=None):
+    def snapshot_ansi(self, pane_id, history=5000, known_digest=None, pane=None):
         content = self.capture_ansi(pane_id, history)
         digest = hashlib.sha1(content.encode()).hexdigest()
         return digest, (None if digest == known_digest else content)
-    def transcript(self, pane_id, limit=200, refresh=False):
+    def transcript(self, pane_id, limit=200, refresh=False, pane=None):
         return {"pane": pane_id, "provider": "claude", "session_id": "remote-session-1", "mtime": 7,
                 "messages": [{"id": "r1", "role": "user", "text": "远端问题", "timestamp": None}]}
     def zip_files(self, paths, base, max_bytes, max_files):
@@ -191,7 +191,7 @@ class FakeSSHRunner:
             archive.writestr("remote.txt", b"remote bytes")
         return buffer.getvalue()
 
-    def send(self, pane_id, text, submit=True):
+    def send(self, pane_id, text, submit=True, pane=None):
         self.sent.append((self.host["id"], pane_id, text, submit))
         if FakeSSHRunner.auto_reply:
             match = re.search(r"TMUXWEB_REPLY_([0-9a-f]{24}):", text)
@@ -406,7 +406,7 @@ class TmuxWebTests(unittest.TestCase):
 
         sent = []
         self.tmux.panes[0]["command"] = "python3"  # provider_for_command -> hermes
-        self.tmux.send_key = lambda pane_id, key: sent.append((pane_id, key))
+        self.tmux.send_key = lambda pane_id, key, pane=None: sent.append((pane_id, key))
         response = self.client.post("/api/panes/%254/interrupt")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["key"], "C-q")
@@ -415,7 +415,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_escape_can_be_sent_to_interrupt_a_turn(self):
         self.login()
         sent = []
-        self.tmux.send_key = lambda pane_id, key: sent.append((pane_id, key))
+        self.tmux.send_key = lambda pane_id, key, pane=None: sent.append((pane_id, key))
         response = self.client.post("/api/panes/%254/key", json={"key": "Escape"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(sent, [("%4", "Escape")])
@@ -1740,13 +1740,13 @@ class TmuxWebTests(unittest.TestCase):
             {"id": "u1", "role": "user", "text": "问题", "timestamp": "2026-10-27T22:00:00Z"},
             {"id": "a1", "role": "assistant", "text": "回答", "timestamp": "2026-10-27T22:00:05Z"},
         ]}
-        self.tmux.transcript = lambda pane_id, limit=200, *args: dict(answered)
+        self.tmux.transcript = lambda pane_id, limit=200, *args, **kwargs: dict(answered)
         idle = self.client.get("/api/panes/%254/transcript?limit=20").json()
         self.assertFalse(idle["waiting"])
         waiting = {"provider": "claude", "mtime": 1, "messages": [
             {"id": "u2", "role": "user", "text": "再来一次", "timestamp": "2026-10-27T22:10:00Z"},
         ]}
-        self.tmux.transcript = lambda pane_id, limit=200, *args: dict(waiting)
+        self.tmux.transcript = lambda pane_id, limit=200, *args, **kwargs: dict(waiting)
         busy = self.client.get("/api/panes/%254/transcript?limit=20").json()
         self.assertTrue(busy["waiting"])
         self.assertEqual(busy["waiting_since"], "2026-10-27T22:10:00Z")
@@ -2061,6 +2061,85 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(created.status_code, 201)
         guest = TestClient(self.client.app)
         self.assertEqual(guest.get("/share/remote-share/api/transcript").status_code, 200)
+
+
+class PaneValidationDedupTests(unittest.TestCase):
+    """A pane the route already validated must not pay for a second listing."""
+
+    LIST_LINE_14 = "<::>".join([
+        "%1", "sess:0.0", "sess", "0", "shell", "0", "zsh", "title",
+        "/work", "1", "200", "50", "1234567", "4242",
+    ])
+    LIST_LINE_13 = "<::>".join([
+        "%1", "sess:0.0", "sess", "0", "shell", "0", "zsh", "title",
+        "/work", "1", "200", "50", "1234567",
+    ])
+
+    def _backend(self, list_output):
+        calls = []
+
+        def fake_run(*args, input_bytes=None):
+            calls.append(args)
+            if args[0] == "list-panes":
+                return list_output
+            if args[0] == "capture-pane":
+                return "screen\n"
+            if args[0] == "display-message":
+                return "4242\n"
+            raise AssertionError("unexpected tmux call: %r" % (args,))
+
+        backend = TmuxBackend()
+        backend._run = fake_run
+        return backend, calls
+
+    def test_list_panes_parses_pane_pid_and_keeps_old_shape(self):
+        backend, _ = self._backend(self.LIST_LINE_14)
+        self.assertEqual(backend.list_panes()[0]["pane_pid"], "4242")
+        backend, _ = self._backend(self.LIST_LINE_13)
+        self.assertNotIn("pane_pid", backend.list_panes()[0])
+
+    def test_capture_with_validated_pane_skips_the_listing(self):
+        backend, calls = self._backend(self.LIST_LINE_14)
+        backend.capture("%1", 500)
+        self.assertEqual([c[0] for c in calls], ["list-panes", "capture-pane"])
+        calls.clear()
+        backend.capture("%1", 500, pane={"id": "%1", "command": "zsh"})
+        self.assertEqual([c[0] for c in calls], ["capture-pane"])
+
+    def test_capture_many_with_listed_panes_skips_validation(self):
+        two = self.LIST_LINE_14 + "\n" + self.LIST_LINE_14.replace("%1", "%2")
+        backend, calls = self._backend(two)
+        panes = {p["id"]: p for p in backend.list_panes()}
+        calls.clear()
+        out = backend.capture_many(["%1", "%2"], 40, panes=panes)
+        self.assertEqual(sorted(out), ["%1", "%2"])
+        self.assertEqual([c[0] for c in calls], ["capture-pane", "capture-pane"])
+        calls.clear()
+        backend.capture_many(["%1", "%2"], 40)
+        self.assertEqual([c[0] for c in calls],
+                         ["list-panes", "capture-pane", "list-panes", "capture-pane"])
+
+    def test_transcript_skips_display_message_when_pid_known(self):
+        backend, calls = self._backend(self.LIST_LINE_14)
+        patches = (
+            mock.patch.object(tmux_web.transcript_reader, "read_transcript",
+                              return_value={"messages": []}),
+            mock.patch.object(tmux_web.transcript_reader, "provider_for_command",
+                              return_value="claude"),
+            mock.patch.object(tmux_web.transcript_reader, "resume_session_hint",
+                              return_value=None),
+        )
+        for patcher in patches:
+            patcher.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+        backend.transcript("%1", 4, pane={"id": "%1", "command": "claude",
+                                          "path": "/work", "title": "t", "pane_pid": "4242"})
+        self.assertEqual(calls, [])
+        calls.clear()
+        # the validating path lists once, and the listing itself now carries
+        # pane_pid, so it needs no extra display-message call either
+        backend.transcript("%1", 4)
+        self.assertEqual([c[0] for c in calls], ["list-panes"])
 
 
 if __name__ == "__main__":
