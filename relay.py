@@ -136,8 +136,8 @@ def extract_reply(text: str, token: str, ignore: set[str] | None = None) -> str 
     return found
 
 
-def inspect(transport, pane_id: str, provider: str | None = None, lines: int = 60) -> dict:
-    text = transport.capture(pane_id, lines)
+def inspect(transport, pane_id: str, provider: str | None = None, lines: int = 60, pane: dict | None = None) -> dict:
+    text = transport.capture(pane_id, lines, pane=pane)
     return {"pane": pane_id, "provider": provider, "status": classify(text), "tail": strip_ansi(text)}
 
 

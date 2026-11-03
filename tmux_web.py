@@ -165,16 +165,18 @@ class TmuxBackend:
             "#{session_name}", "#{window_index}", "#{window_name}", "#{pane_index}",
             "#{pane_current_command}", "#{pane_title}", "#{pane_current_path}",
             "#{pane_active}", "#{pane_width}", "#{pane_height}", "#{window_activity}",
+            "#{pane_pid}",
         ])
         raw = self._run("list-panes", "-a", "-F", format_string)
         panes = []
         for line in raw.splitlines():
             fields = line.split(FIELD_SEPARATOR)
-            if len(fields) not in (12, 13):
+            if len(fields) not in (12, 13, 14):
                 continue
             pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields[:12]
             activity = fields[12] if len(fields) > 12 else ""
-            panes.append({
+            pane_pid = fields[13] if len(fields) > 13 else ""
+            pane = {
                 "id": pane_id,
                 "host_id": "localhost",
                 "target": target,
@@ -189,7 +191,12 @@ class TmuxBackend:
                 "activity": int(activity) if str(activity).isdigit() else 0,
                 "width": int(width),
                 "height": int(height),
-            })
+            }
+            if pane_pid:
+                # lets transcript() skip its own display-message lookup;
+                # older output without the field keeps the old dict shape
+                pane["pane_pid"] = pane_pid
+            panes.append(pane)
         return panes
 
     def validate_pane(self, pane_id: str) -> dict:
@@ -200,46 +207,66 @@ class TmuxBackend:
                 return pane
         raise TmuxError("pane not found")
 
-    def capture_many(self, pane_ids, history: int = 40) -> dict:
-        """Local captures are a few ms each; this keeps the sweep's interface uniform."""
+    def capture_many(self, pane_ids, history: int = 40, panes: dict | None = None) -> dict:
+        """Local captures are a few ms each; this keeps the sweep's interface uniform.
+
+        ``panes`` maps pane ids to dicts the caller already listed (the sweep's
+        own listing): a listed pane skips its own validation, a missing entry
+        falls back to it, and no mapping keeps the old behaviour entirely.
+        """
         result = {}
         for pane_id in pane_ids:
             try:
-                result[pane_id] = self.capture(pane_id, history)
+                result[pane_id] = self.capture(pane_id, history, pane=(panes or {}).get(pane_id))
             except (RuntimeError, OSError, ValueError, TmuxError):
                 continue
         return result
 
-    def capture(self, pane_id: str, history: int = 500) -> str:
-        self.validate_pane(pane_id)
+    def capture(self, pane_id: str, history: int = 500, pane: dict | None = None) -> str:
+        # routes that already validated (pane_or_404) pass the pane through so
+        # one request pays for one list, not two; direct callers validate here
+        if pane is None:
+            self.validate_pane(pane_id)
         history = max(20, min(history, 5000))
         content = self._run("capture-pane", "-p", "-J", "-t", pane_id, "-S", f"-{history}")
         return ANSI_RE.sub("", content)
 
-    def capture_ansi(self, pane_id: str, history: int = 500) -> str:
-        self.validate_pane(pane_id)
+    def capture_ansi(self, pane_id: str, history: int = 500, pane: dict | None = None) -> str:
+        if pane is None:
+            self.validate_pane(pane_id)
         history = max(20, min(history, 5000))
         return self._run("capture-pane", "-p", "-J", "-e", "-t", pane_id, "-S", f"-{history}")
 
     def pane_pid(self, pane_id: str) -> str:
         return self._run("display-message", "-p", "-t", pane_id, "#{pane_pid}").strip()
 
-    def transcript(self, pane_id: str, limit: int = 200, refresh: bool = False) -> dict:
+    def transcript(self, pane_id: str, limit: int = 200, refresh: bool = False, pane: dict | None = None) -> dict:
         # `refresh` exists so the API can pass it for every transport: remote hosts cache
         # the pulled bytes, the local read is always fresh, so it is accepted and ignored.
         # Discovery and parsing live in transcript_reader so the exact same code
         # produces transcripts here and on SSH remote hosts.
-        pane = self.validate_pane(pane_id)
+        if pane is None:
+            pane = self.validate_pane(pane_id)
         provider = transcript_reader.provider_for_command(pane.get("command"))
         if provider is None:
             raise TmuxError("structured transcript is not supported for this pane")
         # A resumed CLI session tells us exactly which transcript to read; the
         # local/web gateway does not, so the reader falls back to cwd probing.
-        hint = transcript_reader.resume_session_hint(self.pane_pid(pane_id))
+        # The pid rides along with the listing now, so a validated pane skips
+        # the extra display-message call; direct callers still pay for it.
+        # A failing pid lookup must not kill the transcript: without it we just
+        # lose the --resume hint and fall back to cwd probing.
+        pid = pane.get("pane_pid") or ""
+        if not pid:
+            try:
+                pid = self.pane_pid(pane_id)
+            except (TmuxError, RuntimeError, OSError, ValueError):
+                pid = ""
+        hint = transcript_reader.resume_session_hint(pid) if pid else None
         try:
             data = transcript_reader.read_transcript(
                 provider, pane.get("path", ""), pane.get("title", ""), limit,
-                home=Path.home(), hint=hint, screen=lambda: self.capture(pane_id, 80),
+                home=Path.home(), hint=hint, screen=lambda: self.capture(pane_id, 80, pane=pane),
             )
         except transcript_reader.TranscriptError as exc:
             raise TmuxError(str(exc)) from exc
@@ -247,9 +274,9 @@ class TmuxBackend:
         return data
 
     def snapshot_ansi(self, pane_id: str, history: int = 5000,
-                      known_digest: str | None = None) -> tuple[str, str | None]:
+                      known_digest: str | None = None, pane: dict | None = None) -> tuple[str, str | None]:
         """Return (digest, content); content is None when nothing changed."""
-        content = self.capture_ansi(pane_id, history)
+        content = self.capture_ansi(pane_id, history, pane=pane)
         digest = hashlib.sha1(content.encode()).hexdigest()
         if known_digest is not None and digest == known_digest:
             return digest, None
@@ -295,12 +322,14 @@ class TmuxBackend:
         if resolved.is_file() or resolved.is_symlink():
             resolved.unlink()
 
-    def send_key(self, pane_id: str, key: str) -> None:
-        self.validate_pane(pane_id)
+    def send_key(self, pane_id: str, key: str, pane: dict | None = None) -> None:
+        if pane is None:
+            self.validate_pane(pane_id)
         self._run("send-keys", "-t", pane_id, key)
 
-    def send(self, pane_id: str, text: str, submit: bool = True) -> None:
-        pane = self.validate_pane(pane_id)
+    def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None) -> None:
+        if pane is None:
+            pane = self.validate_pane(pane_id)
         buffer_name = f"tmux-web-{secrets.token_hex(8)}"
         try:
             if submit:
@@ -937,17 +966,18 @@ def create_app(
         # One capture per host: the tail text is classified locally afterwards.
         captured: dict[int, dict] = {}
         def grab(transport_panes):
-            key, transport, pane_ids = transport_panes
+            key, transport, pane_ids, panes = transport_panes
             try:
-                return key, transport.capture_many(pane_ids, 40)
+                return key, transport.capture_many(pane_ids, 40, panes=panes)
             except Exception:  # noqa: BLE001 - fall back to per-pane captures
                 return key, {}
         groups: dict[int, tuple] = {}
         for job in jobs:
             transport = job[2]
             actual = job[3].get("pane_id") or job[3]["id"]
-            entry = groups.setdefault(id(transport), (id(transport), transport, []))
+            entry = groups.setdefault(id(transport), (id(transport), transport, [], {}))
             entry[2].append(actual)
+            entry[3][actual] = job[3]
         with ThreadPoolExecutor(max_workers=max(1, min(8, len(groups) or 1))) as pool:
             for index, texts in pool.map(grab, list(groups.values())):
                 captured[index] = texts
@@ -1035,7 +1065,7 @@ def create_app(
                     status, source = "unknown", "screen"
             else:
                 try:
-                    state = relay.inspect(transport, actual_pane_id, provider, lines=40)
+                    state = relay.inspect(transport, actual_pane_id, provider, lines=40, pane=pane)
                     status, source = state["status"], "screen"
                 except Exception:  # noqa: BLE001 - one slow or dead pane must not fail the sweep
                     status, source = "unknown", "screen"
@@ -1135,7 +1165,7 @@ def create_app(
         try:
             transport, actual_pane_id = pane_transport(row["pane_id"])
             pane = pane_or_404(row["pane_id"])
-            data = transport.transcript(actual_pane_id, 1)
+            data = transport.transcript(actual_pane_id, 1, pane=pane)
         except (HTTPException, TmuxError, RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail="shared session is unavailable") from exc
         if str(data.get("session_id")) != row["session_id"]:
@@ -1368,10 +1398,10 @@ def create_app(
         require_auth(request)
         if not SHARE_SLUG_RE.fullmatch(payload.slug):
             raise HTTPException(status_code=422, detail="slug must use lowercase letters, numbers, and hyphens")
-        pane = pane_or_404(payload.pane_id)
+        pane = await asyncio.to_thread(pane_or_404, payload.pane_id)
         transport, actual_pane_id = pane_transport(payload.pane_id)
         try:
-            transcript_data = await asyncio.to_thread(transport.transcript, actual_pane_id, 1)
+            transcript_data = await asyncio.to_thread(transport.transcript, actual_pane_id, 1, pane=pane)
         except (TmuxError, RuntimeError, ValueError):
             # a plain shell pane has no transcript: the share shows the screen instead
             transcript_data = {}
@@ -1512,7 +1542,7 @@ def create_app(
     async def share_transcript(request: Request, slug: str, limit: int = 300):
         row = get_share(slug)
         require_share_access(request, row)
-        validate_shared_session(row)
+        await asyncio.to_thread(validate_shared_session, row)
         transport, actual_pane_id = pane_transport(row["pane_id"])
         if not row["session_id"]:
             content = await asyncio.to_thread(transport.capture, actual_pane_id, 2000)
@@ -1529,7 +1559,7 @@ def create_app(
         require_share_access(request, row)
         if not row["allow_input"]:
             raise HTTPException(status_code=403, detail="this share is read-only")
-        validate_shared_session(row)
+        await asyncio.to_thread(validate_shared_session, row)
         transport, actual_pane_id = pane_transport(row["pane_id"])
         await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit)
         return {"status": "sent", "submit": payload.submit}
@@ -1674,7 +1704,7 @@ def create_app(
     async def list_panes(request: Request):
         require_auth(request)
         try:
-            return {"panes": [pane_metadata(pane) for pane in tmux.list_panes()]}
+            return {"panes": [pane_metadata(pane) for pane in await asyncio.to_thread(tmux.list_panes)]}
         except TmuxError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -2182,10 +2212,10 @@ def create_app(
     @app.get("/api/panes/{pane_id}/capture")
     async def capture(request: Request, pane_id: str, history: int = 500):
         require_auth(request)
-        pane_or_404(pane_id)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
         try:
             transport, actual_pane_id = pane_transport(pane_id)
-            content = await asyncio.to_thread(transport.capture, actual_pane_id, history)
+            content = await asyncio.to_thread(transport.capture, actual_pane_id, history, pane=pane)
             return {"pane": pane_id, "content": content}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -2210,13 +2240,13 @@ def create_app(
     @app.get("/api/panes/{pane_id}/transcript")
     async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0):
         require_auth(request)
-        pane_or_404(pane_id)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
         try:
             transport, actual_pane_id = pane_transport(pane_id)
             if refresh and hasattr(transport, "transcript"):
-                data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, True)
+                data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, True, pane=pane)
             else:
-                data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit)
+                data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, pane=pane)
             return with_waiting_hint(data)
         except HTTPException:
             raise
@@ -2226,10 +2256,10 @@ def create_app(
     @app.post("/api/panes/{pane_id}/input")
     async def send_input(request: Request, pane_id: str, payload: InputRequest):
         require_auth(request)
-        pane_or_404(pane_id)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
         try:
             transport, actual_pane_id = pane_transport(pane_id)
-            await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit)
+            await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit, pane=pane)
             return {"status": "sent", "pane": pane_id, "submit": payload.submit}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -2238,12 +2268,12 @@ def create_app(
     async def interrupt_pane(request: Request, pane_id: str):
         """Stop the turn that is running in this pane, using the key its CLI expects."""
         require_auth(request)
-        pane = pane_or_404(pane_id)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
         provider = transcript_reader.provider_for_command(pane.get("command"))
         key = interrupt_key(provider)
         try:
             transport, actual_pane_id = pane_transport(pane_id)
-            await asyncio.to_thread(transport.send_key, actual_pane_id, key)
+            await asyncio.to_thread(transport.send_key, actual_pane_id, key, pane=pane)
             return {"status": "sent", "pane": pane_id, "key": key, "provider": provider}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -2252,18 +2282,20 @@ def create_app(
     async def send_key(request: Request, pane_id: str, payload: KeyRequest):
         """Send one named key (Escape interrupts a running agent turn)."""
         require_auth(request)
-        pane_or_404(pane_id)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
         if payload.key not in ALLOWED_KEYS:
             raise HTTPException(status_code=422, detail="unsupported key")
         try:
             transport, actual_pane_id = pane_transport(pane_id)
-            await asyncio.to_thread(transport.send_key, actual_pane_id, payload.key)
+            await asyncio.to_thread(transport.send_key, actual_pane_id, payload.key, pane=pane)
             return {"status": "sent", "pane": pane_id, "key": payload.key}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    def file_target(pane_ref: str) -> tuple[object, str, dict]:
-        pane = pane_or_404(pane_ref)
+    async def file_target(pane_ref: str) -> tuple[object, str, dict]:
+        # blocking pane lookup stays off the event loop; the transport itself
+        # does no I/O, so only the lookup moves to a thread
+        pane = await asyncio.to_thread(pane_or_404, pane_ref)
         transport, actual_pane_id = pane_transport(pane_ref)
         return transport, actual_pane_id, pane
 
@@ -2272,7 +2304,7 @@ def create_app(
                               limit: int = 2000):
         require_auth(request)
         try:
-            transport, _actual, pane = file_target(pane_id)
+            transport, _actual, pane = await file_target(pane_id)
             directory = path or pane.get("path") or "."
             data = await asyncio.to_thread(transport.list_files, directory, bool(hidden),
                                            max(1, min(limit, 5000)))
@@ -2297,7 +2329,7 @@ def create_app(
         if not path.strip():
             raise HTTPException(status_code=422, detail="path is required")
         try:
-            transport, _actual, pane = file_target(pane_id)
+            transport, _actual, pane = await file_target(pane_id)
             base = (pane.get("path") or "").strip()
             raw = os.path.expanduser(path.strip())
             if os.path.isabs(raw):
@@ -2353,7 +2385,7 @@ def create_app(
         if not path:
             raise HTTPException(status_code=422, detail="path is required")
         try:
-            transport, _actual, _pane = file_target(pane_id)
+            transport, _actual, _pane = await file_target(pane_id)
             payload = await asyncio.to_thread(transport.download_file, path, download_limit)
         except HTTPException:
             raise
@@ -2384,7 +2416,7 @@ def create_app(
         if not path:
             raise HTTPException(status_code=422, detail="path is required")
         try:
-            transport, _actual, _pane = file_target(pane_id)
+            transport, _actual, _pane = await file_target(pane_id)
             payload = await asyncio.to_thread(transport.download_file, path, download_limit)
         except HTTPException:
             raise
@@ -2411,7 +2443,7 @@ def create_app(
         if len(wanted) > 1000:
             raise HTTPException(status_code=422, detail="too many paths selected")
         try:
-            transport, _actual, pane = file_target(pane_id)
+            transport, _actual, pane = await file_target(pane_id)
             base = payload.base or pane.get("path") or "."
             blob = await asyncio.to_thread(transport.zip_files, wanted, base, zip_limit, zip_max_files)
         except HTTPException:
@@ -2435,7 +2467,7 @@ def create_app(
         if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
             raise HTTPException(status_code=422, detail="invalid file name")
         try:
-            transport, _actual, pane = file_target(pane_id)
+            transport, _actual, pane = await file_target(pane_id)
             directory = dir or pane.get("path") or "."
             body = await request.body()
             if len(body) > upload_limit:
@@ -2458,7 +2490,7 @@ def create_app(
         if os.path.basename(dir.rstrip("/")) != "upload_files":
             raise HTTPException(status_code=422, detail="only files in upload_files can be removed here")
         try:
-            transport, _actual, _pane = file_target(pane_id)
+            transport, _actual, _pane = await file_target(pane_id)
             target = os.path.join(dir, name)
             await asyncio.to_thread(transport.delete_file, target)
         except HTTPException:
@@ -2525,13 +2557,13 @@ def create_app(
         if not custom_title:
             entry["title"] = entry["default_title"]
         try:
-            entry["status"] = relay.inspect(transport, actual_pane_id, provider, lines=30)["status"]
+            entry["status"] = relay.inspect(transport, actual_pane_id, provider, lines=30, pane=pane)["status"]
         except (RuntimeError, OSError, ValueError):
             entry["status"] = "unknown"
         if not provider:
             return entry
         try:
-            data = transport.transcript(actual_pane_id, 4)
+            data = transport.transcript(actual_pane_id, 4, pane=pane)
         except (RuntimeError, OSError, ValueError, transcript_reader.TranscriptError):
             return entry
         messages = data.get("messages") or []
@@ -3117,7 +3149,7 @@ def create_app(
             await websocket.close(code=4401)
             return
         try:
-            pane_or_404(pane_id)
+            pane = await asyncio.to_thread(pane_or_404, pane_id)
             transport, actual_pane_id = pane_transport(pane_id)
         except HTTPException:
             await websocket.close(code=4404)
@@ -3134,12 +3166,12 @@ def create_app(
                 snapshot = getattr(transport, "snapshot_ansi", None)
                 if snapshot is None:
                     capture_ansi = getattr(transport, "capture_ansi", transport.capture)
-                    content = await asyncio.to_thread(capture_ansi, actual_pane_id, lines)
+                    content = await asyncio.to_thread(capture_ansi, actual_pane_id, lines, pane=pane)
                     new_digest = hashlib.sha1(content.encode()).hexdigest()
                     payload = None if digest == new_digest else content
                     digest = new_digest
                 else:
-                    digest, payload = await asyncio.to_thread(snapshot, actual_pane_id, lines, digest)
+                    digest, payload = await asyncio.to_thread(snapshot, actual_pane_id, lines, digest, pane=pane)
                 # the first frame carries some scrollback, the rest is tail-only
                 lines = stream_lines
                 if payload is not None:
@@ -3164,7 +3196,7 @@ def create_app(
             await websocket.close(code=4401)
             return
         try:
-            pane_or_404(pane_id)
+            await asyncio.to_thread(pane_or_404, pane_id)
             host_id, actual_pane_id = split_pane_ref(pane_id)
         except (HTTPException, ValueError):
             await websocket.close(code=4404)

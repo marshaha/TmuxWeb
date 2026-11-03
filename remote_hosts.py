@@ -1383,7 +1383,9 @@ class SSHRunner:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
         return parse_tmux_panes(completed.stdout.decode(errors="replace"), self.host["id"])
 
-    def capture_ansi(self, pane_id: str, history: int = 5000) -> str:
+    def capture_ansi(self, pane_id: str, history: int = 5000, pane: dict | None = None) -> str:
+        # pane is accepted for interface symmetry with the local backend and
+        # ignored: remote transports never validate, the id check below is free
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
         command = f"${{TMUX_BIN:-tmux}} capture-pane -p -J -e -t {shlex.quote(pane_id)} -S -{max(20, min(history, 5000))}"
@@ -1412,7 +1414,7 @@ class SSHRunner:
         return digest
 
     def snapshot_ansi(self, pane_id: str, history: int = 5000,
-                      known_digest: str | None = None) -> tuple[str, str | None]:
+                      known_digest: str | None = None, pane: dict | None = None) -> tuple[str, str | None]:
         digest = self.capture_digest(pane_id, history)
         if known_digest is not None and digest == known_digest:
             return digest, None
@@ -1441,7 +1443,7 @@ class SSHRunner:
                 continue
         return max(stamps) if stamps else 0.0
 
-    def transcript(self, pane_id: str, limit: int = 200, refresh: bool = False) -> dict:
+    def transcript(self, pane_id: str, limit: int = 200, refresh: bool = False, pane: dict | None = None) -> dict:
         """Pull a remote transcript's bytes and parse them here, like scp + local parse.
 
         Repeated polls reuse a cached parse: within the TTL no SSH call happens at
@@ -1694,10 +1696,10 @@ class SSHRunner:
             detail = completed.stderr.decode(errors="replace").strip()
             raise RuntimeError(detail or "remote file could not be removed")
 
-    def capture(self, pane_id: str, history: int = 5000) -> str:
+    def capture(self, pane_id: str, history: int = 5000, pane: dict | None = None) -> str:
         return ANSI_RE.sub("", self.capture_ansi(pane_id, history))
 
-    def capture_many(self, pane_ids, history: int = 40) -> dict:
+    def capture_many(self, pane_ids, history: int = 40, panes: dict | None = None) -> dict:
         """Capture several panes in one ssh call: pane text keyed by pane id.
 
         The status sweep needs a short tail of every pane on a host; doing that one
@@ -1757,7 +1759,7 @@ class SSHRunner:
                 result[pane] = state
         return result
 
-    def send_key(self, pane_id: str, key: str) -> None:
+    def send_key(self, pane_id: str, key: str, pane: dict | None = None) -> None:
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
         command = f"${{TMUX_BIN:-tmux}} send-keys -t {shlex.quote(pane_id)} {shlex.quote(key)}"
@@ -1765,7 +1767,7 @@ class SSHRunner:
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote key send failed")
 
-    def send(self, pane_id: str, text: str, submit: bool = True) -> None:
+    def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None) -> None:
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
         name = "web-" + secrets.token_hex(6)
