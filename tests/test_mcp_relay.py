@@ -161,8 +161,13 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("redact()", script)
         self.assertIn('s/$TOKEN/***REDACTED***/g', script)
         self.assertIn("chmod 600", script)
-        # hermes has no --yes flag, so the enable prompt is answered explicitly
-        self.assertIn("printf 'y\\n' | hermes mcp add", script)
+        # hermes has no --yes flag: the two prompts (requires auth? / enable all) are piped in,
+        # and the token is seeded as MCP_<NAME>_API_KEY so `mcp add` never asks for it
+        self.assertIn("printf 'y\\ny\\n' | hermes mcp add", script)
+        self.assertIn('MCP_$(printf', script)
+        self.assertIn('--auth header', script)
+        # 预置 token 的那段不能把它打到 stdout
+        self.assertNotIn('echo "$TOKEN"', script)
 
 
 class MissingTokenTests(unittest.TestCase):
