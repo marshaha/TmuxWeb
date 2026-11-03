@@ -290,6 +290,11 @@ class TmuxBackend:
             if temporary.exists():
                 temporary.unlink()
 
+    def delete_file(self, path: str) -> None:
+        resolved = file_browser.resolve_path(path)
+        if resolved.is_file() or resolved.is_symlink():
+            resolved.unlink()
+
     def send_key(self, pane_id: str, key: str) -> None:
         self.validate_pane(pane_id)
         self._run("send-keys", "-t", pane_id, key)
@@ -2348,6 +2353,24 @@ def create_app(
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"status": "uploaded", "path": target, "size": len(body)}
+
+    @app.delete("/api/panes/{pane_id}/files/upload")
+    async def delete_pane_upload(request: Request, pane_id: str, name: str, dir: str = ""):
+        """删掉聊天里刚上传的附件（只允许 upload_files 目录下的单层文件名）。"""
+        require_auth(request)
+        if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+            raise HTTPException(status_code=422, detail="invalid file name")
+        if os.path.basename(dir.rstrip("/")) != "upload_files":
+            raise HTTPException(status_code=422, detail="only files in upload_files can be removed here")
+        try:
+            transport, _actual, _pane = file_target(pane_id)
+            target = os.path.join(dir, name)
+            await asyncio.to_thread(transport.delete_file, target)
+        except HTTPException:
+            raise
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"status": "deleted", "path": target}
 
     def host_label(pane_id: str) -> str:
         try:

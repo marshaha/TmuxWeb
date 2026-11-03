@@ -1852,6 +1852,53 @@ class TmuxWebTests(unittest.TestCase):
             self.assertEqual(self.client.get("/api/panes/%254/files/download").status_code, 422)
             self.assertEqual(self.client.get("/api/panes/%254/files/download?path=/nope/missing").status_code, 503)
 
+    def test_chat_attachments_land_in_upload_files_and_can_be_removed(self):
+        """聊天上传：存到 <pane 目录>/upload_files，用 × 删掉时连磁盘文件一起删。"""
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            target = os.path.join(directory, "upload_files")
+            response = self.client.put(
+                f"/api/panes/%254/files/upload?dir={target}&name=shot%20one.png",
+                content=b"\x89PNG\r\n",
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(Path(target, "shot one.png").is_file())
+            removed = self.client.request(
+                "DELETE", f"/api/panes/%254/files/upload?dir={target}&name=shot%20one.png")
+            self.assertEqual(removed.status_code, 200, removed.text)
+            self.assertFalse(Path(target, "shot one.png").exists())
+
+    def test_chat_attachment_delete_refuses_anything_outside_upload_files(self):
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            Path(directory, "keep.txt").write_text("keep")
+            outside = self.client.request(
+                "DELETE", f"/api/panes/%254/files/upload?dir={directory}&name=keep.txt")
+            self.assertEqual(outside.status_code, 422)
+            self.assertTrue(Path(directory, "keep.txt").exists())
+            for name in ["..", "a%2Fb", "x%00y"]:
+                bad = self.client.request(
+                    "DELETE", f"/api/panes/%254/files/upload?dir={directory}%2Fupload_files&name={name}")
+                self.assertEqual(bad.status_code, 422, name)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.request(
+            "DELETE", "/api/panes/%254/files/upload?dir=/tmp/upload_files&name=x").status_code, 401)
+
+    def test_the_chat_composer_can_attach_files(self):
+        """输入框上面挂附件条：图片小格子预览、其它文件显示名字，消息前补一行说明。"""
+        self.login()
+        page = self.client.get("/").text
+        for marker in ('id="uploads"', 'id="attach"', 'id="upload-input"', '<symbol id="i-paperclip"',
+                       "const uploadState={items:[]};", "upload_files", "#i-file"):
+            self.assertIn(marker, page)
+        self.assertIn("/files/${action}?${query}", page)
+        self.assertIn("const query=`name=${encodeURIComponent(name)}&dir=${encodeURIComponent(dir)}`;", page)
+        self.assertIn("user uploaded file “${names.join(' & ')}”", page)
+        self.assertIn("const prompt=uploadPrompt(uploadState.items);", page)
+
     def test_upload_limit_returns_413(self):
         with patch.dict("os.environ", {"TMUX_WEB_FILE_UPLOAD_MAX": "8"}):
             client = TestClient(create_app(self.tmux, password="unit-test-admin-password",

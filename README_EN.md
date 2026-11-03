@@ -117,6 +117,18 @@ pane was terminated by an external signal (no shutdown log ⇒ SIGKILL/SIGHUP) a
 Pinpointing the sender needs auditd (not installed); the three recorders above plus the auto-restart now make
 both the outage and the blind spot go away.
 
+### Attaching files from the chat composer
+
+The 「附件」 button under the composer (or dropping files onto it) uploads into
+`upload_files/` **inside that pane's current directory** — remote panes go over the same SSH channel:
+
+- pending attachments show above the input box: images as small thumbnails, other files as name + size;
+- the × on each one removes it from the message *and* deletes the copy on disk
+  (`DELETE /api/panes/<pane>/files/upload`, restricted to single names inside `upload_files`);
+- sending prefixes the message with `user uploaded file “a.png & b.pdf”` and a blank line, so the agent
+  knows what to read;
+- switching panes clears the strip; the upload limit is the file panel's `TMUX_WEB_FILE_UPLOAD_MAX` (256MB default).
+
 ### Multi-window on a phone
 
 - The toolbar slims down to icons (add / presets / home) and the layout switch disappears: a phone is always

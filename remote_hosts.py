@@ -1668,6 +1668,15 @@ class SSHRunner:
             detail = completed.stderr.decode(errors="replace").strip()
             raise RuntimeError(detail or "remote file could not be written")
 
+    def delete_file(self, path: str) -> None:
+        """Remove one remote file (used by the chat attachments)."""
+        if "\x00" in path or "\n" in path:
+            raise ValueError("invalid path")
+        completed = self.run(f"rm -f -- {shlex.quote(path)}", timeout=60)
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(errors="replace").strip()
+            raise RuntimeError(detail or "remote file could not be removed")
+
     def capture(self, pane_id: str, history: int = 5000) -> str:
         return ANSI_RE.sub("", self.capture_ansi(pane_id, history))
 
