@@ -24,7 +24,7 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **One short number per window (`#N`)**: shared across hosts (`pane_numbers` in `home.db`, assigned on first sight,
   never reused), shown in the session tree, in 最近, in the console title bar, in every `/grid` cell header, and in the `/preview` and `/term` headers. The browser/PWA window title carries the same `#N` prefix (console, a single or maximised grid window, preview, terminal). It is the handle for `?pane=#12`, for the MCP relay
   (`ask_agent` / `send_agent` / `read_agent` accept `target: "#12"`, and `list_agents` returns `handle`), and for talking
-  about a specific agent in prose. A number whose window is gone answers 404 with an explanation instead of resolving to
+  about a specific agent in prose. Resolution lives in `pane_or_404` / `pane_transport`, so `read_agent`, `send_agent`, `ask_agent` and any `/api/panes/#12/...` HTTP call accept the short form. A number whose window is gone answers 404 with an explanation instead of resolving to
   somebody else's session.
 - **Sidebar hover preview**: rest the pointer on a session-tree row or a 最近 row (2s by default, 1/2/3s or off
   in the settings panel) and the last message floats next to it, with 完整预览 / 聊天 / 关闭 at the bottom.
