@@ -19,6 +19,7 @@ without a server.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import time
@@ -48,6 +49,11 @@ class HomeStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self.ensure_schema()
+        # 历史上的分叉（钉住时没改名、收藏处却有名字，比如 #6）在这里合成一个名字。
+        # 只填空白的一侧，不删任何记录。
+        changed = self.sync_names()
+        if changed:
+            logging.getLogger(__name__).info("home: merged %d pin/favourite names", changed)
 
     def ensure_schema(self) -> None:
         with self._lock:
@@ -180,16 +186,31 @@ class HomeStore:
 
     # ---------------------------------------------------------------- favorites
     def add_favorite(self, pane_id: str, note: str = "", title: str = "") -> dict:
+        """Star a pane. One pane has one name, so a pin's label is adopted here.
+
+        * explicit ``title`` wins and is mirrored onto the pin;
+        * empty ``title`` inherits the pin's label (a pane already named in the
+          sidebar must not come back unnamed on the board);
+        * neither exists → stays empty and the card shows the generated default.
+        """
         pane_id = pane_id.strip()
         if not pane_id:
             raise ValueError("pane_id is required")
+        clean = (title or "").strip()[:MAX_TITLE]
         with self._lock:
+            if not clean:
+                pin = self._conn.execute("SELECT label FROM pins WHERE pane_id = ?", (pane_id,)).fetchone()
+                clean = (pin["label"] if pin else "") or ""
             self._conn.execute(
                 """INSERT INTO favorites (pane_id, note, title, created_at) VALUES (?, ?, ?, ?)
                    ON CONFLICT(pane_id) DO UPDATE SET note = excluded.note,
                        title = CASE WHEN excluded.title = '' THEN favorites.title ELSE excluded.title END""",
-                (pane_id, note[:2000], title[:MAX_TITLE], _now()),
+                (pane_id, note[:2000], clean, _now()),
             )
+            if clean:
+                self._conn.execute(
+                    "UPDATE pins SET label = ? WHERE pane_id = ? AND label != ?", (clean, pane_id, clean)
+                )
             self._conn.commit()
             row = self._conn.execute("SELECT * FROM favorites WHERE pane_id = ?", (pane_id,)).fetchone()
         return dict(row)
@@ -259,21 +280,30 @@ class HomeStore:
     def pin(self, pane_id: str, label: str = "") -> dict:
         """Nail a pane to the top of 最近. Pinning twice just refreshes the label.
 
-        Pinning deliberately ignores the board: a favourite and a pin are separate
-        lists, so pinning a pane that happens to be starred does not copy the card's
-        title over. Only an explicit rename links the two names (see rename_pin).
+        The pin and the board card are two lists but **one name**: an explicit
+        ``label`` is mirrored onto the card, and an empty ``label`` inherits the
+        card's title (otherwise #6 shows up as `claude · 0: main · oracle` while the
+        board already calls it something else).
         """
         pane_id = (pane_id or "").strip()
         if not pane_id:
             raise ValueError("pane_id is required")
         now = _now()
+        clean = (label or "").strip()[:MAX_TITLE]
         with self._lock:
+            if not clean:
+                card = self._conn.execute("SELECT title FROM favorites WHERE pane_id = ?", (pane_id,)).fetchone()
+                clean = (card["title"] if card else "") or ""
             self._conn.execute(
                 """INSERT INTO pins (pane_id, label, created_at) VALUES (?, ?, ?)
                    ON CONFLICT(pane_id) DO UPDATE SET
                        label = CASE WHEN excluded.label = '' THEN pins.label ELSE excluded.label END""",
-                (pane_id, (label or "").strip()[:MAX_TITLE], now),
+                (pane_id, clean, now),
             )
+            if clean:
+                self._conn.execute(
+                    "UPDATE favorites SET title = ? WHERE pane_id = ? AND title != ?", (clean, pane_id, clean)
+                )
             self._conn.execute(
                 "DELETE FROM pins WHERE pane_id NOT IN"
                 " (SELECT pane_id FROM pins ORDER BY created_at DESC LIMIT ?)",
@@ -307,6 +337,34 @@ class HomeStore:
             cursor = self._conn.execute("DELETE FROM pins WHERE pane_id = ?", ((pane_id or "").strip(),))
             self._conn.commit()
             return cursor.rowcount > 0
+
+    def sync_names(self) -> int:
+        """Make the pin label and the board title one name (idempotent).
+
+        The two lists stay separate -- pinning does not star and starring does not
+        pin -- but a pane has exactly one name. Rows written before the rename
+        sync existed can disagree; this fills blanks from the other side and, when
+        both sides have a *different* name, keeps the pin's label (the sidebar is
+        where names get edited). Returns how many rows changed.
+        """
+        with self._lock:
+            filled_pins = self._conn.execute(
+                """UPDATE pins SET label = (SELECT title FROM favorites f WHERE f.pane_id = pins.pane_id)
+                   WHERE label = '' AND EXISTS (SELECT 1 FROM favorites f
+                                                WHERE f.pane_id = pins.pane_id AND f.title != '')"""
+            ).rowcount
+            filled_cards = self._conn.execute(
+                """UPDATE favorites SET title = (SELECT label FROM pins p WHERE p.pane_id = favorites.pane_id)
+                   WHERE title = '' AND EXISTS (SELECT 1 FROM pins p
+                                                WHERE p.pane_id = favorites.pane_id AND p.label != '')"""
+            ).rowcount
+            overwritten = self._conn.execute(
+                """UPDATE favorites SET title = (SELECT label FROM pins p WHERE p.pane_id = favorites.pane_id)
+                   WHERE EXISTS (SELECT 1 FROM pins p WHERE p.pane_id = favorites.pane_id
+                                 AND p.label != '' AND p.label != favorites.title)"""
+            ).rowcount
+            self._conn.commit()
+        return filled_pins + filled_cards + overwritten
 
     def pins(self) -> list[dict]:
         """Newest pin first: the thing you just nailed to the top is the thing you want to see."""

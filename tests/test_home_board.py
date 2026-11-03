@@ -244,19 +244,64 @@ class HomeBoardTests(unittest.TestCase):
         self.assertEqual(self.client.patch("/api/home/recent/pin/%255", json={"label": "x"}).status_code, 404)
         self.assertEqual(self.client.patch("/api/home/recent/pin/%20", json={"label": "x"}).status_code, 422)
 
-    def test_pinning_never_copies_the_card_title(self):
-        """钉住和收藏是两份独立的数据：钉的时候不从收藏卡片借名字。"""
+    def test_a_pin_and_a_card_share_one_name(self):
+        """完全同步：钉住/收藏是两份列表，但名字只有一个。
+
+        用户明确要求 —— 钉子区没单独改名的行要显示收藏处的名字，且两边改名互相跟随。
+        """
         self.favourite("%6")
         self.client.patch("/api/home/favorites/%256", json={"title": "HERMES 板子"})
-        self.client.post("/api/home/recent/pin", json={"pane": "%6", "label": "localhost · hermes"})
-        data = self.client.get("/api/home/recent?limit=8").json()
-        self.assertEqual(data["recent"][0]["label"], "localhost · hermes")
-        self.assertEqual(data["recent"][0]["title"], "HERMES 板子")     # 各是各的
+        # 钉住时不给名字 → 继承收藏卡片的名字（不是 claude · 0: main · oracle）
+        self.client.post("/api/home/recent/pin", json={"pane": "%6", "label": ""})
+        row = next(r for r in self.client.get("/api/home/recent?limit=8").json()["recent"]
+                   if r["pane"] == "%6")
+        self.assertEqual(row["label"], "HERMES 板子")
+        self.assertEqual(row["title"], "HERMES 板子")
+        # 钉住时给名字 → 收藏卡片跟着改
+        self.client.post("/api/home/recent/pin", json={"pane": "%6", "label": "本地 HERMES"})
+        board = self.client.get("/api/home").json()
+        self.assertEqual([f["title"] for f in board["favorites"] if f["pane"] == "%6"], ["本地 HERMES"])
         # 收藏本身也绝不会凭空长出一条钉子
         store = __import__("home_store").HomeStore(":memory:")
         store.add_favorite("%7", title="x")
         self.assertEqual(store.pins(), [])
         store.close()
+
+    def test_starring_a_pinned_pane_adopts_the_pin_label(self):
+        store = __import__("home_store").HomeStore(":memory:")
+        store.pin("%8", "板子 A")
+        self.assertEqual(store.add_favorite("%8")["title"], "板子 A")
+        store.add_favorite("%9", title="板子 B")
+        self.assertEqual(store.pin("%9")["label"], "板子 B")
+        # 清空任意一边 = 两边都回到自动名
+        store.rename_pin("%8", "")
+        self.assertEqual([f["title"] for f in store.favorites() if f["pane_id"] == "%8"], [""])
+        store.set_favorite_title("%9", "")
+        self.assertEqual([p["label"] for p in store.pins() if p["pane_id"] == "%9"], [""])
+        store.close()
+
+    def test_old_diverged_rows_are_merged_on_open(self):
+        """老数据：#6 钉住时 label 是空的、收藏处叫 DDR分析 —— 打开库时合并成一个名字。"""
+        import home_store as hs
+        import tempfile
+        from pathlib import Path as _Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _Path(tmp) / "home.db"
+            store = hs.HomeStore(db)
+            # 手工造出历史分叉：钉住用空 label、收藏处有名字
+            store._conn.execute("INSERT INTO pins (pane_id, label, created_at) VALUES (?, '', ?)", ("%6", 1.0))
+            store._conn.execute("INSERT INTO favorites (pane_id, note, title, created_at) VALUES (?, '', ?, ?)",
+                                ("%6", "DDR分析", 1.0))
+            store._conn.commit()
+            store.close()
+            reopened = hs.HomeStore(db)
+            self.assertEqual(reopened.pins()[0]["label"], "DDR分析")
+            self.assertEqual(reopened.favorites()[0]["title"], "DDR分析")
+            # 幂等：再开一次不会改动任何东西
+            reopened.close()
+            again = hs.HomeStore(db)
+            self.assertEqual(again.sync_names(), 0)
+            again.close()
 
     def test_a_pinned_row_shows_the_favorite_name_when_it_has_no_label_of_its_own(self):
         """钉子区 #6 这种：钉住但没单独改名 → 侧栏要显示收藏处的名字，不要退化成 claude · 0: main · oracle。"""
@@ -265,8 +310,9 @@ class HomeBoardTests(unittest.TestCase):
         self.client.post("/api/home/recent/pin", json={"pane": "%6", "label": ""})
         row = next(r for r in self.client.get("/api/home/recent?limit=8").json()["recent"]
                    if r["pane"] == "%6")
-        self.assertEqual(row["label"], "")          # 钉子自己没有名字
-        self.assertEqual(row["title"], "DDR分析")    # 收藏处有
+        # 完全同步之后钉子会直接继承收藏处的名字（以前这里是空串，靠前端兜底）
+        self.assertEqual(row["label"], "DDR分析")
+        self.assertEqual(row["title"], "DDR分析")
         self.assertTrue(row["pinned"])
         # 渲染时的优先级：钉子名字 → 收藏名字 → 自动名
         script = self.client.get("/assets/recents.js").text
