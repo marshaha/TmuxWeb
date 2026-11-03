@@ -32,7 +32,15 @@
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
   main{flex:1;min-height:0;overflow-x:hidden;overflow-y:auto;padding:16px 14px 8px;scrollbar-gutter:stable}
   /* embedded in /grid: the cell header carries the title and the actions */
-  body.embed header{display:none}
+  body.embed header{display:block;position:fixed;top:0;right:0;left:auto;z-index:20;height:auto;
+    padding:0;border:0;background:transparent;box-shadow:none;pointer-events:none}
+  body.embed header>*{display:none!important}
+  /* 但"思考中…"必须留在画面上：多窗口里一眼就能看出哪个窗口在跑 */
+  body.embed header .state{display:inline-flex!important;align-items:center;gap:6px;
+    margin:7px 9px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);
+    background:var(--card);color:var(--ink);font-size:11px;box-shadow:var(--shadow);pointer-events:auto}
+  body.embed header .state:not(.busy){display:none!important}
+  body.embed.waiting main{padding-top:36px}
   body.embed main{padding-top:8px}
   body.embed .msg{margin-bottom:10px}
   body.embed .body{font-size:13.5px}
@@ -190,6 +198,7 @@ function signature(data){return `${data.mtime||''}|${(data.messages||[]).length}
 
 function setState(waiting,status){
   state.waiting=!!waiting;
+  document.body.classList.toggle('waiting',state.waiting);   // 内嵌时给"思考中"胶囊让出顶部空间
   const key=waiting?'busy':(status||'idle');
   $('state').className='state '+key;
   $('state-label').textContent=waiting?'思考中…':(key==='idle'?'idle':key);

@@ -54,7 +54,9 @@
     .cell-head{flex:none;display:flex;align-items:center;gap:7px;height:34px;padding:0 6px 0 10px;border-bottom:1px solid var(--line);background:var(--surface2)}
     .cell-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600}
     .dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--faint)}
-    .dot.idle{background:var(--green)}.dot.busy{background:var(--amber)}.dot.unknown{background:#cfccc4}
+    .dot.idle{background:var(--green)}.dot.busy{background:var(--amber);animation:dot-pulse 1.4s ease-in-out infinite}.dot.unknown{background:#cfccc4}
+    @keyframes dot-pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--amber) 55%,transparent)}50%{box-shadow:0 0 0 3px color-mix(in srgb,var(--amber) 22%,transparent)}}
+    @media(prefers-reduced-motion:reduce){.dot.busy{animation:none}}
     .cell-btn{flex:none;display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer;text-decoration:none}
     .cell-btn:hover{background:var(--card);color:var(--ink)}
     .cell-btn .ico{width:15px;height:15px}
