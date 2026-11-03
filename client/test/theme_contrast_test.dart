@@ -11,7 +11,7 @@ import 'package:tmuxweb_client/widgets/message_tile.dart';
 void main() {
   tearDown(AppTheme.resetForTest);
 
-  double _luminance(Color color) => color.computeLuminance();
+  double luminance(Color color) => color.computeLuminance();
 
   test('the transcript surfaces are derived from the palette', () {
     AppTheme.set(AppThemes.warm);
@@ -25,9 +25,9 @@ void main() {
     expect(darkBubble, isNot(warmBubble));
     expect(darkCode, isNot(warmCode));
     // 深色主题下气泡必须比白纸暗得多，文字才能读得出来。
-    expect(_luminance(darkBubble), lessThan(0.25));
-    expect(_luminance(darkCode), lessThan(0.25));
-    expect(_luminance(warmBubble), greaterThan(0.6));
+    expect(luminance(darkBubble), lessThan(0.25));
+    expect(luminance(darkCode), lessThan(0.25));
+    expect(luminance(warmBubble), greaterThan(0.6));
   });
 
   testWidgets('a user bubble paints the palette colour in a dark theme', (tester) async {
@@ -45,7 +45,7 @@ void main() {
     expect(decoration.color, AppTheme.bubble);
     // 文字与气泡的亮度要差得开，否则就是"看不见"的那种回归。
     final ink = AppTheme.ink;
-    expect((_luminance(ink) - _luminance(AppTheme.bubble)).abs(), greaterThan(0.35));
+    expect((luminance(ink) - luminance(AppTheme.bubble)).abs(), greaterThan(0.35));
   });
 
   test('markdown styling is rebuilt per access, so a theme switch reaches old messages', () {
