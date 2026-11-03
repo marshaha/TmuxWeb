@@ -789,6 +789,19 @@ Tools: `list_agents`, `ask_agent`, `send_agent`, `read_agent` (screen text, or `
 ./install_relay_mcp.sh --uninstall
 ```
 
+**Installing on a different machine** (e.g. Hermes on a Mac mini): the machine only needs to reach the URL — no repo, no
+python3. Seed the token, then register, then test:
+
+```bash
+printf 'MCP_TMUXWEB_API_KEY=%s\n' '<token>' >> ~/.hermes/.env && chmod 600 ~/.hermes/.env
+hermes mcp add tmuxweb --url http://<host>:8787/mcp --auth header   # answer y to both prompts
+hermes mcp test tmuxweb        # -> Connected, 10 tools
+```
+
+If both machines share a tailnet, use the tailnet address (`http://100.x.y.z:8787/mcp`): no reverse tunnel is needed,
+the tailnet is bidirectional. `curl http://<tailnet-ip>:8787/` returning 303 means the path is open (303 is the login
+redirect; `/mcp` without a token should return 401).
+
 For a LAN/Tailscale-only deployment set `TMUX_WEB_MCP_AUTH=off` in `.env` (default `on`): `/mcp` then needs no header and clients are configured with the URL alone. Anyone who can reach the port can drive panes in that mode — the startup log warns once — while `/api/*` and the web login keep their checks.
 
 ## Tests

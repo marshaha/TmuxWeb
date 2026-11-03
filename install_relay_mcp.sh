@@ -111,19 +111,32 @@ PY
       echo "codex: not installed, skipping"
     fi
 
-    # ---- Hermes: its HTTP mode asks for the token interactively (no --yes), so keep stdio
+    # ---- Hermes: HTTP transport; the token goes into ~/.hermes/.env as
+    #      MCP_<NAME>_API_KEY first, so `mcp add` never has to prompt for it
     if have hermes; then
       if hermes mcp list 2>/dev/null | grep -q "^$NAME\b"; then
         echo "hermes: $NAME already registered"
       elif [ "$MODE" = "dry-run" ]; then
-        printf '+ hermes mcp add %s --url %s  (answers "no auth", then "y")\n' "$NAME" "$MCP_URL"
+        printf '+ hermes mcp add %s --url %s  (answers "requires auth?", then "enable all")\n' "$NAME" "$MCP_URL"
       elif [ "$MCP_AUTH" = "off" ]; then
         # no token to type in: answer "no authentication" to the prompt, then enable the tools
         printf 'n\ny\n' | hermes mcp add "$NAME" --url "$MCP_URL" \
           || echo "hermes: registration failed, see the message above"
       else
-        printf 'y\n' | hermes mcp add "$NAME" --command "$PYTHON" --env "TMUXWEB_URL=$URL" \
-          "TMUXWEB_TOKEN=$TOKEN" --args "$SERVER" \
+        HERMES_ENV="$HOME/.hermes/.env"
+        HERMES_KEY="MCP_$(printf '%s' "$NAME" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9_]/_/g')_API_KEY"
+        mkdir -p "$(dirname "$HERMES_ENV")"
+        touch "$HERMES_ENV"
+        chmod 600 "$HERMES_ENV"
+        "$PYTHON" - "$HERMES_ENV" "$HERMES_KEY" "$TOKEN" <<'PY'
+import pathlib, sys
+
+path, key, token = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+lines = [line for line in path.read_text().splitlines() if not line.startswith(key + "=")]
+lines.append(f"{key}={token}")
+path.write_text("\n".join(lines) + "\n")
+PY
+        printf 'y\ny\n' | hermes mcp add "$NAME" --url "$MCP_URL" --auth header \
           || echo "hermes: registration failed, see the message above"
       fi
     else
