@@ -492,6 +492,33 @@
     const col=index%perRow, row=Math.floor(index/perRow);
     return {x:8+col*(cellW+gap),y:8+row*(cellH+gap),w:cellW,h:cellH};
   }
+  // 自动选行列：让每一格尽量接近 1.5:1 的"窗口"比例，同时少留空位。
+  // 结果天然偏向 2×N / 3×N，而不是一根长条上下堆。
+  function bestShape(count){
+    const n=Math.max(1,count||state.panes.length||1);
+    if(n===1)return {cols:1,rows:1};
+    if(window.innerWidth<=760)return {cols:1,rows:n};          // 手机：单列本来就对
+    const box=$('grid');
+    const w=Math.max(420,(box?box.clientWidth:1200)-24);
+    const h=Math.max(320,(box?box.clientHeight:900)-24);
+    const gap=8;
+    let best=null;
+    for(let cols=1;cols<=n;cols++){
+      const rows=Math.ceil(n/cols);
+      const cw=(w-gap*(cols-1))/cols;
+      const ch=(h-gap*(rows-1))/rows;
+      if(cw<CANVAS_MIN_W||ch<CANVAS_MIN_H)continue;            // 放不下就别选
+      // 比例用对数比：0.75 和 3 的"难看程度"一样
+      const ratio=Math.abs(Math.log((cw/ch)/1.4));
+      const holes=(cols*rows-n)*0.30;                          // 空格位要罚
+      const vertical=rows>cols?0.35:0;                          // 竖着堆永远不如横排
+      const squash=Math.max(0,1-cw/(CANVAS_MIN_W*1.35))*1.5;    // 太窄的列再罚一点
+      const score=ratio+holes+vertical+squash;
+      if(!best||score<best.score-Math.pow(10,-6))best={cols,rows,score};
+    }
+    if(!best){const cols=Math.min(n,Math.max(1,Math.round(Math.sqrt(n))));return {cols,rows:Math.ceil(n/cols)};}
+    return best;
+  }
   function tileCanvas(cols,rows){
     // 把当前窗口按 cols×rows 平铺进画布（新窗口、切换行列、"整理" 都用它）
     // 先清掉内联尺寸再量：画布会被拖大，拿被撑大的宽度去平铺只会越铺越小
@@ -508,6 +535,19 @@
     state.canvasRows=useRows;
   }
   function ensureCanvasCells(){
+    // 手机上存的单列布局，换到宽屏就是"上下平铺"很难看：自动换成 2×*/3×*
+    if(state.panes.length>1&&window.innerWidth>760&&Math.max(1,state.canvasCols||0)===1){
+      const stillOneCol=state.panes.every((pane,seat)=>{
+        const rect=state.cells[pane];if(!rect)return true;
+        const slot=slotRect(seat,1,state.panes.length);
+        return Math.abs(rect.x-slot.x)<2&&Math.abs(rect.y-slot.y)<2;
+      });
+      if(stillOneCol){
+        const shape=bestShape(state.panes.length);
+        state.canvasCols=shape.cols;state.canvasRows=shape.rows;
+        tileCanvas(shape.cols,shape.rows);save();
+      }
+    }
     const shapeCols=()=>Math.max(1,state.canvasCols||state.cols||2);
     const shapeRows=(cols)=>Math.max(1,state.canvasRows||Math.ceil(state.panes.length/cols));
     if(!state.panes.length){state.cells={};return;}
@@ -1276,9 +1316,10 @@
     if(pop&&!pop.hidden)closeShapePop();
   });
   $('tidy').addEventListener('click',()=>{
-    state.canvasCols=state.canvasCols||Math.ceil(Math.sqrt(Math.max(1,state.panes.length)));
-    state.canvasRows=Math.ceil(state.panes.length/Math.max(1,state.canvasCols));
-    tileCanvas(state.canvasCols,state.canvasRows);
+    const shape=bestShape(state.panes.length);
+    state.canvasCols=shape.cols;
+    state.canvasRows=shape.rows;
+    tileCanvas(shape.cols,shape.rows);
     save();render();
   });
 

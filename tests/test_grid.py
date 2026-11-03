@@ -160,6 +160,24 @@ class GridPageTests(unittest.TestCase):
         page = self.client.get("/grid").text
         self.assertIn("calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))", page)
 
+    def test_tidy_prefers_two_or_three_columns(self):
+        """「整理」不能把窗口竖着堆成一根长条：按画布比例选行列，且惩罚竖排。"""
+        page = self.client.get("/grid").text
+        self.assertIn("function bestShape(count){", page)
+        self.assertIn("const ratio=Math.abs(Math.log((cw/ch)/1.4));", page)
+        self.assertIn("const vertical=rows>cols?0.35:0;", page)
+        self.assertIn("const holes=(cols*rows-n)*0.30;", page)
+        # 整理用 bestShape，不再用 sqrt 那套
+        self.assertIn("const shape=bestShape(state.panes.length);", page)
+        self.assertNotIn("state.canvasCols||Math.ceil(Math.sqrt(Math.max(1,state.panes.length)))", page)
+        # 手机上仍然是单列
+        self.assertIn("if(window.innerWidth<=760)return {cols:1,rows:n};", page)
+
+    def test_a_stale_phone_column_layout_is_untiled_on_a_wide_screen(self):
+        page = self.client.get("/grid").text
+        self.assertIn("手机上存的单列布局，换到宽屏就是\"上下平铺\"很难看", page)
+        self.assertIn("const stillOneCol=state.panes.every((pane,seat)=>{", page)
+
     def test_each_window_has_three_distinct_header_icons(self):
         """格子右上角：气泡/终端（切模式）、折角纸页（在控制台打开）、叉号。
 
