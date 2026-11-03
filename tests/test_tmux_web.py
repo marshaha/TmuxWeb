@@ -1898,6 +1898,10 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("const query=`name=${encodeURIComponent(name)}&dir=${encodeURIComponent(dir)}`;", page)
         self.assertIn("user uploaded file “${names.join(' & ')}”", page)
         self.assertIn("const prompt=uploadPrompt(uploadState.items);", page)
+        # 删除按钮要显眼：红底白叉 + 白色描边，触屏更大
+        self.assertIn("background:var(--danger);color:#fff;cursor:pointer", page)
+        self.assertIn(".upload-x .ico{width:11px;height:11px;stroke-width:3}", page)
+        self.assertIn("@media(pointer:coarse){.upload-x{width:24px;height:24px", page)
 
     def test_upload_limit_returns_413(self):
         with patch.dict("os.environ", {"TMUX_WEB_FILE_UPLOAD_MAX": "8"}):
