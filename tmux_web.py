@@ -254,7 +254,15 @@ class TmuxBackend:
         # local/web gateway does not, so the reader falls back to cwd probing.
         # The pid rides along with the listing now, so a validated pane skips
         # the extra display-message call; direct callers still pay for it.
-        hint = transcript_reader.resume_session_hint(pane.get("pane_pid") or self.pane_pid(pane_id))
+        # A failing pid lookup must not kill the transcript: without it we just
+        # lose the --resume hint and fall back to cwd probing.
+        pid = pane.get("pane_pid") or ""
+        if not pid:
+            try:
+                pid = self.pane_pid(pane_id)
+            except (TmuxError, RuntimeError, OSError, ValueError):
+                pid = ""
+        hint = transcript_reader.resume_session_hint(pid) if pid else None
         try:
             data = transcript_reader.read_transcript(
                 provider, pane.get("path", ""), pane.get("title", ""), limit,

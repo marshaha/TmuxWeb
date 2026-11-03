@@ -635,6 +635,22 @@ class TmuxWebTests(unittest.TestCase):
             ("user", "用户问题"), ("assistant", "可见回答")
         ])
 
+    def test_a_transcript_still_reads_when_the_pane_pid_is_unavailable(self):
+        """拿不到 pane_pid（没有 tmux server / 调用方自带 pane dict）只是少了 --resume 提示，不能整条 transcript 报错。"""
+        backend = TmuxBackend()
+        pane = {"id": "%4", "command": "claude", "title": "t", "path": "/work/x"}
+        backend.validate_pane = lambda pane_id: pane
+
+        def boom(pane_id):
+            raise TmuxError("error connecting to /tmp/tmux-0/default")
+
+        backend.pane_pid = boom
+        with patch("transcript_reader.read_transcript", return_value={"messages": []}) as reader:
+            data = backend.transcript("%4", 5)
+        self.assertEqual(data["messages"], [])
+        self.assertIsNone(reader.call_args.kwargs["hint"])
+        self.assertEqual(reader.call_args.args[:2], ("claude", "/work/x"))
+
     def test_kimi_picks_the_session_that_is_still_being_written(self):
         """Two sessions can share a cwd and a title; the newest one holds the messages."""
         self.tmux.panes[0].update({"command": "kimi", "title": "继续完成工作", "path": "/work/kimi"})
