@@ -356,6 +356,10 @@ capabilities, it is not a kernel sandbox, so run untrusted plugins inside a cont
 
 - Chat mode never keeps a `tmux attach` client alive, avoiding terminal-size interference between devices.
 - Only terminal mode attaches through a PTY; the attachment is released after WebSocket disconnect.
+- Agent detection does not trust `pane_current_command` alone: Codex/Claude are sometimes launched through a
+  shell (`zsh -c 'codex …'`, a background process, a runtime wrapper), so tmux reports `zsh` and the chat view would
+  stay empty. TmuxWeb then walks the descendants of `pane_pid` (the remote host ships
+  `ps -A -o pid=,ppid=,args=` in the same SSH call). Window/session names that merely mention an agent are ignored.
 - Remote structured transcripts need no remote `python3` either: a POSIX shell snippet locates the session file (Claude project dir + title/screen probe, Codex `session_index`, Kimi `state.json`, Hermes `--resume` session jsonl or `sqlite3`), the bytes are pulled here and parsed by the **same local parsers** — the `scp` model. When discovery fails the pane falls back to `capture-pane`. Remote transcripts are polled at the same 1s cadence: the server caches the parsed result per (host, pane, limit), serves repeats for 2s without touching the host, then uses a single `stat` probe and only re-pulls when the file changed — so a remote conversation follows the remote file live at almost no cost while idle.
 - A remote **Claude / Codex** pane's session file is located from **`--resume <id>` / `--session-id <id>` /
   `codex resume <id>` in the pane's own process argv**, and only falls back to "newest file in the cwd + title/screen scoring" when there is no such
