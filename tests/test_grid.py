@@ -160,6 +160,19 @@ class GridPageTests(unittest.TestCase):
         page = self.client.get("/grid").text
         self.assertIn("calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))", page)
 
+    def test_tidy_can_be_undone(self):
+        """「整理」会覆盖手动布局，必须能一步撤回（按钮 + Ctrl/⌘+Z）。"""
+        page = self.client.get("/grid").text
+        self.assertIn('id="undo-tidy"', page)
+        self.assertIn("let layoutUndo=null;", page)
+        self.assertIn("function pushLayoutUndo(){layoutUndo=snapshotLayout();syncUndo();}", page)
+        self.assertIn("function undoLayout(){", page)
+        # 整理与换行列都要先记快照
+        self.assertGreaterEqual(page.count("pushLayoutUndo();"), 3)
+        self.assertIn("if((event.metaKey||event.ctrlKey)&&!event.shiftKey&&(event.key==='z'||event.key==='Z')){", page)
+        # 撤销回单列时不能被"自动横排"再次覆盖
+        self.assertIn("if(!skipAutoShape&&state.panes.length>1&&window.innerWidth>760", page)
+
     def test_tidy_prefers_two_or_three_columns(self):
         """「整理」不能把窗口竖着堆成一根长条：按画布比例选行列，且惩罚竖排。"""
         page = self.client.get("/grid").text

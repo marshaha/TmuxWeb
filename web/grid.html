@@ -319,6 +319,9 @@
   <button class="btn" id="tidy" type="button" title="把窗口重新按行列排整齐" aria-label="整理窗口" hidden>
     <svg class="ico"><use href="#i-layout"/></svg><span class="lbl">整理</span>
   </button>
+  <button class="btn" id="undo-tidy" type="button" title="撤销上一次整理（Ctrl/⌘+Z）" aria-label="撤销整理" hidden>
+    <svg class="ico"><use href="#i-restore"/></svg><span class="lbl">撤销</span>
+  </button>
   <button class="btn primary" id="add" type="button" title="添加窗口" aria-label="添加窗口"><svg class="ico"><use href="#i-plus"/></svg><span class="lbl">添加窗口</span></button>
   <button class="btn" id="preset-btn" type="button" title="布局预设" aria-label="布局预设"><svg class="ico"><use href="#i-preset"/></svg><span class="lbl">预设</span></button>
   <a class="btn" id="home" href="/home" title="返回主页" aria-label="返回主页"><svg class="ico"><use href="#i-home"/></svg><span class="lbl">主页</span></a>
@@ -519,6 +522,27 @@
     if(!best){const cols=Math.min(n,Math.max(1,Math.round(Math.sqrt(n))));return {cols,rows:Math.ceil(n/cols)};}
     return best;
   }
+  // ---- 整理/换行列的撤销：只记一份（上一次），点撤销或 Ctrl+Z 还原 ----
+  let layoutUndo=null;
+  let skipAutoShape=false;          // 撤销回单列后别再自动横排
+  function snapshotLayout(){
+    return {cells:JSON.parse(JSON.stringify(state.cells||{})),
+      cols:state.canvasCols||0,rows:state.canvasRows||0,panes:[...state.panes]};
+  }
+  function syncUndo(){
+    const button=$('undo-tidy');
+    if(button)button.hidden=!layoutUndo||state.layout!=='canvas';
+  }
+  function pushLayoutUndo(){layoutUndo=snapshotLayout();syncUndo();}
+  function undoLayout(){
+    if(!layoutUndo)return false;
+    const snap=layoutUndo;layoutUndo=null;
+    state.canvasCols=snap.cols;state.canvasRows=snap.rows;
+    state.cells=snap.cells;
+    skipAutoShape=true;
+    save();render();syncUndo();
+    return true;
+  }
   function tileCanvas(cols,rows){
     // 把当前窗口按 cols×rows 平铺进画布（新窗口、切换行列、"整理" 都用它）
     // 先清掉内联尺寸再量：画布会被拖大，拿被撑大的宽度去平铺只会越铺越小
@@ -536,7 +560,7 @@
   }
   function ensureCanvasCells(){
     // 手机上存的单列布局，换到宽屏就是"上下平铺"很难看：自动换成 2×*/3×*
-    if(state.panes.length>1&&window.innerWidth>760&&Math.max(1,state.canvasCols||0)===1){
+    if(!skipAutoShape&&state.panes.length>1&&window.innerWidth>760&&Math.max(1,state.canvasCols||0)===1){
       const stillOneCol=state.panes.every((pane,seat)=>{
         const rect=state.cells[pane];if(!rect)return true;
         const slot=slotRect(seat,1,state.panes.length);
@@ -733,6 +757,7 @@
     syncSizeUi();
     const tidy=$('tidy');
     if(tidy)tidy.hidden=!canvas;
+    syncUndo();
     if(!state.panes.length){
       cells.clear();
       grid.innerHTML='<div class="empty"><div><b>还没有窗口</b>点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。</div></div>';
@@ -827,6 +852,7 @@
   }
   function applyShape(cols,rows){
     if(state.layout==='canvas'){
+      pushLayoutUndo();
       state.canvasCols=cols;
       state.canvasRows=rows;
       tileCanvas(cols,rows);
@@ -890,6 +916,7 @@
     const rows=Math.max(1,Math.min(SHAPE_MAX_ROWS,Math.round(Number($('gc-rows').value)||state.rows)));
     if(state.layout==='canvas'){
       state.custom={cols,rows};
+      pushLayoutUndo();
       state.canvasCols=cols;
       state.canvasRows=rows;
       tileCanvas(cols,rows);
@@ -1315,7 +1342,18 @@
     const pop=$('shape-pop');
     if(pop&&!pop.hidden)closeShapePop();
   });
+  $('undo-tidy').addEventListener('click',()=>{undoLayout();});
+  document.addEventListener('keydown',event=>{
+    if((event.metaKey||event.ctrlKey)&&!event.shiftKey&&(event.key==='z'||event.key==='Z')){
+      if(state.layout!=='canvas'||!layoutUndo)return;
+      const tag=(event.target&&event.target.tagName)||'';
+      if(/^(INPUT|TEXTAREA)$/.test(tag)||event.target.isContentEditable)return;
+      event.preventDefault();
+      undoLayout();
+    }
+  });
   $('tidy').addEventListener('click',()=>{
+    pushLayoutUndo();
     const shape=bestShape(state.panes.length);
     state.canvasCols=shape.cols;
     state.canvasRows=shape.rows;
