@@ -52,6 +52,29 @@ TmuxWeb 是一个自托管的 tmux 与 AI CLI 会话管理中心。它把本机�
 - **受控 MCP 邮箱**：可选的 Claude Code、Codex、Hermes 文本消息中继，不开放任意 shell/文件能力。
 
 
+## 网页与 App 的同步闸门
+
+Web 控制台和 Flutter 客户端（`client/`）共用同一套 HTTP 接口，功能一旦只做一边就会悄悄分叉。
+`scripts/parity.py` 把这件事变成硬约束：它对比**服务端路由**、**Dart 实际调用的路由**、
+**`web/assets/*.js` 共享模块**和**页面**，任何一边多出来的东西都必须在 `parity.json` 里表态：
+
+- `ported_*`：Dart 那一侧的实现在哪（值必须是一个真实存在的文件，删了就红）；
+- `web_only_*`：只属于网页，附理由；
+- `pending_*`：已知欠账，报告里点名，不阻塞。
+
+```bash
+python3 scripts/parity.py           # 报告；有未表态的漂移就 exit 1
+python3 scripts/parity.py --update  # 从代码刷新清单，保留已写的理由
+```
+
+`tests/test_parity.py` 把它接进服务端测试，`.github/workflows/tests.yml` 还有一个独立
+`parity` job —— 所以「服务端加了一个接口但没决定 App 怎么办」会直接让 CI 变红，不需要装 Flutter。
+新增网页功能时的流程：先跑一次脚本 → 要么同一次改动里把 Dart 补上（`ported_*`），要么写成
+`pending_*` 并说明原因。
+
+当前欠账（`parity.json` 里可查）：`recents.js`（App 还没有独立「最近」区块）与
+`composer-files.js`（App 聊天还不能带附件，上传 API 已在 client 里）。
+
 ## 守护与故障排查
 
 `tmux kill-session`、`exec` 断链、进程被杀都会让"会话整个消失"——因为 tmux 在窗格进程退出时就关掉会话，

@@ -281,6 +281,31 @@ void main() {
       expect(requests[2].url.queryParameters['q'], 'codex');
     });
 
+    test('pins: read the list, pin/unpin, rename — the web 最近 block equivalent', () async {
+      final requests = <http.Request>[];
+      final client = ApiClient(httpClient: MockClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET') {
+          return http.Response('{"recent":[],"pinned":[{"pane":"%7","label":"review"}]}', 200);
+        }
+        return http.Response('{}', 200);
+      }));
+      final list = await client.pins();
+      expect((list['pinned'] as List).first['label'], 'review');
+      await client.pinPane('%7', pinned: true);
+      await client.pinPane('%7', pinned: false);
+      await client.renamePin('%7', 'agent A');
+      expect(requests.map((request) => '${request.method} ${request.url.path}').toList(), [
+        'GET /api/home/recent',
+        'POST /api/home/recent/pin',
+        'POST /api/home/recent/pin',
+        'PATCH /api/home/recent/pin/%257',
+      ]);
+      expect(jsonDecode(requests[1].body), {'pane': '%7', 'pinned': true});
+      expect(jsonDecode(requests[2].body), {'pane': '%7', 'pinned': false});
+      expect(jsonDecode(requests[3].body), {'label': 'agent A'});
+    });
+
     test('favorite add/rename/delete encode the pane reference', () async {
       final requests = <http.Request>[];
       final client = ApiClient(httpClient: MockClient((request) async {

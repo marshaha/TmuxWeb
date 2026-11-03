@@ -19,6 +19,8 @@ class FakeApi implements Api, TerminalApi {
   final List<String> sent = [];
   final List<String> uploads = [];
   final List<String> renames = [];
+  final List<String> pinnedCalls = [];
+  final List<String> renamedPins = [];
   final List<String> deletes = [];
 
   @override
@@ -193,6 +195,19 @@ class FakeApi implements Api, TerminalApi {
   /// The favorite set the hosts tree reads; add/delete keep it in sync,
   /// like the server, so star toggles are observable in widget tests.
   final Set<String> favoritePanes = {'abc~%0'};
+
+  @override
+  Future<Map<String, dynamic>> pins() async => {'recent': [], 'pinned': []};
+
+  @override
+  Future<void> pinPane(String paneRef, {required bool pinned}) async {
+    pinnedCalls.add('$paneRef:$pinned');
+  }
+
+  @override
+  Future<void> renamePin(String paneRef, String label) async {
+    renamedPins.add('$paneRef:$label');
+  }
 
   @override
   Future<Map<String, dynamic>> homeFavorites() async => {'favorites': favoritePanes.toList(), 'notes': {}};

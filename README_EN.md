@@ -101,6 +101,29 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Optional MCP mailbox**: controlled text messaging among Claude Code, Codex, and Hermes without arbitrary shell or filesystem tools.
 
 
+## Web ⇄ Flutter parity gate
+
+The web console and the Flutter client (`client/`) share one HTTP API; a feature that only lands on one side
+drifts silently. `scripts/parity.py` turns that into a hard rule: it compares **server routes**, **routes the
+Dart client actually calls**, **shared `web/assets/*.js` modules** and **pages**, and everything extra must be
+declared in `parity.json`:
+
+- `ported_*`: where the Dart side lives (the path must exist — delete it and the gate fails);
+- `web_only_*`: web-only, with the reason;
+- `pending_*`: known debt, printed in the report, not blocking.
+
+```bash
+python3 scripts/parity.py           # report, exit 1 on undeclared drift
+python3 scripts/parity.py --update  # refresh the manifest, keep written reasons
+```
+
+`tests/test_parity.py` runs it inside the server suite and `tests.yml` has a dedicated `parity` job, so a new
+endpoint without a decision about the app turns CI red without installing Flutter. For every new web feature:
+run the script, then either port it to Dart in the same change (`ported_*`) or record `pending_*` with a reason.
+
+Known debt today (`parity.json`): `recents.js` (the app has no standalone 最近 block yet) and
+`composer-files.js` (the app's chat cannot attach files yet; the upload API is already in the client).
+
 ## Supervision and chasing a disappearing session
 
 `tmux kill-session`, a broken `exec` chain or a stray `kill` all look the same: the whole session

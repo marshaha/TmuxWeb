@@ -84,6 +84,15 @@ abstract class Api {
   /// GET /api/home/favorites: {favorites: [pane_id], notes: {pane_id: note}}.
   Future<Map<String, dynamic>> homeFavorites();
 
+  /// GET /api/home/recent: {recent: [...], pinned: [...]} —— 「最近」区块与钉子。
+  Future<Map<String, dynamic>> pins();
+
+  /// 把 pane 钉到「最近」顶部 / 取消（POST /api/home/recent/pin）。
+  Future<void> pinPane(String paneRef, {required bool pinned});
+
+  /// 给钉子改名（PATCH /api/home/recent/pin/<pane>），空字符串恢复默认名。
+  Future<void> renamePin(String paneRef, String label);
+
   Future<void> addHomeFavorite(String paneRef, {String note = '', String title = ''});
 
   /// PATCH title; an empty title restores the generated one.
@@ -523,6 +532,32 @@ class ApiClient implements Api, TerminalApi {
   Future<Map<String, dynamic>> homeBoard() async {
     final response = await _http.get(_uri('/api/home'), headers: _headers());
     return _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> pins() async {
+    final response = await _http.get(_uri('/api/home/recent'), headers: _headers());
+    return _decode(response);
+  }
+
+  @override
+  Future<void> pinPane(String paneRef, {required bool pinned}) async {
+    final response = await _http.post(
+      _uri('/api/home/recent/pin'),
+      headers: _headers(json: true),
+      body: jsonEncode({'pane': paneRef, 'pinned': pinned}),
+    );
+    _decode(response);
+  }
+
+  @override
+  Future<void> renamePin(String paneRef, String label) async {
+    final response = await _http.patch(
+      _uri('/api/home/recent/pin/${encodePaneRef(paneRef)}'),
+      headers: _headers(json: true),
+      body: jsonEncode({'label': label}),
+    );
+    _decode(response);
   }
 
   @override

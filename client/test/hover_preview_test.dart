@@ -5,7 +5,7 @@ import 'package:tmuxweb_client/widgets/pane_hover_preview.dart';
 
 void main() {
   Future<PanePreviewData?> load(String paneRef) async =>
-      PanePreviewData(role: 'assistant', text: '最后一条：${paneRef} 完成', time: '2 分钟前');
+      PanePreviewData(role: 'assistant', text: '最后一条：$paneRef 完成', time: '2 分钟前');
 
   Widget app({Duration delay = const Duration(milliseconds: 200), Future<PanePreviewData?> Function(String)? loader}) {
     return MaterialApp(

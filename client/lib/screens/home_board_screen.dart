@@ -132,6 +132,9 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
   bool _resumed = true;
   Pane? _previewPane;
   String _previewTitle = '';
+  // 预览面板里的钉子和 Web 一样：pin 属于「最近」列表，名字存在 pin 上
+  bool _pinOn = false;
+  bool _pinBusy = false;
   Timer? _intervalTimer;
   Timer? _pendingTimer;
   Timer? _retryTimer;
@@ -259,7 +262,9 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
       setState(() {
         _previewPane = pane;
         _previewTitle = title;
+        _pinOn = false;
       });
+      _loadPin(pane);
       return;
     }
     final api = widget.api;
@@ -271,6 +276,69 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
         baseUrl: widget.baseUrl,
       ),
     ));
+  }
+
+  Future<void> _loadPin(Pane pane) async {
+    try {
+      final data = await widget.api.pins();
+      final pins = (data['pinned'] as List? ?? const []);
+      final on = pins.any((row) => row is Map && row['pane'] == pane.ref);
+      if (mounted && _previewPane?.ref == pane.ref) setState(() => _pinOn = on);
+    } catch (_) {
+      // 没有钉子信息就当没钉住：按钮仍然可用
+    }
+  }
+
+  Future<void> _togglePin(Pane pane) async {
+    if (_pinBusy) return;
+    final next = !_pinOn;
+    setState(() {
+      _pinOn = next;
+      _pinBusy = true;
+    });
+    try {
+      await widget.api.pinPane(pane.ref, pinned: next);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _pinOn = !next);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _pinBusy = false);
+    }
+  }
+
+  Future<void> _renamePin(Pane pane) async {
+    final controller = TextEditingController(text: _previewTitle);
+    final label = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重命名钉子'),
+        content: TextField(
+          key: const Key('pin-rename-input'),
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: '留空恢复默认名字'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          FilledButton(
+            key: const Key('pin-rename-ok'),
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || label == null) return;
+    try {
+      await widget.api.renamePin(pane.ref, label);
+      if (!mounted) return;
+      setState(() => _previewTitle = label.isEmpty ? _previewTitle : label);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已更新钉子名字')));
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    }
   }
 
   void _closePreview() => setState(() {
@@ -610,6 +678,14 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                   Expanded(
                     child: Text(_previewTitle, maxLines: 1, overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                  ),
+                  IconButton(
+                    key: const Key('preview-panel-pin'),
+                    tooltip: _pinOn ? '取消固定（长按改名）' : '固定到最近（长按改名）',
+                    icon: Icon(_pinOn ? Icons.push_pin : Icons.push_pin_outlined, size: 20),
+                    color: _pinOn ? AppTheme.accent : null,
+                    onPressed: _pinBusy ? null : () => _togglePin(pane),
+                    onLongPress: () => _renamePin(pane),
                   ),
                   FavoriteStarButton(api: api, paneRef: pane.ref),
                   if (api is TerminalApi)
