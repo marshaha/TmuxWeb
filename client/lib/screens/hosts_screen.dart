@@ -6,6 +6,7 @@ import '../api/api_client.dart';
 import '../models/chat_source.dart';
 import '../models/models.dart';
 import '../theme.dart';
+import '../widgets/pane_hover_preview.dart';
 import 'chat_screen.dart';
 import 'grid_screen.dart';
 import 'home_board_screen.dart';
@@ -483,7 +484,10 @@ class _HostsScreenState extends State<HostsScreen> {
   Widget _paneTile(Pane pane) {
     final status = _states[pane.ref];
     final busy = status == 'busy';
-    return ListTile(
+    return PaneHoverPreview(
+      paneRef: pane.ref,
+      loadPreview: _previewFor,
+      child: ListTile(
       key: Key('pane-${pane.ref}'),
       dense: true,
       selected: _selectedPane?.ref == pane.ref,
@@ -531,8 +535,63 @@ class _HostsScreenState extends State<HostsScreen> {
               : Icon(Icons.terminal, size: 16, color: AppTheme.faint),
         ],
       ),
-      onTap: () => _openPane(pane),
+        onTap: () => _openPane(pane),
+      ),
     );
+  }
+
+  // ---- 悬停预览的数据：一次 /api/home，60 秒内复用（和 Web 共用同一个接口）
+  Map<String, Map<String, dynamic>>? _previewEntries;
+  DateTime? _previewAt;
+
+  Future<PanePreviewData?> _previewFor(String paneRef) async {
+    final fresh = _previewEntries != null &&
+        _previewAt != null &&
+        DateTime.now().difference(_previewAt!) < const Duration(seconds: 60);
+    if (!fresh) {
+      try {
+        final board = await widget.api.homeBoard();
+        final entries = <String, Map<String, dynamic>>{};
+        for (final item in [
+          ...(board['favorites'] as List? ?? const []),
+          ...(board['recent'] as List? ?? const []),
+        ]) {
+          if (item is Map && item['pane'] is String) {
+            final key = item['pane'] as String;
+            final previous = entries[key];
+            final richer = previous != null &&
+                (previous['agent_preview'] != null || previous['preview'] != null);
+            if (richer && item['agent_preview'] == null && item['preview'] == null) continue;
+            entries[key] = Map<String, dynamic>.from(item);
+          }
+        }
+        _previewEntries = entries;
+        _previewAt = DateTime.now();
+      } catch (_) {
+        return null;
+      }
+    }
+    final entry = _previewEntries?[paneRef];
+    final source = entry?['agent_preview'] ?? entry?['preview'];
+    if (source is! Map) return null;
+    final text = (source['text'] as String?)?.trim();
+    if (text == null || text.isEmpty) return null;
+    return PanePreviewData(
+      role: (source['role'] as String?) ?? 'pane',
+      text: text,
+      time: _previewAgo(source['timestamp']),
+    );
+  }
+
+  String? _previewAgo(Object? stamp) {
+    final seconds = stamp is num ? stamp.toDouble() : double.tryParse('${stamp ?? ''}');
+    if (seconds == null || seconds <= 0) return null;
+    final ago = DateTime.now().difference(
+        DateTime.fromMillisecondsSinceEpoch((seconds * 1000).round()));
+    if (ago.inSeconds < 60) return '刚刚';
+    if (ago.inMinutes < 60) return '${ago.inMinutes} 分钟前';
+    if (ago.inHours < 24) return '${ago.inHours} 小时前';
+    return '${ago.inDays} 天前';
   }
 
   Widget _buildBody() {
