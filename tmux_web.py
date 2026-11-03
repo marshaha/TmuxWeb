@@ -1297,8 +1297,9 @@ def create_app(
             raise HTTPException(status_code=400, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="expected an object of preferences")
-        allowed = {"theme", "sidebar"}
-        choices = {"sidebar": {"pane", "none"}}
+        allowed = {"theme", "sidebar", "preview"}
+        # preview = 侧栏悬停预览的延迟（off 关闭；1/2/3 秒）
+        choices = {"sidebar": {"pane", "none"}, "preview": {"off", "1", "2", "3"}}
         saved = home.get_prefs()
         for key, value in payload.items():
             if key not in allowed:
@@ -1664,6 +1665,18 @@ def create_app(
     async def composer_files_script() -> FileResponse:
         """Chat attachments: upload / thumbnail / delete in one place, shared by both composers."""
         return FileResponse(WEB_DIR / "assets" / "composer-files.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/pane-preview.css")
+    async def pane_preview_stylesheet() -> FileResponse:
+        """The hover preview panel shared by the home cards and the sidebar rows."""
+        return FileResponse(WEB_DIR / "assets" / "pane-preview.css", media_type="text/css",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/pane-preview.js")
+    async def pane_preview_script() -> FileResponse:
+        """TmuxPanePreview — one implementation of "hover a row, see the last message"."""
+        return FileResponse(WEB_DIR / "assets" / "pane-preview.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/downloads.css")

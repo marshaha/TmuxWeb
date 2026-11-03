@@ -1924,6 +1924,45 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("method: 'DELETE'", shared)
         self.assertEqual(self.client.get("/assets/composer-files.css").status_code, 200)
 
+    def test_the_sidebar_previews_a_pane_after_hovering(self):
+        """侧栏（会话树 + 最近）悬停 N 秒预览最后消息，和 home 卡片共用一份实现。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn('<link rel="stylesheet" href="/assets/pane-preview.css">', page)
+        self.assertIn('<script src="/assets/pane-preview.js"></script>', page)
+        for marker in ("function setupPanePreview(){", "setupRecentPreview();",
+                       "localStorage.getItem('tmux-preview-delay')",
+                       "seconds*1000", "TmuxPanePreview.bind($('pane-list')",
+                       "selector:'.recent-row',paneOf:element=>element.dataset.row",
+                       "new URLSearchParams(location.search).has('preview')",
+                       "previewFromTranscript(data)"):
+            self.assertIn(marker, page)
+        # 不在 /api/home 的 pane 悬停时才取一次，60 秒内复用
+        module = self.client.get("/assets/pane-preview.js").text
+        for marker in ("const canHover = !!(window.matchMedia", "(hover: hover) and (pointer: fine)",
+                       "function previewFor(paneId)", "function bind(container, config)",
+                       "if (!canHover && !options.force) return;", "FETCH_TTL = 60_000",
+                       "function previewFromTranscript(data)", "完整预览", "data-hp=\"full\""):
+            self.assertIn(marker, module)
+        css = self.client.get("/assets/pane-preview.css").text
+        self.assertIn(".hover-preview{pointer-events:auto", css)
+        self.assertIn(".hp-body.md table{", css)
+        self.assertEqual(self.client.get("/assets/pane-preview.css").headers["cache-control"], "no-store")
+        self.assertEqual(self.client.get("/assets/pane-preview.js").headers["cache-control"], "no-store")
+
+    def test_the_hover_preview_delay_is_a_follow_me_preference(self):
+        """设置面板里可调（关闭 / 1 / 2 / 3 秒），存到账号；手机没有悬停，默认不绑。"""
+        self.login()
+        settings = self.client.get("/assets/settings.js").text
+        for marker in ('id="ts-preview-delay"', '<option value="off">关闭</option>',
+                       '<option value="1">1 秒</option>', "loadPreviewPref", "savePreviewDelay",
+                       "localStorage.setItem(PREVIEW_KEY, next)"):
+            self.assertIn(marker, settings)
+        self.assertEqual(self.client.put("/api/prefs", json={"preview": "2"}).status_code, 200)
+        self.assertEqual(self.client.put("/api/prefs", json={"preview": "off"}).status_code, 200)
+        self.assertEqual(self.client.put("/api/prefs", json={"preview": "9"}).status_code, 400)
+        self.assertEqual(self.client.get("/api/prefs").json()["prefs"]["preview"], "off")
+
     def test_file_panel_can_rename_and_delete(self):
         """文件面板的删除/重命名：目录内改名、不覆盖同名、非空目录要显式递归、护栏挡住家目录。"""
         self.login()

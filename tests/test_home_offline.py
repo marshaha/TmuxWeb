@@ -67,10 +67,13 @@ class HomeOfflineCacheTests(unittest.TestCase):
 
     def test_the_board_page_marks_cached_previews(self):
         page = self.client.get("/home").text
-        self.assertIn("function cardPreview(", page)
-        self.assertIn("离线 · 缓存", page)
-        self.assertIn("favorite.cached", page)
-        self.assertIn("#hover-preview.offline #hp-role", page)
+        shared = self.client.get("/assets/pane-preview.js").text
+        # 取数在页面（卡片和侧栏共用 /api/home），离线/缓存的标注在共享面板里
+        self.assertIn("const panePreview=TmuxPanePreview.mount({", page)
+        self.assertIn("const entries=[...(state.board&&state.board.favorites||[]),...(state.board&&state.board.recent||[])];", page)
+        self.assertIn("离线 · 缓存", shared)
+        self.assertIn("const offline = entry.status === 'offline';", shared)
+        self.assertIn("#hover-preview.offline #hp-role", self.client.get("/assets/pane-preview.css").text)
 
 
 if __name__ == "__main__":

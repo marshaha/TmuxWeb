@@ -23,6 +23,9 @@
   .ts-row:hover{color:var(--accent,#c96442)}
   /* rows can be links (server / share management): same look, no underline, a chevron instead of a caret */
   .ts-row.ts-link{text-decoration:none}
+  .ts-select{height:26px;padding:0 6px;border:1px solid var(--line,#dddcd5);border-radius:8px;
+    background:var(--card,#fff);color:var(--ink,#242421);font:12px inherit}
+  .ts-select:focus-visible{outline:2px solid var(--accent,#c96442);outline-offset:2px}
   .ts-row.ts-static{cursor:default}
   .ts-row.ts-static:hover{color:var(--ink,#242421)}
   .ts-row.ts-static + .ts-hint{margin:0 0 4px;padding-bottom:6px}
@@ -175,6 +178,21 @@
         <div class="ts-themes" id="ts-themes"></div>
         <p class="ts-hint">主题记在本浏览器里；插件自己的页面也会跟着变。</p>
       </div>
+    </section>
+
+    <section class="ts-block">
+      <div class="ts-row ts-static">
+        <span>悬停预览</span>
+        <span class="ts-tail">
+          <select class="ts-select" id="ts-preview-delay" aria-label="侧栏悬停预览延迟">
+            <option value="off">关闭</option>
+            <option value="1">1 秒</option>
+            <option value="2">2 秒</option>
+            <option value="3">3 秒</option>
+          </select>
+        </span>
+      </div>
+      <p class="ts-hint" id="ts-preview-hint">鼠标在侧栏的服务器或「最近」一行上停多久，才弹出最后一条消息。手机没有悬停，默认关闭。</p>
     </section>
 
     <section class="ts-block">
@@ -443,6 +461,43 @@
     }
   }
 
+  const PREVIEW_KEY = 'tmux-preview-delay';
+  const PREVIEW_VALUES = new Set(['off', '1', '2', '3']);
+
+  function paintPreviewDelay(value) {
+    const select = $('ts-preview-delay');
+    if (select) select.value = PREVIEW_VALUES.has(value) ? value : '2';
+  }
+
+  async function loadPreviewPref() {
+    let stored = '2';
+    try { stored = localStorage.getItem(PREVIEW_KEY) || '2'; } catch {}
+    paintPreviewDelay(stored);
+    try {
+      const data = await api('/api/prefs');
+      const server = (data.prefs || {}).preview;
+      if (PREVIEW_VALUES.has(server)) {
+        try { localStorage.setItem(PREVIEW_KEY, server); } catch {}
+        paintPreviewDelay(server);
+      }
+    } catch { /* offline: the local mirror is what the pages read */ }
+  }
+
+  async function savePreviewDelay(value) {
+    const next = PREVIEW_VALUES.has(value) ? value : '2';
+    paintPreviewDelay(next);
+    try { localStorage.setItem(PREVIEW_KEY, next); } catch {}
+    try {
+      await api('/api/prefs', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preview: next }),
+      });
+    } catch {
+      note($('ts-preview-hint'), '保存到账号失败，已记在本浏览器', 'bad');
+    }
+  }
+
   async function loadSidebarPref() {
     let enabled = false;
     try { enabled = localStorage.getItem(SIDEBAR_PREF_KEY) === 'pane'; } catch {}
@@ -566,6 +621,7 @@
     dialog.showModal();
     renderThemes();
     loadSidebarPref();
+    loadPreviewPref();
     loadPlugins();          // fills the row's counter; the list itself stays collapsed
     // Chrome/Firefox auto-focus the first control, Safari draws its blue ring on it: park the focus on
     // the dialog instead, so opening 设置 never comes with a highlighted row
@@ -618,6 +674,7 @@
     for (const button of buttons) button.onclick = () => open();
     $('ts-close').onclick = () => dialog.close();
     $('ts-sidebar-memory').addEventListener('click', () => toggleSidebarMemory());
+    $('ts-preview-delay').addEventListener('change', event => savePreviewDelay(event.target.value));
     $('ts-themes').addEventListener('click', event => {
       const button = event.target.closest('[data-theme]');
       if (button) chooseTheme(button.dataset.theme);

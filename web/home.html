@@ -15,6 +15,7 @@
 <title>TmuxWeb · 主页</title>
 <link rel="stylesheet" href="/assets/shell.css">
 <link rel="stylesheet" href="/assets/recents.css">
+<link rel="stylesheet" href="/assets/pane-preview.css">
 <style>
   :root{--bg:#F0EEE6;--surface:#FAF9F5;--card:#fff;--ink:#262520;--muted:#6f6a5e;--faint:#a09a8c;--line:#E2DFD5;--accent:#C96442;--green:#3f8f5f;--amber:#D89A3C;--danger:#B4442F;--side-w:268px;--card-hover:#f3f2ed;--bubble:#e9e7df;--line-strong:#cbc9c0;--shimmer:var(--card-hover)}
   *{box-sizing:border-box}
@@ -138,40 +139,7 @@
   .hit-title{font-size:13px;font-weight:600}
   .hit-snippet{font-size:12.5px;color:var(--muted);white-space:pre-wrap;word-break:break-word}
   mark{padding:0 2px;border-radius:3px;background:color-mix(in srgb,var(--accent) 14%,var(--card));color:#8a3d22}
-  .hover-preview{pointer-events:auto;overscroll-behavior:contain;scrollbar-width:thin;position:fixed;z-index:30;width:min(520px,calc(100vw - 24px));max-height:min(62vh,520px);display:flex;flex-direction:column;
-    padding:11px 13px;border:1px solid var(--line);border-radius:13px;background:var(--card);box-shadow:0 16px 44px rgba(32,31,28,.18)}
-  .hover-preview[hidden]{display:none}
-  @media(max-width:760px){.hover-preview{left:10px!important;right:10px;top:auto!important;bottom:calc(10px + env(safe-area-inset-bottom));width:auto!important;max-height:min(70vh,520px);padding:12px 13px calc(11px + env(safe-area-inset-bottom))}}
-  .hp-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px;color:var(--faint)}
-  .hp-head #hp-role{padding:1px 7px;border-radius:20px;border:1px solid var(--line);background:var(--surface);color:var(--muted);font-size:10.5px}
-  .hp-head .hp-x{margin-left:auto;display:grid;place-items:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer}
-  .hp-head .hp-x:hover{background:var(--surface2);color:var(--ink)}
-  .hp-head .hp-x .ico{width:12px;height:12px}
-  .hp-actions{display:flex;gap:6px;margin-top:9px;padding-top:8px;border-top:1px solid var(--line)}
-  .hp-btn{flex:1;height:30px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font-size:12px;cursor:pointer}
-  .hp-btn:hover{border-color:#c8c5bc;background:var(--surface2)}
-  .hp-btn.primary{border-color:#292825;background:#292825;color:#fff}
-  .hp-btn.primary:hover{background:#3a3934}
-  .hp-body.md{white-space:normal}
-  .hp-body.md>*:first-child{margin-top:0}
-  .hp-body.md>*:last-child{margin-bottom:0}
-  .hp-body.md p{margin:0 0 8px}
-  .hp-body.md h1,.hp-body.md h2,.hp-body.md h3,.hp-body.md h4{margin:10px 0 6px;font-size:13px;font-weight:650;line-height:1.35}
-  .hp-body.md ul,.hp-body.md ol{margin:6px 0 8px;padding-left:18px}
-  .hp-body.md li{margin:2px 0}
-  .hp-body.md code{background:var(--surface2);padding:1px 4px;border-radius:4px;font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace}
-  .hp-body.md pre{margin:8px 0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface2);overflow:auto}
-  .hp-body.md pre code{background:transparent;padding:0;font-size:11.5px;line-height:1.5}
-  .hp-body.md table{display:block;width:max-content;min-width:100%;border-collapse:collapse;overflow:auto;margin:8px 0}
-  .hp-body.md th,.hp-body.md td{border:1px solid var(--line);padding:4px 7px;text-align:left;white-space:nowrap}
-  .hp-body.md th{background:var(--surface2);font-weight:600}
-  .hp-body.md blockquote{margin:8px 0;padding:2px 0 2px 9px;border-left:2px solid var(--line);color:var(--muted)}
-  .hp-body.md a{color:var(--accent)}
-  .hp-body.md img{max-width:100%}
-  .hp-body{overflow:auto;min-height:0;font-size:12.5px;line-height:1.55;color:var(--ink);white-space:pre-wrap;word-break:break-word;overscroll-behavior:contain}
-  .preview.cached{color:var(--muted)}
-  #hover-preview.offline #hp-role{border-color:#eed6cf;background:color-mix(in srgb,var(--danger) 12%,var(--card));color:#8d4a3a}
-  #hover-preview.offline.cached #hp-body{color:var(--muted)}
+  
   .preview-drawer{position:fixed;top:0;right:0;bottom:0;z-index:40;display:flex;flex-direction:column;width:min(760px,56vw);
     min-width:360px;border-left:1px solid var(--line);background:var(--bg);box-shadow:-16px 0 48px rgba(32,31,28,.16);
     transform:translateX(12px);opacity:0;transition:transform .16s ease,opacity .16s ease}
@@ -319,18 +287,6 @@
   <iframe id="pd-frame" title="对话预览" referrerpolicy="same-origin"></iframe>
 </aside>
 <div class="pd-backdrop" id="pd-backdrop" hidden></div>
-<div class="hover-preview" id="hover-preview" hidden>
-  <div class="hp-head"><span id="hp-role">agent</span><span id="hp-time"></span>
-    <button class="hp-x" id="hp-x" type="button" title="关闭预览" aria-label="关闭预览"><svg class="ico"><use href="#i-close"/></svg></button>
-  </div>
-  <div class="hp-body" id="hp-body"></div>
-  <!-- the card only ever previews; every way out of the preview lives here -->
-  <div class="hp-actions">
-    <button class="hp-btn" id="hp-full" type="button" data-hp="full">完整预览</button>
-    <button class="hp-btn primary" id="hp-chat" type="button" data-hp="chat">聊天</button>
-    <button class="hp-btn" id="hp-close" type="button" data-hp="close">关闭</button>
-  </div>
-</div>
 <div class="toast shell-toast" id="toast"></div>
 
 <script type="module">
@@ -342,6 +298,7 @@
   window.__md = value => marked.parse(String(value == null ? '' : value), {gfm:true, breaks:false, async:false});
 </script>
 <script src="/assets/recents.js"></script>
+<script src="/assets/pane-preview.js"></script>
 <script src="/assets/shell.js"></script>
 <script>
   const $=id=>document.getElementById(id);
@@ -421,6 +378,7 @@
     try{
       const board=await api('/api/home');
       state.board=board;
+      refreshPreviewEntries();
       state.favorites=new Set((board.favorites||[]).map(f=>f.pane));
       syncStars();
       if(shell) shell.setFavorites([...state.favorites]);
@@ -588,15 +546,6 @@
     }
     const rename=event.target.closest('[data-rename]');
     if(rename){event.preventDefault();event.stopPropagation();openRename(rename.dataset.rename);return;}
-    const action=event.target.closest('[data-hp]');
-    if(action){event.preventDefault();event.stopPropagation();
-      const paneId=hoverPane;
-      if(!paneId)return;
-      if(action.dataset.hp==='chat')location=consoleUrl(paneId);
-      else if(action.dataset.hp==='full')openFullPreview(paneId);
-      else hideHover();
-      return;}
-    if(event.target.closest('#hp-x')){event.preventDefault();hideHover();return;}
     const open=event.target.closest('[data-open]');
     if(open){
       // a card previews, it never navigates: the panel holds the ways in
@@ -666,103 +615,56 @@
   $('rename-reset').onclick=()=>{$('rename-input').value='';saveRename('');};
 
   // ---------------------------------------------------------------- hover preview
-  const hoverBox=$('hover-preview');
-  let hoverPane=null;
-
-  function agentPreview(paneId){
-    const favorite=(state.board&&state.board.favorites||[]).find(item=>item.pane===paneId);
-    return favorite&&favorite.agent_preview?favorite.agent_preview:null;
-  }
-  // every card must open something: fall back to the last message, then to a hint, so a
-  // click never does nothing (the panel's buttons are the way in)
-  function cardPreview(paneId){
+  // 面板本身来自 /assets/pane-preview.js（和侧栏同一份），这里只负责喂数据。
+  const previewEntries=new Map();
+  function refreshPreviewEntries(){
+    previewEntries.clear();
     const entries=[...(state.board&&state.board.favorites||[]),...(state.board&&state.board.recent||[])];
-    const entry=entries.find(item=>item.pane===paneId);
-    const offline=!!(entry&&entry.status==='offline');
-    const cached=!!(entry&&entry.cached);
-    const favorite=agentPreview(paneId);
-    if(favorite)return {...favorite,offline,cached,cachedAt:entry&&entry.cached_at};
-    if(entry&&entry.preview)return {...entry.preview,offline,cached,cachedAt:entry.cached_at};
-    return {role:entry&&entry.provider||'pane',
-            text:cached?'缓存里也没有这个会话的内容。':'这个会话暂时没有可预览的内容。',
-            timestamp:null,offline,cached,cachedAt:entry&&entry.cached_at};
-  }
-
-  function placeHover(card){
-    if(isNarrow()){hoverBox.style.left='';hoverBox.style.top='';hoverBox.style.width='';return;}  // CSS sheet
-    const rect=card.getBoundingClientRect();
-    const viewportW=window.innerWidth, viewportH=window.innerHeight;
-    const width=Math.min(520,viewportW-24);
-    hoverBox.style.width=width+'px';
-    // prefer the right of the card, fall back to the left, then keep it on screen
-    let left=rect.right+12;
-    if(left+width>viewportW-12)left=Math.max(12,rect.left-width-12);
-    const height=Math.min(hoverBox.scrollHeight||260,viewportH*0.62);
-    const top=Math.min(Math.max(12,rect.top),Math.max(12,viewportH-height-12));
-    hoverBox.style.left=left+'px';
-    hoverBox.style.top=top+'px';
-  }
-
-  let hoverHideTimer=null;
-  function scheduleHideHover(){
-    if(hoverSticky)return;               // a tap-opened panel is dismissed explicitly
-    clearTimeout(hoverHideTimer);hoverHideTimer=setTimeout(hideHover,260);}
-  function cancelHideHover(){clearTimeout(hoverHideTimer);hoverHideTimer=null;}
-
-  let hoverSticky=false;                 // opened by a click: stays until closed
-  function showHover(card,paneId,sticky=false){
-    const preview=cardPreview(paneId);
-    if(!preview)return;
-    cancelHideHover();
-    hoverSticky=sticky||hoverSticky;
-    hoverPane=paneId;
-    $('hp-role').textContent=preview.role==='assistant'?'agent 回复':preview.role;
-    // a dropped pane keeps its last answer on screen, labelled with where it came from
-    const origin=preview.offline?(preview.cached?'离线 · 缓存':'离线'):'';
-    $('hp-time').textContent=[origin,ago(preview.timestamp),preview.truncated?'已截断':''].filter(Boolean).join(' · ');
-    hoverBox.classList.toggle('offline',!!preview.offline);
-    hoverBox.classList.toggle('cached',!!preview.cached);
-    if(window.__md){
-      $('hp-body').innerHTML=window.__md(preview.text);
-      $('hp-body').classList.add('md');
-    }else{
-      $('hp-body').textContent=preview.text;
-      $('hp-body').classList.remove('md');
+    for(const entry of entries){
+      if(!entry||!entry.pane)continue;
+      // 「最近」的条目只有标题，收藏的条目才带预览；别让后到的空条目盖掉有内容的
+      const previous=previewEntries.get(entry.pane);
+      const richer=previous&&(previous.agent_preview||previous.preview);
+      if(richer&&!(entry.agent_preview||entry.preview))continue;
+      previewEntries.set(entry.pane,entry);
     }
-    hoverBox.hidden=false;
-    placeHover(card);
   }
-
-  function hideHover(){hoverBox.hidden=true;hoverPane=null;hoverSticky=false;}
-
-  // Phones emulate a mouse: a tap fired mouseover first, the preview panel appeared over
-  // the card and swallowed the click, so cards could only ever "preview" and never open.
-  const canHover=matchMedia('(hover:hover) and (pointer:fine)').matches;
+  const panePreview=TmuxPanePreview.mount({
+    force:new URLSearchParams(location.search).has('preview'),   // 同样留一个逃生口
+    data:()=>previewEntries,
+    delay:()=>0,                       // 首页卡片是"移上去立刻看"，和以前一致
+    render:text=>window.__md?window.__md(text):String(text==null?'':text),
+    onChat:pane=>{location=consoleUrl(pane);},
+    onFull:pane=>openFullPreview(pane),
+  });
+  function showHover(card,paneId,sticky=false){
+    refreshPreviewEntries();
+    panePreview.show(card,paneId,{sticky});
+  }
+  function hideHover(){panePreview.hide();}
+  const canHover=panePreview.canHover||TmuxPanePreview.hoverable;
   document.addEventListener('mouseover',event=>{
     if(!canHover)return;
     const card=event.target.closest('.card[data-open]');
-    if(!card||!agentPreview(card.dataset.open))return;
-    if(hoverPane===card.dataset.open&&!hoverBox.hidden)return;
-    showHover(card,card.dataset.open);
+    if(!card)return;
+    const paneId=card.dataset.open;
+    // 卡片还没有任何预览内容时不弹空面板（board 可能刚刷新过，先同步一次）
+    refreshPreviewEntries();
+    const entry=previewEntries.get(paneId);
+    if(!entry||!(entry.agent_preview||entry.preview))return;
+    const current=TmuxPanePreview.state();
+    if(current.pane===paneId&&current.visible)return;
+    showHover(card,paneId);
   });
   document.addEventListener('mouseout',event=>{
     if(!canHover)return;
     const card=event.target.closest('.card[data-open]');
     if(!card)return;
-    if(event.relatedTarget&&(card.contains(event.relatedTarget)||hoverBox.contains(event.relatedTarget)))return;
-    scheduleHideHover();
+    if(event.relatedTarget&&(card.contains(event.relatedTarget)))return;
+    const panel=document.getElementById('hover-preview');
+    if(event.relatedTarget&&panel&&panel.contains(event.relatedTarget))return;
+    setTimeout(()=>{const current=TmuxPanePreview.state();if(current.visible&&!current.sticky)hideHover();},260);
   });
-  // the panel is interactive: you can move the pointer onto it and scroll it
-  hoverBox.addEventListener('mouseenter',cancelHideHover);
-  hoverBox.addEventListener('mouseleave',scheduleHideHover);
-  window.addEventListener('scroll',event=>{if(!hoverBox.contains(event.target))hideHover();},{passive:true});
-  document.addEventListener('click',event=>{
-    if(hoverBox.hidden||!hoverSticky)return;
-    if(hoverBox.contains(event.target)||event.target.closest('.card'))return;
-    hideHover();
-  });
-  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!hoverBox.hidden)hideHover();});
-  window.addEventListener('resize',hideHover);
 
   $('q').addEventListener('input',event=>{
     state.query=event.target.value;
@@ -795,6 +697,7 @@
   if(cached){
     // paint first, ask the server second
     state.board=cached.board;
+    refreshPreviewEntries();
     state.hosts=cached.hosts||[];
     state.favorites=new Set((cached.board.favorites||[]).map(item=>item.pane));
     state.stale=true;

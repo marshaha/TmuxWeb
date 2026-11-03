@@ -223,11 +223,13 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 <link rel="stylesheet" href="/assets/path-links.css">
 <link rel="stylesheet" href="/assets/composer-files.css">
 <link rel="stylesheet" href="/assets/downloads.css">
+<link rel="stylesheet" href="/assets/pane-preview.css">
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
 <script src="/assets/composer-files.js"></script>
 <script src="/assets/path-links.js"></script>
 <script src="/assets/downloads.js"></script>
+<script src="/assets/pane-preview.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -617,6 +619,67 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
         if(paths.length){event.preventDefault();deleteFiles(paths);}
       }
     });
+  }
+
+  // ---- 侧栏悬停预览：和 home 卡片共用 /assets/pane-preview.js + /api/home 的数据
+  // 会话树的行和「最近」的行都绑上；手机（没有 hover）模块本身不绑。
+  const previewEntries=new Map();
+  function previewDelay(){
+    try{
+      const raw=localStorage.getItem('tmux-preview-delay');
+      if(raw===null||raw==='')return 2000;           // 默认 2 秒
+      if(raw==='off')return null;                     // 设置里关掉
+      const seconds=Number(raw);                      // 设置里存的是秒：1/2/3
+      return Number.isFinite(seconds)&&seconds>=0?seconds*1000:2000;
+    }catch{return 2000;}
+  }
+  async function loadPreviewEntries(){
+    try{
+      const board=await api('/api/home');
+      previewEntries.clear();
+      for(const entry of [...(board.favorites||[]),...(board.recent||[])]){
+        if(!entry||!entry.pane)continue;
+        // 收藏条目带 preview/agent_preview，「最近」条目只有标题：别被后到的空条目覆盖
+        const previous=previewEntries.get(entry.pane);
+        const richer=previous&&(previous.agent_preview||previous.preview);
+        if(richer&&!(entry.agent_preview||entry.preview))continue;
+        previewEntries.set(entry.pane,entry);
+      }
+    }catch{/* 预览是锦上添花，取不到就算了 */}
+  }
+  function setupPanePreview(){
+    if(!window.TmuxPanePreview)return;
+    const force=new URLSearchParams(location.search).has('preview');  // 调试/报错 hover 能力时的逃生口
+    TmuxPanePreview.mount({
+      force,
+      data:()=>previewEntries,
+      delay:previewDelay,
+      render:text=>markdown(text),
+      onChat:pane=>{selectPane(pane);if(isMobile())closeSidebar();},
+      onFull:pane=>{location=`/grid?add=${encodeURIComponent(pane)}`;},
+      // 会话树里大多数 pane 不在 /api/home 的收藏/最近里：悬停时按需取最后几条消息
+      fetch:pane=>api(`/api/panes/${encodeURIComponent(pane)}/transcript?limit=8`)
+        .then(data=>TmuxPanePreview.previewFromTranscript(data)),
+    });
+    if(!TmuxPanePreview.hoverable)return;          // 手机 web 默认关闭（bind 也会再看一次）
+    TmuxPanePreview.bind($('pane-list'),{selector:'[data-pane]',paneOf:element=>element.dataset.pane});
+    loadPreviewEntries();
+    // 账号级偏好（设置面板里改的）覆盖本浏览器一次，之后每页都读 localStorage
+    api('/api/prefs').then(data=>{
+      const stored=(data&&data.prefs||{}).preview;
+      if(stored==='off'||stored==='1'||stored==='2'||stored==='3'){
+        try{localStorage.setItem('tmux-preview-delay',stored);}catch{}
+      }
+    }).catch(()=>{});
+    setInterval(()=>{if(!document.hidden)loadPreviewEntries();},60_000);
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadPreviewEntries();});
+  }
+
+  function setupRecentPreview(){
+    // 「最近」块是 recents.js 挂载时生成的，这里等它出现再绑（同一份面板逻辑）
+    if(!window.TmuxPanePreview||!TmuxPanePreview.hoverable)return;
+    const list=$('recent-list');
+    if(list)TmuxPanePreview.bind(list,{selector:'.recent-row',paneOf:element=>element.dataset.row});
   }
 
   function setupFiles(){$('files-toggle').onclick=()=>{state.filesMode=!state.filesMode;syncFilesPanel();if(state.filesMode)openFiles(state.filesPane===state.selected?state.filesPath:null);};
@@ -1619,7 +1682,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   $('live-toggle').onclick=()=>{state.livePaused?resumeLive():pauseLive();};$('fav-toggle').onclick=()=>{if(state.selected)toggleFavorite(state.selected);};
   $('refresh').onclick=()=>{if(state.selected&&state.mode==='chat')refreshTranscript(state.selected,{force:true,refresh:true});loadPanes(true);};$('menu').onclick=openSidebar;$('sidebar-close').onclick=closeSidebar;$('drawer-backdrop').onclick=closeSidebar;$('chat-mode').onclick=()=>setMode('chat');$('terminal-mode-button').onclick=()=>setMode('terminal');$('fullscreen').onclick=toggleFullscreen;$('share-button').onclick=()=>{$('share-result').textContent='';$('share-slug').value=`share-${Date.now().toString(36)}`;$('share-dialog').showModal();};$('share-cancel').onclick=()=>$('share-dialog').close();$('share-form').onsubmit=createShare;document.addEventListener('fullscreenchange',syncFullscreen);document.addEventListener('visibilitychange',()=>{clearTimeout(state.hiddenTimer);if(document.hidden&&state.mode==='terminal')state.hiddenTimer=setTimeout(()=>{if(document.hidden&&state.mode==='terminal')setMode('chat');},15000);});window.addEventListener('beforeunload',closeConnections);document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('sidebar').classList.contains('open'))closeSidebar();else if($('main').classList.contains('fullscreen-fallback'))toggleFullscreen();}});send.onclick=()=>{if(state.mode==='chat'&&state.selected&&agentWorking()&&!input.value.trim()){stopAgent();return;}sendInput();};input.addEventListener('focus',()=>setComposing(true));input.addEventListener('blur',()=>setTimeout(()=>setComposing(keyboardWanted()),120));input.oninput=()=>{syncSendButton();input.style.height='auto';input.style.height=Math.min(input.scrollHeight,82)+'px';if(state.selected)state.drafts.set(state.selected,input.value);};input.onkeydown=e=>{if(e.key==='Escape'&&state.mode==='chat'&&state.selected&&agentWorking()){e.preventDefault();stopAgent();return;}
     if(e.key!=='Enter'||e.shiftKey||e.isComposing||isMobile())return;e.preventDefault();sendInput();};scroll.addEventListener('wheel',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.addEventListener('touchmove',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.onscroll=()=>{state.stick=atBottom();
-    if(scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier)loadEarlier();$('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
+    if(scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier)loadEarlier();$('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
 // 会跨页面加载记住的偏好。以前这里会读 localStorage，于是你上次开着文件面板，之后每次
 // 进 chat（主页卡片、多窗口、直接链接）侧栏都先弹文件管理，看起来像是随机的。
 try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(localStorage.getItem('tmux-sidebar-collapsed')==='1'&&!isMobile())document.querySelector('.app').classList.add('sidebar-collapsed');const saved=localStorage.getItem('tmux-web-mode');if(saved==='terminal')setMode('terminal');
@@ -1638,6 +1701,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
       hideWhenFiles: true,
     });
     TmuxRecents.setHosts(state.hosts);
+    setupRecentPreview();
   }
   loadPanes();setInterval(()=>{if(!document.hidden)loadPanes();},20000);
 

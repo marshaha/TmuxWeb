@@ -21,6 +21,11 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **Cross-server relay**: an agent in any pane can ask an agent pane on another host and receive its answer through the HTTP API or `relay_client.py`.
 - **Remote rendering performance**: SSH connection multiplexing, remote content digests, idle backoff — and non-ASCII pane titles no longer arrive as `_`.
 - **File panel**: browse the selected pane's working directory in the sidebar (enter/leave folders, scroll), download with a click and upload by drag-and-drop, on localhost and over SSH alike.
+- **Sidebar hover preview**: rest the pointer on a session-tree row or a 最近 row (2s by default, 1/2/3s or off
+  in the settings panel) and the last message floats next to it, with 完整预览 / 聊天 / 关闭 at the bottom.
+  It is the *same* implementation the board cards use (`/assets/pane-preview.js` + `/api/home` data); a pane that is
+  not a favourite or recent entry fetches its transcript once on hover (reused for 60s). Mobile web has no hover, so
+  it is off by default; `?preview=1` forces it on for browsers that misreport hover support.
 - **File panel: rename and delete**: pick one entry and the toolbar shows 重命名 (renames inside the same directory,
   never overwrites); pick one or more and it shows 删除 (a non-empty directory needs the "remove its contents too"
   checkbox). Desktop can right-click and a phone can long-press (520 ms) for the same menu

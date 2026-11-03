@@ -54,7 +54,9 @@ class HomeBoardTests(unittest.TestCase):
         for marker in ('id="tree"', 'id="side-collapse"', 'id="side-open"',
                        'src="/assets/shell.js"', "TmuxShell.mount(",
                        'data-rename=', 'id="rename-dialog"', "openRename",
-                       'id="hover-preview"', 'agent_preview', "showHover"):
+                       # 预览面板是共享模块（侧栏也用同一份），页面只负责喂数据
+                       "TmuxPanePreview.mount(", "panePreview.show(card,paneId,{sticky})",
+                       'src="/assets/pane-preview.js"'):
             self.assertIn(marker, response.text)
         shell = self.client.get("/assets/shell.js").text
         for marker in ('data-star=', 'data-pane=', "function loadHosts", "function renderTree"):
@@ -316,12 +318,15 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("window.__md = value => marked.parse(", page)
         # 原始 HTML 要转义（和 /preview 同一套策略）
         self.assertIn("marked.use({renderer:{html(token){return escHtml(", page)
-        self.assertIn("$('hp-body').innerHTML=window.__md(preview.text);", page)
-        self.assertIn("$('hp-body').classList.add('md');", page)
+        # 面板由共享模块建，渲染器由页面注入（首页用同一个 marked）
+        self.assertIn("render:text=>window.__md?window.__md(text):String(text==null?'':text)", page)
+        shared = self.client.get("/assets/pane-preview.js").text
+        self.assertIn("body.innerHTML = options.render(preview.text);", shared)
+        self.assertIn("body.classList.add('md');", shared)
         # markdown 模式下不能还保留 pre-wrap，并且代码/表格要有样式
-        self.assertIn(".hp-body.md{white-space:normal}", page)
-        self.assertIn(".hp-body.md pre{", page)
-        self.assertIn(".hp-body.md table{", page)
+        styles = self.client.get("/assets/pane-preview.css").text
+        for marker in (".hp-body.md{white-space:normal}", ".hp-body.md pre{", ".hp-body.md table{"):
+            self.assertIn(marker, styles)
         # 卡片上的 4 行摘要在不渲染 markdown 的前提下也要剥掉记号
         self.assertIn("function plainText(value){", page)
         self.assertIn("${esc(plainText(preview.text))}</p>", page)
@@ -465,12 +470,14 @@ class HomeBoardTests(unittest.TestCase):
     def test_a_card_previews_first_and_the_panel_holds_the_ways_in(self):
         """Cards preview; the panel offers full preview / chat / close."""
         page = self.client.get("/home").text
-        for marker in ('id="hp-full"', 'id="hp-chat"', 'id="hp-close"', 'data-hp="full"',
-                       'data-hp="chat"', 'data-hp="close"'):
-            self.assertIn(marker, page)
+        shared = self.client.get("/assets/pane-preview.js").text
+        for marker in ('data-hp="full"', 'data-hp="chat"', 'data-hp="close"', '完整预览', '关闭'):
+            self.assertIn(marker, shared)
         self.assertIn("showHover(cardEl,open.dataset.open,true)", page)   # click opens the panel
         self.assertNotIn('data-full=', page)                              # no per-card shortcut left
-        self.assertIn("function cardPreview", page)                       # even a bare card opens something
+        # 没有预览内容时不弹空面板；有内容时预览面板自己给入口
+        self.assertIn("if(!entry||!(entry.agent_preview||entry.preview))return;", page)
+        self.assertIn("function previewFor(paneId)", shared)
 
     def test_the_tree_starts_collapsed_and_has_expand_buttons(self):
         """Clicking a server must not dump the whole tree open; the toolbar does that."""
@@ -492,7 +499,10 @@ class HomeBoardTests(unittest.TestCase):
     def test_a_phone_tap_opens_the_conversation_instead_of_the_hover_panel(self):
         """Touch fires mouseover first, so the preview panel used to swallow the tap."""
         page = self.client.get("/home").text
-        self.assertIn("canHover=matchMedia('(hover:hover) and (pointer:fine)')", page)
+        shared = self.client.get("/assets/pane-preview.js").text
+        self.assertIn("const canHover = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);", shared)
+        self.assertIn("if (!canHover && !options.force) return;", shared)   # 手机默认不绑
+        self.assertIn("const canHover=panePreview.canHover||TmuxPanePreview.hoverable;", page)
         self.assertIn("if(!canHover)return;", page)
 
     def test_the_full_preview_page_is_served_and_wired_to_the_board(self):
@@ -513,7 +523,9 @@ class HomeBoardTests(unittest.TestCase):
                        "openFullPreview", "closeFullPreview"):
             self.assertIn(marker, page)
         # the hover panel has to accept the pointer, otherwise it cannot be scrolled
-        self.assertIn("pointer-events:auto;overscroll-behavior:contain", page)
+        # (the panel itself is the shared /assets/pane-preview.css now)
+        self.assertIn("pointer-events:auto;overscroll-behavior:contain",
+                      self.client.get("/assets/pane-preview.css").text)
 
     def test_the_chat_and_terminal_switch_sits_next_to_the_star(self):
         page = self.client.get("/").text
