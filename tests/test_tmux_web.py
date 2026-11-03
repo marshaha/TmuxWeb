@@ -1379,6 +1379,21 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("state.paneNumber", preview)
         self.assertIn("`#${number} · ${name}`", preview)
 
+        # 终端页标题栏 + PWA 窗口标题
+        term = self.client.get("/term?pane=%2528").text
+        self.assertIn("function paintTitle(number){", term)
+        self.assertIn("fetch('/api/panes'", term)
+        self.assertIn("`#${number} · `:'')+`终端 · ${pane}`", term)
+
+        # 控制台的浏览器/PWA 标题
+        self.assertIn("document.title=p.number?`#${p.number} · ${p.title||p.target} · Tmux Chat`", page)
+
+        # 多窗口：只有一个窗口或最大化时窗口标题带 #N，删空回到「多窗口」
+        grid = self.client.get("/grid").text
+        self.assertIn("function syncDocTitle(){", grid)
+        self.assertIn("document.querySelectorAll('#grid > .cell')", grid)
+        self.assertIn("document.title=`${titleFor(pane)} · TmuxWeb`", grid)
+
     def test_the_sidebar_and_relay_address_a_pane_by_its_number(self):
         """#N 能当 relay 目标，也能直接 ?pane=#N 打开；侧栏行显示同一个号。"""
         self.login()

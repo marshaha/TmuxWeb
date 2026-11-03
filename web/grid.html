@@ -672,6 +672,15 @@
   }
   const esc=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 
+  // 浏览器/PWA 窗口标题：只有一个窗口或最大化时带上 #N
+  function syncDocTitle(){
+    const cells=[...document.querySelectorAll('#grid > .cell')];
+    const pane=state.max||(cells.length===1?cells[0].dataset.pane:'');
+    if(!pane){document.title='多窗口 · TmuxWeb';return;}
+    // titleFor 已经带 "#N · " 前缀，这里不要再加一层
+    document.title=`${titleFor(pane)} · TmuxWeb`;
+  }
+
   function titleFor(paneId){
     // 最近/收藏里改过名字的，就用那边的名字（同一块 pane 只有一个名字）
     const meta=state.titles.get(paneId);
@@ -722,6 +731,7 @@
       if(title.textContent!==label)title.textContent=label;
       title.title=pane;
     }
+    syncDocTitle();                     // 窗口标题跟着窗口数量/#N 走
     const toggle=cell.querySelector('[data-mode-toggle]');
     if(toggle){
       const tip=mode==='term'?'切到聊天':'切到终端';
@@ -1180,6 +1190,7 @@
       if(!renamed){
         render();
       }
+      syncDocTitle();
       applyDefaultModes();
     }catch{}
   }
@@ -1344,6 +1355,7 @@
   // ---- double-click a title bar to give one window the whole page
   function toggleMax(pane){
     state.max=state.max===pane?null:pane;
+    syncDocTitle();
     $('grid').classList.toggle('maximized',!!state.max);
     for(const cell of document.querySelectorAll('.cell')){
       cell.classList.toggle('max',cell.dataset.pane===state.max);

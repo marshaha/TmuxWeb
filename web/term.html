@@ -77,8 +77,20 @@
   const embedded=params.get('embed')==='1';
   if(embedded)document.body.classList.add('embed');
   $('console-link').href='/?pane='+encodeURIComponent(pane);
-  document.title='终端 · '+pane;
-  $('title').textContent=pane;
+  // 标题栏/PWA 窗口标题都带窗口编号（和侧栏、relay 的 #N 是同一个号）
+  function paintTitle(number){
+    const shown=number?`#${number} · ${pane}`:pane;
+    $('title').textContent=shown;
+    document.title=(number?`#${number} · `:'')+`终端 · ${pane}`;
+  }
+  paintTitle(0);
+  fetch('/api/panes',{headers:{'Accept':'application/json'}})
+    .then(response=>response.ok?response.json():null)
+    .then(data=>{
+      const found=((data&&data.panes)||[]).find(item=>item.id===pane);
+      if(found&&found.number)paintTitle(found.number);
+    })
+    .catch(()=>{});
   if(matchMedia('(hover:none) and (pointer:coarse)').matches)document.body.classList.add('touch');
 
   const savedFont=Number(localStorage.getItem('tmux-term-font'));
