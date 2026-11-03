@@ -686,20 +686,24 @@ codex mcp add tmuxweb --url http://host:8787/mcp
 printf 'y\ny\n' | hermes mcp add tmuxweb --url http://host:8787/mcp --auth header
 ```
 
+**地址约定**：一律用 tailnet 地址（`http://100.x.y.z:8787`）。同一个 tailnet 是双向的，跨机器不需要反向隧道、
+不需要 SSH 转发；`install_relay_mcp.sh` 默认就取本机 `tailscale ip -4`，没装 tailscale 才回落到 `127.0.0.1`。
+只有**必须经跳板机**的主机（例如 `oracle` 走 `aliyun` 跳，公网地址不在 tailnet 里）才另说——那种情况在
+`remote_hosts` 里配 `jump_host_id`，relay 本身仍然连本机这一条 URL。
+
 **装在另一台机器上**（比如 Mac mini 的 Hermes）：只要那台机器能访问到这个 URL 就行，不需要本仓库、不需要 python3。
 
 ```bash
 # 1) token 落到 ~/.hermes/.env（0600，别贴进 shell 历史）
 printf 'MCP_TMUXWEB_API_KEY=%s\n' '<token>' >> ~/.hermes/.env && chmod 600 ~/.hermes/.env
 # 2) 注册（两个提示都答 y：requires auth / enable all）
-hermes mcp add tmuxweb --url http://<host>:8787/mcp --auth header
+hermes mcp add tmuxweb --url http://100.x.y.z:8787/mcp --auth header
 # 3) 验证
 hermes mcp test tmuxweb        # ✓ Connected · 10 tools
 ```
 
-隧道不通、但两台机器都在同一个 tailnet 时，直接用 tailnet 地址（`http://100.x.y.z:8787/mcp`）最省事：
-不需要反向隧道，tailnet 是双向的。`curl http://<tailnet-ip>:8787/` 回 303 就说明通（303 是未登录跳转，
-`/mcp` 不带 token 回 401 才是对的）。
+`curl http://100.x.y.z:8787/` 回 303 就说明通（303 是未登录跳转），`/mcp` 不带 token 回 401 才是对的。
+别用 MagicDNS 短名（实测 `http://robo:8787/` 会 502），写 tailnet IP。
 
 没有 MCP 支持的场景（脚本、shell）可以用 `relay_client.py`，或用 stdio 版 `mcp_relay.py`（`--selftest` 自检）。
 内网/Tailscale 部署可以彻底免掉 header：在 `.env` 设 `TMUX_WEB_MCP_AUTH=off`（默认 `on`），`/mcp` 不再校验 token，客户端只填 URL；此时任何能访问该端口的人都能操作 pane，启动日志会打一条警告，`/api/*` 与网页登录仍按原样校验。

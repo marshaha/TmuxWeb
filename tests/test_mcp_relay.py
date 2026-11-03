@@ -169,6 +169,16 @@ class InstallerTests(unittest.TestCase):
         # 预置 token 的那段不能把它打到 stdout
         self.assertNotIn('echo "$TOKEN"', script)
 
+    def test_installer_defaults_to_the_tailnet_address(self):
+        """地址统一走 tailnet：跨机器直连，不用反向隧道；没装 tailscale 才回落到 127.0.0.1。"""
+        script = Path("install_relay_mcp.sh").read_text()
+        self.assertIn('ip -4', script)
+        self.assertIn('DEFAULT_IP=$(tailnet_ip) || DEFAULT_IP="127.0.0.1"', script)
+        self.assertIn('URL="${TMUXWEB_URL:-http://$DEFAULT_IP:8787}"', script)
+        self.assertIn('DEFAULT_IP="127.0.0.1"', script)               # 回落分支还在
+        # macOS 上 tailscale 是 App 里的二进制，不在 PATH
+        self.assertIn("/Applications/Tailscale.app/Contents/MacOS/Tailscale", script)
+
 
 class MissingTokenTests(unittest.TestCase):
     def test_token_falls_back_to_the_server_variable(self):

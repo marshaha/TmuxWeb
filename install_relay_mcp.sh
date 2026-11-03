@@ -6,7 +6,8 @@
 #   ./install_relay_mcp.sh --dry-run    # print the commands, token masked
 #   ./install_relay_mcp.sh --uninstall  # remove it again
 #
-# Needs TMUXWEB_URL (default http://127.0.0.1:8787) and TMUXWEB_TOKEN; when the
+# Needs TMUXWEB_URL (default: this machine's tailnet address, e.g. http://100.x.y.z:8787,
+# falling back to http://127.0.0.1:8787) and TMUXWEB_TOKEN; when the
 # token is missing the script reads TMUX_WEB_API_TOKEN from ./.env.
 set -euo pipefail
 
@@ -29,7 +30,20 @@ if [ -f "$DIR/.env" ]; then
   . "$DIR/.env"
   set +a
 fi
-URL="${TMUXWEB_URL:-http://127.0.0.1:8787}"
+# 默认用 tailnet 地址：其它机器（含经跳板机的）只要加入同一个 tailnet 就能直连，
+# 不用反向隧道；本机没装 tailscale 时回落到 127.0.0.1
+tailnet_ip() {
+  for candidate in tailscale /usr/bin/tailscale /opt/homebrew/bin/tailscale \
+                   /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      ip=$("$candidate" ip -4 2>/dev/null | head -1)
+      if [ -n "$ip" ]; then printf '%s' "$ip"; return 0; fi
+    fi
+  done
+  return 1
+}
+DEFAULT_IP=$(tailnet_ip) || DEFAULT_IP="127.0.0.1"
+URL="${TMUXWEB_URL:-http://$DEFAULT_IP:8787}"
 MCP_URL="${TMUXWEB_MCP_URL:-${URL%/}/mcp}"
 TOKEN="${TMUXWEB_TOKEN:-${TMUX_WEB_API_TOKEN:-}}"
 case "$(printf '%s' "${TMUX_WEB_MCP_AUTH:-on}" | tr '[:upper:]' '[:lower:]')" in
