@@ -17,11 +17,20 @@
 (function () {
   // 绝对/家目录路径，或"带扩展名的相对路径"（results/out.md、src/main.py）。
   // 后者故意要求"斜杠 + 扩展名"，免得把 and/or 之类的普通词也变成链接。
-  const ABSOLUTE = /(^|[\s(（\[【<"'`])((?:~|\.{1,2})?\/[^\s'"`<>|，。；：、）)】]+)/g;
-  const RELATIVE = /(^|[\s(（\[【<"'`])((?:\.{1,2}\/)?(?:[\w@%+.-]+\/)+[\w@%+.-]+\.[A-Za-z0-9]{1,8})/g;
+  const BOUNDARY = "[\\s(（\\[【<\"'`：:，、；;！？!?）】」』》>]";
+  const ABSOLUTE = new RegExp('(^|' + BOUNDARY + ')((?:~|\\.{1,2})?\\/[^\\s\"' + '`<>|，。；：、）)】]+)', 'g');
+  const RELATIVE = new RegExp('(^|' + BOUNDARY + ')((?:\\.{1,2}\\/)?(?:[\\w@%+.-]+\\/)+[\\w@%+.-]+\\.[A-Za-z0-9]{1,8})', 'g');
   const SKIP_TAGS = new Set(['A', 'PRE', 'SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'BUTTON', 'SVG']);
   const MD_EXT = /\.(md|markdown|mdx)$/i;
   const TRAILING = /[.,;:!?)}\]】。，；：！？]+$/;
+
+  // 至少两段（/a/b）或者以 ~/ ./ ../ 开头，才算"像路径"：/grid、/OUT-OF-BAND 这种就放过
+  const WEB_PREFIX = /^\/(api|assets|static|vendor|mcp|share-assets|login|logout|home|grid|preview|term|hosts|shares)(\/|$)/;
+  function plausible(path) {
+    if (WEB_PREFIX.test(path)) return false;          // 接口/静态资源不是文件
+    if (/^(~|\.{1,2})\//.test(path)) return true;
+    return path.split('/').filter(Boolean).length >= 2;
+  }
 
   function cleanPath(raw) {
     let path = String(raw || '').replace(TRAILING, '');
@@ -57,7 +66,7 @@
       while ((found = pattern.exec(text))) {
         const start = found.index + found[1].length;
         const raw = cleanPath(found[group]);
-        if (!raw) continue;
+        if (!raw || !plausible(raw)) continue;
         if (/:\/\//.test(text.slice(Math.max(0, start - 8), start))) continue;   // 跳过 URL
         if (hits.some(hit => start >= hit.start && start < hit.start + hit.raw.length)) continue;
         hits.push({start, raw});
@@ -126,7 +135,7 @@
         if (SKIP_TAGS.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
         if (parent.closest('[data-plink], a, button')) return NodeFilter.FILTER_REJECT;
         if (parent.closest('pre')) return NodeFilter.FILTER_REJECT;   // 代码块里不动
-        if (!/[~./]\//.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+        if (!node.nodeValue.includes('/')) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       },
     });

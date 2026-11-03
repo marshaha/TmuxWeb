@@ -1948,6 +1948,11 @@ class TmuxWebTests(unittest.TestCase):
         for marker in ("window.TmuxPaths = {enhance, rawHref, lookup};",
                        "files/stat?path=", "onDir", "onMd", "onMissing", "dataset.plinkPath"):
             self.assertIn(marker, module)
+        # 中文标点也是边界：`本地文件：/Users/...` 这类纯文本必须能识别
+        self.assertIn("：:，、；;！？!?", module)
+        # 只有一段的（/grid、/OUT-OF-BAND）和接口前缀（/api、/assets）不当文件链接
+        self.assertIn("function plausible(path)", module)
+        self.assertIn("WEB_PREFIX", module)
         self.assertEqual(self.client.get("/assets/path-links.css").status_code, 200)
 
     def test_the_embedded_preview_has_the_same_composer(self):
