@@ -67,6 +67,12 @@ abstract class Api {
   /// Zip of the given paths; an empty list zips the directory `base`.
   Future<List<int>> zipFiles(String paneRef, List<String> paths, String base);
 
+  /// Rename one entry inside its own directory; returns the new absolute path.
+  Future<String> renameFile(String paneRef, String path, String name);
+
+  /// Delete entries; a non-empty directory needs [recursive].
+  Future<int> deleteFiles(String paneRef, List<String> paths, {bool recursive = false});
+
   // --- Web parity, batch 1: API surface only, no screens yet. ---
   // Shapes below are taken from tmux_web.py (main 3fff9a1); where the
   // server returns a plain object it is passed through as a Map so the
@@ -427,6 +433,28 @@ class ApiClient implements Api, TerminalApi {
     );
     if (response.statusCode >= 400) _fail(response);
     return response.bodyBytes;
+  }
+
+  @override
+  Future<String> renameFile(String paneRef, String path, String name) async {
+    final response = await _http.post(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/files/rename'),
+      headers: _headers(json: true),
+      body: jsonEncode({'path': path, 'name': name}),
+    );
+    final data = _decode(response);
+    return (data['path'] as String?) ?? path;
+  }
+
+  @override
+  Future<int> deleteFiles(String paneRef, List<String> paths, {bool recursive = false}) async {
+    final response = await _http.post(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/files/delete'),
+      headers: _headers(json: true),
+      body: jsonEncode({'paths': paths, 'recursive': recursive}),
+    );
+    final data = _decode(response);
+    return (data['deleted'] as List?)?.length ?? paths.length;
   }
 
   @override

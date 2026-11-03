@@ -112,6 +112,149 @@ class _FilesScreenState extends State<FilesScreen> {
     }
   }
 
+
+  /// 行尾「更多」和长按共用：桌面右键的习惯在触屏上是长按。
+  Future<void> _actions(FileEntry entry) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(entry.isDir ? Icons.folder_open_outlined : Icons.open_in_new, size: 20),
+              title: Text(entry.isDir ? '打开目录' : '预览'),
+              onTap: () => Navigator.pop(context, 'open'),
+            ),
+            if (!entry.isDir)
+              ListTile(
+                leading: const Icon(Icons.download_outlined, size: 20),
+                title: const Text('下载'),
+                onTap: () => Navigator.pop(context, 'download'),
+              ),
+            const Divider(height: 1),
+            ListTile(
+              key: const Key('file-action-rename'),
+              leading: const Icon(Icons.drive_file_rename_outline, size: 20),
+              title: const Text('重命名'),
+              onTap: () => Navigator.pop(context, 'rename'),
+            ),
+            ListTile(
+              key: const Key('file-action-delete'),
+              leading: Icon(Icons.delete_outline, size: 20, color: AppTheme.danger),
+              title: Text('删除', style: TextStyle(color: AppTheme.danger)),
+              onTap: () => Navigator.pop(context, 'delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'open':
+        entry.isDir ? await _open(entry.path) : await _preview(entry);
+      case 'download':
+        await _download(entry);
+      case 'rename':
+        await _rename(entry);
+      case 'delete':
+        await _delete(entry);
+    }
+  }
+
+  Future<void> _rename(FileEntry entry) async {
+    final dot = entry.name.lastIndexOf('.');
+    final controller = TextEditingController(text: entry.name)
+      ..selection = TextSelection(baseOffset: 0, extentOffset: dot > 0 ? dot : entry.name.length);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重命名'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(entry.path, style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('file-rename-input'),
+              controller: controller,
+              autofocus: true,
+              onSubmitted: (value) => Navigator.pop(context, value.trim()),
+              decoration: const InputDecoration(labelText: '新名字'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          FilledButton(
+            key: const Key('file-rename-ok'),
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('重命名'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || name == null || name.isEmpty || name == entry.name) return;
+    try {
+      await widget.api.renameFile(widget.pane.ref, entry.path, name);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已重命名为 $name')));
+      await _open(_listing?.path ?? widget.pane.path);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('重命名失败：$error')));
+    }
+  }
+
+  Future<void> _delete(FileEntry entry) async {
+    var recursive = entry.isDir;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('删除'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(entry.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text('删除后无法恢复。', style: TextStyle(fontSize: 12, color: AppTheme.danger)),
+              if (entry.isDir)
+                CheckboxListTile(
+                  key: const Key('file-delete-recursive'),
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  value: recursive,
+                  onChanged: (value) => setDialogState(() => recursive = value ?? false),
+                  title: const Text('连同目录内容一起删除', style: TextStyle(fontSize: 13)),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+            FilledButton(
+              key: const Key('file-delete-ok'),
+              style: FilledButton.styleFrom(backgroundColor: AppTheme.danger),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('删除'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    try {
+      await widget.api.deleteFiles(widget.pane.ref, [entry.path], recursive: recursive);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已删除 ${entry.name}')));
+      await _open(_listing?.path ?? widget.pane.path);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+    }
+  }
+
   Future<void> _preview(FileEntry entry) async {
     setState(() => _busy = true);
     List<int> bytes = const [];
@@ -279,14 +422,25 @@ class _FilesScreenState extends State<FilesScreen> {
             title: Text(entry.name,
                 maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
             subtitle: entry.isDir ? null : Text(entry.sizeLabel, style: TextStyle(fontSize: 11, color: AppTheme.faint)),
-            trailing: entry.isDir
-                ? Icon(Icons.chevron_right, size: 18, color: AppTheme.faint)
-                : IconButton(
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (!entry.isDir)
+                  IconButton(
                     tooltip: '下载',
                     onPressed: _busy ? null : () => _download(entry),
                     icon: const Icon(Icons.download_outlined, size: 18),
                   ),
+                IconButton(
+                  key: Key('file-more-${entry.name}'),
+                  tooltip: '更多',
+                  onPressed: _busy ? null : () => _actions(entry),
+                  icon: const Icon(Icons.more_vert, size: 18),
+                ),
+              ],
+            ),
             onTap: () => entry.isDir ? _open(entry.path) : _preview(entry),
+            onLongPress: _busy ? null : () => _actions(entry),
           );
         },
       ),

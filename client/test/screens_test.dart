@@ -18,6 +18,8 @@ class FakeApi implements Api, TerminalApi {
   final List<String> logins = [];
   final List<String> sent = [];
   final List<String> uploads = [];
+  final List<String> renames = [];
+  final List<String> deletes = [];
 
   @override
   Future<void> login({required String baseUrl, required String password, String token = ''}) async {
@@ -100,6 +102,18 @@ class FakeApi implements Api, TerminalApi {
 
   @override
   Future<List<int>> zipFiles(String paneRef, List<String> paths, String base) async => const [80, 75, 3, 4];
+
+  @override
+  Future<String> renameFile(String paneRef, String path, String name) async {
+    renames.add('$path -> $name');
+    return path.replaceAll(RegExp(r'[^/]+$'), name);
+  }
+
+  @override
+  Future<int> deleteFiles(String paneRef, List<String> paths, {bool recursive = false}) async {
+    deletes.add('${paths.join(',')}|recursive=$recursive');
+    return paths.length;
+  }
 
   @override
   Future<Transcript> transcript(String paneRef, {int limit = 200, bool refresh = false}) async =>
