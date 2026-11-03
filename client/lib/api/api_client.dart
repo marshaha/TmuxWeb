@@ -64,6 +64,17 @@ abstract class Api {
 
   Future<void> uploadFile(String paneRef, String dir, String name, List<int> bytes);
 
+  /// GET /api/panes/{ref}/files/stat?path=... — is this path a file or a
+  /// directory? Returns {path, name, exists, kind, size, mtime, parent,
+  /// offset}; offset is which base matched (0 = as typed). Used by chat
+  /// text that mentions paths.
+  Future<Map<String, dynamic>> fileStat(String paneRef, String path);
+
+  /// DELETE /api/panes/{ref}/files/upload?dir&name — remove a chat-uploaded
+  /// attachment. Only single-level names under a dir ending in
+  /// `upload_files` are accepted (server enforces this, 422 otherwise).
+  Future<Map<String, dynamic>> deleteUploadFile(String paneRef, String dir, String name);
+
   /// Zip of the given paths; an empty list zips the directory `base`.
   Future<List<int>> zipFiles(String paneRef, List<String> paths, String base);
 
@@ -114,10 +125,15 @@ abstract class Api {
 
   Future<void> deleteHomeCard(String cardId);
 
-  /// GET /api/prefs: {prefs: {theme: ...}}; today theme is the only key.
+  /// GET /api/prefs: {prefs: {theme, sidebar, preview}}.
   Future<Map<String, dynamic>> prefs();
 
   Future<Map<String, dynamic>> updateTheme(String theme);
+
+  /// PUT /api/prefs with any subset of {theme, sidebar: pane|none,
+  /// preview: off|1|2|3}. The server rejects unknown keys and out-of-range
+  /// values with 400.
+  Future<Map<String, dynamic>> updatePrefs(Map<String, String> prefs);
 
   /// GET /api/settings: {password_source, hosts, api_token}.
   Future<Map<String, dynamic>> settingsInfo();
@@ -135,6 +151,11 @@ abstract class Api {
 
   /// GET /api/plugins: {plugins: [...]}; each entry is passed through raw.
   Future<List<Map<String, dynamic>>> plugins();
+
+  /// The same /api/plugins response's `buttons` entries
+  /// {label, href, icon, title} for enabled plugins — the sidebar buttons
+  /// web renders from plugins-ui.js.
+  Future<List<Map<String, dynamic>>> pluginButtons();
 
   Future<void> setPluginEnabled(String name, bool enabled);
 
@@ -434,6 +455,24 @@ class ApiClient implements Api, TerminalApi {
   }
 
   @override
+  Future<Map<String, dynamic>> fileStat(String paneRef, String path) async {
+    final response = await _http.get(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/files/stat', {'path': path}),
+      headers: _headers(),
+    );
+    return _decode(response);
+  }
+
+  @override
+  Future<Map<String, dynamic>> deleteUploadFile(String paneRef, String dir, String name) async {
+    final response = await _http.delete(
+      _uri('/api/panes/${encodePaneRef(paneRef)}/files/upload', {'dir': dir, 'name': name}),
+      headers: _headers(),
+    );
+    return _decode(response);
+  }
+
+  @override
   Future<List<int>> zipFiles(String paneRef, List<String> paths, String base) async {
     final response = await _http.post(
       _uri('/api/panes/${encodePaneRef(paneRef)}/files/zip'),
@@ -657,6 +696,16 @@ class ApiClient implements Api, TerminalApi {
   }
 
   @override
+  Future<Map<String, dynamic>> updatePrefs(Map<String, String> prefs) async {
+    final response = await _http.put(
+      _uri('/api/prefs'),
+      headers: _headers(json: true),
+      body: jsonEncode(prefs),
+    );
+    return _decode(response);
+  }
+
+  @override
   Future<Map<String, dynamic>> settingsInfo() async {
     final response = await _http.get(_uri('/api/settings'), headers: _headers());
     return _decode(response);
@@ -693,6 +742,12 @@ class ApiClient implements Api, TerminalApi {
   Future<List<Map<String, dynamic>>> plugins() async {
     final response = await _http.get(_uri('/api/plugins'), headers: _headers());
     return _maps(_decode(response), 'plugins');
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> pluginButtons() async {
+    final response = await _http.get(_uri('/api/plugins'), headers: _headers());
+    return _maps(_decode(response), 'buttons');
   }
 
   @override

@@ -118,6 +118,14 @@ class FakeApi implements Api, TerminalApi {
   }
 
   @override
+  Future<Map<String, dynamic>> fileStat(String paneRef, String path) async =>
+      {'path': path, 'exists': false, 'kind': null, 'offset': 0};
+
+  @override
+  Future<Map<String, dynamic>> deleteUploadFile(String paneRef, String dir, String name) async =>
+      {'status': 'deleted'};
+
+  @override
   Future<Transcript> transcript(String paneRef, {int limit = 200, bool refresh = false}) async =>
       Transcript(mode: 'transcript', provider: 'codex', mtime: 1, messages: [
         ChatMessage(id: 'm1', role: 'assistant', text: '来自 $paneRef 的回复'),
@@ -297,6 +305,12 @@ class FakeApi implements Api, TerminalApi {
     updatedTheme = theme;
     return {'prefs': {'theme': theme}};
   }
+
+  @override
+  Future<Map<String, dynamic>> updatePrefs(Map<String, String> prefs) async => {'prefs': prefs};
+
+  @override
+  Future<List<Map<String, dynamic>>> pluginButtons() async => [];
 
   @override
   Future<Map<String, dynamic>> settingsInfo() async =>
