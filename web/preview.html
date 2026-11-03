@@ -70,7 +70,9 @@
   .screen{flex:1 1 auto;min-height:0;margin:0;padding:10px 12px;overflow:auto;border-radius:10px;background:#111;
     color:#e7e5df;font:11.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
   footer{flex:none;padding:9px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--surface)}
-  .composer{display:flex;align-items:flex-end;gap:8px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:14px;background:var(--card)}
+  .composer{display:flex;flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px;
+    border:1px solid var(--line-strong);border-radius:14px;background:var(--card)}
+  .composer-row{display:flex;align-items:flex-end;gap:8px}
   textarea{flex:1;min-height:22px;max-height:120px;padding:4px 2px;border:0;resize:none;background:transparent;color:var(--ink);outline:none;font:inherit;line-height:1.5}
   .send{display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:50%;background:#292825;color:#fff;cursor:pointer;flex:none}
   .send:disabled{background:#c8c5bd;cursor:not-allowed}
@@ -82,11 +84,16 @@
     /* iOS zooms the page when a field under 16px takes focus and never zooms back out */
     @media(max-width:760px){input,textarea,select{font-size:16px!important}}
   </style>
+<link rel="stylesheet" href="/assets/composer-files.css">
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
+<script src="/assets/composer-files.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="M20.4 11.6 12 20a5.2 5.2 0 0 1-7.4-7.4l8.9-8.9a3.5 3.5 0 0 1 4.9 5l-8.9 8.9a1.8 1.8 0 0 1-2.5-2.5l8.2-8.2"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.2 4.2h7.6l5.2 5.2v10.4a1.6 1.6 0 0 1-1.6 1.6H6.2a1.6 1.6 0 0 1-1.6-1.6V5.8a1.6 1.6 0 0 1 1.6-1.6Z"/><path d="M13.6 4.5v4.4h4.6"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5 17.5 17.5M17.5 6.5 6.5 17.5"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6"/></symbol>
   <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4.5 5.8h15a1.2 1.2 0 0 1 1.2 1.2v8.4a1.2 1.2 0 0 1-1.2 1.2H9.6l-4 3.1a.5.5 0 0 1-.8-.4v-2.7H4.5a1.2 1.2 0 0 1-1.2-1.2V7a1.2 1.2 0 0 1 1.2-1.2Z"></path><path d="M7.8 9.6h8.4M7.8 12.9h5.6"></path></symbol>
   <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3.4" y="5" width="17.2" height="14" rx="2"></rect><path d="m7.2 10 2.4 2.2-2.4 2.2M12.4 14.6h4.2"></path></symbol>
@@ -123,8 +130,12 @@
 
 <footer>
   <div class="composer">
-    <textarea id="input" rows="1" placeholder="继续提问…（Enter 发送，Shift+Enter 换行）"></textarea>
-    <button class="send" id="send" title="发送" aria-label="发送"><svg class="ico"><use href="#i-send"/></svg></button>
+    <div class="cf-bar"><button class="cf-attach" id="attach" type="button" title="添加附件（存到 pane 目录下的 upload_files）" aria-label="添加附件" disabled><svg class="ico"><use href="#i-paperclip"/></svg><span>附件</span></button><input id="upload-input" type="file" multiple hidden><span class="cf-hint"></span></div>
+    <div class="cf-strip" id="uploads" hidden></div>
+    <div class="composer-row">
+      <textarea id="input" rows="1" placeholder="继续提问…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button class="send" id="send" title="发送" aria-label="发送"><svg class="ico"><use href="#i-send"/></svg></button>
+    </div>
   </div>
   <div class="hint" id="hint"></div>
 </footer>
@@ -137,6 +148,13 @@ const $=id=>document.getElementById(id);
 const pane=new URLSearchParams(location.search).get('pane')||'';
 const state={messages:[],sig:null,pane,waiting:false,stick:true,timer:null,paneInfo:null};
 const scroll=$('scroll');
+// 附件：和控制台聊天共用 /assets/composer-files.js
+const files=window.TmuxFiles?window.TmuxFiles.mount({
+  strip:$('uploads'),button:$('attach'),picker:$('upload-input'),drop:document.querySelector('footer'),
+  pane:()=>pane,
+  path:()=>(state.paneInfo&&state.paneInfo.path)||'',
+  onError:message=>toast(message),
+}):null;
 
 function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 marked.use({renderer:{html(token){return esc(token&&(token.text!=null?token.text:token.raw));}}});
@@ -278,16 +296,33 @@ async function loadScreen(){
   screenTimer=setTimeout(loadScreen,cellVisible?5000:20000);
 }
 
+async function applyCustomName(){
+  try{
+    const [recent,favorites]=await Promise.all([
+      api('/api/home/recent?limit=60').catch(()=>({recent:[]})),
+      api('/api/home/favorites').catch(()=>({favorites:[]})),
+    ]);
+    const names=new Map();
+    for(const item of favorites.favorites||[])if(item.pane&&item.title)names.set(item.pane,item.title.trim());
+    for(const item of recent.recent||[])if(item.pane&&item.label)names.set(item.pane,item.label.trim());
+    const name=names.get(pane);
+    if(!name)return;
+    $('title').textContent=name;
+    document.title=`${name} · 对话预览`;
+  }catch(_error){}
+}
 async function loadPaneInfo(){
   try{
     const data=await api('/api/hosts');
     const owner=(data.hosts||[]).find(host=>(host.panes||[]).some(item=>item.id===pane));
     const meta=owner&&(owner.panes||[]).find(item=>item.id===pane);
     state.paneInfo=meta||null;
+    if(files)files.syncButton();
     if(!meta)return;
     document.title=`${meta.title||pane} · 对话预览`;
     $('title').textContent=meta.title||pane;
     $('sub').textContent=[owner.name,meta.session,`${meta.window}:${meta.window_name||''}`,meta.command].filter(Boolean).join(' · ');
+    await applyCustomName();
     $('open-chat').href=`/?pane=${encodeURIComponent(pane)}`;
     $('open-terminal').href=`/?pane=${encodeURIComponent(pane)}&mode=terminal`;
   }catch{}
@@ -303,8 +338,11 @@ document.addEventListener('click',async event=>{
 });
 
 async function send(){
-  const text=$('input').value;
+  const typed=$('input').value;
+  const prompt=files?files.prompt():'';
+  const text=prompt?(typed.trim()?`${prompt}\n\n${typed}`:prompt):typed;
   if(!text.trim())return;
+  if(files&&files.pending())return;
   if(state.waiting){await stop();return;}
   const input=$('input');
   input.value='';input.style.height='auto';syncSend();
@@ -313,6 +351,7 @@ async function send(){
       body:JSON.stringify({text,submit:true})});
     state.stick=true;
     state.sig=null;
+    if(files)files.clear();
     load(false);
   }catch(error){toast(error.message);input.value=text;}
 }

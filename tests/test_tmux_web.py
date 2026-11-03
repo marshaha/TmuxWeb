@@ -1888,20 +1888,37 @@ class TmuxWebTests(unittest.TestCase):
             "DELETE", "/api/panes/%254/files/upload?dir=/tmp/upload_files&name=x").status_code, 401)
 
     def test_the_chat_composer_can_attach_files(self):
-        """输入框上面挂附件条：图片小格子预览、其它文件显示名字，消息前补一行说明。"""
+        """控制台聊天和 /preview 共用同一份附件实现（按钮在输入框卡片里，一条细线分隔）。"""
         self.login()
         page = self.client.get("/").text
-        for marker in ('id="uploads"', 'id="attach"', 'id="upload-input"', '<symbol id="i-paperclip"',
-                       "const uploadState={items:[]};", "upload_files", "#i-file"):
-            self.assertIn(marker, page)
-        self.assertIn("/files/${action}?${query}", page)
-        self.assertIn("const query=`name=${encodeURIComponent(name)}&dir=${encodeURIComponent(dir)}`;", page)
-        self.assertIn("user uploaded file “${names.join(' & ')}”", page)
-        self.assertIn("const prompt=uploadPrompt(uploadState.items);", page)
-        # 删除按钮要显眼：红底白叉 + 白色描边，触屏更大
-        self.assertIn("background:var(--danger);color:#fff;cursor:pointer", page)
-        self.assertIn(".upload-x .ico{width:11px;height:11px;stroke-width:3}", page)
-        self.assertIn("@media(pointer:coarse){.upload-x{width:24px;height:24px", page)
+        self.assertIn('/assets/composer-files.css', page)
+        self.assertIn('/assets/composer-files.js', page)
+        self.assertIn('<div class="composer-card"><div class="cf-bar">', page)
+        self.assertIn('<div class="cf-strip" id="uploads" hidden></div>', page)
+        self.assertIn('id="attach"', page)
+        self.assertIn("window.TmuxFiles.mount({", page)
+        self.assertIn("const prompt=attachmentsPrompt();", page)
+
+        shared = self.client.get("/assets/composer-files.js").text
+        self.assertIn("user uploaded file “${names.join(' & ')}”", shared)
+        self.assertIn("/files/upload`", shared)              # 上传 + 删除用同一个端点
+        self.assertIn("?name=${encodeURIComponent(name)}&dir=", shared)
+        self.assertIn("/files/download?path=", shared)
+        self.assertIn("method: 'DELETE'", shared)
+        self.assertEqual(self.client.get("/assets/composer-files.css").status_code, 200)
+
+    def test_the_embedded_preview_has_the_same_composer(self):
+        """多窗口里那一格就是 /preview，不能没有附件（否则行为分叉）。"""
+        self.login()
+        preview = self.client.get("/preview?pane=%251").text
+        self.assertIn('/assets/composer-files.css', preview)
+        self.assertIn('/assets/composer-files.js', preview)
+        self.assertIn('<div class="cf-bar">', preview)
+        self.assertIn('<div class="cf-strip" id="uploads" hidden></div>', preview)
+        self.assertIn("window.TmuxFiles.mount({", preview)
+        self.assertIn("const prompt=files?files.prompt():'';", preview)
+        # 标题也统一走最近/收藏里的名字
+        self.assertIn("async function applyCustomName(){", preview)
 
     def test_upload_limit_returns_413(self):
         with patch.dict("os.environ", {"TMUX_WEB_FILE_UPLOAD_MAX": "8"}):

@@ -119,7 +119,10 @@ both the outage and the blind spot go away.
 
 ### Attaching files from the chat composer
 
-The 「附件」 button under the composer (or dropping files onto it) uploads into
+The 「附件」 button sits in the first row **inside** the composer card, separated from the textarea by a
+1px hairline. One implementation (`/assets/composer-files.js`) is shared by the console chat and by
+`/preview` — the very page each multi-window cell embeds — so both behave identically, including the
+`user uploaded file “…”` prefix and the same title (最近 / 收藏 name wins). Files upload into
 `upload_files/` **inside that pane's current directory** — remote panes go over the same SSH channel:
 
 - pending attachments show above the input box: images as small thumbnails, other files as name + size;

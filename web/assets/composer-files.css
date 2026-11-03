@@ -1,0 +1,32 @@
+/* Shared composer attachments: the same strip + button in the console chat and in
+   the embedded /preview used by multi-window cells. One implementation, two hosts. */
+.cf-bar{display:flex;align-items:center;gap:8px;padding:0 0 6px;margin-bottom:6px;
+  border-bottom:1px solid var(--line)}
+.cf-attach{display:inline-flex;align-items:center;gap:5px;flex:none;height:24px;padding:0 8px;
+  border:0;border-radius:7px;background:transparent;color:var(--muted);font:11px inherit;cursor:pointer}
+.cf-attach:hover{background:var(--card-hover);color:var(--ink)}
+.cf-attach:disabled{opacity:.45;cursor:default}
+.cf-attach .ico{width:13px;height:13px}
+.cf-hint{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:10.5px;color:var(--faint)}
+.cf-strip{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px}
+.cf-strip[hidden]{display:none}
+.cf-item{position:relative;display:flex;align-items:center;gap:7px;max-width:230px;
+  padding:5px 9px 5px 7px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.cf-item.shot{padding:0;width:58px;height:58px;overflow:hidden;border-radius:10px}
+.cf-item.shot img{width:100%;height:100%;object-fit:cover;display:block}
+.cf-item > .ico{width:14px;height:14px;flex:none;color:var(--muted)}
+.cf-meta{min-width:0;display:flex;flex-direction:column;line-height:1.25}
+.cf-name{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
+.cf-size{font-size:10px;color:var(--faint)}
+.cf-item.busy{opacity:.55}
+/* delete: red disc + white cross + white ring, so it reads as "remove" on any thumbnail */
+.cf-x{position:absolute;top:-8px;right:-8px;display:grid;place-items:center;width:22px;height:22px;padding:0;
+  border:2px solid var(--card);border-radius:50%;background:var(--danger);color:#fff;cursor:pointer;
+  box-shadow:0 1px 5px rgba(0,0,0,.32)}
+.cf-x::after{content:"";position:absolute;inset:-7px;border-radius:50%}
+.cf-x:hover{background:color-mix(in srgb,var(--danger) 84%,#000)}
+.cf-x:focus-visible{outline:2px solid var(--danger);outline-offset:2px}
+.cf-x .ico{width:11px;height:11px;stroke-width:3}
+@media(pointer:coarse){.cf-x{width:24px;height:24px;top:-9px;right:-9px}}
+@media(max-width:760px){.cf-item.shot{width:52px;height:52px}.cf-name{max-width:120px}.cf-hint{display:none}}

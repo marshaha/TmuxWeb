@@ -1580,6 +1580,18 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "recents.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/composer-files.css")
+    async def composer_files_stylesheet() -> FileResponse:
+        """Chat attachments: one stylesheet for the console composer and the embedded preview."""
+        return FileResponse(WEB_DIR / "assets" / "composer-files.css", media_type="text/css",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/composer-files.js")
+    async def composer_files_script() -> FileResponse:
+        """Chat attachments: upload / thumbnail / delete in one place, shared by both composers."""
+        return FileResponse(WEB_DIR / "assets" / "composer-files.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/plugins-ui.js")
     async def plugins_ui_script():
         """Sidebar buttons contributed by plugins; no-store so a plugin edit shows up on reload."""
