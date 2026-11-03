@@ -86,10 +86,12 @@
   </style>
 <link rel="stylesheet" href="/assets/path-links.css">
 <link rel="stylesheet" href="/assets/composer-files.css">
+<link rel="stylesheet" href="/assets/downloads.css">
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
 <script src="/assets/composer-files.js"></script>
 <script src="/assets/path-links.js"></script>
+<script src="/assets/downloads.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -243,10 +245,10 @@ function render(){
 
 // 消息里的路径：目录 → 提示去控制台文件面板；文件 → 直接下载；md 也可以下载（这里没有查看器）
 function downloadPath(path){
-  const link=document.createElement('a');
-  link.href=`/api/panes/${encodeURIComponent(pane)}/files/download?path=${encodeURIComponent(path)}`;
-  link.download='';
-  document.body.appendChild(link);link.click();link.remove();
+  const href=`/api/panes/${encodeURIComponent(pane)}/files/download?path=${encodeURIComponent(path)}`;
+  const name=String(path||'').split('/').filter(Boolean).pop()||'文件';
+  // 移动端先确认（iOS 直接点会跳进没有返回按钮的系统预览）
+  TmuxDownload.maybe(href,{name,meta:path});
 }
 // 只处理用户碰到的那一条消息（长会话不必每次全量扫）
 let pathsBound=false;

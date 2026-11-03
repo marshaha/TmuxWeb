@@ -185,10 +185,12 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 <link rel="stylesheet" href="/assets/recents.css">
 <link rel="stylesheet" href="/assets/path-links.css">
 <link rel="stylesheet" href="/assets/composer-files.css">
+<link rel="stylesheet" href="/assets/downloads.css">
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
 <script src="/assets/composer-files.js"></script>
 <script src="/assets/path-links.js"></script>
+<script src="/assets/downloads.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -415,8 +417,12 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   function selectRange(path){const entries=(state.filesData&&state.filesData.entries)||[];const order=entries.map(entry=>entry.path);const anchor=order.indexOf(state.filesAnchor);const target=order.indexOf(path);if(anchor<0||target<0){togglePick(path);return;}const [from,to]=anchor<target?[anchor,target]:[target,anchor];for(let index=from;index<=to;index+=1)state.filesPicked.add(order[index]);state.filesAnchor=path;syncFileSelection();}
   function syncFileSelection(){const picked=state.filesPicked;const download=$('file-download');if(download)download.title=picked.size?`打包下载选中的 ${picked.size} 项`:'打包下载当前目录';const total=((state.filesData&&state.filesData.entries)||[]).length;const all=total>0&&picked.size===total;$('file-pick-all').hidden=!picked.size;$('file-pick-all').textContent=all?'取消全选':'全选';$('file-pick-none').hidden=!picked.size||all;$('file-zip').hidden=!picked.size;const zip=$('file-zip');if(zip){zip.disabled=!picked.size;zip.textContent=picked.size?`下载 zip (${picked.size})`:'下载 zip';}document.querySelectorAll('.file-row[data-entry]').forEach(row=>{const on=picked.has(row.dataset.entry);row.classList.toggle('picked',on);const box=row.querySelector('.file-check');if(box)box.checked=on;});}
   function renderFiles(){const data=state.filesData;if(!data)return;$('file-list').innerHTML=(data.parent?`<button class="file-row" data-dir="${esc(data.parent)}"><span class="file-icon dir"><svg class="ico"><use href="#i-parent"/></svg></span><span class="file-name dir">..</span></button>`:'')+data.entries.map(entry=>{const isDir=entry.type==='dir';return `<button class="file-row${state.filesPicked.has(entry.path)?' picked':''}" data-entry="${esc(entry.path)}" data-type="${esc(entry.type)}"><input class="file-check" type="checkbox" tabindex="-1" aria-label="选择 ${esc(entry.name)}"><span class="file-icon${isDir?' dir':''}"><svg class="ico"><use href="#i-${isDir?'folder':(entry.type==='link'?'link':'file')}"/></svg></span><span class="file-name${isDir?' dir':''}">${esc(entry.name)}</span><span class="file-meta">${isDir?'':formatSize(entry.size)}</span></button>`;}).join('');}
-  function downloadFile(path){const link=document.createElement('a');link.href=`/api/panes/${encodeURIComponent(state.selected)}/files/download?path=${encodeURIComponent(path)}`;link.download='';document.body.appendChild(link);link.click();link.remove();setFileStatus(`下载 ${path.split('/').pop()}`);}
-  async function downloadArchive(paths,label){if(!paths.length||!state.selected)return;const button=$('file-zip');if(button)button.disabled=true;setFileStatus(`打包 ${label}…`);try{const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/zip`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base:state.filesPath||'',paths:paths})});if(!response.ok){let detail=`HTTP ${response.status}`;try{detail=(await response.json()).detail||detail;}catch{}throw new Error(detail);}const blob=await response.blob();const stem=((state.filesPath||'files').split('/').filter(Boolean).pop())||'files';const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=`${stem}.zip`;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(link.href),20000);setFileStatus(`已打包 ${label} · ${formatSize(blob.size)}`);}catch(e){setFileStatus(`打包失败：${e.message}`);}finally{if(button)button.disabled=false;syncFileSelection();}}
+  function downloadFile(path){const href=`/api/panes/${encodeURIComponent(state.selected)}/files/download?path=${encodeURIComponent(path)}`;
+    const name=String(path||'').split('/').filter(Boolean).pop()||'文件';
+    // 移动端必须先确认：iOS 直接打开下载链接会跳进没返回按钮的预览
+    const ask=TmuxDownload.maybe(href,{name,meta:path});
+    setFileStatus(`下载 ${name}`);return ask;}
+  async function downloadArchive(paths,label){if(!paths.length||!state.selected)return;const button=$('file-zip');if(button)button.disabled=true;setFileStatus(`打包 ${label}…`);try{const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/zip`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base:state.filesPath||'',paths:paths})});if(!response.ok){let detail=`HTTP ${response.status}`;try{detail=(await response.json()).detail||detail;}catch{}throw new Error(detail);}const blob=await response.blob();const stem=((state.filesPath||'files').split('/').filter(Boolean).pop())||'files';const url=URL.createObjectURL(blob);TmuxDownload.maybe(url,{name:`${stem}.zip`,meta:formatSize(blob.size)});setTimeout(()=>URL.revokeObjectURL(url),60000);setFileStatus(`已打包 ${label} · ${formatSize(blob.size)}`);}catch(e){setFileStatus(`打包失败：${e.message}`);}finally{if(button)button.disabled=false;syncFileSelection();}}
   async function uploadFiles(files,directory){if(!files.length||!state.selected)return;for(const file of files){setFileStatus(`上传 ${file.name}…`);try{const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/upload?dir=${encodeURIComponent(directory)}&name=${encodeURIComponent(file.name)}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:file});if(!response.ok){let detail=`HTTP ${response.status}`;try{const parsed=await response.json();detail=parsed.detail||detail;}catch{}throw new Error(detail);}}catch(e){setFileStatus(`${file.name}: ${e.message}`);return;}}setFileStatus(`已上传 ${files.length} 个文件`);openFiles(directory);}
   function setupFiles(){$('files-toggle').onclick=()=>{state.filesMode=!state.filesMode;syncFilesPanel();if(state.filesMode)openFiles(state.filesPane===state.selected?state.filesPath:null);};
     $('file-reload').onclick=()=>{if(state.filesMode)openFiles(state.filesPath);};
@@ -578,7 +584,15 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     $('md-open').setAttribute('href',href);
     const path=new URL(href,location.origin).searchParams.get('path')||'';
     const downloadButton=$('md-download');
-    if(downloadButton&&path)downloadButton.setAttribute('href',fileDownloadHref(path));
+    if(downloadButton&&path){
+      downloadButton.setAttribute('href',fileDownloadHref(path));
+      // 移动端：点「下载」先确认，别直接跳进系统预览
+      downloadButton.onclick=event=>{
+        if(!TmuxDownload.isMobile())return;
+        event.preventDefault();
+        TmuxDownload.maybe(fileDownloadHref(path),{name:path.split('/').filter(Boolean).pop()||'文件',meta:path});
+      };
+    }
     toggle.hidden=false;toggle.textContent='源码';toggle.setAttribute('aria-pressed','false');
     body.className='md-body';body.innerHTML='<p class="md-hint">加载中…</p>';
     viewer.hidden=false;document.body.classList.add('viewer-open');

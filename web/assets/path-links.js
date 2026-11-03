@@ -171,12 +171,10 @@
       event.stopPropagation();
       const {path, pane, options, href, exists, previewable} = card.__target;
       if (button.dataset.plinkAct === 'download') {
-        const link = document.createElement('a');
-        link.href = downloadHref(pane, path);
-        link.download = '';
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
+        const href = downloadHref(pane, path);
+        const name = path.split('/').filter(Boolean).pop() || '文件';
+        if (window.TmuxDownload) window.TmuxDownload.maybe(href, {name});
+        else { const link = document.createElement('a'); link.href = href; link.download = ''; document.body.appendChild(link); link.click(); link.remove(); }
       } else if (exists) {
         if (previewable && options.onPreview) options.onPreview(path);
         else if (options.onMd && /\.(md|markdown|mdx)$/i.test(path)) options.onMd(path);

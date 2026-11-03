@@ -1604,6 +1604,18 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "composer-files.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/downloads.css")
+    async def downloads_stylesheet() -> FileResponse:
+        """Download confirmation sheet (mobile must confirm before downloading)."""
+        return FileResponse(WEB_DIR / "assets" / "downloads.css", media_type="text/css",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/downloads.js")
+    async def downloads_script() -> FileResponse:
+        """TmuxDownload.maybe(href, {name, meta}) — ask on touch devices, download directly on desktop."""
+        return FileResponse(WEB_DIR / "assets" / "downloads.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/plugins-ui.js")
     async def plugins_ui_script():
         """Sidebar buttons contributed by plugins; no-store so a plugin edit shows up on reload."""
@@ -2273,34 +2285,62 @@ def create_app(
 
     @app.get("/api/panes/{pane_id}/files/stat")
     async def stat_pane_path(request: Request, pane_id: str, path: str = ""):
-        """Is this path a file or a directory? Used by chat text that mentions paths."""
+        """Is this path a file or a directory? Used by chat text that mentions paths.
+
+        Agents often print paths relative to *their* cwd, e.g. ``ate/s3k/note.md``
+        while the pane sits one or two levels elsewhere. So a relative path is
+        probed against several bases (pane cwd → its parent → home) and the first
+        hit wins; the answer always carries the absolute ``path`` plus
+        ``offset`` (which base matched, 0 = as typed).
+        """
         require_auth(request)
         if not path.strip():
             raise HTTPException(status_code=422, detail="path is required")
         try:
             transport, _actual, pane = file_target(pane_id)
-            base = pane.get("path") or ""
-            wanted = os.path.expanduser(path)
-            if not os.path.isabs(wanted):
-                wanted = os.path.join(base or ".", wanted)
-            wanted = os.path.normpath(wanted)
-            parent = os.path.dirname(wanted.rstrip("/")) or wanted
-            try:
-                data = await asyncio.to_thread(transport.list_files, parent, True, 5000)
-            except (TmuxError, RuntimeError, OSError, ValueError, file_browser.FileBrowserError):
-                data = {"entries": []}      # 父目录都不存在 = 这个路径不存在
+            base = (pane.get("path") or "").strip()
+            raw = os.path.expanduser(path.strip())
+            if os.path.isabs(raw):
+                candidates = [os.path.normpath(raw)]
+            else:
+                bases = [base or ".", os.path.dirname(base.rstrip("/")) if base else "",
+                         os.path.expanduser("~")]
+                candidates = []
+                for directory in bases:
+                    if not directory:
+                        continue
+                    candidate = os.path.normpath(os.path.join(directory, raw))
+                    if candidate not in candidates:
+                        candidates.append(candidate)
+            found = None
+            parent = ""
+            for index, candidate in enumerate(candidates[:4]):
+                folder = os.path.dirname(candidate.rstrip("/")) or candidate
+                try:
+                    listing = await asyncio.to_thread(transport.list_files, folder, True, 5000)
+                except (TmuxError, RuntimeError, OSError, ValueError, file_browser.FileBrowserError):
+                    continue        # 这一层的父目录都不存在，换下一个基准
+                name = os.path.basename(candidate.rstrip("/"))
+                for entry in listing.get("entries") or []:
+                    if entry.get("name") == name:
+                        found = (candidate, folder, entry, index)
+                        break
+                if found:
+                    break
+            if not found:
+                wanted = candidates[0]
+                name = os.path.basename(wanted.rstrip("/"))
+                return {"path": wanted, "name": name, "exists": False, "kind": None,
+                        "size": 0, "mtime": 0,
+                        "parent": os.path.dirname(wanted.rstrip("/")) or wanted, "offset": 0}
+            wanted, parent, entry, index = found
         except HTTPException:
             raise
         except (TmuxError, RuntimeError, OSError, ValueError, file_browser.FileBrowserError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        name = os.path.basename(wanted.rstrip("/"))
-        for entry in data.get("entries") or []:
-            if entry.get("name") == name:
-                return {"path": wanted, "name": name, "exists": True, "kind": entry.get("type"),
-                        "size": entry.get("size") or 0, "mtime": entry.get("mtime") or 0,
-                        "parent": parent}
-        return {"path": wanted, "name": name, "exists": False, "kind": None,
-                "size": 0, "mtime": 0, "parent": parent}
+        return {"path": wanted, "name": os.path.basename(wanted.rstrip("/")), "exists": True,
+                "kind": entry.get("type"), "size": entry.get("size") or 0,
+                "mtime": entry.get("mtime") or 0, "parent": parent, "offset": index}
 
     @app.get("/api/panes/{pane_id}/files/raw")
     async def raw_pane_file(request: Request, pane_id: str, path: str):

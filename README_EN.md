@@ -135,6 +135,14 @@ console and `/preview`, and usable on any subtree:
   and 预览 / 下载 buttons. Text-like files (`log`, `txt`, `json`, `yaml`, `csv`, source) open in the
   viewer (which has its own download button) instead of downloading silently; binaries still download.
   The card is not shown on touch devices.
+- **relative-path offset**: agents often print paths relative to *their* cwd
+  (e.g. `ate/s3k/ca_pu_crossboard_1102.md`). `GET /files/stat` resolves against the pane cwd first,
+  then its parent and finally home; `offset` in the answer says which base matched (0 = as typed)
+  and `path` is always the absolute result.
+- **mobile downloads ask first**: `TmuxDownload.maybe(href, {name, meta})` in `/assets/downloads.js`
+  shows a bottom sheet (name, size, cancel/download) on touch devices and downloads straight away on
+  desktop. The file panel, zip export, markdown viewer and the path hover card all go through it —
+  iOS Safari otherwise jumps into a system preview with no way back.
 
 ### Attaching files from the chat composer
 

@@ -1929,6 +1929,56 @@ class TmuxWebTests(unittest.TestCase):
                                              params={"path": "~/definitely-missing"}).json()["exists"], False)
             self.assertEqual(self.client.get("/api/panes/%254/files/stat", params={"path": ""}).status_code, 422)
 
+    def test_relative_paths_fall_back_to_the_parent_directory(self):
+        """agent 常吐“自己 cwd 下的相对路径”，按 cwd 找不到就往上退一级再试。"""
+        self.login()
+        with tempfile.TemporaryDirectory() as root:
+            work = Path(root, "work")
+            work.mkdir()
+            Path(root, "ate", "s3k").mkdir(parents=True)
+            Path(root, "ate", "s3k", "crossboard.md").write_text("# x")
+            Path(work, "ate").mkdir()
+            Path(work, "ate", "local.md").write_text("# y")
+            self.tmux.panes[0]["path"] = str(work)
+            endpoint = "/api/panes/%254/files/stat"
+            # cwd 命中：offset 0
+            local = self.client.get(endpoint, params={"path": "ate/local.md"}).json()
+            self.assertTrue(local["exists"])
+            self.assertEqual(local["offset"], 0)
+            self.assertEqual(local["path"], str(work / "ate" / "local.md"))
+            # cwd 里没有 → 往上一级（work 的父目录）命中
+            up = self.client.get(endpoint, params={"path": "ate/s3k/crossboard.md"}).json()
+            self.assertTrue(up["exists"], up)
+            self.assertEqual(up["offset"], 1)
+            self.assertEqual(up["path"], str(Path(root, "ate", "s3k", "crossboard.md")))
+            # 哪儿都没有 → 仍然是不存在
+            missing = self.client.get(endpoint, params={"path": "ate/s3k/nope.md"}).json()
+            self.assertFalse(missing["exists"])
+            self.assertEqual(missing["offset"], 0)
+
+    def test_mobile_downloads_ask_before_opening(self):
+        """移动端下载必须先确认：iOS 直接打开下载链接会跳进没有返回按钮的预览。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn('/assets/downloads.css', page)
+        self.assertIn('/assets/downloads.js', page)
+        self.assertIn("TmuxDownload.maybe(", page)
+        self.assertIn('downloadButton.onclick=event=>{', page)
+
+        module = self.client.get("/assets/downloads.js").text
+        self.assertIn("const MOBILE = /Android|iPhone|iPad|iPod", module)
+        self.assertIn("function maybe(href, options)", module)
+        self.assertIn("if (!MOBILE) { go(href); return Promise.resolve(true); }", module)
+        self.assertIn("window.TmuxDownload = { isMobile, maybe, ask, go };", module)
+        self.assertIn(self.client.get("/assets/downloads.css").status_code, (200,))
+
+        preview = self.client.get("/preview?pane=%25254").text
+        self.assertIn('/assets/downloads.js', preview)
+        self.assertIn("TmuxDownload.maybe(href,{name,meta:path});", preview)
+        # 路径气泡里的下载也走确认
+        self.assertIn("window.TmuxDownload.maybe(href, {name})",
+                      self.client.get("/assets/path-links.js").text)
+
     def test_chat_messages_turn_paths_into_links(self):
         """独立的路径后处理：/assets/path-links.js，控制台和 /preview 都用它。"""
         self.login()

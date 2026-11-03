@@ -1,0 +1,25 @@
+/* 下载确认层样式：手机是底部卡片，桌面是居中对话框 */
+.dl-sheet{position:fixed;inset:0;z-index:90;display:flex;align-items:flex-end;justify-content:center;
+  background:rgba(12,10,9,.42);padding:0;opacity:0;transition:opacity .16s ease}
+.dl-sheet[hidden]{display:none}
+.dl-sheet.on{opacity:1}
+.dl-sheet-card{width:100%;max-width:420px;background:var(--card);color:var(--ink);
+  border:1px solid var(--line);border-radius:16px 16px 0 0;padding:16px 16px calc(14px + env(safe-area-inset-bottom));
+  box-shadow:0 -8px 30px rgba(0,0,0,.22);transform:translateY(8px);transition:transform .16s ease}
+.dl-sheet.on .dl-sheet-card{transform:none}
+.dl-sheet-title{font-size:12px;letter-spacing:.02em;color:var(--faint)}
+.dl-sheet-name{margin-top:6px;font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.dl-sheet-meta{margin-top:3px;font-size:11px;color:var(--muted)}
+.dl-sheet-note{margin-top:10px;font-size:11px;line-height:1.5;color:var(--faint)}
+.dl-sheet-actions{display:flex;gap:10px;margin-top:14px}
+.dl-btn{flex:1;height:38px;border-radius:10px;border:1px solid var(--line);background:var(--card);
+  color:var(--ink);font:13px inherit;cursor:pointer}
+.dl-btn:hover{border-color:var(--line-strong)}
+.dl-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.dl-btn.primary:hover{background:color-mix(in srgb,var(--accent) 86%,#000)}
+.dl-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+@media(min-width:761px){
+  .dl-sheet{align-items:center;padding:24px}
+  .dl-sheet-card{border-radius:16px;max-width:380px}
+}
