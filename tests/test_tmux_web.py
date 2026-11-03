@@ -1251,7 +1251,10 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(pane["capabilities"], {"transcript": True, "terminal": True,
                                                 "relay": True, "share": True})
         # a plain shell has no transcript but is still shareable (screen mode)
+        # 列表会把 provider 写进 pane 字典（真实后端每次都返回新字典，这里是假后端在复用，
+        # 所以要把它一起清掉，否则测的还是上一轮的判定）
         self.tmux.panes[0]["command"] = "zsh"
+        self.tmux.panes[0].pop("provider", None)
         pane = self.client.get("/api/panes").json()["panes"][0]
         self.assertFalse(pane["capabilities"]["transcript"])
         self.assertTrue(pane["capabilities"]["share"])

@@ -301,6 +301,10 @@ busy/idle/offline 变；点一下就切过去，切过去的会话会自动顶�
 
 - 聊天模式不创建长期 `tmux attach`，避免多个客户端参与 tmux 尺寸协商。
 - 只有终端模式使用 PTY attach；WebSocket 断开后释放。
+- agent 的识别不只看 tmux 报的前台命令：Codex/Claude 有时被 shell 包着启动（`zsh -c 'codex …'`、
+  后台进程、runtime 外壳），`pane_current_command` 就成了 `zsh`。这时按 `pane_pid` 的后代进程判断
+  （远端在同一次 SSH 里顺带取 `ps -A -o pid=,ppid=,args=`），`#92` 这种就能正常出对话；窗口/会话名
+  里带 codex 不算数，避免误判。
 - 远端结构化 transcript 也不依赖远端 python3：远端只跑一段 POSIX sh 定位会话文件（Claude 项目目录 + 标题/屏幕探测、Codex session_index、Kimi state.json、Hermes `--resume` 的 session jsonl 或 `sqlite3`），把文件尾部字节拉回本地，用**本地同一套解析器**解析——等同 `scp` 拉回来再解析。定位不到时回退远端 `capture-pane`。远端会话由前端按 1 秒节奏轮询：服务端按 (主机, pane, limit) 缓存解析结果，2 秒内重复请求不打远端，之后只用一次 `stat` 判断文件是否变化，变了才重新拉取——所以远程对话跟着远端文件实时更新，空闲时几乎无开销。
 - 远端 transcript 的传输是增量且压缩的：首次定位只扫最新 3 个会话文件的尾部 256KB（不再 grep 整个几百 MB 的文件），之后每次只按字节偏移拉取**新增部分**（`tail -c +offset`），并用 `gzip` 压缩上线——实测一台 300MB 会话、0.7s RTT 的主机：首次 53s → 8.6s，后续轮询 1.5s 左右，单次传输从 4MB 降到几十字节到几百 KB。窗口大小可用 `TMUXWEB_PAYLOAD_BYTES` 调整。
 - 远端 **Claude / Codex** 的会话文件优先按 **pane 自己进程里的 `--resume <id>` / `--session-id <id>` / `codex resume <id>`** 定位，找不到才退回「按 cwd 找最新文件 + 标题/屏幕行打分匹配」。同一个目录里并行跑好几个 Claude 会话时，后一种猜法会挑到隔壁的会话——网页上的 chat 会一直停在另一段对话上、看起来「不刷新」。Codex 另外还要求

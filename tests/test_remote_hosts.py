@@ -15,7 +15,8 @@ from pathlib import Path
 
 import remote_hosts
 
-from remote_hosts import (FIELD_SEPARATOR, REMOTE_LIST_SCRIPT, REMOTE_TRANSCRIPT_TAIL_SCRIPT, TRANSCRIPT_CACHE,
+from remote_hosts import (PROCESS_TABLE_MARK, FIELD_SEPARATOR, REMOTE_LIST_SCRIPT,
+                          REMOTE_TRANSCRIPT_TAIL_SCRIPT, TRANSCRIPT_CACHE,
                           TRANSCRIPT_STATE, RemoteHostStore, SSHRunner, pane_ref, parse_remote_listing,
                           parse_tmux_panes, parse_transcript_response, split_pane_ref, ssh_mux_path,
                           validate_private_key_text)
@@ -279,6 +280,35 @@ class RemoteHostTests(unittest.TestCase):
         self.assertIn(FIELD_SEPARATOR, captured["command"])
         self.assertNotIn("\t", captured["command"])
         self.assertNotIn("\\t", captured["command"])
+
+    def test_remote_panes_get_a_provider_even_when_the_shell_is_in_front(self):
+        """远端 #92 那种：pane_current_command 是 zsh，里面跑着 codex。"""
+        runner = SSHRunner({"id": "0123456789abcdef", "hostname": "host", "port": 22,
+                            "username": "user", "auth_type": "password", "credential": "x",
+                            "host_key": "host ssh-ed25519 AAAA"})
+        fields = ["%132", "codexrt:0.0", "codexrt195", "0", "codexrt", "0", "zsh", "title",
+                  "/home/ubuntu/ddr", "1", "120", "40", "1793742663", "3239203"]
+        panes_raw = FIELD_SEPARATOR.join(fields) + "\n"
+        processes = " 3239203 1 zsh\n 3239300 3239203 node /opt/codex/bin/codex.js\n"
+
+        class Result:
+            returncode = 0
+            stdout = (panes_raw + "\n" + PROCESS_TABLE_MARK + "\n" + processes).encode()
+            stderr = b""
+
+        runner.run = lambda command, **kwargs: Result()
+        panes = runner.list_panes()
+        self.assertEqual(len(panes), 1)
+        self.assertEqual(panes[0]["command"], "zsh")
+        self.assertEqual(panes[0]["pane_pid"], "3239203")
+        self.assertEqual(panes[0]["provider"], "codex")
+
+    def test_the_transcript_script_detects_an_agent_behind_a_shell(self):
+        source = Path("remote_hosts.py").read_text()
+        self.assertIn("detect_provider()", source)
+        self.assertIn("args_match()", source)
+        # 前台命令是 shell 时不能直接报 unsupported，要去看进程树
+        self.assertIn('provider=$(detect_provider', source)
 
     def test_ssh_command_multiplexes_and_forces_a_utf8_locale(self):
         runner = SSHRunner({"id": "0123456789abcdef", "hostname": "host.example", "port": 22,

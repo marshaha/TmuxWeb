@@ -169,6 +169,38 @@ session_hint() {
   done
   return 1
 }
+# Codex / Claude 有时被 shell 包着启动（`zsh -c 'codex …'`、后台进程、runtime 外壳），
+# pane_current_command 就退化成 zsh/bash。这时只能看 pane_pid 的后代在跑什么，
+# 否则脚本会直接报 "unsupported pane command"，对话视图也就空着。
+args_match() {  # $1=args $2=agent 名
+  case "$1" in
+    *"/$2 "*|*"/$2"|"$2 "*|"$2") return 0 ;;
+    *"/bin/$2"*) return 0 ;;
+    *"/$2.js"*|*"/$2/bin/"*) return 0 ;;
+  esac
+  return 1
+}
+detect_provider() {
+  root=${1:-0}
+  case "$2" in
+    claude*) printf '%s' claude; return 0 ;;
+    codex*) printf '%s' codex; return 0 ;;
+    kimi*) printf '%s' kimi; return 0 ;;
+    python*|hermes*) printf '%s' hermes; return 0 ;;
+  esac
+  [ -n "$root" ] || return 1
+  for pid in "$root" $(pgrep -P "$root" 2>/dev/null) \
+      $(for child in $(pgrep -P "$root" 2>/dev/null); do pgrep -P "$child" 2>/dev/null; done) \
+      $(for child in $(pgrep -P "$root" 2>/dev/null); do for grand in $(pgrep -P "$child" 2>/dev/null); do pgrep -P "$grand" 2>/dev/null; done; done); do
+    [ -n "$pid" ] || continue
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+    for agent in codex claude kimi hermes; do
+      if args_match "$args" "$agent"; then printf '%s' "$agent"; return 0; fi
+    done
+  done
+  return 1
+}
+
 payload_bytes=${TMUXWEB_PAYLOAD_BYTES:-4194304}
 encoding=none
 if command -v gzip >/dev/null 2>&1; then encoding=gzip; fi
@@ -181,13 +213,7 @@ cwd=${info%%"$sep"*}
 rest=${info#*"$sep"}
 title=${rest%%"$sep"*}
 command=${rest##*"$sep"}
-case "$command" in
-  claude*) provider=claude ;;
-  codex*) provider=codex ;;
-  kimi*) provider=kimi ;;
-  python*|hermes*) provider=hermes ;;
-  *) provider="" ;;
-esac
+provider=$(detect_provider "$(${TMUX_BIN:-tmux} display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null)" "$command") || provider=""
 [ -n "$provider" ] || error "unsupported pane command: $command" 22
 
 if [ "$provider" = claude ]; then
@@ -744,14 +770,18 @@ def split_pane_ref(value: str) -> tuple[str, str]:
     return host_id, pane_id
 
 
+PROCESS_TABLE_MARK = "__TMUXWEB_PROCESS_TABLE__"
+
+
 def parse_tmux_panes(raw: str, host_id: str, separator: str = FIELD_SEPARATOR) -> list[dict]:
     panes = []
     for line in raw.splitlines():
         fields = line.split(separator)
-        if len(fields) not in (12, 13):
+        if len(fields) not in (12, 13, 14):
             continue
         pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields[:12]
         activity = fields[12] if len(fields) > 12 else ""
+        pane_pid = fields[13].strip() if len(fields) > 13 else ""
         if not PANE_ID_RE.fullmatch(pane_id):
             continue
         panes.append({
@@ -760,6 +790,7 @@ def parse_tmux_panes(raw: str, host_id: str, separator: str = FIELD_SEPARATOR) -
             "index": index, "command": command, "title": title, "path": path,
             "active": active == "1", "width": int(width), "height": int(height),
             "activity": int(activity) if str(activity).isdigit() else 0,
+            **({"pane_pid": pane_pid} if pane_pid else {}),
         })
     return panes
 
@@ -1375,13 +1406,24 @@ class SSHRunner:
             "#{pane_id}", "#{session_name}:#{window_index}.#{pane_index}", "#{session_name}",
             "#{window_index}", "#{window_name}", "#{pane_index}", "#{pane_current_command}",
             "#{pane_title}", "#{pane_current_path}", "#{pane_active}", "#{pane_width}", "#{pane_height}",
-            "#{window_activity}",
+            "#{window_activity}", "#{pane_pid}",
         ])
-        command = f"${{TMUX_BIN:-tmux}} list-panes -a -F {shlex.quote(fmt)}"
+        # 一次 SSH 同时取 pane 列表和进程表：进程表用来认出「被 shell 包着启动」的
+        # agent（tmux 报的前台命令是 zsh，实际里面跑着 codex）。
+        command = (
+            f"${{TMUX_BIN:-tmux}} list-panes -a -F {shlex.quote(fmt)}; "
+            f"printf '\\n{PROCESS_TABLE_MARK}\\n'; ps -A -o pid=,ppid=,args= 2>/dev/null || true"
+        )
         completed = self.run(command, timeout=timeout)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
-        return parse_tmux_panes(completed.stdout.decode(errors="replace"), self.host["id"])
+        raw = completed.stdout.decode(errors="replace")
+        pane_text, _, process_text = raw.partition(PROCESS_TABLE_MARK)
+        panes = parse_tmux_panes(pane_text, self.host["id"])
+        table = transcript_reader.parse_process_table(process_text)
+        for pane in panes:
+            pane["provider"] = transcript_reader.provider_for_pane(pane, table)
+        return panes
 
     def capture_ansi(self, pane_id: str, history: int = 5000, pane: dict | None = None) -> str:
         # pane is accepted for interface symmetry with the local backend and

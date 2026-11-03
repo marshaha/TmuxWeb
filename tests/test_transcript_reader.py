@@ -21,6 +21,41 @@ class ClassifyCommandTests(unittest.TestCase):
             self.assertIsNone(transcript_reader.provider_for_command(command), command)
 
 
+class ProcessTreeDetectionTests(unittest.TestCase):
+    """前台命令是 shell 时说“这不是 agent”会漏掉被 shell 包着跑的 codex(#92)。"""
+
+    TABLE = (
+        "  100   1 zsh\n"
+        "  101 100 node /opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js resume\n"
+        "  102 101 /usr/bin/sandbox-exec -p profile -- bash -lc ls\n"
+        "  200   1 -zsh\n"
+        "  201 200 vim notes.md\n"
+    )
+
+    def setUp(self):
+        self.table = transcript_reader.parse_process_table(self.TABLE)
+
+    def test_parse_process_table_keeps_argv(self):
+        self.assertEqual(self.table["101"][0], "100")
+        self.assertIn("codex.js", self.table["101"][1])
+
+    def test_a_shell_pane_with_a_codex_child_is_codex(self):
+        pane = {"command": "zsh", "pane_pid": "100", "session": "codexrt195"}
+        self.assertEqual(transcript_reader.provider_for_pane(pane, self.table), "codex")
+
+    def test_grandchildren_count_too(self):
+        pane = {"command": "zsh", "pane_pid": "100"}
+        self.assertEqual(transcript_reader.provider_for_pane(pane, self.table), "codex")
+
+    def test_a_plain_shell_stays_unknown(self):
+        pane = {"command": "zsh", "pane_pid": "200", "session": "codex-old"}
+        # 名字里带 codex 也不算数：只认真正在跑的进程
+        self.assertIsNone(transcript_reader.provider_for_pane(pane, self.table))
+
+    def test_a_real_agent_command_wins_without_any_table(self):
+        self.assertEqual(transcript_reader.provider_for_pane({"command": "claude"}), "claude")
+
+
 class FixtureTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

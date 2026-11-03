@@ -49,6 +49,77 @@ def provider_for_command(command):
     return None
 
 
+AGENT_NAMES = ("claude", "codex", "kimi", "hermes")
+
+
+def parse_process_table(raw):
+    """pid -> (ppid, argv) 的进程表；ps 行格式 ``pid ppid args...``。"""
+    table = {}
+    for line in (raw or "").splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid, ppid, argv = parts
+        if pid.isdigit() and ppid.isdigit():
+            table[pid] = (ppid, argv)
+    return table
+
+
+def provider_for_pane(pane, table=None):
+    """哪个 agent CLI 在这个 pane 里跑。
+
+    只看 pane_current_command 不够：Codex / Claude 有时是被 shell 包着启动的
+    （`zsh -c 'codex …'`、后台进程、runtime 外壳），tmux 报的前台命令就退化成
+    `zsh`/`bash`，于是控制台拿不到 transcript，对话视图是空的。
+    退路是看进程树：pane_pid 的后代里谁叫 codex/claude/kimi/hermes。
+    """
+    provider = provider_for_command(pane.get("command"))
+    if provider:
+        return provider
+    root = str(pane.get("pane_pid") or "").strip()
+    if table and root.isdigit() and root in table:
+        children = {}
+        for pid, (ppid, argv) in table.items():
+            children.setdefault(ppid, []).append((pid, argv))
+        seen = set()
+        queue = [(child, 1) for child in children.get(root, [])]
+        while queue:
+            (pid, argv), depth = queue.pop(0)
+            if pid in seen or depth > 6:
+                continue
+            seen.add(pid)
+            found = provider_from_argv(argv)
+            if found:
+                return found
+            queue.extend((child, depth + 1) for child in children.get(pid, []))
+    # 不看窗口/会话名：名字里带 codex 但实际是普通 shell 的情况太多（误判会让
+    # 对话视图去读不存在的东西），只认真正在跑的进程。
+    return None
+
+
+def provider_from_argv(argv):
+    """一条 argv 是哪个 agent：``codex``、``/x/bin/codex``、``node .../@openai/codex/bin/codex.js`` 都算。"""
+    name = app_name(argv)
+    if name in AGENT_NAMES:
+        return name
+    for token in str(argv or "").split():
+        base = os.path.basename(token).lower()
+        if not base or base.startswith("-"):
+            continue
+        for agent in AGENT_NAMES:
+            if base == agent or base.startswith(agent + "."):
+                return agent
+    return None
+
+
+def app_name(argv):
+    """``/opt/homebrew/bin/codex --flag`` → ``codex``。"""
+    if not argv:
+        return ""
+    first = str(argv).strip().split(None, 1)[0]
+    return os.path.basename(first).lower()
+
+
 def limit_cap(limit, ceiling=None):
     """Clamp a requested message count to the configured maximum."""
     if ceiling is None:

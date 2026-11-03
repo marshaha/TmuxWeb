@@ -197,6 +197,9 @@ class TmuxBackend:
                 # older output without the field keeps the old dict shape
                 pane["pane_pid"] = pane_pid
             panes.append(pane)
+        table = local_process_table()
+        for pane in panes:
+            pane["provider"] = transcript_reader.provider_for_pane(pane, table)
         return panes
 
     def validate_pane(self, pane_id: str) -> dict:
@@ -247,7 +250,7 @@ class TmuxBackend:
         # produces transcripts here and on SSH remote hosts.
         if pane is None:
             pane = self.validate_pane(pane_id)
-        provider = transcript_reader.provider_for_command(pane.get("command"))
+        provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
         if provider is None:
             raise TmuxError("structured transcript is not supported for this pane")
         # A resumed CLI session tells us exactly which transcript to read; the
@@ -541,13 +544,38 @@ class RelayMessageRequest(BaseModel):
     text: str = Field(min_length=1, max_length=100_000)
 
 
+_PS_CACHE: dict[str, object] = {"at": 0.0, "table": {}}
+
+
+def local_process_table(ttl: float = 10.0) -> dict:
+    """本机进程表（pid -> (ppid, argv)），10 秒内复用。
+
+    列 pane 时一次 ps 就够，不用每个 pane 各查一遍。
+    """
+    now = time.monotonic()
+    if now - float(_PS_CACHE["at"] or 0.0) < ttl:
+        return dict(_PS_CACHE["table"] or {})
+    try:
+        raw = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,args="], capture_output=True,
+                             text=True, timeout=5, check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        raw = ""
+    table = transcript_reader.parse_process_table(raw)
+    _PS_CACHE["at"] = now
+    _PS_CACHE["table"] = table
+    return dict(table)
+
+
 def pane_metadata(pane: dict) -> dict:
     """Annotate a pane with its provider and what TmuxWeb can do with it.
 
     Clients can then hide actions that would only fail, instead of discovering
     support by triggering a 409.
     """
-    provider = transcript_reader.provider_for_command(pane.get("command"))
+    provider = (pane.get("provider")
+                or transcript_reader.provider_for_pane(pane, local_process_table()
+                                                       if pane.get("host_id") in (None, "localhost") else None)
+                or pane.get("provider") or transcript_reader.provider_for_command(pane.get("command")))
     pane["provider"] = provider
     pane["capabilities"] = {
         "transcript": bool(provider),
@@ -1040,11 +1068,12 @@ def create_app(
         native: dict[str, str] = {}
         local_agents = [job[3] for job in jobs
                         if job[0] == "localhost"
-                        and transcript_reader.provider_for_command(job[3].get("command"))]
+                        and (job[3].get("provider")
+                             or transcript_reader.provider_for_command(job[3].get("command")))]
         remote_agents: dict[int, tuple] = {}
         for job in jobs:
             host_id, _, transport, pane = job
-            provider = transcript_reader.provider_for_command(pane.get("command"))
+            provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
             if host_id == "localhost" or not provider or not hasattr(transport, "status_many"):
                 continue
             group = remote_agents.setdefault(id(transport), (transport, host_id, []))
@@ -1074,7 +1103,7 @@ def create_app(
             def probe_local():
                 out = []
                 for pane in local_agents:
-                    provider = transcript_reader.provider_for_command(pane.get("command"))
+                    provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
                     try:
                         state = agent_status.status_for_pane(
                             provider, pane.get("path", ""), pane.get("title", ""))
@@ -1099,7 +1128,7 @@ def create_app(
 
         def describe(job):
             host_id, host_name, transport, pane = job
-            provider = transcript_reader.provider_for_command(pane.get("command"))
+            provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
             actual_pane_id = pane.get("pane_id") or pane["id"]
             text = captured.get(id(transport), {}).get(actual_pane_id)
             activity = pane.get("activity") or 0
@@ -2358,7 +2387,7 @@ def create_app(
         """Stop the turn that is running in this pane, using the key its CLI expects."""
         require_auth(request)
         pane = await asyncio.to_thread(pane_or_404, pane_id)
-        provider = transcript_reader.provider_for_command(pane.get("command"))
+        provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
         key = interrupt_key(provider)
         try:
             transport, actual_pane_id = pane_transport(pane_id)
@@ -2685,7 +2714,7 @@ def create_app(
             transport, actual_pane_id = pane_transport(pane_id)
         except HTTPException:
             return entry
-        provider = transcript_reader.provider_for_command(pane.get("command"))
+        provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
         host_name = host_label(pane_id)
         entry.update({"provider": provider, "pane_title": pane.get("title") or "",
                       "path": pane.get("path") or "", "session": pane.get("session") or "",
@@ -3257,7 +3286,7 @@ def create_app(
     async def perform_relay_ask(payload: RelayAskRequest) -> dict:
         """Ask a pane and wait for the answer: used by the HTTP route and the MCP endpoint."""
         transport, pane_id, pane, host_name = await asyncio.to_thread(relay_target, payload.target)
-        provider = transcript_reader.provider_for_command(pane.get("command"))
+        provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
         lock = relay_locks.setdefault(payload.target, asyncio.Lock())
         if lock.locked():
             raise HTTPException(status_code=409, detail="another relay request is already waiting on this pane")
