@@ -238,7 +238,7 @@ function render(){
         <div class="msg-tools">${clockTime(message.timestamp)?`<span class="msg-time">${clockTime(message.timestamp)}</span>`:''}<button class="copy" data-copy="${esc(message.id)}"><svg class="ico"><use href="#i-copy"/></svg>复制</button></div></div></article>`).join('')
     :'<div class="empty">这个会话还没有消息</div>';
   if(state.stick)requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;});
-  enhancePaths(host);
+  enhancePathsLazy(host);
 }
 
 // 消息里的路径：目录 → 提示去控制台文件面板；文件 → 直接下载；md 也可以下载（这里没有查看器）
@@ -247,6 +247,25 @@ function downloadPath(path){
   link.href=`/api/panes/${encodeURIComponent(pane)}/files/download?path=${encodeURIComponent(path)}`;
   link.download='';
   document.body.appendChild(link);link.click();link.remove();
+}
+// 只处理用户碰到的那一条消息（长会话不必每次全量扫）
+let pathsBound=false;
+function enhancePathsLazy(container){
+  if(!container||pathsBound)return;
+  pathsBound=true;
+  const touch=event=>{
+    const message=event.target.closest&&event.target.closest('article.msg');
+    if(!message||message.dataset.paths==='1')return;
+    message.dataset.paths='1';
+    enhancePaths(message);
+  };
+  container.addEventListener('pointerover',touch,true);
+  container.addEventListener('pointerdown',event=>{
+    touch(event);
+    if(event.pointerType==='mouse')return;            // 触摸没有 hover：同一次按下就打开
+    if(window.TmuxPaths&&window.TmuxPaths.activateAt)window.TmuxPaths.activateAt(event.clientX,event.clientY,event.target.closest('article.msg')||event.target);
+  },true);
+  container.addEventListener('focusin',touch,true);
 }
 function enhancePaths(root){
   if(!root||!window.TmuxPaths||!pane)return;

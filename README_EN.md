@@ -128,6 +128,9 @@ console and `/preview`, and usable on any subtree:
   directory → the file panel navigates there; file → panel jumps to its folder and downloads it;
   markdown → preview with a download button; missing → a `找不到` hint.
 - text nodes only: `<pre>` blocks, existing links and buttons are left alone; Tab + Enter work.
+- **lazy**: nothing is scanned at render time — a message is processed when the pointer enters it,
+  a finger touches it or it receives focus, and the result is marked with `data-paths`. On touch the
+  freshly created link is opened by the same gesture, so one tap is enough.
 
 ### Attaching files from the chat composer
 

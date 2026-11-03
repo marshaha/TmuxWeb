@@ -512,6 +512,27 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   // 消息里的路径（/a/b、~/x、report.md）后处理成链接：目录 → 左侧文件面板，文件 → 下载，
   // markdown → 预览（带下载按钮）。实现在 /assets/path-links.js。
   function fileDownloadHref(path){return `/api/panes/${encodeURIComponent(state.selected)}/files/download?path=${encodeURIComponent(path)}`;}
+  // 长会话一下子上百条消息，逐条扫文本太费；改成"碰到哪条处理哪条"：
+  // 鼠标移入 / 手指按下 时才扫这一条，结果打上 data-paths 不重复处理。
+  function enhancePathsLazy(container){
+    if(!container||container.dataset.pathsBound==='1')return;
+    container.dataset.pathsBound='1';
+    const touch=event=>{
+      const message=event.target.closest&&event.target.closest('.chat-message');
+      if(!message||message.dataset.paths==='1')return;
+      message.dataset.paths='1';
+      enhancePaths(message);
+    };
+    container.addEventListener('pointerover',touch,true);
+    container.addEventListener('pointerdown',event=>{
+      touch(event);
+      // 触摸没有 hover：这一次按下去就顺手把刚生成的路径打开
+      if(event.pointerType==='mouse')return;
+      const {clientX,clientY}=event;
+      if(window.TmuxPaths&&window.TmuxPaths.activateAt)window.TmuxPaths.activateAt(clientX,clientY,event.target.closest('.chat-message')||event.target);
+    },true);
+    container.addEventListener('focusin',touch,true);
+  }
   function enhancePaths(root){
     if(!root||!window.TmuxPaths||!state.selected)return;
     const cwd=panePathOf(state.selected)||'';
@@ -780,7 +801,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(canAppend){
       const holder=document.createElement('div');
       holder.innerHTML=messages.slice(rendered.length).map(transcriptBubble).join('');
-      enhanceBlocks(holder);rewriteLocalLinks(holder);enhancePaths(holder);
+      enhanceBlocks(holder);rewriteLocalLinks(holder);enhancePathsLazy(host);
       const fragment=document.createDocumentFragment();
       while(holder.firstChild)fragment.appendChild(holder.firstChild);
       host.appendChild(fragment);
@@ -792,7 +813,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     for(const item of pending){const index=Math.min(messages.length,pendingAnchorIndex(messages,item.pending));slots[index]=slots[index]||[];slots[index].push(item.html);}
     const ordered=messages.map((message,index)=>(slots[index]||[]).join('')+formal[index]).join('')
       +(slots[messages.length]||[]).join('');
-    host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);enhancePaths(host);}
+    host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host);}
   const CODE_LANG_RE=/language-([\w+#-]+)/;
   async function copyText(text,button){const value=String(text==null?'':text);let ok=false;
     try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);ok=true;}}catch{}

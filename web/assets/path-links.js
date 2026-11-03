@@ -25,7 +25,8 @@
   const TRAILING = /[.,;:!?)}\]】。，；：！？]+$/;
 
   // 至少两段（/a/b）或者以 ~/ ./ ../ 开头，才算"像路径"：/grid、/OUT-OF-BAND 这种就放过
-  const WEB_PREFIX = /^\/(api|assets|static|vendor|mcp|share-assets|login|logout|home|grid|preview|term|hosts|shares)(\/|$)/;
+  // 只屏蔽明确的接口/静态资源前缀；`/home/...` 是 Linux 家目录，不能连坐（曾经把整条路径吃掉）
+  const WEB_PREFIX = /^\/(api|assets|static|vendor|mcp|share-assets)\//;
   function plausible(path) {
     if (WEB_PREFIX.test(path)) return false;          // 接口/静态资源不是文件
     if (/^(~|\.{1,2})\//.test(path)) return true;
@@ -82,15 +83,20 @@
       link.dataset.plinkPath = raw;
       link.title = raw;
       link.textContent = raw;
+      link.__plinkOpen = () => {
+        if (link.__plinkAt && Date.now() - link.__plinkAt < 600) return;   // 同一个手势只开一次
+        link.__plinkAt = Date.now();
+        open(raw, pane, options, cwd);
+      };
       link.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
-        open(raw, pane, options, cwd);
+        link.__plinkOpen();
       });
       link.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
-          open(raw, pane, options, cwd);
+          link.__plinkOpen();
         }
       });
       bits.push(link);
@@ -152,5 +158,22 @@
     return count;
   }
 
-  window.TmuxPaths = {enhance, rawHref, lookup};
+  // 手指按下时刚补齐的链接：直接用同一个手势打开（否则要再点一次）
+  function activateAt(x, y, scope) {
+    // elementFromPoint 有时落在外层容器上（内联链接跨行/两侧留白），所以先在作用域里按矩形找
+    let link = null;
+    for (const candidate of (scope || document).querySelectorAll('.plink')) {
+      const box = candidate.getBoundingClientRect();
+      if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) { link = candidate; break; }
+    }
+    if (!link) {
+      const element = document.elementFromPoint(x, y);
+      link = element && element.closest ? element.closest('.plink') : null;
+    }
+    if (!link || !link.__plinkOpen) return false;
+    link.__plinkOpen();      // 它自己会记时间戳，紧接着的原生 click 会被去重挡掉
+    return true;
+  }
+
+  window.TmuxPaths = {enhance, rawHref, lookup, activateAt};
 })();

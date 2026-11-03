@@ -1936,6 +1936,12 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn('/assets/path-links.css', page)
         self.assertIn('/assets/path-links.js', page)
         self.assertIn("function enhancePaths(root){", page)
+        # 懒处理：渲染时不扫，碰到哪条消息才处理哪条（长会话别每次全量扫文本）
+        self.assertIn("function enhancePathsLazy(container){", page)
+        self.assertIn("container.dataset.pathsBound='1';", page)
+        self.assertIn("'pointerover',touch,true", page)
+        self.assertIn("enhancePathsLazy(host);", page)
+        self.assertNotIn("rewriteLocalLinks(host);enhancePaths(host);", page)
         self.assertIn("onDir:path=>{openFiles(path);}", page)
         self.assertIn("onMd:path=>openMarkdownViewer(", page)
         self.assertIn('id="md-download"', page)
@@ -1945,7 +1951,9 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("function enhancePaths(root){", preview)
 
         module = self.client.get("/assets/path-links.js").text
-        for marker in ("window.TmuxPaths = {enhance, rawHref, lookup};",
+        self.assertIn("function activateAt(x, y, scope)", module)
+        self.assertIn("__plinkOpen", module)
+        for marker in ("window.TmuxPaths = {enhance, rawHref, lookup, activateAt};",
                        "files/stat?path=", "onDir", "onMd", "onMissing", "dataset.plinkPath"):
             self.assertIn(marker, module)
         # 中文标点也是边界：`本地文件：/Users/...` 这类纯文本必须能识别
