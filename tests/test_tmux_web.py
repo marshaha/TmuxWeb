@@ -1958,10 +1958,17 @@ class TmuxWebTests(unittest.TestCase):
                        '<option value="1">1 秒</option>', "loadPreviewPref", "savePreviewDelay",
                        "localStorage.setItem(PREVIEW_KEY, next)"):
             self.assertIn(marker, settings)
-        self.assertEqual(self.client.put("/api/prefs", json={"preview": "2"}).status_code, 200)
-        self.assertEqual(self.client.put("/api/prefs", json={"preview": "off"}).status_code, 200)
-        self.assertEqual(self.client.put("/api/prefs", json={"preview": "9"}).status_code, 400)
-        self.assertEqual(self.client.get("/api/prefs").json()["prefs"]["preview"], "off")
+        # 用独立的内存 home.db：这组断言会写偏好，不能落到部署里的 home.db
+        client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
+                                       session_secret="test-secret", terminal_factory=self.terminals,
+                                       share_db=":memory:", home_db=":memory:",
+                                       remote_store=self.remote_store, remote_runner_factory=FakeSSHRunner))
+        self.assertEqual(client.post("/login", data={"password": "unit-test-admin-password"},
+                                     follow_redirects=False).status_code, 303)
+        self.assertEqual(client.put("/api/prefs", json={"preview": "2"}).status_code, 200)
+        self.assertEqual(client.put("/api/prefs", json={"preview": "off"}).status_code, 200)
+        self.assertEqual(client.put("/api/prefs", json={"preview": "9"}).status_code, 400)
+        self.assertEqual(client.get("/api/prefs").json()["prefs"]["preview"], "off")
 
     def test_file_panel_can_rename_and_delete(self):
         """文件面板的删除/重命名：目录内改名、不覆盖同名、非空目录要显式递归、护栏挡住家目录。"""
