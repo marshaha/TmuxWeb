@@ -668,10 +668,16 @@ Header:  Authorization: Bearer <TMUX_WEB_API_TOKEN>
 
 ```bash
 ./install_relay_mcp.sh --dry-run   # 预览（token 打码）
-./install_relay_mcp.sh             # 默认 HTTP 模式：claude / codex / kimi 全部走 URL
-./install_relay_mcp.sh --stdio     # 兼容模式：客户端各自 spawn python3 mcp_relay.py
-./install_relay_mcp.sh --uninstall # 卸载
+./install_relay_mcp.sh             # 默认 auto：能连上就 HTTP（claude/codex/hermes/kimi 全走 URL）
+./install_relay_mcp.sh --http      # 强制 HTTP
+./install_relay_mcp.sh --stdio     # 兼容模式：本机 stdio，客户端各自 spawn python3 mcp_relay.py
+./install_relay_mcp.sh --hub user@robo   # 连不上 8787 的机器：自动改成 stdio over ssh
+./install_relay_mcp.sh --uninstall # 卸载（带 --hub 时连 hub 上的 wrapper 一起清）
 ```
+
+默认是 `auto`：先探测 URL（`curl ${URL}/`，303/401 都算通）——通就用 HTTP；不通且给了 `--hub`，就把
+wrapper + 0600 的 `relay.env` 装到 hub 上，本机改成 `ssh <hub> ~/.local/bin/tmuxweb-relay-stdio`
+这种 stdio over ssh 注册，一个端口都不开（token 走 stdin 落到 hub 的 0600 文件，不进 argv）。
 
 脚本做的事（也可手工）：
 
@@ -717,7 +723,10 @@ tailnet 是首选。**如果那台机器既不在 tailnet、又从外面连不�
 ./scripts/reverse_tunnel.sh marscrazy@远端 --ssh-port 2222 --identity ~/.ssh/id_ed25519
 ./scripts/reverse_tunnel.sh marscrazy@远端 --print-systemd   # 本机常驻用
 ./scripts/reverse_tunnel.sh marscrazy@远端 --print-launchd   # macOS 常驻用
+./scripts/reverse_tunnel.sh oracle-embedded@host --jump root@aliyun   # 只能经跳板机进的
 ```
+
+`--jump` 可以重复（多级跳板按顺序拼成 ProxyJump），systemd / launchd 模板里也会带上 `-J`。
 
 - 脚本有 `autossh` 就用它，没有就自己循环重连（指数退避，最长 30 秒）；`ExitOnForwardFailure=yes`
   保证转发没建起来时立刻报错，`ServerAliveInterval=20`、`CountMax=3` 保证假死能发现。

@@ -848,6 +848,12 @@ chmod +x ~/.local/bin/tmuxweb-relay-stdio
 hermes mcp add tmuxweb --command /usr/bin/ssh --args <user>@<address> /home/<user>/.local/bin/tmuxweb-relay-stdio
 ```
 
+`install_relay_mcp.sh --hub <user>@<address>` automates this whole recipe: it probes the URL, and if the endpoint is
+unreachable it writes `~/.config/tmuxweb/relay.env` (0600, token via stdin) plus the wrapper on the hub and
+registers every CLI found here as `ssh <hub> <wrapper>` — no listening port at all.
+`./scripts/reverse_tunnel.sh <target> --jump <user>@<hop>` (repeatable) covers hosts that are only reachable
+through a jump host; the systemd/launchd templates carry the same `-J` chain.
+
 For a LAN/Tailscale-only deployment set `TMUX_WEB_MCP_AUTH=off` in `.env` (default `on`): `/mcp` then needs no header and clients are configured with the URL alone. Anyone who can reach the port can drive panes in that mode — the startup log warns once — while `/api/*` and the web login keep their checks.
 
 ## Tests

@@ -215,6 +215,38 @@ class ReverseTunnelTests(unittest.TestCase):
         self.assertNotIn("Authorization", script)
 
 
+class InstallerTransportTests(unittest.TestCase):
+    """默认顺序：tailnet 可达 → HTTP；不可达且给了 --hub → stdio over ssh。"""
+
+    def run_installer(self, *args, env_extra=None):
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+               "HOME": os.environ.get("HOME", "/tmp"),
+               "TMUX_WEB_API_TOKEN": "test-token", "TMUX_WEB_MCP_AUTH": "on"}
+        env.update(env_extra or {})
+        return subprocess.run(["bash", "install_relay_mcp.sh", *args],
+                              capture_output=True, text=True, timeout=40, env=env)
+
+    def test_reachable_endpoint_keeps_http(self):
+        result = self.run_installer("--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("mode: http (", result.stdout)
+
+    def test_unreachable_with_a_hub_switches_to_stdio_over_ssh(self):
+        result = self.run_installer("--dry-run", "--assume-unreachable",
+                                    "--hub", "me@hub.example")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("mode: stdio over ssh (hub me@hub.example", result.stdout)
+        self.assertIn("/usr/bin/ssh me@hub.example", result.stdout)
+        # 注册用的是 ssh + wrapper，而不是 URL
+        self.assertIn("hermes mcp add tmuxweb --command", result.stdout)
+
+    def test_unreachable_without_a_hub_warns_but_stays_http(self):
+        result = self.run_installer("--dry-run", "--assume-unreachable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("not reachable from here", result.stderr)
+        self.assertIn("mode: http (", result.stdout)
+
+
 class MissingTokenTests(unittest.TestCase):
     def test_token_falls_back_to_the_server_variable(self):
         with patch.dict(os.environ, {"TMUXWEB_TOKEN": "", "TMUX_WEB_API_TOKEN": "", "TMUXWEB_URL": ""}, clear=False):

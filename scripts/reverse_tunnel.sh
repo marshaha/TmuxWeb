@@ -17,6 +17,7 @@ LOCAL_PORT=8787
 REMOTE_PORT=8787
 BIND=127.0.0.1          # 127.0.0.1 keeps the port off the remote's network; needs no GatewayPorts
 IDENTITY=""
+JUMPS=()
 ACTION="run"
 
 usage() {
@@ -29,6 +30,7 @@ options:
   --remote-port N   port to open on the remote's 127.0.0.1 (default 8787)
   --bind ADDR       remote listen address (default 127.0.0.1; 0.0.0.0 needs GatewayPorts)
   --identity FILE   SSH private key
+  --jump user@hop   reach the remote through a jump host (repeatable, becomes ProxyJump)
   --print-systemd   print a systemd unit that runs this tunnel, then exit
   --print-launchd   print a launchd plist (macOS), then exit
 USAGE
@@ -41,6 +43,7 @@ while [ $# -gt 0 ]; do
     --remote-port) REMOTE_PORT="$2"; shift 2 ;;
     --bind) BIND="$2"; shift 2 ;;
     --identity) IDENTITY="$2"; shift 2 ;;
+    --jump) JUMPS+=("$2"); shift 2 ;;
     --print-systemd) ACTION="systemd"; shift ;;
     --print-launchd) ACTION="launchd"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -68,7 +71,20 @@ SSH_CPU_OPTS=(
   -o StrictHostKeyChecking=accept-new
 )
 [ -n "$IDENTITY" ] && SSH_CPU_OPTS+=(-i "$IDENTITY")
+# 经跳板机（oracle 这种只能从 aliyun 进去的）：整条链交给 ProxyJump
+if [ "${#JUMPS[@]}" -gt 0 ]; then
+  HOP_LIST=$(IFS=,; printf "%s" "${JUMPS[*]}")
+  SSH_CPU_OPTS+=(-J "$HOP_LIST")
+fi
 SSH_CPU_OPTS+=(-p "$SSH_PORT" -R "$FORWARD")
+
+JUMP_FLAG=""
+JUMP_PLIST=""
+if [ "${#JUMPS[@]}" -gt 0 ]; then
+  HOP_LIST=$(IFS=,; printf "%s" "${JUMPS[*]}")
+  JUMP_FLAG=" -J $HOP_LIST"
+  JUMP_PLIST=$'\n    <string>-J</string><string>'"$HOP_LIST"'</string>'
+fi
 
 if [ "$ACTION" = "systemd" ]; then
   cat <<EOF
@@ -82,7 +98,7 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 \\
-    -o ServerAliveCountMax=3 -o TCPKeepAlive=yes -p $SSH_PORT -R $FORWARD $TARGET
+    -o ServerAliveCountMax=3 -o TCPKeepAlive=yes$JUMP_FLAG -p $SSH_PORT -R $FORWARD $TARGET
 Restart=always
 RestartSec=5
 
@@ -108,7 +124,7 @@ if [ "$ACTION" = "launchd" ]; then
     <string>-o</string><string>ExitOnForwardFailure=yes</string>
     <string>-o</string><string>ServerAliveInterval=20</string>
     <string>-o</string><string>ServerAliveCountMax=3</string>
-    <string>-o</string><string>TCPKeepAlive=yes</string>
+    <string>-o</string><string>TCPKeepAlive=yes</string>$JUMP_PLIST
     <string>-p</string><string>$SSH_PORT</string>
     <string>-R</string><string>$FORWARD</string>
     <string>$TARGET</string>
@@ -128,13 +144,13 @@ log() { printf '%s reverse-tunnel: %s\n' "$(date '+%F %T')" "$*"; }
 
 if command -v autossh >/dev/null 2>&1; then
   # autossh 自己会重连；-M 0 关掉它的监控端口（靠 ssh 的 ServerAlive 就够）
-  log "using autossh: -R $FORWARD -> $TARGET:$SSH_PORT"
+  log "using autossh: -R $FORWARD -> $TARGET:$SSH_PORT${HOP_LIST:+ via $HOP_LIST}"
   exec autossh -M 0 "${SSH_CPU_OPTS[@]}" "$TARGET"
 fi
 
 backoff=1
 while :; do
-  log "connecting: -R $FORWARD -> $TARGET:$SSH_PORT"
+  log "connecting: -R $FORWARD -> $TARGET:$SSH_PORT${HOP_LIST:+ via $HOP_LIST}"
   started=$(date +%s)
   if ssh "${SSH_CPU_OPTS[@]}" "$TARGET"; then
     log "tunnel closed cleanly"
