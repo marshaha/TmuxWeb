@@ -1020,6 +1020,9 @@ class TmuxWebTests(unittest.TestCase):
             self.assertEqual(websocket.receive_bytes(), b"\x1b[32mTERM_READY\x1b[0m")
             websocket.send_text(json.dumps({"type": "input", "data": "hello\r"}))
             websocket.send_text(json.dumps({"type": "resize", "cols": 120, "rows": 40}))
+            # 显式关闭：TestClient 的 __exit__ 在某些 starlette 版本上不会把 disconnect
+            # 交给服务端，处理器会一直等 receive_text，session 也就永远不 close
+            websocket.close()
         session = self.terminals.sessions[0]
         self.assertEqual(session.pane_id, "%4")
         self.assertEqual(session.inputs, [b"hello\r"])
