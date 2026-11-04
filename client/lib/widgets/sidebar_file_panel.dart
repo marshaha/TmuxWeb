@@ -197,6 +197,13 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
   /// clearing filesPicked and [FilesScreen]'s `_open`.
   final Set<String> _selected = {};
 
+  /// Row most recently interacted with, for the F2 / Delete
+  /// shortcuts (web's list keydown reads the focused [data-entry]
+  /// row) — set by row taps, checkbox toggles and menu opens, and
+  /// cleared by tapping the `..` row, which has no data-entry.
+  /// Like [FilesScreen]'s field of the same name.
+  String? _focusedPath;
+
   @override
   void initState() {
     super.initState();
@@ -520,6 +527,7 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
 
   void _toggleSelected(FileEntry entry, bool selected) {
     setState(() {
+      _focusedPath = entry.path;
       if (selected) {
         _selected.add(entry.path);
       } else {
@@ -528,14 +536,49 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
     });
   }
 
+  /// F2 renames the single selection, else the focused row — web's
+  /// file-list keydown rule (picked.length == 1 ? picked[0] :
+  /// focused), same as [FilesScreen]'s shortcut.
+  void _shortcutRename() {
+    if (_busy || _pathFocusNode.hasFocus) return;
+    FileEntry? entry;
+    if (_selected.length == 1) {
+      entry = _entryForPath(_selected.first);
+    } else if (_focusedPath != null) {
+      entry = _entryForPath(_focusedPath!);
+    }
+    if (entry != null) _rename(entry);
+  }
+
+  /// Delete deletes the selection, else the focused row (web rule).
+  void _shortcutDelete() {
+    if (_busy || _pathFocusNode.hasFocus) return;
+    final entries = _selected.isNotEmpty
+        ? _selected.map(_entryForPath).whereType<FileEntry>().toList()
+        : (_focusedPath == null ? const <FileEntry>[] : [_entryForPath(_focusedPath!)].whereType<FileEntry>().toList());
+    if (entries.isNotEmpty) _deleteEntries(entries);
+  }
+
   @override
   Widget build(BuildContext context) {
     final listing = _listing;
     // Web's syncFileSelection title rule for the bar download button.
     final zipTooltip = _selected.isEmpty ? '打包下载当前目录' : '打包下载选中的 ${_selected.length} 项';
-    return _dropWrap(Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
+    // Web's file-list keydown, scoped to this panel exactly like
+    // [FilesScreen]: the shortcuts resolve only while focus is
+    // inside the panel subtree (the autofocus Focus below), and are
+    // suppressed while the path field has focus (web's listener is
+    // on #file-list, not on the path input).
+    return _dropWrap(CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.f2): _shortcutRename,
+        const SingleActivator(LogicalKeyboardKey.delete): _shortcutDelete,
+      },
+      child: Focus(
+        autofocus: true,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 8, 6),
           child: Row(
@@ -627,7 +670,9 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
         Expanded(child: _buildList(listing)),
         if (_selected.isNotEmpty) _buildSelectionBar(),
         _buildFooter(),
-      ],
+          ],
+        ),
+      ),
     ));
   }
 
@@ -805,6 +850,10 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
               leading: Icon(Icons.subdirectory_arrow_left, size: 20, color: AppTheme.accent),
               title: const Text('..', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13.5)),
               onTap: () {
+                // The `..` row is not a [data-entry] row, so in web a
+                // click on it moves focus there and the keydown
+                // handler finds no focused entry afterwards.
+                setState(() => _focusedPath = null);
                 final keys = HardwareKeyboard.instance;
                 if (!keys.isShiftPressed && !keys.isControlPressed && !keys.isMetaPressed) {
                   _open(parent);
