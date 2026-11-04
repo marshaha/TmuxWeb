@@ -19,7 +19,7 @@ class _GridParityApi extends FakeApi {
   Future<Map<String, String>> paneStates() async => states;
 
   @override
-  Future<Map<String, dynamic>> pins() async => pinsData;
+  Future<Map<String, dynamic>> pins({int limit = 12}) async => pinsData;
 }
 
 Map<String, dynamic> _gridJson(List<String> panes,

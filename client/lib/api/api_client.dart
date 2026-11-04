@@ -26,7 +26,10 @@ class ApiException implements Exception {
 abstract class Api {
   Future<void> login({required String baseUrl, required String password, String token = ''});
 
-  Future<List<Host>> hosts();
+  /// GET /api/hosts, with ?refresh=1 when [refresh] (web console
+  /// loadPanes(true) / per-host refresh). Plain hosts() is the cached
+  /// read; forced refresh re-probes every host.
+  Future<List<Host>> hosts({bool refresh = false});
 
   Future<Transcript> transcript(String paneRef, {int limit = 200, bool refresh = false});
 
@@ -95,8 +98,10 @@ abstract class Api {
   /// GET /api/home/favorites: {favorites: [pane_id], notes: {pane_id: note}}.
   Future<Map<String, dynamic>> homeFavorites();
 
-  /// GET /api/home/recent: {recent: [...], pinned: [...]} —— 「最近」区块与钉子。
-  Future<Map<String, dynamic>> pins();
+  /// GET /api/home/recent?limit=N: {recent: [...], pinned: [...]} —— 「最近」区块与钉子。
+  /// Web's console mount reads ?limit=12; the default matches it so a
+  /// plain pins() call is already the console's read.
+  Future<Map<String, dynamic>> pins({int limit = 12});
 
   /// 把 pane 钉到「最近」顶部 / 取消（POST /api/home/recent/pin）。
   Future<void> pinPane(String paneRef, {required bool pinned});
@@ -114,6 +119,11 @@ abstract class Api {
   Future<void> touchHomeRecent(String paneRef);
 
   Future<void> deleteHomeRecent(String paneRef);
+
+  /// Web's recent-clear (recents.js:502-516): DELETE every unpinned
+  /// row, one request per pane, failures swallowed per pane — the
+  /// pinned rows are untouched.
+  Future<void> clearUnpinnedRecents();
 
   /// GET /api/home/search: {query, mode, hosts, sessions, panes, messages, cards}.
   Future<Map<String, dynamic>> homeSearch(String query, {int limit = 20, bool messages = true});
@@ -332,8 +342,11 @@ class ApiClient implements Api, TerminalApi {
   }
 
   @override
-  Future<List<Host>> hosts() async {
-    final response = await _http.get(_uri('/api/hosts'), headers: _headers());
+  Future<List<Host>> hosts({bool refresh = false}) async {
+    final response = await _http.get(
+      _uri('/api/hosts', refresh ? const {'refresh': '1'} : null),
+      headers: _headers(),
+    );
     final data = _decode(response);
     final raw = (data['hosts'] as List?) ?? const [];
     return raw.whereType<Map>().map((item) => Host.fromJson(Map<String, dynamic>.from(item))).toList();
@@ -574,8 +587,11 @@ class ApiClient implements Api, TerminalApi {
   }
 
   @override
-  Future<Map<String, dynamic>> pins() async {
-    final response = await _http.get(_uri('/api/home/recent'), headers: _headers());
+  Future<Map<String, dynamic>> pins({int limit = 12}) async {
+    final response = await _http.get(
+      _uri('/api/home/recent', {'limit': '$limit'}),
+      headers: _headers(),
+    );
     return _decode(response);
   }
 
@@ -645,6 +661,23 @@ class ApiClient implements Api, TerminalApi {
   Future<void> deleteHomeRecent(String paneRef) async {
     final response = await _http.delete(_uri('/api/home/recent/${encodePaneRef(paneRef)}'), headers: _headers());
     _decode(response);
+  }
+
+  @override
+  Future<void> clearUnpinnedRecents() async {
+    final data = await pins();
+    final recent = data['recent'];
+    if (recent is! List) return;
+    for (final row in recent) {
+      if (row is! Map) continue;
+      final ref = '${row['pane'] ?? ''}';
+      if (ref.isEmpty) continue;
+      try {
+        await deleteHomeRecent(ref);
+      } catch (_) {
+        // Web's clear handler swallows per-pane failures too.
+      }
+    }
   }
 
   @override

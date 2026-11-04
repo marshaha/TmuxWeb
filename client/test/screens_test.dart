@@ -30,7 +30,7 @@ class FakeApi implements Api, TerminalApi {
   }
 
   @override
-  Future<List<Host>> hosts() async {
+  Future<List<Host>> hosts({bool refresh = false}) async {
     if (hostsError != null) throw hostsError!;
     return [
       Host(id: 'localhost', name: 'localhost', kind: 'local', status: 'online', panes: [
@@ -155,6 +155,7 @@ class FakeApi implements Api, TerminalApi {
   final List<String> unfavorited = [];
   final List<String> renamedFavorites = [];
   final List<String> deletedRecent = [];
+  int clearedUnpinnedCalls = 0;
   final List<String> deletedCards = [];
 
   @override
@@ -205,7 +206,7 @@ class FakeApi implements Api, TerminalApi {
   final Set<String> favoritePanes = {'abc~%0'};
 
   @override
-  Future<Map<String, dynamic>> pins() async => {'recent': [], 'pinned': []};
+  Future<Map<String, dynamic>> pins({int limit = 12}) async => {'recent': [], 'pinned': []};
 
   @override
   Future<void> pinPane(String paneRef, {required bool pinned}) async {
@@ -243,6 +244,11 @@ class FakeApi implements Api, TerminalApi {
   @override
   Future<void> deleteHomeRecent(String paneRef) async {
     deletedRecent.add(paneRef);
+  }
+
+  @override
+  Future<void> clearUnpinnedRecents() async {
+    clearedUnpinnedCalls++;
   }
 
   @override
