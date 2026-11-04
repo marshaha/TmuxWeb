@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../services/pager_haptics.dart';
+
 /// Fixed ↑ n/N ↓ pager for narrow (≤760px) grid, mirroring web's
 /// grid-pager (grid.html:177-191,968-1027): 26px capsules, bottom-right
 /// by default (safe-area aware via the parent's padding), a saved
@@ -21,6 +23,7 @@ class GridPager extends StatefulWidget {
     this.savedTop,
     this.onPositionChanged,
     this.onPositionReset,
+    this.onDragStartHaptic = vibratePagerDragStart,
   });
 
   /// 1-based current index, like web's `index + 1`.
@@ -28,6 +31,12 @@ class GridPager extends StatefulWidget {
   final int total;
   final VoidCallback onUp;
   final VoidCallback onDown;
+
+  /// Haptic fired when the 380ms hold arms the drag (web's
+  /// `navigator.vibrate(8)` in bindPager). Defaults to the real
+  /// platform implementation ([vibratePagerDragStart]); tests inject
+  /// a recorder so no platform channel runs inside a widget test.
+  final Future<void> Function()? onDragStartHaptic;
 
   /// Saved floating position (logical pixels), or null for the
   /// default bottom-right dock.
@@ -105,6 +114,9 @@ class _GridPagerState extends State<GridPager> {
         _dragDelta = _pressGlobal! - origin;
         _offset = _clamped(origin, screen);
       });
+      // Web's bindPager vibrates exactly here, when the hold arms
+      // the drag — not on pointerdown, not on first move.
+      unawaited(widget.onDragStartHaptic?.call());
     });
   }
 

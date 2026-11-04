@@ -22,6 +22,8 @@ dependencies:
   webview_flutter: ^4.14.1
   webview_windows: ^0.4.0
   desktop_drop: ^0.8.0
+  # Pager drag-start haptic (web's navigator.vibrate(8) in bindPager).
+  vibration: ^3.2.1
 
 dev_dependencies:
   flutter_test:
