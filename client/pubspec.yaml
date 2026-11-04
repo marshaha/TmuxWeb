@@ -19,6 +19,11 @@ dependencies:
   # Web socket + download support (package:web is only imported
   # from the web implementation; native builds never load it).
   web: ^1.1.0
+  webview_flutter: ^4.14.1
+  webview_windows: ^0.4.0
+  desktop_drop: ^0.8.0
+  # Pager drag-start haptic (web's navigator.vibrate(8) in bindPager).
+  vibration: ^3.2.1
 
 dev_dependencies:
   flutter_test:

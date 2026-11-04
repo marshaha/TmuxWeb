@@ -43,6 +43,25 @@ class LiveFakeSource implements ChatSource {
   @override
   Stream<String> screenStream() => _frames ?? const Stream.empty();
 
+  // Same ChatSource-default overrides as chat_screen_test's FakeSource.
+  @override
+  Stream<bool> screenReconnecting() => const Stream.empty();
+
+  @override
+  bool get isScreenReconnecting => false;
+
+  @override
+  Api? get chatApi => null;
+
+  @override
+  String? get paneRef => null;
+
+  @override
+  String get panePath => '';
+
+  @override
+  String? get numberLabel => null;
+
   @override
   Future<void> send(String text, {bool submit = true}) async {
     if (sendError != null) throw sendError!;
@@ -200,4 +219,112 @@ void main() {
       expect(tester.widget<TextField>(composer).controller?.text, '');
     });
   });
+
+  group('ScreenStream reconnect state', () {
+    test('reconnecting is true after a drop and false once reconnected', () async {
+      var connections = 0;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        if (!WebSocketTransformer.isUpgradeRequest(request)) return;
+        final socket = await WebSocketTransformer.upgrade(request);
+        connections += 1;
+        if (connections == 1) {
+          socket.add(jsonEncode({'type': 'capture', 'content': 'first frame'}));
+          await socket.close();
+        } else {
+          socket.add(jsonEncode({'type': 'capture', 'content': 'second frame'}));
+        }
+      });
+      try {
+        final stream = ScreenStream(uri: Uri.parse('ws://127.0.0.1:${server.port}/ws/panes/%7'), headers: {});
+        final received = <String>[];
+        final states = <bool>[];
+        final frameSub = stream.stream.listen(received.add);
+        final stateSub = stream.reconnecting.listen(states.add);
+        stream.start();
+        final deadline = DateTime.now().add(const Duration(seconds: 8));
+        while (received.length < 2 && DateTime.now().isBefore(deadline)) {
+          await Future.delayed(const Duration(milliseconds: 100));
+        }
+        expect(received, ['first frame', 'second frame']);
+        expect(states, [true, false]);
+        await frameSub.cancel();
+        await stateSub.cancel();
+        await stream.close();
+      } finally {
+        await server.close();
+      }
+    });
+
+    testWidgets('ChatScreen shows a 重连中… badge while reconnecting', (tester) async {
+      final frames = StreamController<String>.broadcast();
+      final reconnecting = StreamController<bool>.broadcast();
+      addTearDown(frames.close);
+      addTearDown(reconnecting.close);
+      final source = _ReconnectSource(frames: frames.stream, reconnecting: reconnecting.stream);
+      await tester.pumpWidget(MaterialApp(
+        theme: AppTheme.light(),
+        home: ChatScreen(source: source, poll: Duration.zero, cache: TranscriptCache()),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('重连中…'), findsNothing);
+
+      reconnecting.add(true);
+      await tester.pumpAndSettle();
+      expect(find.text('重连中…'), findsOneWidget);
+
+      reconnecting.add(false);
+      await tester.pumpAndSettle();
+      expect(find.text('重连中…'), findsNothing);
+    });
+  });
+}
+
+class _ReconnectSource implements ChatSource {
+  _ReconnectSource({required this.frames, required this.reconnecting});
+
+  final Stream<String> frames;
+  final Stream<bool> reconnecting;
+
+  @override
+  String get cacheKey => 'pane:reconnect';
+
+  @override
+  String get title => '重连会话';
+
+  @override
+  String get subtitle => '';
+
+  @override
+  bool get readOnly => false;
+
+  @override
+  Future<Transcript> fetch({bool refresh = false}) async => Transcript(mode: 'screen', content: 'screen output');
+
+  @override
+  Stream<String> screenStream() => frames;
+
+  @override
+  Stream<bool> screenReconnecting() => reconnecting;
+
+  @override
+  bool get isScreenReconnecting => false;
+
+  @override
+  Api? get chatApi => null;
+
+  @override
+  String? get paneRef => null;
+
+  @override
+  String get panePath => '';
+
+  @override
+  String? get numberLabel => null;
+
+  @override
+  Future<void> send(String text, {bool submit = true}) async {}
+
+  @override
+  Future<String> stop() async => 'Escape';
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tmuxweb_client/api/api_client.dart';
 import 'package:tmuxweb_client/screens/chat_screen.dart';
 import 'package:tmuxweb_client/screens/hosts_admin_screen.dart';
@@ -14,6 +15,13 @@ void main() {
   testWidgets('the sidebar groups panes as host → session → window', (tester) async {
     await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://127.0.0.1:8787')));
     await tester.pumpAndSettle();
+    // Narrow (800x600) console: the tree lives in a slide-over
+    // drawer, shut and collapsed by default — open it and expand all
+    // before asserting tree content (web parity C1/A2).
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
 
     // hosts
     expect(find.text('localhost'), findsOneWidget);
@@ -24,15 +32,30 @@ void main() {
     // panes stay reachable
     expect(find.byKey(const Key('pane-%7')), findsOneWidget);
     expect(find.byKey(const Key('pane-abc~%0')), findsOneWidget);
-    // and the management entry exists
-    expect(find.byKey(const Key('hosts-admin')), findsOneWidget);
+    // and the management entry exists (drawer copy — the narrow
+    // AppBar carries the same key for its own actions row).
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('narrow-drawer')),
+        matching: find.byKey(const Key('hosts-admin')),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('busy panes get an accent dot in the tree', (tester) async {
     await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://127.0.0.1:8787')));
     await tester.pumpAndSettle();
-    final panes = tester.widgetList<ListTile>(find.byType(ListTile)).where((tile) => tile.leading != null).toList();
-    expect(panes.length, greaterThanOrEqualTo(2));
+    // Pane rows are custom rows now (web console row), not ListTiles;
+    // the state dot carries its own key and decoration color.
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
+    BoxDecoration dotColor(String ref) =>
+        tester.widget<Container>(find.byKey(Key('pane-state-$ref'))).decoration! as BoxDecoration;
+    expect(dotColor('abc~%0').color, const Color(0xFFD89A3C), reason: 'busy pane is amber');
+    expect(dotColor('%7').color, AppTheme.green, reason: 'idle pane is green');
   });
 
   testWidgets('Enter sends and Shift+Enter keeps the newline', (tester) async {
@@ -90,5 +113,68 @@ void main() {
     final plain = ApiClient(baseUrl: 'http://10.0.0.1:8787');
     expect(plain.wsUri('/ws/terminal/%257', {'cols': '100'}).toString(),
         'ws://10.0.0.1:8787/ws/terminal/%257?cols=100');
+  });
+
+  Future<void> pumpWideHosts(WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({});
+    AppTheme.resetForTest();
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://127.0.0.1:8787')));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('wide sidebar collapses and expands again', (tester) async {
+    await pumpWideHosts(tester);
+    expect(find.byKey(const Key('sidebar-collapse')), findsOneWidget);
+    // The tree starts collapsed (web: empty open set) — expand first.
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('pane-%7')), findsOneWidget);
+
+    // Brand buttons live in the swipeable coarse row under the test
+    // platform default — scroll the collapse button into view first.
+    await tester.ensureVisible(find.byKey(const Key('sidebar-collapse')));
+    await tester.tap(find.byKey(const Key('sidebar-collapse')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sidebar-expand')), findsOneWidget);
+    expect(find.byKey(const Key('pane-%7')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('sidebar-expand')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sidebar-collapse')), findsOneWidget);
+    // The restored tree is collapsed again — expand to see the pane.
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('pane-%7')), findsOneWidget);
+  });
+
+  testWidgets('wide sidebar drag-resizes and persists, double-click resets', (tester) async {
+    await pumpWideHosts(tester);
+    expect(find.byKey(const Key('sidebar-resizer')), findsOneWidget);
+
+    await tester.drag(find.byKey(const Key('sidebar-resizer')), const Offset(100, 0));
+    await tester.pumpAndSettle();
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getDouble('tmux-side-w'), 380);
+
+    // No doubleTap helper on WidgetTester here: two quick taps land as
+    // a double-tap on the resizer's GestureDetector.
+    await tester.tap(find.byKey(const Key('sidebar-resizer')));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(find.byKey(const Key('sidebar-resizer')));
+    await tester.pumpAndSettle();
+    expect(prefs.getDouble('tmux-side-w'), 280);
+  });
+
+  testWidgets('wide sidebar hides the recent block when there are no rows', (tester) async {
+    await pumpWideHosts(tester);
+    // FakeApi pins() is empty, so under E4 the block hides entirely —
+    // header included — instead of rendering a header-only block.
+    // Mount-with-rows is covered by recent_block_parity_test.dart.
+    expect(find.byKey(const Key('recent-fold')), findsNothing);
+    expect(find.byKey(const Key('recent-grip')), findsNothing);
   });
 }

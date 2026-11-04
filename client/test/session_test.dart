@@ -17,6 +17,9 @@ void main() {
     await tester.pumpWidget(wrap(HostsScreen(api: api, baseUrl: _baseUrl)));
     await tester.pumpAndSettle();
 
+    // Narrow console: host rows live in a shut drawer — open it first.
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('new-session-abc')));
     await tester.pumpAndSettle();
     expect(find.text('新建 tmux 会话'), findsOneWidget);
@@ -36,6 +39,9 @@ void main() {
     await tester.pumpWidget(wrap(HostsScreen(api: api, baseUrl: _baseUrl)));
     await tester.pumpAndSettle();
 
+    // Narrow console: host rows live in a shut drawer — open it first.
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('new-session-localhost')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('session-create')));
@@ -50,6 +56,9 @@ void main() {
     await tester.pumpWidget(wrap(HostsScreen(api: api, baseUrl: _baseUrl)));
     await tester.pumpAndSettle();
 
+    // Narrow console: host rows live in a shut drawer — open it first.
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('new-session-localhost')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('session-name')), 'codex');

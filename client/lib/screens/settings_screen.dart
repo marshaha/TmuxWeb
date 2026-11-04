@@ -9,10 +9,65 @@ import '../models/grid_state.dart';
 import '../services/config_crypto.dart';
 import '../services/save_file.dart';
 import '../services/config_import.dart';
+import '../services/share_open.dart';
 import '../theme.dart';
+import '../widgets/pane_hover_preview.dart';
 import 'hosts_admin_screen.dart';
 import 'shares_screen.dart';
 import 'login_screen.dart';
+
+/// Per-pane sidebar-view storage scaffolding, mirroring web's
+/// localStorage['tmux-files-view'] pattern: pane ref → view, most
+/// recent last, capped at 60 panes (oldest trimmed first).
+///
+/// The sidebar file panel now exists (SidebarFilePanel, mounted in
+/// the hosts sidebar), so per-pane view state has something to attach
+/// to and hosts_screen reads/writes through this class. The settings
+/// toggle below syncs the preference itself (sidebar: pane|none).
+class SidebarViewMemory {
+  static const String key = 'tmux-files-view';
+  static const int maxPanes = 60;
+
+  static Future<Map<String, String>> load() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(key);
+      if (raw == null || raw.isEmpty) return {};
+      final data = jsonDecode(raw);
+      if (data is! Map) return {};
+      return {
+        for (final entry in data.entries)
+          if (entry.key is String && entry.value is String) entry.key as String: entry.value as String,
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static Future<void> save(String paneRef, String view) async {
+    if (paneRef.isEmpty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final views = await load();
+      views.remove(paneRef);
+      views[paneRef] = view;
+      while (views.length > maxPanes) {
+        views.remove(views.keys.first);
+      }
+      await prefs.setString(key, jsonEncode(views));
+    } catch (_) {}
+  }
+
+  static Future<void> forget(String paneRef) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final views = await load();
+      if (views.remove(paneRef) != null) {
+        await prefs.setString(key, jsonEncode(views));
+      }
+    } catch (_) {}
+  }
+}
 
 /// Settings, mirroring web/assets/settings.js: server and share
 /// management links, password change, encrypted export/import, plugin
@@ -56,6 +111,83 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _loadInfo();
     _loadPlugins();
+    _loadDisplayPrefs();
+  }
+
+  // Hover-preview delay (web settings.js loadPreviewPref /
+  // savePreviewDelay) and sidebar memory (toggleSidebarMemory): local
+  // mirrors in SharedPreferences, synced to the account via updatePrefs.
+  String _previewDelay = '2';
+  bool _sidebarMemory = false;
+  String _prefsStatus = '';
+
+  static const _previewValues = ['off', '1', '2', '3'];
+  static const _sidebarPrefKey = 'tmux-sidebar-memory';
+
+  Future<void> _loadDisplayPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final localPreview = prefs.getString(PaneHoverPreview.delayKey);
+      final localSidebar = prefs.getString(_sidebarPrefKey);
+      if (!mounted) return;
+      setState(() {
+        if (localPreview != null && _previewValues.contains(localPreview)) _previewDelay = localPreview;
+        _sidebarMemory = localSidebar == 'pane';
+      });
+    } catch (_) {}
+    try {
+      final data = await widget.api.prefs();
+      final stored = data['prefs'];
+      if (stored is! Map || !mounted) return;
+      final serverPreview = '${stored['preview'] ?? ''}';
+      final serverSidebar = '${stored['sidebar'] ?? ''}';
+      setState(() {
+        if (_previewValues.contains(serverPreview)) _previewDelay = serverPreview;
+        if (serverSidebar == 'pane' || serverSidebar == 'none') _sidebarMemory = serverSidebar == 'pane';
+      });
+      final prefs = await SharedPreferences.getInstance();
+      if (_previewValues.contains(serverPreview)) {
+        await prefs.setString(PaneHoverPreview.delayKey, serverPreview);
+      }
+      if (serverSidebar == 'pane' || serverSidebar == 'none') {
+        await prefs.setString(_sidebarPrefKey, serverSidebar);
+      }
+    } catch (_) {
+      // Offline: the local mirrors are what hover and the sidebar read.
+    }
+  }
+
+  Future<void> _savePreviewDelay(String value) async {
+    if (!_previewValues.contains(value)) value = '2';
+    setState(() {
+      _previewDelay = value;
+      _prefsStatus = '';
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(PaneHoverPreview.delayKey, value);
+    } catch (_) {}
+    try {
+      await widget.api.updatePrefs({'preview': value});
+    } catch (_) {
+      if (mounted) setState(() => _prefsStatus = '预览延迟已记在本机，同步到账号失败');
+    }
+  }
+
+  Future<void> _toggleSidebarMemory(bool next) async {
+    setState(() {
+      _sidebarMemory = next;
+      _prefsStatus = '';
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_sidebarPrefKey, next ? 'pane' : 'none');
+    } catch (_) {}
+    try {
+      await widget.api.updatePrefs({'sidebar': next ? 'pane' : 'none'});
+    } catch (_) {
+      if (mounted) setState(() => _prefsStatus = '侧栏记忆已记在本机，同步到账号失败');
+    }
   }
 
   @override
@@ -178,9 +310,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       var panes = 0;
       if (which != 'hosts') {
-        // The grid page is not ported yet (batch 6), so there is no
-        // grid state to export; web exports null here when nothing
-        // was stored, and this does the same.
+        // The grid page IS ported: GridScreen persists its layout and
+        // presets under GridState.gridKey / presetsKey, and the export
+        // reads those same keys (null when nothing was stored, like web).
         final prefs = await SharedPreferences.getInstance();
         bundle['grid'] = _storedJson(prefs, GridState.gridKey);
         bundle['grid_presets'] = _storedJson(prefs, GridState.presetsKey);
@@ -350,7 +482,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('分享管理'),
             trailing: const Icon(Icons.chevron_right, size: 18),
             onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => SharesScreen(api: widget.api, baseUrl: widget.baseUrl)),
+              MaterialPageRoute(builder: (_) => SharesScreen(api: widget.api, baseUrl: widget.baseUrl, tabOpener: openShareTab)),
             ),
           ),
           _sectionTitle('修改密码'),
@@ -362,7 +494,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Text('当前来源：$_passwordSource', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
               const SizedBox(height: 10),
               _field('当前密码', TextField(key: const Key('settings-pw-current'), controller: _pwCurrent, obscureText: true)),
-              _field('新密码', TextField(key: const Key('settings-pw-new'), controller: _pwNew, obscureText: true)),
+              _field('新密码',
+                  TextField(key: const Key('settings-pw-new'), controller: _pwNew, obscureText: true, decoration: const InputDecoration(hintText: '至少 6 位'))),
               _field('确认新密码', TextField(key: const Key('settings-pw-confirm'), controller: _pwConfirm, obscureText: true)),
               FilledButton(
                 key: const Key('settings-pw-submit'),
@@ -500,6 +633,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const SizedBox(height: 6),
               Text('主题记在账号上，换设备也会跟着走。', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+            ],
+          ),
+          _sectionTitle('悬停预览与侧栏'),
+          ExpansionTile(
+            key: const Key('settings-display-tile'),
+            title: const Text('悬停预览与侧栏', style: TextStyle(fontSize: 14)),
+            childrenPadding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+            children: [
+              Row(
+                children: [
+                  const Expanded(child: Text('悬停预览延迟', style: TextStyle(fontSize: 13))),
+                  DropdownButton<String>(
+                    key: const Key('settings-preview-delay'),
+                    value: _previewDelay,
+                    items: const [
+                      DropdownMenuItem(value: 'off', child: Text('关闭')),
+                      DropdownMenuItem(value: '1', child: Text('1 秒')),
+                      DropdownMenuItem(value: '2', child: Text('2 秒')),
+                      DropdownMenuItem(value: '3', child: Text('3 秒')),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) _savePreviewDelay(value);
+                    },
+                  ),
+                ],
+              ),
+              Text('鼠标在侧栏或主页卡片上停多久，才弹出最后一条消息。触屏没有悬停，不会触发。',
+                  style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+              const SizedBox(height: 10),
+              SwitchListTile(
+                key: const Key('settings-sidebar-memory'),
+                title: const Text('记住每个 pane 的侧栏视图', style: TextStyle(fontSize: 13)),
+                subtitle: Text('开启后每个 pane 记住自己上次的侧栏视图。',
+                    style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+                contentPadding: EdgeInsets.zero,
+                value: _sidebarMemory,
+                onChanged: _toggleSidebarMemory,
+              ),
+              _status(_prefsStatus),
             ],
           ),
           const SizedBox(height: 16),

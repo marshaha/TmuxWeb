@@ -11,6 +11,8 @@ import 'package:tmuxweb_client/screens/chat_screen.dart';
 import 'package:tmuxweb_client/theme.dart';
 import 'package:tmuxweb_client/widgets/message_tile.dart';
 
+import 'screens_test.dart' show FakeApi;
+
 class FakeSource implements ChatSource {
   FakeSource({this.readOnly = false, Transcript? transcript}) : _transcript = transcript ?? _default;
 
@@ -42,6 +44,27 @@ class FakeSource implements ChatSource {
 
   @override
   Stream<String> screenStream() => const Stream.empty();
+
+  // ChatSource defaults for pane context / reconnect state (shares and
+  // plain fakes have no pane socket): spelled out because `implements`
+  // does not inherit the abstract class's defaults.
+  @override
+  Stream<bool> screenReconnecting() => const Stream.empty();
+
+  @override
+  bool get isScreenReconnecting => false;
+
+  @override
+  Api? get chatApi => null;
+
+  @override
+  String? get paneRef => null;
+
+  @override
+  String get panePath => '';
+
+  @override
+  String? get numberLabel => null;
 
   int stops = 0;
 
@@ -300,6 +323,57 @@ void main() {
     expect(find.text('已发送'), findsOneWidget);
     expect(source.attempts, 2);
     expect(source.sent, ['hi']);
+  });
+
+  testWidgets('app bar title carries the #N short number for pane sources', (tester) async {
+    final api = FakeApi();
+    final pane = Pane(ref: '%7', title: 'review', command: 'codex', session: 'codex', path: '/srv/work', hasTranscript: true, number: 7);
+    await tester.pumpWidget(wrap(ChatScreen(source: PaneChatSource(api: api, pane: pane), poll: Duration.zero)));
+    await tester.pumpAndSettle();
+    expect(find.text('#7 · review'), findsOneWidget);
+  });
+
+  testWidgets('share dialog rejects a bad slug client-side and accepts a good one', (tester) async {
+    final api = FakeApi();
+    final pane = Pane(ref: '%7', title: 'review', command: 'codex', session: 'codex', path: '/srv/work', hasTranscript: true);
+    await tester.pumpWidget(wrap(ChatScreen(source: PaneChatSource(api: api, pane: pane), poll: Duration.zero)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('chat-share')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('share-slug')), 'AB');
+    await tester.tap(find.byKey(const Key('share-submit')));
+    await tester.pumpAndSettle();
+    expect(find.text('分享路径只能用小写字母、数字和连字符，3–48 个字符，且以字母或数字开头'), findsOneWidget);
+    expect(api.createdShares, isEmpty);
+
+    await tester.enterText(find.byKey(const Key('share-slug')), 'share001');
+    await tester.tap(find.byKey(const Key('share-submit')));
+    await tester.pumpAndSettle();
+    expect(api.createdShares, hasLength(1));
+    expect(find.textContaining('已创建并复制'), findsOneWidget);
+  });
+
+  testWidgets('fullscreen toggle hides the app bar and exits back', (tester) async {
+    await tester.pumpWidget(wrap(ChatScreen(source: FakeSource(), poll: Duration.zero)));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppBar), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('chat-fullscreen')));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppBar), findsNothing);
+    expect(find.byKey(const Key('chat-fullscreen-exit')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('chat-fullscreen-exit')));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppBar), findsOneWidget);
+    expect(find.text('测试会话'), findsOneWidget);
+  });
+
+  testWidgets('non-pane sources get no attach button', (tester) async {
+    await tester.pumpWidget(wrap(ChatScreen(source: FakeSource(), poll: Duration.zero)));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('chat-attach')), findsNothing);
   });
 }
 

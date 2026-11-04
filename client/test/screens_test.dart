@@ -30,7 +30,7 @@ class FakeApi implements Api, TerminalApi {
   }
 
   @override
-  Future<List<Host>> hosts() async {
+  Future<List<Host>> hosts({bool refresh = false}) async {
     if (hostsError != null) throw hostsError!;
     return [
       Host(id: 'localhost', name: 'localhost', kind: 'local', status: 'online', panes: [
@@ -118,6 +118,14 @@ class FakeApi implements Api, TerminalApi {
   }
 
   @override
+  Future<Map<String, dynamic>> fileStat(String paneRef, String path) async =>
+      {'path': path, 'exists': false, 'kind': null, 'offset': 0};
+
+  @override
+  Future<Map<String, dynamic>> deleteUploadFile(String paneRef, String dir, String name) async =>
+      {'status': 'deleted'};
+
+  @override
   Future<Transcript> transcript(String paneRef, {int limit = 200, bool refresh = false}) async =>
       Transcript(mode: 'transcript', provider: 'codex', mtime: 1, messages: [
         ChatMessage(id: 'm1', role: 'assistant', text: '来自 $paneRef 的回复'),
@@ -147,6 +155,7 @@ class FakeApi implements Api, TerminalApi {
   final List<String> unfavorited = [];
   final List<String> renamedFavorites = [];
   final List<String> deletedRecent = [];
+  int clearedUnpinnedCalls = 0;
   final List<String> deletedCards = [];
 
   @override
@@ -197,7 +206,7 @@ class FakeApi implements Api, TerminalApi {
   final Set<String> favoritePanes = {'abc~%0'};
 
   @override
-  Future<Map<String, dynamic>> pins() async => {'recent': [], 'pinned': []};
+  Future<Map<String, dynamic>> pins({int limit = 12}) async => {'recent': [], 'pinned': []};
 
   @override
   Future<void> pinPane(String paneRef, {required bool pinned}) async {
@@ -235,6 +244,11 @@ class FakeApi implements Api, TerminalApi {
   @override
   Future<void> deleteHomeRecent(String paneRef) async {
     deletedRecent.add(paneRef);
+  }
+
+  @override
+  Future<void> clearUnpinnedRecents() async {
+    clearedUnpinnedCalls++;
   }
 
   @override
@@ -297,6 +311,12 @@ class FakeApi implements Api, TerminalApi {
     updatedTheme = theme;
     return {'prefs': {'theme': theme}};
   }
+
+  @override
+  Future<Map<String, dynamic>> updatePrefs(Map<String, String> prefs) async => {'prefs': prefs};
+
+  @override
+  Future<List<Map<String, dynamic>>> pluginButtons() async => [];
 
   @override
   Future<Map<String, dynamic>> settingsInfo() async =>
@@ -556,7 +576,17 @@ void main() {
     await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://chat.local:8899')));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('abc~%0'), findsOneWidget);
+    // Narrow console: the tree lives in a slide-over drawer, shut
+    // and collapsed by default (web parity C1/A2) — open and expand
+    // first. Pane rows no longer carry the ref subtitle (A6), so the
+    // pane is identified by its tile key, not its ref text.
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('pane-abc~%0')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('pane-abc~%0')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('pane-abc~%0')));
     await tester.pumpAndSettle();
     expect(find.text('来自 abc~%0 的回复'), findsOneWidget);

@@ -76,4 +76,36 @@ void main() {
     expect(PaneHoverPreview.durationFromPref('1'), const Duration(seconds: 1));
     expect(PaneHoverPreview.durationFromPref('3'), const Duration(seconds: 3));
   });
+
+  testWidgets('悬停面板按 markdown 渲染，不把语法原样怼出来', (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 200,
+            child: PaneHoverPreview(
+              paneRef: '%7',
+              delay: const Duration(milliseconds: 100),
+              loadPreview: (paneRef) async =>
+                  const PanePreviewData(role: 'assistant', text: '## 完成情况\n**已完成**第一版', time: '刚刚'),
+              child: Container(key: const Key('row'), height: 40, color: Colors.white,
+                  child: const Text('pane 0')),
+            ),
+          ),
+        ),
+      ),
+    ));
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await gesture.addPointer(location: Offset.zero);
+    addTearDown(gesture.removePointer);
+
+    await gesture.moveTo(tester.getCenter(find.byKey(const Key('row'))));
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.pump();
+    expect(find.byKey(const Key('pane-hover-preview')), findsOneWidget);
+    expect(find.textContaining('完成情况'), findsOneWidget);
+    expect(find.textContaining('##'), findsNothing);
+    expect(find.textContaining('**'), findsNothing);
+  });
 }

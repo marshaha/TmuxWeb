@@ -26,4 +26,34 @@ void main() {
     expect(transcript.mode, 'transcript');
     expect(transcript.provider, 'codex');
   });
+
+  test('pane source exposes its number label, ref and path for chat extras', () {
+    final api = FakeApi();
+    final pane = Pane(ref: '%7', title: 'review', command: 'codex', session: 'codex', path: '/srv/work', hasTranscript: true, number: 7);
+    final source = PaneChatSource(api: api, pane: pane);
+    expect(source.numberLabel, '#7');
+    expect(source.paneRef, '%7');
+    expect(source.panePath, '/srv/work');
+    expect(source.chatApi, same(api));
+    expect(source.isScreenReconnecting, isFalse);
+
+    final unnumbered = PaneChatSource(
+      api: api,
+      pane: Pane(ref: '%8', title: 'shell', command: 'bash', session: 'demo'),
+    );
+    expect(unnumbered.numberLabel, isNull);
+  });
+
+  test('share source has no pane context or reconnect state', () async {
+    final source = ShareChatSource(
+      api: FakeApi(),
+      meta: ShareMeta(slug: 's1', title: '共享会话', mode: 'transcript', allowInput: false),
+    );
+    expect(source.chatApi, isNull);
+    expect(source.paneRef, isNull);
+    expect(source.panePath, '');
+    expect(source.numberLabel, isNull);
+    expect(source.isScreenReconnecting, isFalse);
+    expect(await source.screenReconnecting().isEmpty, isTrue);
+  });
 }

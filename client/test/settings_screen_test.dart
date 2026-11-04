@@ -167,4 +167,46 @@ void main() {
     expect(find.text('先选择要导入的文件'), findsOneWidget);
     temp.deleteSync(recursive: true);
   });
+
+  testWidgets('new-password field hints at least 6 characters', (tester) async {
+    await openSettings(tester, FakeApi());
+    await tapVisible(tester, find.byKey(const Key('settings-password-tile')));
+    await tester.pumpAndSettle();
+    expect(find.text('至少 6 位'), findsOneWidget);
+  });
+
+  testWidgets('preview-delay dropdown mirrors locally and sidebar memory toggles', (tester) async {
+    await openSettings(tester, FakeApi());
+    await tapVisible(tester, find.byKey(const Key('settings-display-tile')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('settings-preview-delay')), findsOneWidget);
+    expect(find.byKey(const Key('settings-sidebar-memory')), findsOneWidget);
+    expect(tester.widget<SwitchListTile>(find.byKey(const Key('settings-sidebar-memory'))).value, isFalse);
+
+    await tapVisible(tester, find.byKey(const Key('settings-preview-delay')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('1 秒').last);
+    await tester.pumpAndSettle();
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('tmux-preview-delay'), '1');
+
+    await tapVisible(tester, find.byKey(const Key('settings-sidebar-memory')));
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(find.byKey(const Key('settings-sidebar-memory'))).value, isTrue);
+    expect(prefs.getString('tmux-sidebar-memory'), 'pane');
+  });
+
+  test('per-pane sidebar view storage caps at 60 panes, oldest trimmed', () async {
+    SharedPreferences.setMockInitialValues({});
+    for (var i = 0; i < 61; i++) {
+      await SidebarViewMemory.save('pane-$i', 'files:/dir-$i');
+    }
+    final views = await SidebarViewMemory.load();
+    expect(views.length, 60);
+    expect(views.containsKey('pane-0'), isFalse);
+    expect(views['pane-60'], 'files:/dir-60');
+    await SidebarViewMemory.forget('pane-60');
+    expect((await SidebarViewMemory.load()).containsKey('pane-60'), isFalse);
+  });
 }

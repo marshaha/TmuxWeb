@@ -15,6 +15,7 @@ class Pane {
     this.provider,
     this.active = false,
     this.hasTranscript = false,
+    this.number,
   });
 
   /// Fully qualified pane reference: `%7` locally, `abc123~%7` for a remote host.
@@ -30,8 +31,12 @@ class Pane {
   final String? provider;
   final bool active;
   final bool hasTranscript;
+  final int? number;
 
   String get label => title.isNotEmpty ? title : (command.isNotEmpty ? command : ref);
+
+  /// Web's `#N` short-number prefix; empty when the server assigned none.
+  String get numberLabel => number == null ? '' : '#$number';
 
   factory Pane.fromJson(Map<String, dynamic> json, {String hostId = 'localhost'}) {
     final caps = json['capabilities'];
@@ -48,8 +53,26 @@ class Pane {
       provider: ((json['provider'] as String?) ?? '').isEmpty ? null : json['provider'] as String,
       active: json['active'] == true,
       hasTranscript: caps is Map ? caps['transcript'] == true : json['provider'] != null,
+      number: (json['number'] as num?)?.toInt(),
     );
   }
+}
+
+/// Web's display-name priority (recents.js nameFor): pin label, then
+/// favorite title, then the generated fallback. The server syncs pin labels
+/// and favorite titles both ways; this only decides what the UI shows when
+/// they still differ.
+String nameForPane({
+  required String paneRef,
+  Map<String, String> pinLabels = const {},
+  Map<String, String> favoriteTitles = const {},
+  required String fallback,
+}) {
+  final pin = pinLabels[paneRef] ?? '';
+  if (pin.isNotEmpty) return pin;
+  final fav = favoriteTitles[paneRef] ?? '';
+  if (fav.isNotEmpty) return fav;
+  return fallback;
 }
 
 class Host {
@@ -235,6 +258,7 @@ class FileEntry {
     required this.name,
     required this.path,
     required this.isDir,
+    this.isLink = false,
     this.size = 0,
     this.mtime = 0,
   });
@@ -242,6 +266,14 @@ class FileEntry {
   final String name;
   final String path;
   final bool isDir;
+
+  /// True when the file-list API reports `type: 'link'` — a symlink
+  /// to a non-directory (file_browser.py `_entry` resolves a link to
+  /// a directory as `dir`, so a link-to-dir is indistinguishable
+  /// from a real dir on both web and Flutter; web's renderFiles icon
+  /// rule is dir ? folder : (link ? link : file), and this field
+  /// carries exactly that signal).
+  final bool isLink;
   final int size;
   final double mtime;
 
@@ -261,6 +293,7 @@ class FileEntry {
         name: '${json['name'] ?? ''}',
         path: '${json['path'] ?? ''}',
         isDir: '${json['type'] ?? 'file'}' == 'dir',
+        isLink: '${json['type'] ?? 'file'}' == 'link',
         size: int.tryParse('${json['size'] ?? 0}') ?? 0,
         mtime: double.tryParse('${json['mtime'] ?? 0}') ?? 0,
       );

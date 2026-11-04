@@ -25,6 +25,9 @@ void main() {
     await pumpWide(tester);
     // Sidebar tree (pane tile) and detail board header are onstage at once:
     // the tree is not a full-screen page anymore.
+    // The tree starts collapsed (web parity A2) — expand to see tiles.
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('pane-%7')), findsOneWidget);
     expect(find.text('主页板'), findsOneWidget);
     expect(find.byKey(const Key('chat-composer')), findsNothing);
@@ -32,6 +35,8 @@ void main() {
 
   testWidgets('wide tapping a pane selects it into the detail pane, no push', (tester) async {
     await pumpWide(tester);
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('pane-%7')));
     await tester.pumpAndSettle();
     // Embedded chat composer appears while the sidebar tree stays onstage.
@@ -43,6 +48,8 @@ void main() {
 
   testWidgets('wide detail header closes back to the board', (tester) async {
     await pumpWide(tester);
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('pane-%7')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('shell-detail-close')));
@@ -53,6 +60,8 @@ void main() {
 
   testWidgets('wide detail header opens the full chat page', (tester) async {
     await pumpWide(tester);
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('pane-%7')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('shell-detail-open')));
@@ -62,13 +71,22 @@ void main() {
     expect(find.byKey(const Key('chat-composer')), findsOneWidget);
   });
 
-  testWidgets('narrow still pushes a full chat page on pane tap', (tester) async {
+  testWidgets('narrow pane tap selects into the inline detail and closes the drawer', (tester) async {
+    // C1 replaced the old narrow push-a-chat-page flow: the console is
+    // detail-first with a slide-over drawer, and selecting a pane
+    // closes the drawer while the chat shows inline in the detail.
     await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://test.local')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('tree-expand')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('pane-%7')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('chat-composer')), findsOneWidget);
-    // The tree is behind the pushed route now (offstage), not beside it.
-    expect(find.byKey(const Key('pane-%7')), findsNothing);
+    // The drawer slid shut (off-screen), but it stays built — the
+    // tile is still in the tree, just off-screen, not on a pushed route.
+    expect(tester.getTopLeft(find.byKey(const Key('narrow-drawer'))).dx, lessThan(0));
+    expect(find.byKey(const Key('pane-%7')), findsOneWidget);
   });
 }

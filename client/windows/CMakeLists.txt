@@ -32,6 +32,15 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# webview_windows 0.4.0 uses <experimental/coroutine> (/await), which newer
+# MSVC (VS 18, STL1011) rejects as a hard error. This macro is Microsoft's
+# documented suppression for exactly that error; it only silences the
+# deprecation static_assert and does not change code generation. This file
+# is Windows-only, so the definition is scoped to the Windows build.
+# 0.4.0 is the latest published webview_windows release, so there is no
+# newer plugin version to upgrade to instead.
+add_definitions(-D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by

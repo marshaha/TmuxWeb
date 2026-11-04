@@ -159,4 +159,40 @@ void main() {
     expect(clipboard, contains('http://chat.local:8899/share/my-share'));
     expect(api.createdShares.map((share) => share['slug']), contains('my-share'));
   });
+  testWidgets('expiry time includes seconds, like web toLocaleString', (tester) async {
+    await pumpShares(tester);
+    final label = tester.widget<Text>(find.textContaining('到期：').first).data!;
+    expect(label, matches(RegExp(r'\d{2}:\d{2}:\d{2}$')));
+  });
+
+  testWidgets('empty title stays empty instead of falling back to slug', (tester) async {
+    final api = FakeApi();
+    api.shares.add({
+      'id': 's3',
+      'slug': 'share-empty',
+      'url': '/share/share-empty',
+      'pane_id': '%7',
+      'title': '',
+      'created_at': 1761868800,
+      'expires_at': 1893456000,
+      'revoked': false,
+      'password_protected': false,
+      'allow_input': false,
+      'status': 'active',
+    });
+    await tester.pumpWidget(wrap(SharesScreen(api: api, baseUrl: _baseUrl)));
+    await tester.pumpAndSettle();
+    // The slug still appears in the meta line ('路径：share-empty'),
+    // but never as the bare title text.
+    expect(find.text('share-empty'), findsNothing);
+    expect(find.text('共 3 个分享 · 2 个有效'), findsOneWidget);
+  });
+
+  testWidgets('open still pushes the in-app share view', (tester) async {
+    await pumpShares(tester);
+    await tester.tap(find.byKey(const Key('share-open-s1')));
+    await tester.pumpAndSettle();
+    expect(find.byType(ShareScreen), findsOneWidget);
+  });
+
 }
