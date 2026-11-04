@@ -138,11 +138,12 @@ void main() {
     expect(prefs.getDouble('tmux-side-w'), 280);
   });
 
-  testWidgets('wide sidebar mounts the recent block', (tester) async {
+  testWidgets('wide sidebar hides the recent block when there are no rows', (tester) async {
     await pumpWideHosts(tester);
-    // FakeApi pins() is empty, so the block renders its header only —
-    // but the mount (fold button + grip) must exist in the sidebar.
-    expect(find.byKey(const Key('recent-fold')), findsOneWidget);
-    expect(find.byKey(const Key('recent-grip')), findsOneWidget);
+    // FakeApi pins() is empty, so under E4 the block hides entirely —
+    // header included — instead of rendering a header-only block.
+    // Mount-with-rows is covered by recent_block_parity_test.dart.
+    expect(find.byKey(const Key('recent-fold')), findsNothing);
+    expect(find.byKey(const Key('recent-grip')), findsNothing);
   });
 }

@@ -285,7 +285,8 @@ void main() {
     await tester.tap(find.byKey(const Key('recent-rename-%7')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('recent-rename-input-%7')), '新名字');
-    await tester.tap(find.byKey(const Key('recent-rename-save-%7')));
+    // E10 removed the explicit save/cancel buttons: Enter saves.
+    await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pumpAndSettle();
     expect(renames, ['%7:新名字']);
 
