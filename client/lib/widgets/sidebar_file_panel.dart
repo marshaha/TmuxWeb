@@ -1,0 +1,599 @@
+import 'dart:convert';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+
+import '../api/api_client.dart';
+import '../models/models.dart';
+import '../services/save_file.dart';
+import '../theme.dart';
+
+/// One pane's sidebar view, as web stores it in
+/// localStorage['tmux-files-view'] (commit 2c282a4, web/index.html):
+/// `{open: bool, path: string}` per pane, most recent last, capped at
+/// 60 panes.
+///
+/// Flutter's [SidebarViewMemory] (settings_screen.dart) stores the same
+/// key as a `Map<String, String>` (pane ref → view string), so the web
+/// object is carried as that string: [encode] JSON-encodes it, and
+/// [tryParse] decodes it. The legacy plain scaffolding value
+/// `files:/dir` (open panel, that directory) still parses, so rows
+/// written before this panel existed are not mistaken for "no record".
+class SidebarFileView {
+  const SidebarFileView({required this.open, this.path = ''});
+
+  final bool open;
+  final String path;
+
+  String encode() => jsonEncode({'open': open, 'path': path});
+
+  static SidebarFileView? tryParse(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final data = jsonDecode(raw);
+      if (data is Map) {
+        final open = data['open'];
+        if (open is bool) return SidebarFileView(open: open, path: '${data['path'] ?? ''}');
+      }
+    } catch (_) {
+      // Not JSON: fall through to the legacy plain form below.
+    }
+    if (raw == 'files') return const SidebarFileView(open: true);
+    if (raw.startsWith('files:')) {
+      return SidebarFileView(open: true, path: raw.substring('files:'.length));
+    }
+    return null;
+  }
+}
+
+/// The console sidebar's file panel (web's `#file-panel`, web/index.html):
+/// the directory listing for one pane, shown in place of the session
+/// tree while it is open. Browsing uses the same file APIs
+/// [FilesScreen] uses ([Api.listFiles] / [Api.readFile]); no new server
+/// endpoints.
+///
+/// The panel loads once in [initState] at [initialPath] (or the pane's
+/// own directory when that is empty, like web's `openFiles(null)`), and
+/// reports every resolved directory through [onDirectoryChanged] —
+/// web writes the per-pane view a second time once the directory is
+/// known (the 2c282a4 empty-path fix), and the hosts shell does the
+/// same from that callback. A pane change remounts the panel (the shell
+/// keys it by pane ref), so [didUpdateWidget] only reloads on a pane
+/// change: a directory change reported back as a new [initialPath]
+/// must not reload the panel that just reported it.
+///
+/// Actions mirror web's file panel (same web/index.html lines as
+/// [FilesScreen]): the bar has zip-download and picker upload, rows
+/// have checkboxes, and the footer offers select-all / clear / rename
+/// / delete / zip with web's `syncFileSelection` visibility rules.
+/// Upload, rename and delete copy [FilesScreen]'s dialog and message
+/// shapes; OS drag-and-drop is deliberately not here (web's panel
+/// accepts drops too, but that is a separate extension item).
+class SidebarFilePanel extends StatefulWidget {
+  const SidebarFilePanel({
+    super.key,
+    required this.api,
+    required this.pane,
+    this.initialPath,
+    required this.onClose,
+    required this.onDirectoryChanged,
+    this.pickUploads,
+  });
+
+  final Api api;
+  final Pane pane;
+
+  /// Directory to open first; empty/absent means the pane's directory.
+  final String? initialPath;
+
+  final VoidCallback onClose;
+
+  /// Every directory the panel actually resolves to (after the listing
+  /// returns, not the requested path — the requested one may be empty).
+  final void Function(String path) onDirectoryChanged;
+
+  /// Test seam for the upload picker: production passes null and the
+  /// panel uses [FilePicker.pickFiles] exactly like [FilesScreen];
+  /// tests inject picked (name, bytes) pairs so no real file IO runs
+  /// inside a widget test.
+  final Future<List<({String name, List<int> bytes})>> Function()? pickUploads;
+
+  @override
+  State<SidebarFilePanel> createState() => _SidebarFilePanelState();
+}
+
+class _SidebarFilePanelState extends State<SidebarFilePanel> {
+  FileListing? _listing;
+  String? _error;
+  bool _loading = true;
+  bool _busy = false;
+
+  /// Monotonic request id: completions from an older directory request
+  /// are ignored, like [FilesScreen]'s filesSeq guard.
+  int _requestId = 0;
+
+  /// Last directory requested, for the retry button.
+  String _currentPath = '';
+
+  /// Paths picked with the per-row checkboxes (web's filesPicked).
+  /// Cleared on every successful listing, like web's `openFiles`
+  /// clearing filesPicked and [FilesScreen]'s `_open`.
+  final Set<String> _selected = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _open(_initialDirectory);
+  }
+
+  @override
+  void didUpdateWidget(SidebarFilePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.pane.ref != oldWidget.pane.ref) _open(_initialDirectory);
+  }
+
+  String get _initialDirectory {
+    final initial = widget.initialPath;
+    if (initial != null && initial.isNotEmpty) return initial;
+    return widget.pane.path;
+  }
+
+  Future<void> _open(String path) async {
+    final requestId = ++_requestId;
+    _currentPath = path;
+    setState(() => _loading = true);
+    try {
+      final listing = await widget.api.listFiles(widget.pane.ref, path: path);
+      if (!mounted || requestId != _requestId) return;
+      setState(() {
+        _listing = listing;
+        _error = null;
+        _loading = false;
+        _selected.clear();
+      });
+      widget.onDirectoryChanged(listing.path);
+    } catch (error) {
+      if (!mounted || requestId != _requestId) return;
+      setState(() {
+        _error = '$error';
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _save(List<int> bytes, String name) async {
+    final saved = await saveFileBytes(name, bytes);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已保存到 $saved')));
+  }
+
+  Future<void> _download(FileEntry entry) async {
+    setState(() => _busy = true);
+    try {
+      final bytes = await widget.api.readFile(widget.pane.ref, entry.path);
+      await _save(bytes, entry.name);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Zip the checkbox selection, or the current directory when
+  /// nothing is selected (web's `file-download` handler zips the
+  /// picked paths, else the current directory; Flutter expresses the
+  /// latter as an empty path list plus the directory base, exactly
+  /// like [FilesScreen]'s `_zipCurrent`, per the [Api.zipFiles]
+  /// contract). The bar tooltip follows web's `syncFileSelection`
+  /// title rule: picked ? 打包下载选中的 N 项 : 打包下载当前目录.
+  Future<void> _zip() async {
+    final listing = _listing;
+    if (listing == null) return;
+    setState(() => _busy = true);
+    try {
+      final bytes = await widget.api.zipFiles(widget.pane.ref, _selected.toList(), listing.path);
+      final name = '${listing.path.split('/').where((part) => part.isNotEmpty).lastOrNull ?? 'files'}.zip';
+      await _save(bytes, name);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<List<({String name, List<int> bytes})>> _defaultPickUploads() async {
+    // Web's file input is multiple: upload every picked file, not
+    // just the first — same shape as [FilesScreen]'s `_upload`.
+    final picked = await FilePicker.pickFiles();
+    final uploads = <({String name, List<int> bytes})>[];
+    for (final file in picked) {
+      uploads.add((name: file.name, bytes: await file.xFile.readAsBytes()));
+    }
+    return uploads;
+  }
+
+  Future<void> _upload() async {
+    final picked = await (widget.pickUploads ?? _defaultPickUploads)();
+    if (picked.isEmpty) return;
+    await _uploadAll(picked);
+  }
+
+  /// Same `uploadFile` calls, same refresh, same messages as web's
+  /// `uploadFiles` and [FilesScreen]'s `_uploadAll`: success always
+  /// reports the count (`已上传 N 个文件`), and the first failure
+  /// stops the batch with `<name>: <error>`, exactly like web.
+  Future<void> _uploadAll(List<({String name, List<int> bytes})> uploads) async {
+    final listing = _listing;
+    if (listing == null || uploads.isEmpty) return;
+    setState(() => _busy = true);
+    var current = '';
+    try {
+      for (final upload in uploads) {
+        current = upload.name;
+        await widget.api.uploadFile(widget.pane.ref, listing.path, upload.name, upload.bytes);
+      }
+      await _open(listing.path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已上传 ${uploads.length} 个文件')));
+      }
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$current: $error')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Web's `renameFile`: a dialog prefilled with the current name
+  /// (stem selected, extension left alone), then refresh. Only ever
+  /// offered for exactly one selection, like web's footer rename.
+  Future<void> _rename(FileEntry entry) async {
+    final dot = entry.name.lastIndexOf('.');
+    final controller = TextEditingController(text: entry.name)
+      ..selection = TextSelection(baseOffset: 0, extentOffset: dot > 0 ? dot : entry.name.length);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重命名'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(entry.path, style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('sidebar-file-rename-input'),
+              controller: controller,
+              autofocus: true,
+              // 16px: web's mobile input rule — smaller text triggers
+              // iOS auto-zoom on focus (same as FilesScreen).
+              style: const TextStyle(fontSize: 16),
+              onSubmitted: (value) => Navigator.pop(context, value.trim()),
+              decoration: const InputDecoration(labelText: '新名字'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          FilledButton(
+            key: const Key('sidebar-file-rename-ok'),
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('重命名'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || name == null || name.isEmpty || name == entry.name) return;
+    try {
+      await widget.api.renameFile(widget.pane.ref, entry.path, name);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已重命名为 $name')));
+      await _open(_listing?.path ?? widget.pane.path);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('重命名失败：$error')));
+    }
+  }
+
+  /// Delete one row or the whole checkbox selection, like web's
+  /// `deleteFiles` and [FilesScreen]'s `_deleteEntries`: the dialog
+  /// previews at most 5 names plus '等 N 项', and the recursive
+  /// checkbox appears only when a directory is selected, defaulting
+  /// to on in that case (FilesScreen's rule for dir rows).
+  Future<void> _deleteEntries(List<FileEntry> entries) async {
+    if (entries.isEmpty) return;
+    final names = entries.map((entry) => entry.name).toList();
+    final preview = names.take(5).join('、') + (names.length > 5 ? ' 等 ${names.length} 项' : '');
+    var recursive = entries.any((entry) => entry.isDir);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(entries.length > 1 ? '删除 ${entries.length} 项' : '删除'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(preview, style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text('删除后无法恢复。', style: TextStyle(fontSize: 12, color: AppTheme.danger)),
+              if (entries.any((entry) => entry.isDir))
+                CheckboxListTile(
+                  key: const Key('sidebar-file-delete-recursive'),
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  value: recursive,
+                  onChanged: (value) => setDialogState(() => recursive = value ?? false),
+                  title: const Text('连同目录内容一起删除', style: TextStyle(fontSize: 13)),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+            FilledButton(
+              key: const Key('sidebar-file-delete-ok'),
+              style: FilledButton.styleFrom(backgroundColor: AppTheme.danger),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('删除'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    try {
+      await widget.api.deleteFiles(widget.pane.ref, entries.map((entry) => entry.path).toList(), recursive: recursive);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(entries.length == 1 ? '已删除 ${entries.first.name}' : '已删除 ${entries.length} 项'),
+      ));
+      _selected.removeAll(entries.map((entry) => entry.path));
+      await _open(_listing?.path ?? widget.pane.path);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+    }
+  }
+
+  FileEntry? _entryForPath(String path) {
+    final entries = _listing?.entries;
+    if (entries == null) return null;
+    for (final entry in entries) {
+      if (entry.path == path) return entry;
+    }
+    return null;
+  }
+
+  void _toggleSelected(FileEntry entry, bool selected) {
+    setState(() {
+      if (selected) {
+        _selected.add(entry.path);
+      } else {
+        _selected.remove(entry.path);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final listing = _listing;
+    // Web's syncFileSelection title rule for the bar download button.
+    final zipTooltip = _selected.isEmpty ? '打包下载当前目录' : '打包下载选中的 ${_selected.length} 项';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 6),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  listing?.path ?? widget.pane.label,
+                  key: const Key('sidebar-files-path'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTheme.mono,
+                ),
+              ),
+              IconButton(
+                key: const Key('sidebar-files-zip'),
+                tooltip: zipTooltip,
+                iconSize: 18,
+                visualDensity: VisualDensity.compact,
+                onPressed: _busy ? null : _zip,
+                icon: const Icon(Icons.folder_zip_outlined, size: 18),
+              ),
+              IconButton(
+                key: const Key('sidebar-files-upload'),
+                tooltip: '上传文件',
+                iconSize: 18,
+                visualDensity: VisualDensity.compact,
+                onPressed: _busy ? null : _upload,
+                icon: const Icon(Icons.upload_file, size: 18),
+              ),
+              IconButton(
+                key: const Key('sidebar-files-up'),
+                tooltip: '上级目录',
+                iconSize: 18,
+                visualDensity: VisualDensity.compact,
+                onPressed: listing?.parent == null ? null : () => _open(listing!.parent!),
+                icon: const Icon(Icons.arrow_upward, size: 18),
+              ),
+              IconButton(
+                key: const Key('sidebar-files-refresh'),
+                tooltip: '刷新',
+                iconSize: 18,
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _open(_currentPath),
+                icon: const Icon(Icons.refresh, size: 18),
+              ),
+              IconButton(
+                key: const Key('sidebar-files-close'),
+                tooltip: '隐藏文件面板',
+                iconSize: 18,
+                visualDensity: VisualDensity.compact,
+                onPressed: widget.onClose,
+                icon: const Icon(Icons.close, size: 18),
+              ),
+            ],
+          ),
+        ),
+        if (_busy) const LinearProgressIndicator(minHeight: 2),
+        const Divider(height: 1),
+        Expanded(child: _buildList(listing)),
+        if (_selected.isNotEmpty) _buildSelectionBar(),
+      ],
+    );
+  }
+
+  /// Footer for the checkbox selection, with web's `syncFileSelection`
+  /// visibility rules exactly: select-all is shown whenever anything
+  /// is picked and flips to 取消全选 when all rows are picked; clear
+  /// is hidden when all are picked (select-all already undoes it);
+  /// rename only for exactly one pick; delete and zip whenever any
+  /// rows are picked, with the zip label carrying the count like
+  /// web's `下载 zip (N)`. Chip-style small buttons, horizontally
+  /// scrollable so the bar survives the 280px sidebar width.
+  Widget _buildSelectionBar() {
+    final entries = _listing?.entries ?? const <FileEntry>[];
+    final allSelected = entries.isNotEmpty && _selected.length == entries.length;
+    final selectedEntries = _selected.map(_entryForPath).whereType<FileEntry>().toList();
+    return Container(
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+      decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextButton(
+              key: const Key('sidebar-files-select-all'),
+              style: _chipStyle,
+              onPressed: () => setState(() {
+                if (allSelected) {
+                  _selected.clear();
+                } else {
+                  _selected.addAll(entries.map((entry) => entry.path));
+                }
+              }),
+              child: Text(allSelected ? '取消全选' : '全选'),
+            ),
+            if (!allSelected)
+              TextButton(
+                key: const Key('sidebar-files-select-none'),
+                style: _chipStyle,
+                onPressed: () => setState(_selected.clear),
+                child: const Text('清空'),
+              ),
+            if (_selected.length == 1)
+              TextButton(
+                key: const Key('sidebar-files-footer-rename'),
+                style: _chipStyle,
+                onPressed: selectedEntries.isEmpty ? null : () => _rename(selectedEntries.first),
+                child: const Text('重命名'),
+              ),
+            TextButton(
+              key: const Key('sidebar-files-footer-delete'),
+              style: _chipStyle,
+              onPressed: () => _deleteEntries(selectedEntries),
+              child: Text('删除', style: TextStyle(color: AppTheme.danger)),
+            ),
+            // OutlinedButton, not FilledButton: the app theme gives
+            // FilledButton an infinite minimum width, which only lays
+            // out when the button fills its parent — in a Row with
+            // siblings it asserts (same reason as FilesScreen).
+            OutlinedButton(
+              key: const Key('sidebar-files-footer-zip'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 28),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                textStyle: const TextStyle(fontSize: 12),
+              ),
+              onPressed: _busy ? null : _zip,
+              child: Text('下载 zip (${_selected.length})'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Web's `.chip-btn`: small, tight, no full-width tap target.
+  static final ButtonStyle _chipStyle = TextButton.styleFrom(
+    padding: const EdgeInsets.symmetric(horizontal: 8),
+    minimumSize: const Size(0, 28),
+    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    textStyle: const TextStyle(fontSize: 12),
+  );
+
+  Widget _buildList(FileListing? listing) {
+    if (_loading && listing == null) return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+    if (listing == null) {
+      return ListView(
+        padding: const EdgeInsets.all(24),
+        children: [
+          Text(_error ?? '加载失败', style: TextStyle(color: AppTheme.danger, fontSize: 13)),
+          const SizedBox(height: 12),
+          OutlinedButton(onPressed: () => _open(_currentPath), child: const Text('重试')),
+        ],
+      );
+    }
+    final entries = listing.entries;
+    if (entries.isEmpty) {
+      return Center(child: Text('这个目录是空的', style: TextStyle(color: AppTheme.muted)));
+    }
+    return ListView.builder(
+      itemCount: entries.length + (listing.truncated ? 1 : 0),
+      itemBuilder: (context, index) {
+        if (index == entries.length) {
+          return Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text('条目太多，只显示了一部分', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+          );
+        }
+        final entry = entries[index];
+        final selected = _selected.contains(entry.path);
+        // Transparent Material per row: the sidebar container paints a
+        // background above the Scaffold's Material, which would hide
+        // the ListTile ink (Flutter asserts on exactly this).
+        return Material(
+          type: MaterialType.transparency,
+          child: Row(
+            children: [
+              Checkbox(
+                key: Key('sidebar-file-check-${entry.name}'),
+                value: selected,
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                onChanged: (value) => _toggleSelected(entry, value ?? false),
+              ),
+              Expanded(
+                child: ListTile(
+                  key: Key('sidebar-file-${entry.name}'),
+                  dense: true,
+                  tileColor: selected ? AppTheme.accent.withValues(alpha: 0.08) : null,
+                  leading: Icon(
+                    entry.isDir ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
+                    size: 20,
+                    color: entry.isDir ? AppTheme.accent : AppTheme.faint,
+                  ),
+                  title: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5)),
+                  subtitle: entry.isDir ? null : Text(entry.sizeLabel, style: TextStyle(fontSize: 11, color: AppTheme.faint)),
+                  trailing: entry.isDir
+                      ? null
+                      : IconButton(
+                          key: Key('sidebar-file-download-${entry.name}'),
+                          tooltip: '下载',
+                          iconSize: 18,
+                          visualDensity: VisualDensity.compact,
+                          onPressed: _busy ? null : () => _download(entry),
+                          icon: const Icon(Icons.download_outlined, size: 18),
+                        ),
+                  onTap: () => entry.isDir ? _open(entry.path) : _download(entry),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

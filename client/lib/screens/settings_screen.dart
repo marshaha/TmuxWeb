@@ -667,7 +667,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               SwitchListTile(
                 key: const Key('settings-sidebar-memory'),
                 title: const Text('记住每个 pane 的侧栏视图', style: TextStyle(fontSize: 13)),
-                subtitle: Text('开启后每个 pane 记住自己上次的侧栏视图；侧栏文件面板仍在开发中，暂无视图可记。',
+                subtitle: Text('开启后每个 pane 记住自己上次的侧栏视图。',
                     style: TextStyle(fontSize: 12, color: AppTheme.muted)),
                 contentPadding: EdgeInsets.zero,
                 value: _sidebarMemory,

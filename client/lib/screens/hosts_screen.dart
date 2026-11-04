@@ -9,6 +9,7 @@ import '../models/models.dart';
 import '../theme.dart';
 import '../widgets/pane_hover_preview.dart';
 import '../widgets/recent_block.dart';
+import '../widgets/sidebar_file_panel.dart';
 import 'chat_screen.dart';
 import '../widgets/plugin_buttons.dart';
 import 'grid_screen.dart';
@@ -37,7 +38,9 @@ class HostsScreen extends StatefulWidget {
 
   /// Pane ref to select once hosts load (grid "在控制台打开" and
   /// terminal "在控制台打开" deep links). Wide shell shows it in the
-  /// detail pane; narrow only highlights its tree row.
+  /// detail pane; narrow auto-opens its chat once, post-frame (see
+  /// [_maybeAutoOpenDeepLink]), while still highlighting its tree row
+  /// underneath.
   final String? initialPaneRef;
 
   @override
@@ -58,6 +61,29 @@ class _HostsScreenState extends State<HostsScreen> {
 
   /// Whether the [HostsScreen.initialPaneRef] deep link has been applied.
   bool _initialPaneApplied = false;
+
+  /// Narrow deep link: pane refs already auto-opened, and whether a
+  /// deep-link push is currently in flight. A ref auto-opens at most
+  /// once, and a new ref arriving while a push is in flight is ignored
+  /// rather than stacked on top of it, so rapid parent rebuilds cannot
+  /// double-push or crash the navigator.
+  final Set<String> _deepLinkOpened = {};
+  bool _deepLinkPushInFlight = false;
+
+  /// Wide-shell sidebar file panel (web's console `#file-panel`):
+  /// whether the panel replaces the tree, and the last directory it
+  /// resolved to for the selected pane (null = the pane's own directory).
+  /// Narrow has no persistent sidebar in Flutter — the tree is a
+  /// full-screen page — so the panel lives in the wide shell only.
+  bool _filesMode = false;
+  String? _filesPath;
+
+  /// Whether 设置 → 侧栏「按 pane 记住」 is on, from the local mirror
+  /// SharedPreferences 'tmux-sidebar-memory' == 'pane' (synced to the
+  /// account as /api/prefs sidebar: pane|none). Read fresh whenever a
+  /// sidebar view is applied or written, so returning from Settings
+  /// never acts on a stale cached value.
+  bool _sidebarMemoryOn = false;
 
   /// Web's narrow breakpoint: at or below 860px the sidebar is an overlay.
   static const double _wideBreakpoint = 861;
@@ -101,7 +127,91 @@ class _HostsScreenState extends State<HostsScreen> {
         _sidebarWidth = (prefs.getDouble('tmux-side-w') ?? _sidebarDefaultWidth).clamp(200, 640);
         _sidebarCollapsed = prefs.getBool('tmux-sidebar-collapsed') ?? false;
       });
+      _sidebarMemoryOn = prefs.getString('tmux-sidebar-memory') == 'pane';
     } catch (_) {}
+  }
+
+  /// Fresh read of the sidebar-memory mirror (see [_sidebarMemoryOn]).
+  Future<bool> _readSidebarMemory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final on = prefs.getString('tmux-sidebar-memory') == 'pane';
+      _sidebarMemoryOn = on;
+      return on;
+    } catch (_) {
+      return _sidebarMemoryOn;
+    }
+  }
+
+  /// Web's selectPane sidebar branch (web/index.html, 2c282a4), applied
+  /// whenever the selected pane changes:
+  /// - memory on: an unrecorded pane (or one last closed) shows the
+  ///   session tree — never the previous pane's panel — and a recorded
+  ///   open panel is restored at its directory; the view is written
+  ///   back so the switch itself is remembered.
+  /// - memory off: a closed panel stays closed; an open panel follows
+  ///   the new pane at that pane's own directory (web: openFiles(null)).
+  /// A fresh shell starts closed either way, matching web's
+  /// `filesMode:false` initial state.
+  Future<void> _applySidebarViewForPane(Pane pane) async {
+    final memoryOn = await _readSidebarMemory();
+    if (!mounted) return;
+    if (memoryOn) {
+      final views = await SidebarViewMemory.load();
+      if (!mounted) return;
+      final remembered = SidebarFileView.tryParse(views[pane.ref]);
+      if (remembered != null && remembered.open) {
+        final path = remembered.path.isEmpty ? null : remembered.path;
+        setState(() {
+          _filesMode = true;
+          _filesPath = path;
+        });
+        await SidebarViewMemory.save(pane.ref, SidebarFileView(open: true, path: remembered.path).encode());
+      } else {
+        setState(() {
+          _filesMode = false;
+          _filesPath = null;
+        });
+        await SidebarViewMemory.save(pane.ref, const SidebarFileView(open: false).encode());
+      }
+    } else {
+      // Panel state itself is unchanged; only the directory resets so
+      // an open panel remounts at the new pane's directory.
+      setState(() => _filesPath = null);
+    }
+  }
+
+  /// The panel's folder toggle (web's `#files-toggle`): with no pane
+  /// selected there is nothing to show, like web's openFiles guard.
+  /// Closing writes the view only when memory is on — web's
+  /// writeFilesView is likewise a no-op when memory is off.
+  Future<void> _toggleFilesPanel() async {
+    final pane = _selectedPane;
+    if (pane == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('先选择一个 pane')));
+      return;
+    }
+    final next = !_filesMode;
+    setState(() => _filesMode = next);
+    if (await _readSidebarMemory()) {
+      await SidebarViewMemory.save(pane.ref, SidebarFileView(open: next, path: _filesPath ?? '').encode());
+    }
+  }
+
+  /// The panel's second write (web's openFiles post-resolve write):
+  /// browsing into a directory updates the remembered directory while
+  /// the panel stays open. No write when memory is off.
+  void _onSidebarDirectory(String path) {
+    _filesPath = path;
+    final pane = _selectedPane;
+    if (pane == null) return;
+    unawaited(_writeSidebarViewIfMemoryOn(pane, SidebarFileView(open: true, path: path)));
+  }
+
+  Future<void> _writeSidebarViewIfMemoryOn(Pane pane, SidebarFileView view) async {
+    if (await _readSidebarMemory()) {
+      await SidebarViewMemory.save(pane.ref, view.encode());
+    }
   }
 
   Future<void> _saveSidebarPrefs() async {
@@ -185,6 +295,34 @@ class _HostsScreenState extends State<HostsScreen> {
     super.dispose();
   }
 
+  @override
+  void didUpdateWidget(HostsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialPaneRef == oldWidget.initialPaneRef) return;
+    // A changed deep link re-arms the one-shot application: the load
+    // that already ran must not swallow the new value, and a load still
+    // in flight reads the new widget value when it lands.
+    _initialPaneApplied = false;
+    final ref = widget.initialPaneRef;
+    final hosts = _hosts;
+    if (ref == null || hosts == null) return;
+    final target = _findPane(ref);
+    if (target == null) return;
+    _initialPaneApplied = true;
+    setState(() => _selectedPane = target);
+    _maybeAutoOpenDeepLink(target);
+    unawaited(_applySidebarViewForPane(target));
+  }
+
+  Pane? _findPane(String ref) {
+    for (final host in _hosts ?? const <Host>[]) {
+      for (final pane in host.panes) {
+        if (pane.ref == ref) return pane;
+      }
+    }
+    return null;
+  }
+
   Future<void> _refreshStates() async {
     try {
       final states = await widget.api.paneStates();
@@ -199,6 +337,7 @@ class _HostsScreenState extends State<HostsScreen> {
     try {
       final hosts = await widget.api.hosts();
       if (!mounted) return;
+      Pane? deepLinked;
       setState(() {
         _hosts = hosts;
         _error = null;
@@ -207,6 +346,7 @@ class _HostsScreenState extends State<HostsScreen> {
         final selected = _selectedPane;
         if (selected != null && !hosts.any((host) => host.panes.any((pane) => pane.ref == selected.ref))) {
           _selectedPane = null;
+          _filesMode = false;
         }
         // Deep-link selection, applied once on the first load that has
         // hosts; later reloads never override the user's own selection.
@@ -216,12 +356,20 @@ class _HostsScreenState extends State<HostsScreen> {
           if (ref != null && _selectedPane == null) {
             for (final host in hosts) {
               for (final pane in host.panes) {
-                if (pane.ref == ref) _selectedPane = pane;
+                if (pane.ref == ref) {
+                  _selectedPane = pane;
+                  deepLinked = pane;
+                }
               }
             }
           }
         }
       });
+      final deepLinkedPane = deepLinked;
+      if (deepLinkedPane != null) {
+        _maybeAutoOpenDeepLink(deepLinkedPane);
+        unawaited(_applySidebarViewForPane(deepLinkedPane));
+      }
       unawaited(_refreshStates());
     } catch (error) {
       if (!mounted) return;
@@ -235,19 +383,60 @@ class _HostsScreenState extends State<HostsScreen> {
   int get _paneCount => (_hosts ?? const <Host>[]).fold<int>(0, (sum, host) => sum + host.panes.length);
 
   void _openPane(Pane pane) {
-    final api = widget.api;
     if (MediaQuery.sizeOf(context).width >= _wideBreakpoint) {
       // Wide shell: select into the detail pane instead of pushing.
       setState(() => _selectedPane = pane);
+      unawaited(_applySidebarViewForPane(pane));
       return;
     }
-    Navigator.of(context).push(MaterialPageRoute(
+    // Narrow has no sidebar to show, but the view is still applied and
+    // written like web's selectPane, so it is correct if the shell
+    // later goes wide (and so a recorded panel is not lost by a tap).
+    setState(() => _selectedPane = pane);
+    unawaited(_applySidebarViewForPane(pane));
+    unawaited(_pushChatPage(pane));
+  }
+
+  Future<void> _pushChatPage(Pane pane) {
+    final api = widget.api;
+    return Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => ChatScreen(
         source: PaneChatSource(api: api, pane: pane),
         terminalApi: api is TerminalApi ? api as TerminalApi : null,
         baseUrl: widget.baseUrl,
       ),
     ));
+  }
+
+  /// Narrow deep link: schedule the chat push for the next frame, never
+  /// during build (a push during build throws "setState() or
+  /// markNeedsBuild() called during build"). The width is re-checked in
+  /// the callback itself, so a shell that has since grown wide keeps
+  /// its detail pane instead of pushing. The push is "in flight" until
+  /// the chat page pops, so a second deep-link value arriving in the
+  /// meantime is dropped rather than stacked; the per-value set keeps
+  /// a later reload or parent rebuild from re-pushing the same ref.
+  void _maybeAutoOpenDeepLink(Pane pane) {
+    final ref = widget.initialPaneRef;
+    if (ref == null || pane.ref != ref) return;
+    if (_deepLinkOpened.contains(ref) || _deepLinkPushInFlight) return;
+    _deepLinkPushInFlight = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        _deepLinkPushInFlight = false;
+        return;
+      }
+      if (MediaQuery.sizeOf(context).width >= _wideBreakpoint) {
+        _deepLinkPushInFlight = false;
+        return;
+      }
+      _deepLinkOpened.add(ref);
+      try {
+        await _pushChatPage(pane);
+      } finally {
+        _deepLinkPushInFlight = false;
+      }
+    });
   }
 
   /// Full-screen chat for a pane (detail header's "open full" action).
@@ -389,7 +578,10 @@ class _HostsScreenState extends State<HostsScreen> {
         tooltip: '主页板',
         visualDensity: density,
         onPressed: wide
-            ? () => setState(() => _selectedPane = null)
+            ? () => setState(() {
+                  _selectedPane = null;
+                  _filesMode = false;
+                })
             : () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => HomeBoardScreen(api: widget.api, baseUrl: widget.baseUrl))),
         icon: Icon(
@@ -480,6 +672,17 @@ class _HostsScreenState extends State<HostsScreen> {
                           const Expanded(
                             child: Text('会话', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                           ),
+                          // Web's console `#files-toggle`: the file panel
+                          // replaces the tree while open (see below).
+                          IconButton(
+                            key: const Key('sidebar-files-toggle'),
+                            tooltip: _filesMode ? '隐藏文件面板' : '文件面板',
+                            iconSize: 18,
+                            visualDensity: VisualDensity.compact,
+                            icon: Icon(Icons.folder_outlined,
+                                size: 18, color: _filesMode ? AppTheme.accent : null),
+                            onPressed: _toggleFilesPanel,
+                          ),
                           IconButton(
                             key: const Key('sidebar-collapse'),
                             tooltip: '折叠侧栏',
@@ -505,7 +708,18 @@ class _HostsScreenState extends State<HostsScreen> {
                     ],
                   ),
                 ),
-                Expanded(child: RefreshIndicator(onRefresh: _load, child: _buildBody())),
+                Expanded(
+                  child: _filesMode && _selectedPane != null
+                      ? SidebarFilePanel(
+                          key: ValueKey('sidebar-files-${_selectedPane!.ref}'),
+                          api: widget.api,
+                          pane: _selectedPane!,
+                          initialPath: _filesPath,
+                          onClose: () => unawaited(_toggleFilesPanel()),
+                          onDirectoryChanged: _onSidebarDirectory,
+                        )
+                      : RefreshIndicator(onRefresh: _load, child: _buildBody()),
+                ),
                 RecentBlock(
                   load: _loadRecentBlock,
                   onOpen: _openRecentPane,
@@ -697,7 +911,10 @@ class _HostsScreenState extends State<HostsScreen> {
               IconButton(
                 key: const Key('shell-detail-close'),
                 tooltip: '返回主页板',
-                onPressed: () => setState(() => _selectedPane = null),
+                onPressed: () => setState(() {
+                  _selectedPane = null;
+                  _filesMode = false;
+                }),
                 icon: const Icon(Icons.close, size: 20),
               ),
             ],
