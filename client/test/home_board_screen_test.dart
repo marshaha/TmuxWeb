@@ -7,6 +7,7 @@ import 'package:tmuxweb_client/api/api_client.dart';
 import 'package:tmuxweb_client/screens/home_board_screen.dart';
 import 'package:tmuxweb_client/screens/home_search_screen.dart';
 import 'package:tmuxweb_client/screens/hosts_screen.dart';
+import 'package:tmuxweb_client/widgets/recent_block.dart';
 
 import 'screens_test.dart' show FakeApi, wrap;
 
@@ -189,5 +190,114 @@ void main() {
     await tester.tap(find.byKey(const Key('star-%7')));
     await tester.pumpAndSettle();
     expect(api.addedFavorites, ['%7']);
+  });
+
+  test('stripMarkdown removes syntax for the 4-line card summaries', () {
+    expect(stripMarkdown('## 标题 **粗体** `代码` [链接](https://example.com)'), '标题 粗体 代码 链接');
+    expect(stripMarkdown('- 项目\n> 引用\n| a | b |'), contains('项目'));
+    expect(stripMarkdown('- 项目\n> 引用\n| a | b |'), isNot(contains('#')));
+    expect(stripMarkdown('```dart\ncode();\n```\n正文'), contains('正文'));
+    expect(stripMarkdown('```dart\ncode();\n```\n正文'), isNot(contains('code();')));
+  });
+
+  testWidgets('home recent rows share the sidebar row actions', (tester) async {
+    final api = FakeApi();
+    await tester.pumpWidget(wrap(HomeBoardScreen(api: api, baseUrl: _baseUrl)));
+    await tester.pumpAndSettle();
+
+    // Shared row: pin + star + the kept delete action, not just delete.
+    expect(find.byKey(const Key('recent-pin-abc~%0')), findsOneWidget);
+    expect(find.byKey(const Key('recent-star-abc~%0')), findsOneWidget);
+    expect(find.byKey(const Key('delete-recent-abc~%0')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('recent-pin-abc~%0')));
+    await tester.pumpAndSettle();
+    expect(api.pinnedCalls, contains('abc~%0:true'));
+
+    await tester.tap(find.byKey(const Key('delete-recent-abc~%0')));
+    await tester.pumpAndSettle();
+    expect(api.deletedRecent, ['abc~%0']);
+  });
+
+  testWidgets('wide preview drawer covers the full viewport above the bar', (tester) async {
+    tester.view.physicalSize = const Size(1600, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(wrap(HomeBoardScreen(api: FakeApi(), baseUrl: _baseUrl)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('review').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('完整预览'));
+    await tester.pumpAndSettle();
+
+    final panel = find.byKey(const Key('preview-panel'));
+    expect(panel, findsOneWidget);
+    final rect = tester.getRect(panel);
+    // Web: width min(760px, 56vw), full height from top:0.
+    expect(rect.width, 760);
+    expect(rect.top, 0);
+    expect(rect.height, 900);
+    final container = tester.widget<Container>(panel);
+    final decoration = container.decoration as BoxDecoration;
+    final shadow = decoration.boxShadow!.single;
+    expect(shadow.offset, const Offset(-16, 0));
+    expect(shadow.blurRadius, 48);
+  });
+
+  testWidgets('recent block renders pins, actions, rename and collapse', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final pins = <String>[];
+    final renames = <String>[];
+    final stars = <String>[];
+    var opens = <String>[];
+    Future<RecentBlockData> load() async => const RecentBlockData(
+          pinned: [
+            RecentRowData(paneRef: '%7', label: '钉住的会话', pinLabel: '钉住的会话', pinned: true, starred: true),
+          ],
+          recent: [
+            RecentRowData(paneRef: 'abc~%0', label: '最近的会话', visitedLabel: '01-02 03:04', starred: false),
+          ],
+        );
+    await tester.pumpWidget(wrap(Scaffold(
+      body: RecentBlock(
+        load: load,
+        onOpen: (ref) => opens.add(ref),
+        onTogglePin: (ref, pinned) async => pins.add('$ref:$pinned'),
+        onRenamePin: (ref, label) async => renames.add('$ref:$label'),
+        onToggleFavorite: (ref, starred) async => stars.add('$ref:$starred'),
+      ),
+    )));
+    await tester.pumpAndSettle();
+
+    expect(find.text('钉住的会话'), findsOneWidget);
+    expect(find.text('最近的会话'), findsOneWidget);
+    // Pencil rename exists only on the pinned row.
+    expect(find.byKey(const Key('recent-rename-%7')), findsOneWidget);
+    expect(find.byKey(const Key('recent-rename-abc~%0')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('recent-pin-abc~%0')));
+    await tester.pumpAndSettle();
+    expect(pins, ['abc~%0:true']);
+
+    await tester.tap(find.byKey(const Key('recent-rename-%7')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('recent-rename-input-%7')), '新名字');
+    await tester.tap(find.byKey(const Key('recent-rename-save-%7')));
+    await tester.pumpAndSettle();
+    expect(renames, ['%7:新名字']);
+
+    await tester.tap(find.byKey(const Key('recent-fold')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('recent-list')), findsNothing);
+    await tester.tap(find.byKey(const Key('recent-fold')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('recent-list')), findsOneWidget);
+
+    await tester.tap(find.text('最近的会话'));
+    expect(opens, ['abc~%0']);
+    expect(stars, isEmpty);
   });
 }

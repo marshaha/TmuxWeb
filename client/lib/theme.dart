@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// One palette. Hex values come from web/assets/theme.css (the five named
-/// themes) and from the existing Flutter warm palette for the default.
-/// Web also has --surface2 (a secondary surface); Flutter screens only
-/// distinguish page and card, so both map to [card] here.
+/// themes) and from web/index.html:18 (the warm default, which has no
+/// theme.css block of its own). --surface2, --card-hover, --line-strong
+/// and --shimmer are web-exact per theme; dark claude-code card is web
+/// --card #2a2725 (not --surface #232120) and dark night card is web
+/// --card #24252b (not --surface #1E1F25).
 class AppPalette {
   const AppPalette({
     required this.name,
@@ -17,6 +19,10 @@ class AppPalette {
     required this.page,
     required this.sidebar,
     required this.card,
+    required this.surface2,
+    required this.cardHover,
+    required this.shimmer,
+    required this.lineStrong,
     required this.accent,
     required this.green,
     required this.danger,
@@ -33,6 +39,18 @@ class AppPalette {
   final Color page;
   final Color sidebar;
   final Color card;
+
+  /// Web --surface2: the secondary surface (inputs, result boxes).
+  final Color surface2;
+
+  /// Web --card-hover: hover background for rows and cards.
+  final Color cardHover;
+
+  /// Web --shimmer: skeleton shimmer tint.
+  final Color shimmer;
+
+  /// Web --line-strong: the heavier border (chips, focused controls).
+  final Color lineStrong;
   final Color accent;
   final Color green;
   final Color danger;
@@ -50,9 +68,13 @@ class AppThemes {
     muted: Color(0xFF73716B),
     faint: Color(0xFF9B998F),
     line: Color(0xFFDDDCD5),
-    page: Color(0xFFF7F6F2),
+    page: Color(0xFFF7F7F5),
     sidebar: Color(0xFFEEEDE8),
     card: Color(0xFFFFFFFF),
+    surface2: Color(0xFFF4F3EE),
+    cardHover: Color(0xFFF3F2ED),
+    shimmer: Color(0xFFF3F2ED),
+    lineStrong: Color(0xFFCBC9C0),
     accent: Color(0xFFC96442),
     green: Color(0xFF4F9A65),
     danger: Color(0xFFB34B43),
@@ -70,6 +92,10 @@ class AppThemes {
     page: Color(0xFFFFFFFF),
     sidebar: Color(0xFFF7F7F8),
     card: Color(0xFFFFFFFF),
+    surface2: Color(0xFFF7F7F8),
+    cardHover: Color(0xFFF2F2F2),
+    shimmer: Color(0xBFFFFFFF),
+    lineStrong: Color(0xFFD9D9D9),
     accent: Color(0xFF10A37F),
     green: Color(0xFF10A37F),
     danger: Color(0xFFEF4146),
@@ -87,6 +113,10 @@ class AppThemes {
     page: Color(0xFFFAF9F5),
     sidebar: Color(0xFFF0EEE6),
     card: Color(0xFFFFFFFF),
+    surface2: Color(0xFFF5F3EE),
+    cardHover: Color(0xFFF4F2EC),
+    shimmer: Color(0xBFFFFFFF),
+    lineStrong: Color(0xFFD8D2C6),
     accent: Color(0xFFD97757),
     green: Color(0xFF5A8F6B),
     danger: Color(0xFFB04A3F),
@@ -104,6 +134,10 @@ class AppThemes {
     page: Color(0xFFFFFFFF),
     sidebar: Color(0xFFF6F8FA),
     card: Color(0xFFFFFFFF),
+    surface2: Color(0xFFF6F8FA),
+    cardHover: Color(0xFFF0F3F6),
+    shimmer: Color(0xBFFFFFFF),
+    lineStrong: Color(0xFFC3CCD6),
     accent: Color(0xFF0969DA),
     green: Color(0xFF1A7F37),
     danger: Color(0xFFCF222E),
@@ -120,7 +154,11 @@ class AppThemes {
     line: Color(0xFF3A3632),
     page: Color(0xFF1A1917),
     sidebar: Color(0xFF151412),
-    card: Color(0xFF232120),
+    card: Color(0xFF2A2725),
+    surface2: Color(0xFF2A2725),
+    cardHover: Color(0xFF332F2C),
+    shimmer: Color(0x0FFFFFFF),
+    lineStrong: Color(0xFF4A453F),
     accent: Color(0xFFD97757),
     green: Color(0xFF5AA87A),
     danger: Color(0xFFE0776B),
@@ -137,7 +175,11 @@ class AppThemes {
     line: Color(0xFF33343D),
     page: Color(0xFF15161A),
     sidebar: Color(0xFF111216),
-    card: Color(0xFF1E1F25),
+    card: Color(0xFF24252B),
+    surface2: Color(0xFF25262D),
+    cardHover: Color(0xFF2C2D35),
+    shimmer: Color(0x0FFFFFFF),
+    lineStrong: Color(0xFF3F414B),
     accent: Color(0xFF7AA2F7),
     green: Color(0xFF6CC08B),
     danger: Color(0xFFD4736A),
@@ -181,6 +223,10 @@ class AppTheme {
   static Color get page => _current.page;
   static Color get sidebar => _current.sidebar;
   static Color get card => _current.card;
+  static Color get surface2 => _current.surface2;
+  static Color get cardHover => _current.cardHover;
+  static Color get shimmer => _current.shimmer;
+  static Color get lineStrong => _current.lineStrong;
   static Color get accent => _current.accent;
   static Color get green => _current.green;
   static Color get danger => _current.danger;
@@ -214,6 +260,15 @@ class AppTheme {
         scrolledUnderElevation: 0.5,
         centerTitle: false,
         titleTextStyle: TextStyle(color: colors.ink, fontSize: 16, fontWeight: FontWeight.w600),
+      ),
+      cardTheme: CardThemeData(
+        color: colors.card,
+        surfaceTintColor: Colors.transparent,
+        shadowColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: colors.line),
+        ),
       ),
       dividerColor: colors.line,
       textSelectionTheme: TextSelectionThemeData(

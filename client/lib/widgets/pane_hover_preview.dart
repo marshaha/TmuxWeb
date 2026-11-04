@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../api/api_client.dart';
 import '../theme.dart';
 
 /// 一条预览：谁说的、什么时候、正文。
@@ -54,6 +56,21 @@ class PaneHoverPreview extends StatefulWidget {
   static Future<Duration> loadDelay() async {
     final prefs = await SharedPreferences.getInstance();
     return durationFromPref(prefs.getString(delayKey));
+  }
+
+  /// Account sync (web settings.js loadPreviewPref): on startup the
+  /// server's prefs()['preview'] wins over the local mirror, so a delay
+  /// changed on another device reaches this one. Silent on failure —
+  /// the local mirror is what hover reads.
+  static Future<void> syncDelayFromAccount(Api api) async {
+    try {
+      final data = await api.prefs();
+      final prefsMap = data['prefs'];
+      final server = prefsMap is Map ? '${prefsMap['preview'] ?? ''}' : '';
+      if (server != 'off' && server != '1' && server != '2' && server != '3') return;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(delayKey, server);
+    } catch (_) {}
   }
 
   @override
@@ -136,9 +153,17 @@ class _PaneHoverPreviewState extends State<PaneHoverPreview> {
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxHeight: 240),
                     child: SingleChildScrollView(
-                      child: Text(
-                        preview.text,
-                        style: TextStyle(fontSize: 12.5, height: 1.5, color: AppTheme.ink),
+                      // Web renders hover bodies with marked (home.html
+                      // __md); raw `## 标题` must not show up as text.
+                      child: MarkdownBody(
+                        data: preview.text,
+                        shrinkWrap: true,
+                        styleSheet: MarkdownStyleSheet(
+                          p: TextStyle(fontSize: 12.5, height: 1.5, color: AppTheme.ink),
+                          code: TextStyle(
+                              fontFamily: 'monospace', fontSize: 11.5, color: AppTheme.ink),
+                          a: TextStyle(color: AppTheme.accent),
+                        ),
                       ),
                     ),
                   ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tmuxweb_client/api/api_client.dart';
 import 'package:tmuxweb_client/screens/chat_screen.dart';
 import 'package:tmuxweb_client/screens/hosts_admin_screen.dart';
@@ -90,5 +91,58 @@ void main() {
     final plain = ApiClient(baseUrl: 'http://10.0.0.1:8787');
     expect(plain.wsUri('/ws/terminal/%257', {'cols': '100'}).toString(),
         'ws://10.0.0.1:8787/ws/terminal/%257?cols=100');
+  });
+
+  Future<void> pumpWideHosts(WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({});
+    AppTheme.resetForTest();
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://127.0.0.1:8787')));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('wide sidebar collapses and expands again', (tester) async {
+    await pumpWideHosts(tester);
+    expect(find.byKey(const Key('sidebar-collapse')), findsOneWidget);
+    expect(find.byKey(const Key('pane-%7')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('sidebar-collapse')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sidebar-expand')), findsOneWidget);
+    expect(find.byKey(const Key('pane-%7')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('sidebar-expand')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sidebar-collapse')), findsOneWidget);
+    expect(find.byKey(const Key('pane-%7')), findsOneWidget);
+  });
+
+  testWidgets('wide sidebar drag-resizes and persists, double-click resets', (tester) async {
+    await pumpWideHosts(tester);
+    expect(find.byKey(const Key('sidebar-resizer')), findsOneWidget);
+
+    await tester.drag(find.byKey(const Key('sidebar-resizer')), const Offset(100, 0));
+    await tester.pumpAndSettle();
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getDouble('tmux-side-w'), 380);
+
+    // No doubleTap helper on WidgetTester here: two quick taps land as
+    // a double-tap on the resizer's GestureDetector.
+    await tester.tap(find.byKey(const Key('sidebar-resizer')));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(find.byKey(const Key('sidebar-resizer')));
+    await tester.pumpAndSettle();
+    expect(prefs.getDouble('tmux-side-w'), 280);
+  });
+
+  testWidgets('wide sidebar mounts the recent block', (tester) async {
+    await pumpWideHosts(tester);
+    // FakeApi pins() is empty, so the block renders its header only —
+    // but the mount (fold button + grip) must exist in the sidebar.
+    expect(find.byKey(const Key('recent-fold')), findsOneWidget);
+    expect(find.byKey(const Key('recent-grip')), findsOneWidget);
   });
 }

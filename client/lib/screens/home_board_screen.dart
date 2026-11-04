@@ -35,6 +35,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/api_client.dart';
@@ -43,6 +44,8 @@ import '../models/home_board.dart';
 import '../models/models.dart';
 import '../theme.dart';
 import '../widgets/favorite_star_button.dart';
+import '../widgets/pane_hover_preview.dart';
+import '../widgets/recent_block.dart';
 import 'chat_screen.dart';
 import 'home_search_screen.dart';
 import 'pane_preview_screen.dart';
@@ -78,6 +81,24 @@ Color _statusColor(String status) {
 String _slice(Object? value, int length) {
   final text = value == null ? '' : '$value';
   return text.length <= length ? text : text.substring(0, length);
+}
+
+/// Web home.html plainText(): markdown syntax stripped for the 4-line
+/// card summaries, which render as plain text (never as markdown).
+String stripMarkdown(String value) {
+  var text = value;
+  text = text.replaceAll(RegExp(r'```[\s\S]*?```'), ' ');
+  text = text.replaceAllMapped(RegExp(r'`([^`]+)`'), (match) => match[1]!);
+  text = text.replaceAll(RegExp(r'!\[[^\]]*\]\([^)]*\)'), '');
+  text = text.replaceAllMapped(RegExp(r'\[([^\]]+)\]\([^)]*\)'), (match) => match[1]!);
+  text = text.replaceAll(RegExp(r'^\s*#{1,6}\s+', multiLine: true), '');
+  text = text.replaceAllMapped(RegExp(r'(\*\*|__)(.*?)\1'), (match) => match[2]!);
+  text = text.replaceAllMapped(RegExp(r'(^|\s)[*_]([^*_\n]+)[*_](?=\s|$)'), (match) => '${match[1]}${match[2]}');
+  text = text.replaceAll(RegExp(r'^\s*[-*+]\s+', multiLine: true), '');
+  text = text.replaceAll(RegExp(r'^\s*>\s?', multiLine: true), '');
+  text = text.replaceAll(RegExp(r'^\s*\|?[-: |]+\|?\s*$', multiLine: true), ' ');
+  text = text.replaceAll('|', ' ');
+  return text;
 }
 
 /// Web's slimBoard, applied before writing the cache.
@@ -132,9 +153,17 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
   bool _resumed = true;
   Pane? _previewPane;
   String _previewTitle = '';
+  // The non-pin title the drawer opened with; clearing a pin label
+  // (empty rename) falls back to this, not to the stale pin label.
+  String _previewBaseTitle = '';
   // 预览面板里的钉子和 Web 一样：pin 属于「最近」列表，名字存在 pin 上
   bool _pinOn = false;
   bool _pinBusy = false;
+  // Home recent rows share the sidebar's name resolution: pin labels
+  // and the board's favorite titles, refreshed with the board.
+  Map<String, String> _pinLabels = const {};
+  Set<String> _pinned = const {};
+  bool _pinsLoading = false;
   Timer? _intervalTimer;
   Timer? _pendingTimer;
   Timer? _retryTimer;
@@ -228,6 +257,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
         _stale = false;
         _loading = false;
       });
+      unawaited(_loadPins());
       _scheduleFollowUps();
     } catch (error) {
       if (!mounted) return;
@@ -241,6 +271,39 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
           _loading = false;
         });
       }
+    }
+  }
+
+  /// Pin labels + pinned set for the home recent rows (shared
+  /// RecentRow rendering). Silent on failure; names fall back.
+  Future<void> _loadPins() async {
+    if (_pinsLoading) return;
+    _pinsLoading = true;
+    try {
+      final data = await widget.api.pins();
+      final labels = <String, String>{};
+      final pinned = <String>{};
+      final list = data['pinned'];
+      if (list is List) {
+        for (final row in list) {
+          if (row is Map) {
+            final ref = '${row['pane'] ?? ''}';
+            if (ref.isEmpty) continue;
+            pinned.add(ref);
+            final label = '${row['label'] ?? ''}';
+            if (label.isNotEmpty) labels[ref] = label;
+          }
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _pinLabels = labels;
+          _pinned = pinned;
+        });
+      }
+    } catch (_) {
+    } finally {
+      _pinsLoading = false;
     }
   }
 
@@ -262,6 +325,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
       setState(() {
         _previewPane = pane;
         _previewTitle = title;
+        _previewBaseTitle = title;
         _pinOn = false;
       });
       _loadPin(pane);
@@ -334,7 +398,10 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
     try {
       await widget.api.renamePin(pane.ref, label);
       if (!mounted) return;
-      setState(() => _previewTitle = label.isEmpty ? _previewTitle : label);
+      // Empty clears the pin name on the server, so the drawer falls
+      // back to the title it opened with — it must not keep the old
+      // pin label (the previous code did exactly that).
+      setState(() => _previewTitle = label.isEmpty ? _previewBaseTitle : label);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已更新钉子名字')));
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
@@ -379,7 +446,17 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
               Expanded(
                 child: SingleChildScrollView(
                   controller: scrollController,
-                  child: SelectableText(preview.text, style: const TextStyle(fontSize: 13.5, height: 1.5)),
+                  // Web renders preview bodies with marked; raw syntax
+                  // must not show up as text here either.
+                  child: MarkdownBody(
+                    data: preview.text,
+                    shrinkWrap: true,
+                    styleSheet: MarkdownStyleSheet(
+                      p: const TextStyle(fontSize: 13.5, height: 1.5),
+                      code: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                      a: TextStyle(color: AppTheme.accent),
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: 12),
@@ -492,7 +569,16 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
   }
 
   Widget _favoriteCard(HomeFavorite favorite) {
-    return Card(
+    // Desktop hover shows the same overlay the sidebar rows use; tap
+    // behavior (bottom sheet) is unchanged.
+    return PaneHoverPreview(
+      paneRef: favorite.pane,
+      loadPreview: (_) async {
+        final preview = favorite.hoverPreview;
+        if (preview.text.isEmpty) return null;
+        return PanePreviewData(role: preview.role, text: preview.text, time: _agoLabel(preview.timestamp));
+      },
+      child: Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: InkWell(
         onTap: () => _showPreview(favorite.asPane, favorite.hoverPreview, favorite.displayTitle),
@@ -538,7 +624,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                   TextSpan(children: [
                     if (favorite.previewRole.isNotEmpty)
                       TextSpan(text: '${favorite.previewRole} ', style: const TextStyle(fontWeight: FontWeight.w600)),
-                    TextSpan(text: favorite.previewText),
+                    TextSpan(text: stripMarkdown(favorite.previewText)),
                   ]),
                   maxLines: 4,
                   overflow: TextOverflow.ellipsis,
@@ -556,33 +642,68 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
           ),
         ),
       ),
+      ),
     );
   }
 
+  /// Home recent section, rendered with the shared RecentRow (the
+  /// sidebar's row): pin toggle, pencil rename when pinned, and star —
+  /// not just the delete action the old tile had (delete is kept as an
+  /// extra trailing action). Names resolve through nameForPane, like
+  /// the sidebar.
   Widget _recentTile(HomeRecent recent) {
     final board = _board;
+    if (board == null) return const SizedBox.shrink();
+    final favoriteTitles = {for (final favorite in board.favorites) favorite.pane: favorite.displayTitle};
+    final label = nameForPane(
+        paneRef: recent.pane,
+        pinLabels: _pinLabels,
+        favoriteTitles: favoriteTitles,
+        fallback: recent.title.isNotEmpty ? recent.title : recent.pane);
+    final previewFor = board.previewFor(recent.pane,
+        provider: recent.provider.isEmpty ? null : recent.provider, offline: recent.status == 'offline');
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: ListTile(
-        title: Text(recent.title.isNotEmpty ? recent.title : recent.pane, maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text(
-            [recent.meta, if (_visitedLabel(recent.visitedAt).isNotEmpty) _visitedLabel(recent.visitedAt)]
-                .join(' · '),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
-        leading: _statusDot(recent.status),
-        trailing: IconButton(
-          key: Key('delete-recent-${recent.pane}'),
-          tooltip: '删除记录',
-          icon: const Icon(Icons.delete_outline, size: 18),
-          onPressed: () => _run(() => widget.api.deleteHomeRecent(recent.pane), '记录已删除'),
+      child: PaneHoverPreview(
+        paneRef: recent.pane,
+        loadPreview: (_) async {
+          if (previewFor.text.isEmpty) return null;
+          return PanePreviewData(role: previewFor.role, text: previewFor.text, time: _agoLabel(previewFor.timestamp));
+        },
+        child: RecentRow(
+          data: RecentRowData(
+            paneRef: recent.pane,
+            label: label,
+            pinLabel: _pinLabels[recent.pane] ?? '',
+            status: recent.status,
+            visitedLabel: _visitedLabel(recent.visitedAt),
+            pinned: _pinned.contains(recent.pane),
+            starred: board.favorites.any((favorite) => favorite.pane == recent.pane),
+          ),
+          onOpen: (_) => _showPreview(recent.asPane, previewFor, label),
+          onTogglePin: (ref, pinned) async {
+            try {
+              await widget.api.pinPane(ref, pinned: pinned);
+              await _loadPins();
+            } catch (error) {
+              if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+            }
+          },
+          onRename: (ref, pinLabel) async {
+            try {
+              await widget.api.renamePin(ref, pinLabel);
+              await _loadPins();
+            } catch (error) {
+              if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+            }
+          },
+          onToggleFavorite: (ref, starred) async {
+            await _run(
+                () => starred ? widget.api.addHomeFavorite(ref) : widget.api.deleteHomeFavorite(ref),
+                starred ? '已收藏到主页' : '已取消收藏');
+          },
+          onDelete: (ref) async => _run(() => widget.api.deleteHomeRecent(ref), '记录已删除'),
         ),
-        onTap: board == null
-            ? null
-            : () => _showPreview(recent.asPane,
-                board.previewFor(recent.pane, provider: recent.provider.isEmpty ? null : recent.provider, offline: recent.status == 'offline'),
-                recent.title.isNotEmpty ? recent.title : recent.pane),
       ),
     );
   }
@@ -590,7 +711,17 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
   Widget _boardCard(HomeCard card) {
     final board = _board;
     final pane = card.asPane;
-    return Card(
+    // Desktop hover shows the same overlay the sidebar rows use; tap
+    // behavior (bottom sheet) is unchanged.
+    return PaneHoverPreview(
+      paneRef: card.paneId,
+      loadPreview: (_) async {
+        if (board == null || card.paneId.isEmpty) return null;
+        final preview = board.previewFor(card.paneId);
+        if (preview.text.isEmpty) return null;
+        return PanePreviewData(role: preview.role, text: preview.text, time: _agoLabel(preview.timestamp));
+      },
+      child: Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: InkWell(
         onTap: pane == null || board == null
@@ -617,7 +748,15 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
               Text(card.title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
               if (card.body.isNotEmpty) ...[
                 const SizedBox(height: 6),
-                Text(card.body, maxLines: 8, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+                MarkdownBody(
+                  data: card.body,
+                  shrinkWrap: true,
+                  styleSheet: MarkdownStyleSheet(
+                    p: const TextStyle(fontSize: 13, height: 1.5),
+                    code: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                    a: TextStyle(color: AppTheme.accent),
+                  ),
+                ),
               ],
               const SizedBox(height: 8),
               Text(card.paneId.isNotEmpty ? card.paneId : '来自 MCP',
@@ -625,6 +764,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
             ],
           ),
         ),
+      ),
       ),
     );
   }
@@ -653,20 +793,33 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
     );
   }
 
+  /// Full-viewport preview drawer (web home.html .preview-drawer):
+  /// width min(760px, 56vw) with a 360px floor, full height, and the
+  /// -16px 0 48px shadow. The caller stacks it ABOVE the Scaffold (see
+  /// build), so the backdrop dims the AppBar too — the old version sat
+  /// inside the Scaffold body Stack below the AppBar.
   Widget _previewPanel(double width) {
     final pane = _previewPane;
     if (pane == null) return const SizedBox.shrink();
     final api = widget.api;
-    final panelWidth = width * 0.56 < 760 ? width * 0.56 : 760.0;
-    return Align(
-      alignment: Alignment.centerRight,
+    final panelWidth = (width * 0.56 < 760 ? width * 0.56 : 760.0).clamp(360.0, width);
+    // The drawer sits above the Scaffold, outside its Material, so it
+    // needs its own transparent Material for the ChatScreen inside.
+    return Material(
+      type: MaterialType.transparency,
       child: Container(
         key: const Key('preview-panel'),
         width: panelWidth,
-        height: double.infinity,
         decoration: BoxDecoration(
           color: AppTheme.page,
           border: Border(left: BorderSide(color: AppTheme.line)),
+          boxShadow: const [
+            BoxShadow(
+              offset: Offset(-16, 0),
+              blurRadius: 48,
+              color: Color.fromRGBO(32, 31, 28, 0.16),
+            ),
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -725,8 +878,8 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
             ),
           ],
         ),
-      ),
-    );
+        ),
+      );
   }
 
   @override
@@ -805,7 +958,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                   ),
                 );
     final showPanel = wide && _previewPane != null;
-    return Scaffold(
+    final scaffold = Scaffold(
       appBar: AppBar(
         title: const Text('主页板'),
         actions: [
@@ -819,20 +972,28 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
           IconButton(tooltip: '刷新', icon: const Icon(Icons.refresh, size: 20), onPressed: _load),
         ],
       ),
-      body: showPanel
-          ? Stack(
-              children: [
-                boardBody,
-                Positioned.fill(
-                  child: GestureDetector(
-                    onTap: _closePreview,
-                    child: Container(color: const Color.fromRGBO(32, 31, 28, 0.18)),
-                  ),
-                ),
-                _previewPanel(width),
-              ],
-            )
-          : boardBody,
+      body: boardBody,
+    );
+    if (!showPanel) return scaffold;
+    // Full-viewport overlay ABOVE the Scaffold (web position:fixed):
+    // the backdrop dims the whole viewport including the AppBar, and
+    // the drawer runs top:0 right:0 bottom:0 with the web shadow.
+    return Stack(
+      children: [
+        scaffold,
+        Positioned.fill(
+          child: GestureDetector(
+            onTap: _closePreview,
+            child: Container(color: const Color.fromRGBO(32, 31, 28, 0.18)),
+          ),
+        ),
+        Positioned(
+          top: 0,
+          right: 0,
+          bottom: 0,
+          child: _previewPanel(width),
+        ),
+      ],
     );
   }
 }

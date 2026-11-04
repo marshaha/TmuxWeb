@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'dart:async';
 
@@ -7,6 +8,7 @@ import '../models/chat_source.dart';
 import '../models/models.dart';
 import '../theme.dart';
 import '../widgets/pane_hover_preview.dart';
+import '../widgets/recent_block.dart';
 import 'chat_screen.dart';
 import 'grid_screen.dart';
 import 'home_board_screen.dart';
@@ -23,7 +25,8 @@ import 'terminal_screen.dart';
 /// Web parity notes: sidebar width 280px is web's --side-w default; the
 /// detail defaults to the home board and shows an embedded chat for the
 /// selected pane (web: the sidebar + conversation). Drag-resizing the
-/// sidebar (web's side-resizer) is not in this cut.
+/// sidebar (web's side-resizer, shell.js) and collapsing it are in this
+/// cut: drag the handle, double-click it to reset to 280, both persisted.
 class HostsScreen extends StatefulWidget {
   const HostsScreen({super.key, required this.api, required this.baseUrl});
 
@@ -50,14 +53,73 @@ class _HostsScreenState extends State<HostsScreen> {
   static const double _wideBreakpoint = 861;
 
   /// Web's --side-w default for the console sidebar.
-  static const double _sidebarWidth = 280;
+  static const double _sidebarDefaultWidth = 280;
+
+  /// Current sidebar width (drag-resized, persisted as tmux-side-w).
+  double _sidebarWidth = _sidebarDefaultWidth;
+
+  /// Collapsed sidebar (persisted as tmux-sidebar-collapsed).
+  bool _sidebarCollapsed = false;
+
+  /// Pin labels (pane ref → label) for nameForPane, from /api/home/recent.
+  Map<String, String> _pinLabels = const {};
+
+  /// Favorite titles (pane ref → title) for nameForPane.
+  Map<String, String> _favoriteTitles = const {};
+
+  double? _dragStartWidth;
+  double _dragStartX = 0;
 
   @override
   void initState() {
     super.initState();
     _load();
     _loadFavorites();
+    _loadPins();
+    _loadSidebarPrefs();
+    // Account preview-delay wins over the local mirror (settings.js
+    // loadPreviewPref); hover reads the mirror from SharedPreferences.
+    unawaited(PaneHoverPreview.syncDelayFromAccount(widget.api));
     _stateTimer = Timer.periodic(const Duration(seconds: 9), (_) => _refreshStates());
+  }
+
+  Future<void> _loadSidebarPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() {
+        _sidebarWidth = (prefs.getDouble('tmux-side-w') ?? _sidebarDefaultWidth).clamp(200, 640);
+        _sidebarCollapsed = prefs.getBool('tmux-sidebar-collapsed') ?? false;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _saveSidebarPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('tmux-side-w', _sidebarWidth);
+      await prefs.setBool('tmux-sidebar-collapsed', _sidebarCollapsed);
+    } catch (_) {}
+  }
+
+  /// Pin labels for the tree titles and the recent block. Silent on
+  /// failure, like _loadFavorites: names just fall back.
+  Future<void> _loadPins() async {
+    try {
+      final data = await widget.api.pins();
+      final labels = <String, String>{};
+      final pinned = data['pinned'];
+      if (pinned is List) {
+        for (final row in pinned) {
+          if (row is Map) {
+            final ref = '${row['pane'] ?? ''}';
+            final label = '${row['label'] ?? ''}';
+            if (ref.isNotEmpty && label.isNotEmpty) labels[ref] = label;
+          }
+        }
+      }
+      if (mounted) setState(() => _pinLabels = labels);
+    } catch (_) {}
   }
 
   /// Web's shell loadFavorites: silent on failure, so a board error never
@@ -67,22 +129,35 @@ class _HostsScreenState extends State<HostsScreen> {
       final data = await widget.api.homeFavorites();
       final list = data['favorites'];
       if (list is! List || !mounted) return;
-      setState(() => _favorites = list
-          .map((item) => item is Map ? '${item['pane'] ?? ''}' : '$item')
-          .where((pane) => pane.isNotEmpty)
-          .toSet());
+      final titles = <String, String>{};
+      for (final item in list) {
+        if (item is Map) {
+          final ref = '${item['pane'] ?? ''}';
+          final title = '${item['title'] ?? ''}';
+          if (ref.isNotEmpty && title.isNotEmpty) titles[ref] = title;
+        }
+      }
+      setState(() {
+        _favorites = list
+            .map((item) => item is Map ? '${item['pane'] ?? ''}' : '$item')
+            .where((pane) => pane.isNotEmpty)
+            .toSet();
+        _favoriteTitles = titles;
+      });
     } catch (_) {}
   }
 
   /// Web's shell toggleStar: DELETE when starred, POST {pane} otherwise,
   /// then reload the set so the row reflects the server, not optimism.
-  Future<void> _toggleFavorite(Pane pane) async {
-    final starred = _favorites.contains(pane.ref);
+  Future<void> _toggleFavorite(Pane pane) => _toggleFavoriteRef(pane.ref);
+
+  Future<void> _toggleFavoriteRef(String ref) async {
+    final starred = _favorites.contains(ref);
     try {
       if (starred) {
-        await widget.api.deleteHomeFavorite(pane.ref);
+        await widget.api.deleteHomeFavorite(ref);
       } else {
-        await widget.api.addHomeFavorite(pane.ref);
+        await widget.api.addHomeFavorite(ref);
       }
       await _loadFavorites();
       if (!mounted) return;
@@ -259,7 +334,7 @@ class _HostsScreenState extends State<HostsScreen> {
       ),
       body: RefreshIndicator(onRefresh: _load, child: _buildBody()),
       bottomNavigationBar: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: EdgeInsets.fromLTRB(16, 10, 16, 10 + MediaQuery.of(context).padding.bottom),
         decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
         child: Text(
           _hosts == null ? '' : '${_hosts!.length} 台主机 · $_paneCount 个 pane',
@@ -326,8 +401,31 @@ class _HostsScreenState extends State<HostsScreen> {
     ];
   }
 
-  /// Wide shell: fixed sidebar + detail pane, mirroring web's console grid.
+  /// Wide shell: resizable + collapsible sidebar + detail pane,
+  /// mirroring web's console grid. The 861px breakpoint is unchanged.
   Widget _buildWide() {
+    if (_sidebarCollapsed) {
+      return Scaffold(
+        body: Stack(
+          children: [
+            _buildDetail(),
+            Positioned(
+              top: 8,
+              left: 8,
+              child: IconButton(
+                key: const Key('sidebar-expand'),
+                tooltip: '展开侧栏',
+                icon: const Icon(Icons.chevron_right, size: 20),
+                onPressed: () {
+                  setState(() => _sidebarCollapsed = false);
+                  _saveSidebarPrefs();
+                },
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Scaffold(
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -346,7 +444,24 @@ class _HostsScreenState extends State<HostsScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('会话', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text('会话', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                          ),
+                          IconButton(
+                            key: const Key('sidebar-collapse'),
+                            tooltip: '折叠侧栏',
+                            iconSize: 18,
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.chevron_left, size: 18),
+                            onPressed: () {
+                              setState(() => _sidebarCollapsed = true);
+                              _saveSidebarPrefs();
+                            },
+                          ),
+                        ],
+                      ),
                       const SizedBox(height: 2),
                       Text(
                         widget.baseUrl,
@@ -360,8 +475,25 @@ class _HostsScreenState extends State<HostsScreen> {
                   ),
                 ),
                 Expanded(child: RefreshIndicator(onRefresh: _load, child: _buildBody())),
+                RecentBlock(
+                  load: _loadRecentBlock,
+                  onOpen: _openRecentPane,
+                  onTogglePin: (ref, pinned) async {
+                    await widget.api.pinPane(ref, pinned: pinned);
+                    await _loadPins();
+                  },
+                  onRenamePin: (ref, label) async {
+                    await widget.api.renamePin(ref, label);
+                    await _loadPins();
+                  },
+                  onToggleFavorite: (ref, starred) async {
+                    // _toggleFavoriteRef reloads the set and toasts like
+                    // the tree star; the block re-reads it on refresh.
+                    await _toggleFavoriteRef(ref);
+                  },
+                ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  padding: EdgeInsets.fromLTRB(16, 10, 16, 10 + MediaQuery.of(context).padding.bottom),
                   decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
                   child: Text(
                     _hosts == null ? '' : '${_hosts!.length} 台主机 · $_paneCount 个 pane',
@@ -371,10 +503,95 @@ class _HostsScreenState extends State<HostsScreen> {
               ],
             ),
           ),
+          _sidebarResizer(),
           Expanded(child: _buildDetail()),
         ],
       ),
     );
+  }
+
+  /// Drag handle between sidebar and detail (web shell.js side-resizer):
+  /// drag to resize (200–640px, capped at 60% of the window), double-click
+  /// to reset to 280. Width persists on drag end and on reset.
+  Widget _sidebarResizer() {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      child: GestureDetector(
+        key: const Key('sidebar-resizer'),
+        // Record on pointer-down, not drag-start: drag-start fires
+        // after the touch slop is consumed, which would eat ~20px of
+        // every resize (web reads pointerdown the same way).
+        onHorizontalDragDown: (details) {
+          _dragStartX = details.globalPosition.dx;
+          _dragStartWidth = _sidebarWidth;
+        },
+        onHorizontalDragUpdate: (details) {
+          final start = _dragStartWidth;
+          if (start == null) return;
+          final maxWidth = [640.0, MediaQuery.of(context).size.width * 0.6].reduce((a, b) => a < b ? a : b);
+          setState(() => _sidebarWidth = (start + details.globalPosition.dx - _dragStartX).clamp(200, maxWidth));
+        },
+        onHorizontalDragEnd: (_) => _saveSidebarPrefs(),
+        onDoubleTap: () {
+          setState(() => _sidebarWidth = _sidebarDefaultWidth);
+          _saveSidebarPrefs();
+        },
+        child: Container(width: 8, color: Colors.transparent),
+      ),
+    );
+  }
+
+  /// The recent block's data: pinned rows first (their labels feed
+  /// nameForPane), then recent rows, from GET /api/home/recent.
+  Future<RecentBlockData> _loadRecentBlock() async {
+    final data = await widget.api.pins();
+    List<Map<String, dynamic>> rawRows(Object? value) =>
+        value is List ? value.whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList() : const [];
+    final pinnedRaw = rawRows(data['pinned']);
+    final pinLabels = <String, String>{};
+    for (final row in pinnedRaw) {
+      final ref = '${row['pane'] ?? ''}';
+      final label = '${row['label'] ?? ''}';
+      if (ref.isNotEmpty && label.isNotEmpty) pinLabels[ref] = label;
+    }
+    _pinLabels = pinLabels;
+    RecentRowData toRow(Map<String, dynamic> row, bool pinned) {
+      final ref = '${row['pane'] ?? ''}';
+      final rawTitle = '${row['title'] ?? ''}';
+      final number = (row['number'] as num?)?.toInt();
+      final visited = (row['visited_at'] as num?)?.toDouble() ?? 0;
+      final inTree = _hosts?.any((host) => host.panes.any((pane) => pane.ref == ref)) ?? false;
+      return RecentRowData(
+        paneRef: ref,
+        label: nameForPane(
+            paneRef: ref,
+            pinLabels: pinLabels,
+            favoriteTitles: _favoriteTitles,
+            fallback: rawTitle.isNotEmpty ? rawTitle : ref),
+        pinLabel: pinned ? '${row['label'] ?? ''}' : '',
+        numberLabel: number == null ? '' : '#$number',
+        status: inTree ? (_states[ref] ?? '') : 'offline',
+        visitedLabel: pinned ? '' : formatRecentVisited(visited),
+        pinned: pinned,
+        starred: _favorites.contains(ref),
+      );
+    }
+
+    return RecentBlockData(
+      pinned: [for (final row in pinnedRaw) if ('${row['pane'] ?? ''}'.isNotEmpty) toRow(row, true)],
+      recent: [for (final row in rawRows(data['recent'])) if ('${row['pane'] ?? ''}'.isNotEmpty) toRow(row, false)],
+    );
+  }
+
+  void _openRecentPane(String paneRef) {
+    for (final host in _hosts ?? const <Host>[]) {
+      for (final pane in host.panes) {
+        if (pane.ref == paneRef) {
+          _openPane(pane);
+          return;
+        }
+      }
+    }
   }
 
   /// Detail pane: the home board by default, an embedded chat for the
@@ -404,7 +621,12 @@ class _HostsScreenState extends State<HostsScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(pane.label,
+                    Text(
+                        nameForPane(
+                            paneRef: pane.ref,
+                            pinLabels: _pinLabels,
+                            favoriteTitles: _favoriteTitles,
+                            fallback: pane.label),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
@@ -484,6 +706,9 @@ class _HostsScreenState extends State<HostsScreen> {
   Widget _paneTile(Pane pane) {
     final status = _states[pane.ref];
     final busy = status == 'busy';
+    final displayName = nameForPane(
+        paneRef: pane.ref, pinLabels: _pinLabels, favoriteTitles: _favoriteTitles, fallback: pane.label);
+    final titleText = [pane.numberLabel, displayName].where((part) => part.isNotEmpty).join(' ');
     return PaneHoverPreview(
       paneRef: pane.ref,
       loadPreview: _previewFor,
@@ -510,7 +735,7 @@ class _HostsScreenState extends State<HostsScreen> {
           ),
         ),
       ),
-      title: Text(pane.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5)),
+      title: Text(titleText, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5)),
       subtitle: Text(
         [pane.ref, if (pane.provider != null) pane.provider!, if (pane.path.isNotEmpty) pane.path].join(' · '),
         maxLines: 1,
