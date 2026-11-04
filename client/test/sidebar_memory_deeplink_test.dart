@@ -65,7 +65,7 @@ void main() {
     });
     // %7 was recorded open: the panel, not the tree, is in the sidebar.
     expect(find.byKey(const Key('sidebar-files-close')), findsOneWidget);
-    expect(tester.widget<Text>(find.byKey(const Key('sidebar-files-path'))).data, '/srv/work');
+    expect(tester.widget<TextField>(find.byKey(const Key('sidebar-files-path'))).controller!.text, '/srv/work');
     expect(find.text('notes.md'), findsOneWidget);
     // Switching to the recorded-closed pane shows the tree again.
     await tester.pumpWidget(
@@ -96,11 +96,11 @@ void main() {
     await tester.tap(find.byKey(const Key('sidebar-files-toggle')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('sidebar-files-close')), findsOneWidget);
-    expect(tester.widget<Text>(find.byKey(const Key('sidebar-files-path'))).data, '/srv/work');
+    expect(tester.widget<TextField>(find.byKey(const Key('sidebar-files-path'))).controller!.text, '/srv/work');
     // Browsing inside the panel with memory off writes nothing.
     await tester.tap(find.byKey(const Key('sidebar-file-sub')));
     await tester.pumpAndSettle();
-    expect(tester.widget<Text>(find.byKey(const Key('sidebar-files-path'))).data, '/srv/work/sub');
+    expect(tester.widget<TextField>(find.byKey(const Key('sidebar-files-path'))).controller!.text, '/srv/work/sub');
     final prefs = await SharedPreferences.getInstance();
     expect(prefs.getString('tmux-files-view'), stored);
   });

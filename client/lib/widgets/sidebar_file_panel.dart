@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -115,6 +116,54 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
   /// Last directory requested, for the retry button.
   String _currentPath = '';
 
+  /// Web's `#file-path` input (web/index.html): an editable path
+  /// field, not a label. Its semantics, matched exactly:
+  /// - focus puts the caret at the end (`setSelectionRange(len,len)`);
+  /// - Enter commits (empty restores the current path instead),
+  ///   then blurs;
+  /// - Escape restores the current path, then blurs;
+  /// - blur restores any uncommitted text — blur never commits.
+  /// The field is re-synced from every successful listing, like
+  /// web's `showPath(d.path)` on `openFiles` success — including
+  /// the Enter-then-blur sequence, where the blur restore briefly
+  /// shows the old path until the new listing lands.
+  final _pathController = TextEditingController();
+  late final _pathFocusNode = FocusNode(
+    onKeyEvent: (node, event) {
+      if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
+        _restorePathField();
+        node.unfocus();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    },
+  );
+
+  /// Directory the field must show when it is not being edited:
+  /// the last resolved listing, or empty before the first load
+  /// (web's field is empty until the first `showPath` too).
+  String get _resolvedPath => _listing?.path ?? '';
+
+  void _syncPathField(String path) {
+    _pathController.value = TextEditingValue(
+      text: path,
+      selection: TextSelection.collapsed(offset: path.length),
+    );
+  }
+
+  void _restorePathField() => _syncPathField(_resolvedPath);
+
+  void _handlePathFocusChange() {
+    if (!_pathFocusNode.hasFocus) {
+      // Blur restores uncommitted text (web's blur handler).
+      if (_pathController.text != _resolvedPath) _restorePathField();
+    } else {
+      // Focus puts the caret at the end (web's focus handler).
+      final text = _pathController.text;
+      _pathController.selection = TextSelection.collapsed(offset: text.length);
+    }
+  }
+
   /// Paths picked with the per-row checkboxes (web's filesPicked).
   /// Cleared on every successful listing, like web's `openFiles`
   /// clearing filesPicked and [FilesScreen]'s `_open`.
@@ -123,7 +172,16 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
   @override
   void initState() {
     super.initState();
+    _pathFocusNode.addListener(_handlePathFocusChange);
     _open(_initialDirectory);
+  }
+
+  @override
+  void dispose() {
+    _pathFocusNode.removeListener(_handlePathFocusChange);
+    _pathFocusNode.dispose();
+    _pathController.dispose();
+    super.dispose();
   }
 
   @override
@@ -151,6 +209,7 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
         _loading = false;
         _selected.clear();
       });
+      _syncPathField(listing.path);
       widget.onDirectoryChanged(listing.path);
     } catch (error) {
       if (!mounted || requestId != _requestId) return;
@@ -384,12 +443,42 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
           child: Row(
             children: [
               Expanded(
-                child: Text(
-                  listing?.path ?? widget.pane.label,
+                child: TextField(
                   key: const Key('sidebar-files-path'),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  controller: _pathController,
+                  focusNode: _pathFocusNode,
+                  autocorrect: false,
                   style: AppTheme.mono,
+                  textInputAction: TextInputAction.go,
+                  // Web's keydown handler: Enter commits (empty
+                  // restores), then blurs — the blur restore below
+                  // briefly shows the old path until this listing
+                  // lands, exactly like web.
+                  onSubmitted: (value) {
+                    final trimmed = value.trim();
+                    if (trimmed.isEmpty) {
+                      _restorePathField();
+                    } else {
+                      _open(trimmed);
+                    }
+                    _pathFocusNode.unfocus();
+                  },
+                  decoration: InputDecoration(
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(6),
+                      borderSide: BorderSide(color: AppTheme.line),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(6),
+                      borderSide: BorderSide(color: AppTheme.line),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(6),
+                      borderSide: BorderSide(color: AppTheme.accent),
+                    ),
+                  ),
                 ),
               ),
               IconButton(

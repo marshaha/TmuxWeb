@@ -85,7 +85,7 @@ void main() {
   testWidgets('panel still loads at initialPath and reports the resolved directory', (tester) async {
     final seen = <String>[];
     await pumpPanel(tester, FakeApi(), seen: seen);
-    expect(tester.widget<Text>(find.byKey(const Key('sidebar-files-path'))).data, '/srv/work');
+    expect(tester.widget<TextField>(find.byKey(const Key('sidebar-files-path'))).controller!.text, '/srv/work');
     expect(seen, ['/srv/work']);
     expect(find.text('notes.md'), findsOneWidget);
     expect(find.text('sub'), findsOneWidget);
@@ -200,7 +200,7 @@ void main() {
     expect(find.text('全选'), findsOneWidget);
     expect(find.byKey(const Key('sidebar-files-select-none')), findsOneWidget);
     // Checking a row must not navigate away.
-    expect(tester.widget<Text>(find.byKey(const Key('sidebar-files-path'))).data, '/srv/work');
+    expect(tester.widget<TextField>(find.byKey(const Key('sidebar-files-path'))).controller!.text, '/srv/work');
     await tester.tap(find.byKey(const Key('sidebar-files-select-all')));
     await tester.pumpAndSettle();
     expect(find.text('取消全选'), findsOneWidget);
@@ -225,6 +225,65 @@ void main() {
     await pumpPanel(tester, FakeApi());
     await tester.tap(find.byKey(const Key('sidebar-file-sub')));
     await tester.pumpAndSettle();
-    expect(tester.widget<Text>(find.byKey(const Key('sidebar-files-path'))).data, '/srv/work/sub');
+    expect(tester.widget<TextField>(find.byKey(const Key('sidebar-files-path'))).controller!.text, '/srv/work/sub');
+  });
+
+  group('editable path input (web #file-path)', () {
+    Finder pathField() => find.byKey(const Key('sidebar-files-path'));
+    String pathText(WidgetTester tester) => tester.widget<TextField>(pathField()).controller!.text;
+
+    testWidgets('Enter commits the typed path and the field follows the listing', (tester) async {
+      final seen = <String>[];
+      await pumpPanel(tester, FakeApi(), seen: seen);
+      await tester.enterText(pathField(), '/srv/work/sub');
+      await tester.testTextInput.receiveAction(TextInputAction.go);
+      await tester.pumpAndSettle();
+      expect(pathText(tester), '/srv/work/sub');
+      expect(seen, ['/srv/work', '/srv/work/sub']);
+    });
+
+    testWidgets('Enter with an empty value restores the current path without navigating', (tester) async {
+      final api = CountingApi();
+      await pumpPanel(tester, api);
+      expect(api.lists, 1);
+      await tester.enterText(pathField(), '   ');
+      await tester.testTextInput.receiveAction(TextInputAction.go);
+      await tester.pumpAndSettle();
+      expect(pathText(tester), '/srv/work');
+      expect(api.lists, 1);
+    });
+
+    testWidgets('Escape restores the current path without navigating', (tester) async {
+      final api = CountingApi();
+      await pumpPanel(tester, api);
+      await tester.enterText(pathField(), '/tmp/xyz');
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(pathText(tester), '/srv/work');
+      expect(api.lists, 1);
+    });
+
+    testWidgets('blur restores uncommitted text and never commits', (tester) async {
+      final api = CountingApi();
+      await pumpPanel(tester, api);
+      await tester.enterText(pathField(), '/tmp/xyz');
+      await tester.pump();
+      // enterText focuses the field; dropping focus must restore
+      // the typed text, not navigate to it.
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+      expect(pathText(tester), '/srv/work');
+      expect(api.lists, 1);
+    });
+
+    testWidgets('focus puts the caret at the end of the path', (tester) async {
+      await pumpPanel(tester, FakeApi());
+      final field = tester.widget<TextField>(pathField());
+      field.focusNode!.requestFocus();
+      await tester.pump();
+      final selection = tester.widget<TextField>(pathField()).controller!.selection;
+      expect(selection, const TextSelection.collapsed(offset: 9));
+    });
   });
 }
