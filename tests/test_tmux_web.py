@@ -2183,7 +2183,41 @@ class TmuxWebTests(unittest.TestCase):
             # 哪儿都没有 → 仍然是不存在
             missing = self.client.get(endpoint, params={"path": "ate/s3k/nope.md"}).json()
             self.assertFalse(missing["exists"])
-            self.assertEqual(missing["offset"], 0)
+
+    def test_a_path_one_level_deeper_is_found_by_searching(self):
+        """agent 报 ate/s3k/x.md，真实位置在 cwd 的下一级 runs/195/ate/s3k/ 里（#6 那种）。"""
+        self.login()
+        with tempfile.TemporaryDirectory() as root:
+            work = Path(root, "work")
+            deep = work / "runs" / "195" / "ate" / "s3k"
+            deep.mkdir(parents=True)
+            (deep / "retrain195_1103.md").write_text("# 报告")
+            (deep / "evidence").mkdir()
+            self.tmux.panes[0]["path"] = str(work)
+            endpoint = "/api/panes/%254/files/stat"
+            hit = self.client.get(endpoint, params={"path": "ate/s3k/retrain195_1103.md"}).json()
+            self.assertTrue(hit["exists"], hit)
+            self.assertEqual(hit["via"], "search")
+            self.assertEqual(hit["kind"], "file")
+            self.assertEqual(hit["path"], str(deep / "retrain195_1103.md"))
+            self.assertEqual(hit["relative"], "runs/195/ate/s3k/retrain195_1103.md")
+            # 目录同样能找到
+            folder = self.client.get(endpoint, params={"path": "ate/s3k/evidence"}).json()
+            self.assertEqual(folder["kind"], "dir")
+            self.assertEqual(folder["via"], "search")
+            # 真没有的东西仍然判空，且带 via=none
+            miss = self.client.get(endpoint, params={"path": "ate/s3k/definitely-not-here.md"}).json()
+            self.assertFalse(miss["exists"])
+            self.assertEqual(miss["via"], "none")
+            # 前端会把相对路径拼成「旧 cwd + 相对路径」的绝对路径发过来，同样要能搜到
+            joined = self.client.get(endpoint, params={"path": str(work / "ate/s3k/retrain195_1103.md")}).json()
+            self.assertTrue(joined["exists"], joined)
+            self.assertEqual(joined["via"], "search")
+            self.assertEqual(joined["path"], str(deep / "retrain195_1103.md"))
+            # 气泡里要说明是“在子目录找到的”，别让人以为原样就存在
+            script = self.client.get("/assets/path-links.js").text
+            self.assertIn("info.via === 'search' && info.relative", script)
+            self.assertIn("子目录 · ${info.relative}", script)
 
     def test_mobile_downloads_ask_before_opening(self):
         """移动端下载必须先确认：iOS 直接打开下载链接会跳进没有返回按钮的预览。"""

@@ -234,9 +234,11 @@
     panel.__target = {path: info.path || query, pane, options, exists: info.exists,
       previewable: TEXT_EXT.test(info.path || query)};
     panel.querySelector('.plink-card-name').textContent = info.name || path;
+    // 在子目录里搜到的（agent 常报相对它自己子目录的路径）要说清楚，别让人以为路径就是原样
+    const foundIn = info.via === 'search' && info.relative ? `子目录 · ${info.relative}` : '';
     panel.querySelector('.plink-card-meta').textContent = !info.exists ? '找不到这个路径'
-      : info.kind === 'dir' ? '目录'
-      : `${info.kind === 'link' ? '符号链接 · ' : ''}${human(info.size)}`;
+      : info.kind === 'dir' ? (foundIn || '目录')
+      : `${info.kind === 'link' ? '符号链接 · ' : ''}${human(info.size)}${foundIn ? ' · ' + foundIn : ''}`;
     const preview = panel.querySelector('[data-plink-act="preview"]');
     if (preview) {
       const canPreview = info.exists && info.kind !== 'dir' && TEXT_EXT.test(info.path || query);

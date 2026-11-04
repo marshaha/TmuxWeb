@@ -291,6 +291,39 @@ class TmuxBackend:
         except (file_browser.FileBrowserError, OSError, ValueError) as exc:
             raise TmuxError(str(exc)) from exc
 
+    def find_suffix(self, base: str, relative: str, max_depth: int = 4, limit: int = 5) -> list[str]:
+        """在 base 下面找以 relative 结尾的路径（agent 常报相对某个子目录的路径）。
+
+        agent 说 ``ate/s3k/note.md``，真实位置可能是 ``<cwd>/runs/195/ate/s3k/note.md``。
+        按层走，跳过 .git/node_modules 这类目录，最多 max_depth 层、limit 个结果。
+        """
+        import os as _os
+
+        relative = (relative or "").strip().lstrip("/")
+        if not relative or relative.startswith(".."):
+            return []
+        root = _os.path.abspath(_os.path.expanduser(base or "."))
+        if not _os.path.isdir(root):
+            return []
+        skip = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
+                ".mypy_cache", ".pytest_cache", "target", ".tox"}
+        matches: list[str] = []
+        visited = 0
+        for current, dirs, _files in _os.walk(root):
+            depth = 0 if current == root else _os.path.relpath(current, root).count(_os.sep) + 1
+            if depth >= max_depth:
+                dirs[:] = []
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in skip)
+            visited += 1
+            if visited > 4000:
+                break
+            candidate = _os.path.join(current, relative)
+            if _os.path.exists(candidate):
+                matches.append(candidate)
+                if len(matches) >= limit:
+                    break
+        return matches
+
     def download_file(self, path: str, max_bytes: int) -> bytes:
         resolved = file_browser.resolve_path(path)
         if not resolved.is_file():
@@ -2433,6 +2466,17 @@ def create_app(
         data["pane"] = pane_id
         return data
 
+    STAT_CACHE: dict[tuple, tuple[float, dict]] = {}
+    STAT_CACHE_TTL = 60.0
+    STAT_CACHE_MAX = 512
+
+    def remember_stat(key: tuple, answer: dict) -> None:
+        """记住一次 stat 结果：悬停/点击不该每次都付一次 SSH 往返，深层搜索尤其贵。"""
+        if len(STAT_CACHE) >= STAT_CACHE_MAX:
+            oldest = min(STAT_CACHE, key=lambda item: STAT_CACHE[item][0])
+            STAT_CACHE.pop(oldest, None)
+        STAT_CACHE[key] = (time.monotonic(), copy.deepcopy(answer))
+
     @app.get("/api/panes/{pane_id}/files/stat")
     async def stat_pane_path(request: Request, pane_id: str, path: str = ""):
         """Is this path a file or a directory? Used by chat text that mentions paths.
@@ -2449,6 +2493,10 @@ def create_app(
         try:
             transport, _actual, pane = await file_target(pane_id)
             base = (pane.get("path") or "").strip()
+            cache_key = (pane_id, base, path.strip())
+            hit_cache = STAT_CACHE.get(cache_key)
+            if hit_cache and time.monotonic() - hit_cache[0] < STAT_CACHE_TTL:
+                return copy.deepcopy(hit_cache[1])
             raw = os.path.expanduser(path.strip())
             if os.path.isabs(raw):
                 candidates = [os.path.normpath(raw)]
@@ -2477,20 +2525,66 @@ def create_app(
                         break
                 if found:
                     break
+            # 更鲁棒的一步：agent 报的路径可能相对它自己的子目录（cwd=runs/195 时说
+            # ate/s3k/x.md），前端也可能已经把它拼成了「旧 cwd + 相对路径」的绝对路径。
+            # 两种都归一成 (从哪里找, 找什么后缀) 再搜。
+            searches: list[tuple[str, str]] = []
+            if os.path.isabs(raw):
+                base_dir = base or os.path.dirname(raw)
+                prefix = base_dir.rstrip("/") + "/"
+                if base_dir and raw.startswith(prefix):
+                    searches.append((base_dir, os.path.relpath(raw, base_dir)))
+                else:
+                    tail = "/".join([part for part in raw.split("/") if part][-2:])
+                    if tail.count("/") >= 1:
+                        searches.append((base_dir or "/", tail))
+            else:
+                searches = [(item, raw) for item in bases if item][:2]
+            if not found and any(suffix.count("/") >= 1 for _anchor, suffix in searches):
+                for anchor, suffix in searches:
+                    if suffix.count("/") < 1:
+                        continue
+                    hits = await asyncio.to_thread(transport.find_suffix, anchor, suffix)
+                    if not hits:
+                        continue
+                    best = hits[0]
+                    folder = os.path.dirname(best) or "."
+                    kind = "dir" if os.path.isdir(best) else "file"
+                    try:
+                        stat = await asyncio.to_thread(transport.list_files, folder, True, 5000)
+                        entry = next((e for e in (stat.get("entries") or [])
+                                      if e.get("name") == os.path.basename(best)), None)
+                    except (TmuxError, RuntimeError, OSError, ValueError,
+                            file_browser.FileBrowserError):
+                        entry = None
+                    answer = {"path": best, "name": os.path.basename(best.rstrip("/")), "exists": True,
+                            "kind": (entry or {}).get("type") or kind,
+                            "size": (entry or {}).get("size") or 0,
+                            "mtime": (entry or {}).get("mtime") or 0,
+                            "parent": folder, "offset": 0, "via": "search",
+                            "relative": os.path.relpath(best, base or ".")}
+                    remember_stat(cache_key, answer)
+                    return answer
             if not found:
                 wanted = candidates[0]
                 name = os.path.basename(wanted.rstrip("/"))
-                return {"path": wanted, "name": name, "exists": False, "kind": None,
-                        "size": 0, "mtime": 0,
-                        "parent": os.path.dirname(wanted.rstrip("/")) or wanted, "offset": 0}
+                answer = {"path": wanted, "name": name, "exists": False, "kind": None,
+                          "size": 0, "mtime": 0,
+                          "parent": os.path.dirname(wanted.rstrip("/")) or wanted, "offset": 0,
+                          "via": "none"}
+                remember_stat(cache_key, answer)
+                return answer
             wanted, parent, entry, index = found
         except HTTPException:
             raise
         except (TmuxError, RuntimeError, OSError, ValueError, file_browser.FileBrowserError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return {"path": wanted, "name": os.path.basename(wanted.rstrip("/")), "exists": True,
-                "kind": entry.get("type"), "size": entry.get("size") or 0,
-                "mtime": entry.get("mtime") or 0, "parent": parent, "offset": index}
+        answer = {"path": wanted, "name": os.path.basename(wanted.rstrip("/")), "exists": True,
+                  "kind": entry.get("type"), "size": entry.get("size") or 0,
+                  "mtime": entry.get("mtime") or 0, "parent": parent, "offset": index,
+                  "via": "direct" if index == 0 else "base"}
+        remember_stat(cache_key, answer)
+        return answer
 
     @app.get("/api/panes/{pane_id}/files/raw")
     async def raw_pane_file(request: Request, pane_id: str, path: str):

@@ -303,6 +303,32 @@ class RemoteHostTests(unittest.TestCase):
         self.assertEqual(panes[0]["pane_pid"], "3239203")
         self.assertEqual(panes[0]["provider"], "codex")
 
+    def test_find_suffix_is_one_pruned_find_over_ssh(self):
+        """深层路径搜索在远端只发一条 find，且跳过 .git/node_modules 这些目录。"""
+        runner = SSHRunner({"id": "0123456789abcdef", "hostname": "host", "port": 22,
+                            "username": "user", "auth_type": "password", "credential": "x",
+                            "host_key": "host ssh-ed25519 AAAA"})
+        captured = {}
+
+        class Result:
+            returncode = 0
+            stdout = b"./runs/195/ate/s3k/note.md\n./other/ate/s3k/note.md\n"
+            stderr = b""
+
+        runner.run = lambda command, **kwargs: (captured.setdefault("command", command), Result())[1]
+        hits = runner.find_suffix("/home/u/ddr/ddr_patch", "ate/s3k/note.md")
+        self.assertEqual(hits, ["/home/u/ddr/ddr_patch/runs/195/ate/s3k/note.md",
+                                "/home/u/ddr/ddr_patch/other/ate/s3k/note.md"])
+        command = captured["command"]
+        self.assertIn("cd /home/u/ddr/ddr_patch", command)
+        self.assertIn("-maxdepth 4", command)
+        self.assertIn("-name .git", command)
+        self.assertIn("-name node_modules", command)
+        self.assertIn("-path '*ate/s3k/note.md'", command)
+        # 不接受穿越和换行
+        self.assertEqual(runner.find_suffix("/tmp", "../../etc/passwd"), [])
+        self.assertEqual(runner.find_suffix("/tmp", "a\nb"), [])
+
     def test_the_transcript_script_detects_an_agent_behind_a_shell(self):
         source = Path("remote_hosts.py").read_text()
         self.assertIn("detect_provider()", source)

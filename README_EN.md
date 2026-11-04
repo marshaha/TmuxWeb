@@ -179,10 +179,15 @@ console and `/preview`, and usable on any subtree:
   and 预览 / 下载 buttons. Text-like files (`log`, `txt`, `json`, `yaml`, `csv`, source) open in the
   viewer (which has its own download button) instead of downloading silently; binaries still download.
   The card is not shown on touch devices.
-- **relative-path offset**: agents often print paths relative to *their* cwd
-  (e.g. `ate/s3k/ca_pu_crossboard_1102.md`). `GET /files/stat` resolves against the pane cwd first,
-  then its parent and finally home; `offset` in the answer says which base matched (0 = as typed)
-  and `path` is always the absolute result.
+- **relative-path offset, then a bounded search one level deeper**: agents often print paths relative to
+  *their* cwd (e.g. `ate/s3k/ca_pu_crossboard_1102.md`) while the file really sits under a subdirectory
+  (`ddr_patch/ate/s3k/...`). `GET /files/stat` resolves against the pane cwd first, then its parent and
+  finally home; when nothing matches it runs a **bounded suffix search** from the cwd and its parent — one
+  command per host (remote `find -maxdepth 4`, pruning `.git`, `node_modules`, `.venv`, ...; local a pruned
+  `os.walk`, capped at 4000 directories). A hit answers with `via:"search"` plus `relative` (its real place
+  under the cwd) and the hover card says `子目录 · <relative>`. `offset` still says which base matched
+  (0 = as typed) and `path` is always the absolute result. Answers are cached for 60 s per pane+base+path,
+  so hovering does not pay an SSH round trip every time.
 - **mobile downloads ask first**: `TmuxDownload.maybe(href, {name, meta})` in `/assets/downloads.js`
   shows a bottom sheet (name, size, cancel/download) on touch devices and downloads straight away on
   desktop. The file panel, zip export, markdown viewer and the path hover card all go through it —

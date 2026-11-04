@@ -1658,6 +1658,34 @@ class SSHRunner:
         payload["host_id"] = self.host.get("id")
         return payload
 
+    def find_suffix(self, base: str, relative: str, max_depth: int = 4, limit: int = 5) -> list[str]:
+        """One ``find`` over SSH: paths under ``base`` that end with ``relative``.
+
+        Agents often print paths relative to *their* own subdirectory, so a chat
+        link can be one or two levels deeper than the pane's cwd. Pruning the
+        usual vendor directories keeps this cheap; no python3 needed remotely.
+        """
+        relative = (relative or "").strip().lstrip("/")
+        if not relative or relative.startswith("..") or "\x00" in relative or "\n" in relative:
+            return []
+        pattern = "*" + "".join("\\" + ch if ch in "*?[" else ch for ch in relative)
+        depth = max(1, min(int(max_depth), 8))
+        command = (
+            f"cd {shlex.quote(base or '.')} 2>/dev/null && "
+            "find . -maxdepth %d \\( -name .git -o -name node_modules -o -name .venv "
+            "-o -name __pycache__ -o -name dist -o -name build -o -name target \\) -prune -o "
+            f"-path {shlex.quote(pattern)} -print 2>/dev/null | head -{max(1, min(int(limit), 20))}"
+        ) % depth
+        completed = self.run(command, timeout=20)
+        root = (base or ".").rstrip("/")
+        hits = []
+        for line in completed.stdout.decode(errors="replace").splitlines():
+            line = line.strip()
+            if not line.startswith("./"):
+                continue
+            hits.append(f"{root}/{line[2:]}")
+        return hits
+
     def download_file(self, path: str, max_bytes: int) -> bytes:
         """Read a remote file; the size limit is enforced before the transfer."""
         if "\x00" in path or "\n" in path:
