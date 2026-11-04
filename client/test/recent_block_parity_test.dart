@@ -25,4 +25,28 @@ void main() {
       expect(formatRecentVisited(ago(-10), now: now), '');
     });
   });
+
+  // E5: web .active row (recents.js markActive, recents.css .active).
+  testWidgets('active row gets the accent tint, inactive does not', (tester) async {
+    Widget row(bool active) => MaterialApp(
+          home: Scaffold(
+            body: RecentRow(
+              data: RecentRowData(paneRef: '%7', label: 'review', active: active),
+              onOpen: (_) {},
+              onTogglePin: (_, __) async {},
+              onRename: (_, __) async {},
+              onToggleFavorite: (_, __) async {},
+            ),
+          ),
+        );
+    await tester.pumpWidget(row(true));
+    await tester.pumpAndSettle();
+    final activeBox =
+        tester.widget<Container>(find.byKey(const Key('recent-row-%7')));
+    expect((activeBox.decoration as BoxDecoration?)?.color, isNotNull);
+    await tester.pumpWidget(row(false));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Container>(find.byKey(const Key('recent-row-%7'))).decoration, isNull);
+  });
 }
+

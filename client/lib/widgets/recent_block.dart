@@ -20,7 +20,23 @@ class RecentRowData {
     this.visitedLabel = '',
     this.pinned = false,
     this.starred = false,
+    this.active = false,
   });
+
+  /// Web's .active row (recents.js markActive): the selected pane's row.
+  final bool active;
+
+  RecentRowData copyWith({String? status, bool? active}) => RecentRowData(
+        paneRef: paneRef,
+        label: label,
+        pinLabel: pinLabel,
+        numberLabel: numberLabel,
+        status: status ?? this.status,
+        visitedLabel: visitedLabel,
+        pinned: pinned,
+        starred: starred,
+        active: active ?? this.active,
+      );
 
   /// Display name, already resolved through nameForPane by the caller.
   final String label;
@@ -158,9 +174,20 @@ class _RecentRowState extends State<RecentRow> {
   @override
   Widget build(BuildContext context) {
     final data = widget.data;
-    return Container(
+    // Web .active (recents.css): the selected pane's row gets the accent
+    // tint. Web also suppresses the context menu on pinned rows
+    // (recents.js:517-519); Flutter has no default row menu, so the
+    // secondary-tap gesture is claimed here so no ancestor menu can
+    // open over a pinned row either.
+    final row = Container(
       key: Key('recent-row-${data.paneRef}'),
       constraints: const BoxConstraints(minHeight: 44),
+      decoration: data.active
+          ? BoxDecoration(
+              color: AppTheme.accent.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(7),
+            )
+          : null,
       child: InkWell(
         borderRadius: BorderRadius.circular(7),
         onTap: _editing ? null : () => widget.onOpen(data.paneRef),
@@ -275,6 +302,7 @@ class _RecentRowState extends State<RecentRow> {
         ),
       ),
     );
+    return row;
   }
 }
 
