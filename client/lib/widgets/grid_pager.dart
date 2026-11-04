@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 /// Fixed ↑ n/N ↓ pager for narrow (≤760px) grid, mirroring web's
@@ -43,6 +45,15 @@ class _GridPagerState extends State<GridPager> {
   Offset? _dragDelta;
   bool _dragging = false;
 
+  /// Web's exact hold (grid.html bindPager: `setTimeout(..., 380)`):
+  /// the press only becomes a drag once this timer fires. Flutter's
+  /// default long-press recognizer fires later (~500ms) and its
+  /// deadline is not web's 380ms, so the timing is driven by an
+  /// explicit timer instead of the recognizer.
+  static const Duration _holdDuration = Duration(milliseconds: 380);
+  Timer? _pressTimer;
+  Offset? _pressGlobal;
+
   @override
   void initState() {
     super.initState();
@@ -63,6 +74,57 @@ class _GridPagerState extends State<GridPager> {
     } else {
       _offset = null;
     }
+  }
+
+  @override
+  void dispose() {
+    _pressTimer?.cancel();
+    super.dispose();
+  }
+
+  void _cancelPress() {
+    _pressTimer?.cancel();
+    _pressTimer = null;
+    _pressGlobal = null;
+  }
+
+  void _onPointerDown(PointerDownEvent event) {
+    // Web bindPager: any pointerdown on the pager arms the timer;
+    // a move before it fires is ignored, and pointerup/cancel
+    // disarms it — so a plain tap never enters drag mode.
+    _cancelPress();
+    _pressGlobal = event.position;
+    final screen = MediaQuery.sizeOf(context);
+    _pressTimer = Timer(_holdDuration, () {
+      _pressTimer = null;
+      if (!mounted) return;
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box?.localToGlobal(Offset.zero) ?? _pressGlobal!;
+      setState(() {
+        _dragging = true;
+        _dragDelta = _pressGlobal! - origin;
+        _offset = _clamped(origin, screen);
+      });
+    });
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    if (!_dragging) return;
+    final screen = MediaQuery.sizeOf(context);
+    setState(() => _offset = _clamped(event.position - (_dragDelta ?? Offset.zero), screen));
+  }
+
+  void _onPointerUpOrCancel() {
+    _cancelPress();
+    if (!_dragging) return;
+    final screen = MediaQuery.sizeOf(context);
+    final pos = _offset == null ? null : _clamped(_offset!, screen);
+    setState(() {
+      _dragging = false;
+      _dragDelta = null;
+      _offset = pos;
+    });
+    if (pos != null) widget.onPositionChanged?.call(pos.dx, pos.dy);
   }
 
   Offset _clamped(Offset offset, Size screen) {
@@ -128,33 +190,16 @@ class _GridPagerState extends State<GridPager> {
         ],
       ),
     );
-    final draggable = GestureDetector(
-      // Web: 380ms long-press enters drag mode. Flutter's long-press
-      // recognizer fires later (~500ms); the gesture itself — drag
-      // after a press-and-hold, persist on release — is the same.
-      onLongPressStart: (details) {
-        final box = context.findRenderObject() as RenderBox?;
-        final origin = box?.localToGlobal(Offset.zero) ?? details.globalPosition;
-        setState(() {
-          _dragging = true;
-          _dragDelta = details.globalPosition - origin;
-          _offset = _clamped(origin, screen);
-        });
-      },
-      onLongPressMoveUpdate: (details) {
-        if (!_dragging) return;
-        setState(() => _offset = _clamped(details.globalPosition - (_dragDelta ?? Offset.zero), screen));
-      },
-      onLongPressEnd: (_) {
-        if (!_dragging) return;
-        final pos = _offset == null ? null : _clamped(_offset!, screen);
-        setState(() {
-          _dragging = false;
-          _dragDelta = null;
-          _offset = pos;
-        });
-        if (pos != null) widget.onPositionChanged?.call(pos.dx, pos.dy);
-      },
+    // Raw pointer handling (not GestureDetector long-press): the
+    // 380ms timer above is the only thing that enters drag mode,
+    // and release persists the position — the same shape as web's
+    // bindPager, with web's exact hold. The double-tap reset on the
+    // counter keeps its own recognizer inside.
+    final draggable = Listener(
+      onPointerDown: _onPointerDown,
+      onPointerMove: _onPointerMove,
+      onPointerUp: (_) => _onPointerUpOrCancel(),
+      onPointerCancel: (_) => _onPointerUpOrCancel(),
       child: pill,
     );
     if (offset == null) {

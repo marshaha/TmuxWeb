@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +12,7 @@ import '../models/grid_state.dart';
 import '../models/models.dart';
 import '../theme.dart';
 import '../widgets/grid_pager.dart';
+import '../widgets/recent_block.dart';
 import 'chat_screen.dart';
 import 'hosts_screen.dart';
 import '../widgets/plugin_buttons.dart';
@@ -46,7 +48,6 @@ class _GridScreenState extends State<GridScreen> {
   Map<String, Map<String, dynamic>> _presets = {};
   Map<String, Pane> _panes = {};
   Map<String, String> _statuses = {};
-  bool _statusesLoaded = false;
   Map<String, String> _pinLabels = {};
   Map<String, String> _favoriteTitles = {};
   SharedPreferences? _prefs;
@@ -65,6 +66,19 @@ class _GridScreenState extends State<GridScreen> {
   bool _canvasDragActive = false;
   bool _canvasDragging = false;
 
+  /// Canvas resize direction (web grid.html:411 HANDLES, :1555-1630
+  /// cdrag resize branch): '' = title-bar move, otherwise one of
+  /// n/s/e/w/ne/nw/se/sw. Snap guides (SNAP=6, GUIDE_DELAY=140ms,
+  /// grid.html:400,447-462 queueGuides) are shared by move and
+  /// resize: lines only paint after 140ms at the same position, so
+  /// a fast drag never flashes them.
+  String _canvasDragDir = '';
+  List<({String axis, double pos})> _canvasGuides = [];
+  List<({String axis, double pos})> _canvasPendingGuides = [];
+  Timer? _canvasGuideTimer;
+  String _canvasGuideKey = '';
+
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final ScrollController _narrowController = ScrollController();
   int _narrowIndex = 0;
   double _narrowStep = 1;
@@ -88,6 +102,7 @@ class _GridScreenState extends State<GridScreen> {
   @override
   void dispose() {
     _statusTimer?.cancel();
+    _canvasGuideTimer?.cancel();
     _narrowController.dispose();
     super.dispose();
   }
@@ -191,14 +206,8 @@ class _GridScreenState extends State<GridScreen> {
           }
         }
       }
-      if (changed || !_statusesLoaded) {
-        setState(() {
-          _statuses = statuses;
-          // An empty sweep means the probe is unavailable, not that
-          // every pane is offline: only a non-empty map licenses the
-          // missing-from-states => offline reading.
-          _statusesLoaded = statuses.isNotEmpty;
-        });
+      if (changed) {
+        setState(() => _statuses = statuses);
       }
     } catch (_) {
       // Status dots are best-effort; a failed sweep leaves the old ones.
@@ -250,6 +259,123 @@ class _GridScreenState extends State<GridScreen> {
     }
   }
 
+  /// The drawer recent block's data, mirroring the hosts sidebar
+  /// mount: pinned rows first, then recent rows, from GET
+  /// /api/home/recent. A row tap adds the pane to the grid (web
+  /// grid.html:303 side-foot hint: 点会话即加入窗口).
+  Future<RecentBlockData> _loadRecentBlock() async {
+    final data = await widget.api.pins();
+    List<Map<String, dynamic>> rawRows(Object? value) =>
+        value is List ? value.whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList() : const [];
+    final pinnedRaw = rawRows(data['pinned']);
+    final pinLabels = <String, String>{};
+    for (final row in pinnedRaw) {
+      final ref = '${row['pane'] ?? ''}';
+      final label = '${row['label'] ?? ''}';
+      if (ref.isNotEmpty && label.isNotEmpty) pinLabels[ref] = label;
+    }
+    RecentRowData toRow(Map<String, dynamic> row, bool pinned) {
+      final ref = '${row['pane'] ?? ''}';
+      final rawTitle = '${row['title'] ?? ''}';
+      final number = (row['number'] as num?)?.toInt();
+      final visited = (row['visited_at'] as num?)?.toDouble() ?? 0;
+      return RecentRowData(
+        paneRef: ref,
+        label: nameForPane(
+            paneRef: ref,
+            pinLabels: pinLabels,
+            favoriteTitles: _favoriteTitles,
+            fallback: rawTitle.isNotEmpty ? rawTitle : ref),
+        pinLabel: pinned ? '${row['label'] ?? ''}' : '',
+        numberLabel: number == null ? '' : '#$number',
+        status: _statuses[ref] ?? '',
+        visitedLabel: pinned ? '' : formatRecentVisited(visited),
+        pinned: pinned,
+        starred: _favoriteTitles.containsKey(ref),
+      );
+    }
+
+    return RecentBlockData(
+      pinned: [for (final row in pinnedRaw) if ('${row['pane'] ?? ''}'.isNotEmpty) toRow(row, true)],
+      recent: [for (final row in rawRows(data['recent'])) if ('${row['pane'] ?? ''}'.isNotEmpty) toRow(row, false)],
+    );
+  }
+
+  /// Grid sidebar drawer: the shared RecentBlock, mounted like the
+  /// hosts sidebar mount (not a competing sidebar). The header
+  /// carries web's console entry exactly as of commit e353ff8,
+  /// which unified grid with home: a chat bubble (web #i-chat)
+  /// titled 聊天（控制台）, never the old #i-console terminal glyph.
+  Widget _gridDrawer() {
+    return Drawer(
+      key: const Key('grid-drawer'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text('会话', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                ),
+                IconButton(
+                  key: const Key('grid-drawer-console'),
+                  tooltip: '聊天（控制台）',
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    // Close the drawer through the Scaffold: a bare
+                    // Navigator pop here would pop the grid page
+                    // route itself, not the drawer.
+                    _scaffoldKey.currentState?.closeDrawer();
+                    Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => HostsScreen(
+                          api: widget.api, baseUrl: widget.baseUrl),
+                    ));
+                  },
+                  icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: RecentBlock(
+              fixedBottom: false,
+              fillHeight: true,
+              load: _loadRecentBlock,
+              onOpen: (ref) {
+                _mutate(() => _grid.add(ref));
+                _scaffoldKey.currentState?.closeDrawer();
+              },
+              onTogglePin: (ref, pinned) async {
+                await widget.api.pinPane(ref, pinned: pinned);
+                await _loadNames();
+              },
+              onRenamePin: (ref, label) async {
+                await widget.api.renamePin(ref, label);
+                await _loadNames();
+              },
+              onToggleFavorite: (ref, starred) async {
+                if (starred) {
+                  await widget.api.addHomeFavorite(ref);
+                } else {
+                  await widget.api.deleteHomeFavorite(ref);
+                }
+                await _loadNames();
+              },
+            ),
+          ),
+          Container(
+            padding: EdgeInsets.fromLTRB(16, 10, 16, 10 + MediaQuery.of(context).padding.bottom),
+            decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
+            child: Text('点会话即加入窗口', style: TextStyle(fontSize: 11.5, color: AppTheme.faint)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _saveIfChanged() async {
     final prefs = _prefs;
     if (prefs == null) return;
@@ -280,14 +406,24 @@ class _GridScreenState extends State<GridScreen> {
     return prefix.isNotEmpty ? '$prefix · $name' : name;
   }
 
-  /// Web's statusText (grid.html:1229): '思考中' when busy, '离线'
-  /// when offline — derived purely from paneStates, never from chat
-  /// state. Offline here means the pane is missing from a non-empty
-  /// states sweep (or explicitly reported offline).
+  /// Web's statusText, verbatim (grid.html:1229-1234, fed by
+  /// loadStatus at :1239-1250 which rebuilds the map from the
+  /// sweep's `panes` list on every poll):
+  ///   function statusText(pane){
+  ///     if(state.liveWaiting&&state.liveWaiting.get(pane))return '思考中';
+  ///     const status=state.statuses.get(pane);
+  ///     if(status==='busy')return '思考中';
+  ///     if(status==='offline')return '离线';
+  ///     return '';
+  ///   }
+  /// A pane missing from the sweep yields `undefined` from the
+  /// Map, so it falls through to '' — missing is NEVER offline
+  /// in web, empty sweep or not. The earlier Flutter guard
+  /// (missing from a non-empty sweep => offline) was a deliberate
+  /// deviation and is reverted here to the literal rule.
   String _statusText(String ref) {
     if (_statuses[ref] == 'busy') return '思考中';
     if (_statuses[ref] == 'offline') return '离线';
-    if (_statusesLoaded && !_statuses.containsKey(ref)) return '离线';
     return '';
   }
 
@@ -507,12 +643,58 @@ class _GridScreenState extends State<GridScreen> {
     return GridState.slotRect(_grid.panes.indexOf(ref), cols, rows, areaWidth, areaHeight);
   }
 
-  void _canvasPointerDown(String ref, PointerDownEvent event) {
+  void _canvasPointerDown(String ref, PointerDownEvent event, {String dir = ''}) {
     if (_grid.maximized != null) return;
     _canvasDragRef = ref;
     _canvasDragStart = event.position;
     _canvasDragRect = _canvasRectFor(ref, _lastCanvasSize.width, _lastCanvasSize.height);
     _canvasDragActive = false;
+    _canvasDragDir = dir;
+  }
+
+  /// Web's snapTargets (grid.html:464-474): canvas edges (8px inset)
+  /// plus every other cell's left/center/right and top/middle/bottom.
+  ({List<double> xs, List<double> ys}) _canvasSnapTargets(String ignore, double areaWidth, double areaHeight) {
+    final xs = <double>[8, math.max(8, areaWidth - 8)];
+    final ys = <double>[8, math.max(8, areaHeight - 8)];
+    for (final other in _grid.panes) {
+      if (other == ignore) continue;
+      final rect = _canvasRectFor(other, areaWidth, areaHeight);
+      xs.addAll([rect.x, rect.x + rect.w, rect.x + rect.w / 2]);
+      ys.addAll([rect.y, rect.y + rect.h, rect.y + rect.h / 2]);
+    }
+    return (xs: xs, ys: ys);
+  }
+
+  /// Web's nearest (grid.html:476-483): closest target within SNAP=6,
+  /// else null.
+  double? _canvasNearest(double value, List<double> targets) {
+    double? best;
+    for (final target in targets) {
+      if ((value - target).abs() > 6) continue;
+      if (best == null || (value - target).abs() < (value - best).abs()) best = target;
+    }
+    return best;
+  }
+
+  /// Web's queueGuides (grid.html:447-462): a changed line set waits
+  /// GUIDE_DELAY=140ms before painting; an empty set hides at once.
+  void _queueCanvasGuides(List<({String axis, double pos})> lines) {
+    final key = lines.map((line) => '${line.axis}${line.pos.round()}').join(',');
+    if (key == _canvasGuideKey) return;
+    _canvasGuideKey = key;
+    _canvasGuideTimer?.cancel();
+    _canvasGuideTimer = null;
+    if (lines.isEmpty) {
+      if (_canvasGuides.isNotEmpty) setState(() => _canvasGuides = []);
+      return;
+    }
+    _canvasPendingGuides = lines;
+    _canvasGuideTimer = Timer(const Duration(milliseconds: 140), () {
+      _canvasGuideTimer = null;
+      if (!mounted) return;
+      setState(() => _canvasGuides = _canvasPendingGuides);
+    });
   }
 
   void _canvasPointerMove(String ref, PointerMoveEvent event) {
@@ -527,14 +709,94 @@ class _GridScreenState extends State<GridScreen> {
       setState(() => _canvasDragging = true);
     }
     final start = _canvasDragRect!;
-    setState(() {
-      _grid.cells[ref] = CanvasRect(
-        x: (start.x + delta.dx).clamp(0.0, double.infinity),
-        y: (start.y + delta.dy).clamp(0.0, double.infinity),
-        w: start.w,
-        h: start.h,
-      );
-    });
+    final targets = _canvasSnapTargets(ref, _lastCanvasSize.width, _lastCanvasSize.height);
+    final lines = <({String axis, double pos})>[];
+    late final CanvasRect next;
+    if (_canvasDragDir.isEmpty) {
+      // Web move branch (grid.html:1585-1595): left beats center
+      // beats right, top beats middle beats bottom.
+      var x = (start.x + delta.dx).clamp(0.0, double.infinity);
+      var y = (start.y + delta.dy).clamp(0.0, double.infinity);
+      final byLeft = _canvasNearest(x, targets.xs);
+      final byCenter = _canvasNearest(x + start.w / 2, targets.xs);
+      final byRight = _canvasNearest(x + start.w, targets.xs);
+      if (byLeft != null) {
+        x = byLeft;
+        lines.add((axis: 'x', pos: byLeft));
+      } else if (byCenter != null) {
+        x = byCenter - start.w / 2;
+        lines.add((axis: 'x', pos: byCenter));
+      } else if (byRight != null) {
+        x = byRight - start.w;
+        lines.add((axis: 'x', pos: byRight));
+      }
+      final byTop = _canvasNearest(y, targets.ys);
+      final byMiddle = _canvasNearest(y + start.h / 2, targets.ys);
+      final byBottom = _canvasNearest(y + start.h, targets.ys);
+      if (byTop != null) {
+        y = byTop;
+        lines.add((axis: 'y', pos: byTop));
+      } else if (byMiddle != null) {
+        y = byMiddle - start.h / 2;
+        lines.add((axis: 'y', pos: byMiddle));
+      } else if (byBottom != null) {
+        y = byBottom - start.h;
+        lines.add((axis: 'y', pos: byBottom));
+      }
+      next = CanvasRect(x: x, y: y, w: start.w, h: start.h);
+    } else {
+      // Web resize branch (grid.html:1596-1625): each edge snaps
+      // its moving side, then the min size clamps it. All edges
+      // measure against the pre-drag rect, like web's cdrag.rect.
+      final dir = _canvasDragDir;
+      var x = start.x;
+      var y = start.y;
+      var w = start.w;
+      var h = start.h;
+      if (dir.contains('e')) {
+        var right = start.x + start.w + delta.dx;
+        final snap = _canvasNearest(right, targets.xs);
+        if (snap != null) {
+          right = snap;
+          lines.add((axis: 'x', pos: snap));
+        }
+        w = math.max(GridState.canvasMinWidth, right - start.x);
+      }
+      if (dir.contains('s')) {
+        var bottom = start.y + start.h + delta.dy;
+        final snap = _canvasNearest(bottom, targets.ys);
+        if (snap != null) {
+          bottom = snap;
+          lines.add((axis: 'y', pos: snap));
+        }
+        h = math.max(GridState.canvasMinHeight, bottom - start.y);
+      }
+      if (dir.contains('w')) {
+        var left = start.x + delta.dx;
+        final snap = _canvasNearest(left, targets.xs);
+        if (snap != null) {
+          left = snap;
+          lines.add((axis: 'x', pos: snap));
+        }
+        left = math.min(left, start.x + start.w - GridState.canvasMinWidth);
+        w = math.max(GridState.canvasMinWidth, start.x + start.w - left);
+        x = math.max(0, left);
+      }
+      if (dir.contains('n')) {
+        var top = start.y + delta.dy;
+        final snap = _canvasNearest(top, targets.ys);
+        if (snap != null) {
+          top = snap;
+          lines.add((axis: 'y', pos: snap));
+        }
+        top = math.min(top, start.y + start.h - GridState.canvasMinHeight);
+        h = math.max(GridState.canvasMinHeight, start.y + start.h - top);
+        y = math.max(0, top);
+      }
+      next = CanvasRect(x: x, y: y, w: w, h: h);
+    }
+    setState(() => _grid.cells[ref] = next);
+    _queueCanvasGuides(lines);
   }
 
   void _finishCanvasDrag() {
@@ -544,7 +806,12 @@ class _GridScreenState extends State<GridScreen> {
     _canvasDragRef = null;
     _canvasDragRect = null;
     _canvasDragActive = false;
+    _canvasDragDir = '';
+    _canvasGuideTimer?.cancel();
+    _canvasGuideTimer = null;
+    _canvasGuideKey = '';
     if (_canvasDragging) setState(() => _canvasDragging = false);
+    if (_canvasGuides.isNotEmpty) setState(() => _canvasGuides = []);
     if (!active) return; // 只是点了一下，窗口不该动，也不用保存
     final rect = _grid.cells[ref];
     if (rect != null) _grid.cells[ref] = rect.rounded();
@@ -552,8 +819,72 @@ class _GridScreenState extends State<GridScreen> {
     if (mounted) setState(() {});
   }
 
+  /// One canvas resize handle (web grid.html:411-425 attachHandles
+  /// + :124-132 positions): 8 directions, edge strips 8px thick
+  /// inset 10px from the sides, corners 14px square overhanging by
+  /// 4px. Handles sit above the clipped card (Stack clip none) so
+  /// the overhang stays hittable, and win the hit test over the
+  /// header beneath them, like web's handle-first pointerdown.
+  Widget _canvasHandle(String ref, String dir) {
+    final isCorner = dir.length == 2;
+    final cursor = switch (dir) {
+      'n' || 's' => SystemMouseCursors.resizeUpDown,
+      'e' || 'w' => SystemMouseCursors.resizeLeftRight,
+      'nw' || 'se' => SystemMouseCursors.resizeUpLeftDownRight,
+      _ => SystemMouseCursors.resizeUpRightDownLeft,
+    };
+    double? top, bottom, left, right, width, height;
+    if (isCorner) {
+      width = 14;
+      height = 14;
+      if (dir.contains('n')) top = -4;
+      if (dir.contains('s')) bottom = -4;
+      if (dir.contains('w')) left = -4;
+      if (dir.contains('e')) right = -4;
+    } else if (dir == 'n') {
+      top = -3;
+      left = 10;
+      right = 10;
+      height = 8;
+    } else if (dir == 's') {
+      bottom = -3;
+      left = 10;
+      right = 10;
+      height = 8;
+    } else if (dir == 'w') {
+      left = -3;
+      top = 10;
+      bottom = 10;
+      width = 8;
+    } else {
+      right = -3;
+      top = 10;
+      bottom = 10;
+      width = 8;
+    }
+    return Positioned(
+      top: top,
+      bottom: bottom,
+      left: left,
+      right: right,
+      width: width,
+      height: height,
+      child: MouseRegion(
+        cursor: cursor,
+        child: Listener(
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: (event) => _canvasPointerDown(ref, event, dir: dir),
+          onPointerMove: (event) => _canvasPointerMove(ref, event),
+          onPointerUp: (_) => _finishCanvasDrag(),
+          onPointerCancel: (_) => _finishCanvasDrag(),
+          child: Container(key: Key('canvas-handle-$ref-$dir'), color: Colors.transparent),
+        ),
+      ),
+    );
+  }
+
   Widget _canvasCell(String ref) {
-    return Container(
+    final card = Container(
       decoration: BoxDecoration(
         color: AppTheme.card,
         border: Border.all(color: AppTheme.line),
@@ -585,6 +916,14 @@ class _GridScreenState extends State<GridScreen> {
           ),
         ],
       ),
+    );
+    return Stack(
+      clipBehavior: Clip.none,
+      fit: StackFit.expand,
+      children: [
+        card,
+        for (final dir in const ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']) _canvasHandle(ref, dir),
+      ],
     );
   }
 
@@ -648,6 +987,46 @@ class _GridScreenState extends State<GridScreen> {
                   width: rects[ref]!.w,
                   height: rects[ref]!.h,
                   child: _canvasCell(ref),
+                ),
+              // Snap guides (web .canvas-guides): full-extent lines
+              // at the snapped positions, painted only after the
+              // 140ms dwell in _queueCanvasGuides.
+              for (final line in _canvasGuides)
+                if (line.axis == 'x')
+                  Positioned(
+                    key: Key('canvas-guide-x-${line.pos.round()}'),
+                    left: line.pos,
+                    top: 0,
+                    bottom: 0,
+                    child: Container(width: 1, color: AppTheme.accent),
+                  )
+                else
+                  Positioned(
+                    key: Key('canvas-guide-y-${line.pos.round()}'),
+                    top: line.pos,
+                    left: 0,
+                    right: 0,
+                    child: Container(height: 1, color: AppTheme.accent),
+                  ),
+              // Size badge (web showBadge): W×H at the dragged
+              // cell's top-left, clamped into the visible area.
+              if (_canvasDragging && _canvasDragRef != null && _grid.cells[_canvasDragRef] != null)
+                Positioned(
+                  key: const Key('canvas-badge'),
+                  left: _grid.cells[_canvasDragRef]!.x.clamp(0.0, math.max(0.0, areaWidth - 90)),
+                  top: math.max(0.0, _grid.cells[_canvasDragRef]!.y - 22),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppTheme.card,
+                      border: Border.all(color: AppTheme.line),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '${_grid.cells[_canvasDragRef]!.w.round()}×${_grid.cells[_canvasDragRef]!.h.round()}',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ),
                 ),
             ],
           ),
@@ -1327,6 +1706,8 @@ class _GridScreenState extends State<GridScreen> {
     return Focus(
       onKeyEvent: _onKeyEvent,
       child: Scaffold(
+        key: _scaffoldKey,
+        drawer: _gridDrawer(),
         appBar: AppBar(
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

@@ -289,6 +289,7 @@ class RecentBlock extends StatefulWidget {
     required this.onRenamePin,
     required this.onToggleFavorite,
     this.fixedBottom = true,
+    this.fillHeight = false,
   });
 
   final Future<RecentBlockData> Function() load;
@@ -300,6 +301,12 @@ class RecentBlock extends StatefulWidget {
   /// Sidebar mount: fixed bottom area with grip + collapse. False
   /// renders the same rows as a plain shrink-wrapped column.
   final bool fixedBottom;
+
+  /// Only meaningful with fixedBottom false: wrap the row list in an
+  /// Expanded so the block can fill a bounded parent (e.g. a drawer
+  /// column). Without it the bare ListView inside the min-sized
+  /// column gets an unbounded height and fails layout.
+  final bool fillHeight;
 
   static const String heightKey = 'tmux-recent-height';
   static const String collapsedKey = 'tmux-recent-collapsed';
@@ -453,7 +460,10 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
       return Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [header, if (!_collapsed) _rows()],
+        children: [
+          header,
+          if (!_collapsed) (widget.fillHeight ? Expanded(child: _rows()) : _rows()),
+        ],
       );
     }
     if (_collapsed) {

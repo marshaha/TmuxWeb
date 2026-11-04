@@ -261,7 +261,7 @@ void main() {
     expect(find.text('思考中'), findsOneWidget);
   });
 
-  testWidgets('offline chip shows for a pane missing from paneStates', (tester) async {
+  testWidgets('missing pane shows no offline chip (web literal rule)', (tester) async {
     SharedPreferences.setMockInitialValues({
       'tmux-grid-v1': jsonEncode({
         'panes': ['%7', 'ghost~%9'],
@@ -276,7 +276,11 @@ void main() {
       }),
     });
     await pumpGrid(tester);
-    expect(find.text('离线'), findsOneWidget);
+    // Delta 16 revert: web statusText falls through to '' for a pane
+    // missing from the sweep — missing is never offline. (The
+    // positive case, explicit 'offline' -> 离线, lives in
+    // grid_parity2_test.dart.)
+    expect(find.text('离线'), findsNothing);
   });
 
   testWidgets('layout switch preserves composer text via keyed cell reuse', (tester) async {
@@ -294,18 +298,24 @@ void main() {
     expect(find.text('hello keep'), findsOneWidget);
   });
 
-  testWidgets('open in console pushes the console, not a chat screen', (tester) async {
+  testWidgets('open in console auto-opens the pane chat on narrow (delta 7)', (tester) async {
     await pumpGrid(tester);
     await addPane(tester, 'grid-pick-%7');
     await tester.tap(find.byKey(const Key('grid-open-%7')));
     await tester.pump();
-    // Let the route transition finish in steps (a single big pump
-    // does not reliably tick it): until then the grid route is
-    // still onstage underneath the pushed console.
-    for (var i = 0; i < 20; i++) {
+    // Two transitions in sequence: grid -> console, then the
+    // console's narrow deep link auto-opens the chat post-frame
+    // (delta 7), sending the console itself offstage. Bounded loop,
+    // not pumpAndSettle: the chat polls on a repeating timer. Both
+    // conditions matter: during the chat transition the composer
+    // is already findable while the grid underneath is still
+    // onstage, so wait for the transition to finish too.
+    for (var i = 0; i < 60; i++) {
       await tester.pump(const Duration(milliseconds: 50));
+      if (find.byKey(const Key('chat-composer')).evaluate().isNotEmpty &&
+          find.byKey(const Key('grid-open-%7')).evaluate().isEmpty) break;
     }
-    expect(find.text('会话'), findsWidgets);
+    expect(find.byKey(const Key('chat-composer')), findsOneWidget);
     expect(find.byKey(const Key('grid-open-%7')), findsNothing);
   });
 
