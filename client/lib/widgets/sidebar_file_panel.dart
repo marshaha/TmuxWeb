@@ -82,10 +82,18 @@ class SidebarFilePanel extends StatefulWidget {
     required this.onClose,
     required this.onDirectoryChanged,
     this.pickUploads,
+    this.hostLabel,
   });
 
   final Api api;
   final Pane pane;
+
+  /// Owning host name for the footer chip (web's `#file-host`, set in
+  /// `openFiles` from the host that owns the pane). The hosts shell
+  /// passes the owner's name; when absent, the panel falls back to
+  /// web's rule exactly: `remote` when the pane ref contains `~`
+  /// (a remote pane), else `localhost`.
+  final String? hostLabel;
 
   /// Directory to open first; empty/absent means the pane's directory.
   final String? initialPath;
@@ -179,6 +187,10 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
       _pathController.selection = TextSelection.collapsed(offset: text.length);
     }
   }
+
+  /// Web's `#file-host` chip text: the explicit [SidebarFilePanel.hostLabel]
+  /// when the caller wired it, else web's openFiles fallback.
+  String get _hostLabel => widget.hostLabel ?? (widget.pane.ref.contains('~') ? 'remote' : 'localhost');
 
   /// Paths picked with the per-row checkboxes (web's filesPicked).
   /// Cleared on every successful listing, like web's `openFiles`
@@ -614,8 +626,41 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
         const Divider(height: 1),
         Expanded(child: _buildList(listing)),
         if (_selected.isNotEmpty) _buildSelectionBar(),
+        _buildFooter(),
       ],
     ));
+  }
+
+  /// Web's `.file-foot`: host chip plus status line. The chip is
+  /// hidden until the first listing lands, like web's `#file-host`
+  /// (hidden until openFiles sets it); the status text is filled in
+  /// by the F2 change below.
+  Widget _buildFooter() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+      decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
+      child: Row(
+        children: [
+          if (_listing != null)
+            Container(
+              key: const Key('sidebar-files-host'),
+              constraints: const BoxConstraints(maxWidth: 76),
+              margin: const EdgeInsets.only(right: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              decoration: BoxDecoration(
+                border: Border.all(color: AppTheme.line),
+                borderRadius: BorderRadius.circular(5),
+              ),
+              child: Text(
+                _hostLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   /// Footer for the checkbox selection, with web's `syncFileSelection`
