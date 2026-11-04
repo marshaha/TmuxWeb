@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../api/api_client.dart';
-import '../theme.dart';
 import '../screens/plugin_page_screen.dart';
 
 /// Sidebar buttons contributed by enabled plugins, the Flutter equivalent
@@ -15,6 +14,12 @@ import '../screens/plugin_page_screen.dart';
 /// non-empty icon field gets a generic extension glyph and its label —
 /// the icon name itself is not a Flutter icon and is never interpreted
 /// as one.
+///
+/// Loading and failure match web/assets/plugins-ui.js exactly: web
+/// renders nothing until the fetch succeeds, and on a failed fetch it
+/// silently mounts nothing (non-ok → return, exception → swallowed) —
+/// no loading text, no retry affordance. A transient failure therefore
+/// just leaves the row empty until the widget is mounted again.
 ///
 /// Not mounted into any shell yet (phase-2 integration): the coordinator
 /// wires this into the console/board/grid shells.
@@ -52,7 +57,6 @@ class PluginButtons extends StatefulWidget {
 
 class _PluginButtonsState extends State<PluginButtons> {
   List<Map<String, dynamic>>? _buttons;
-  String? _error;
 
   @override
   void initState() {
@@ -67,11 +71,13 @@ class _PluginButtonsState extends State<PluginButtons> {
       if (!mounted) return;
       setState(() {
         _buttons = buttons.where((button) => '${button['label'] ?? ''}'.isNotEmpty).toList();
-        _error = null;
       });
-    } catch (error) {
+    } catch (_) {
+      // Web parity: silently drop the buttons on fetch failure — no
+      // error text, no retry affordance. An empty list renders nothing,
+      // exactly like web mounting nothing.
       if (!mounted) return;
-      setState(() => _error = '$error');
+      setState(() => _buttons = const []);
     }
   }
 
@@ -97,28 +103,10 @@ class _PluginButtonsState extends State<PluginButtons> {
 
   @override
   Widget build(BuildContext context) {
-    if (_error != null) {
-      // Web silently drops sidebar buttons on fetch failure; Flutter
-      // shows a small retry affordance instead of failing silently, so a
-      // broken plugin API is visible rather than mysteriously absent.
-      return InkWell(
-        onTap: _load,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          child: Text('插件按钮加载失败，点击重试', style: TextStyle(fontSize: 11, color: AppTheme.danger)),
-        ),
-      );
-    }
     final buttons = _buttons;
-    if (buttons == null) {
-      // Static text, not a spinner: an indeterminate progress widget
-      // would never settle under pumpAndSettle in widget tests.
-      return const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Text('加载中…', style: TextStyle(fontSize: 11)),
-      );
-    }
-    if (buttons.isEmpty) return const SizedBox.shrink();
+    // Web parity: nothing while loading, nothing on failure, nothing
+    // when the list is empty — no '加载中…' text, no retry affordance.
+    if (buttons == null || buttons.isEmpty) return const SizedBox.shrink();
     return Wrap(
       spacing: 6,
       runSpacing: 6,

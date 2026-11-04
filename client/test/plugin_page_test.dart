@@ -140,17 +140,12 @@ void main() {
       expect(find.byType(OutlinedButton), findsNothing);
     });
 
-    testWidgets('a fetch failure shows a retry affordance that reloads', (tester) async {
-      var attempts = 0;
+    testWidgets('a fetch failure renders nothing, like web', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
             body: PluginButtons(
-              buttonsLoader: () async {
-                attempts++;
-                if (attempts == 1) throw Exception('boom');
-                return buttons;
-              },
+              buttonsLoader: () async => throw Exception('boom'),
               baseUrl: 'http://chat.local:8899',
               createPlatformView: false,
             ),
@@ -158,11 +153,8 @@ void main() {
         ),
       );
       await tester.pump();
-      expect(find.text('插件按钮加载失败，点击重试'), findsOneWidget);
-
-      await tester.tap(find.text('插件按钮加载失败，点击重试'));
-      await tester.pump();
-      expect(find.text('演示'), findsOneWidget);
+      expect(find.text('插件按钮加载失败，点击重试'), findsNothing);
+      expect(find.byType(OutlinedButton), findsNothing);
     });
   });
 }

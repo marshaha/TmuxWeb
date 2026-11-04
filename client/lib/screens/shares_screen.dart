@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -5,15 +6,47 @@ import '../api/api_client.dart';
 import '../theme.dart';
 import 'hosts_screen.dart';
 
+/// Resolves the URL web's shares page opens for [share].
+///
+/// Web renders 打开 as `<a href="s.url" target="_blank">` (web/shares.html),
+/// and the browser resolves that href against the page origin — the same
+/// resolution `new URL(s.url, location.origin).href` gives for the copy
+/// action. This mirrors that resolution against [baseUrl]: absolute
+/// http(s) URLs pass through, absolute paths join the base, and relative
+/// paths resolve under the base. Empty [baseUrl] leaves the URL as-is.
+String shareOpenUrl(String baseUrl, Map<String, dynamic> share) {
+  final url = '${share['url'] ?? ''}';
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  var base = baseUrl;
+  while (base.endsWith('/')) {
+    base = base.substring(0, base.length - 1);
+  }
+  if (base.isEmpty) return url;
+  if (url.startsWith('/')) return '$base$url';
+  if (url.isEmpty) return base;
+  return '$base/$url';
+}
+
 /// Share management, mirroring web/shares.html: summary, cards with
 /// status, meta and actions (open, copy, extend, reset password, stop,
 /// delete). Creation lives on the chat screen, like web's console
 /// share button; this page only manages what exists.
 class SharesScreen extends StatefulWidget {
-  const SharesScreen({super.key, required this.api, required this.baseUrl});
+  const SharesScreen({super.key, required this.api, required this.baseUrl, this.tabOpener});
 
   final Api api;
   final String baseUrl;
+
+  /// Web-target opener for the 打开 action: web's shares page opens a new
+  /// browser tab (`<a href="s.url" target="_blank">`), so on the web
+  /// target this must be a `package:web window.open(url, '_blank')` call.
+  /// It is injected rather than imported here because package:web (via
+  /// dart:js_interop) cannot be imported from this shared file without
+  /// breaking native/VM compilation; the actual window.open call belongs
+  /// in a conditional-import barrel wired in by the caller. Null (the
+  /// default, and always the case on native targets) means the in-app
+  /// view below is used.
+  final void Function(String url)? tabOpener;
 
   @override
   State<SharesScreen> createState() => _SharesScreenState();
@@ -213,6 +246,24 @@ class _SharesScreenState extends State<SharesScreen> {
     }
   }
 
+  void _openShare(Map<String, dynamic> share) {
+    // Web parity for 打开: web/shares.html opens a new browser tab with
+    // the share URL resolved against the origin (see [shareOpenUrl]).
+    // On the web target that tab open is [SharesScreen.tabOpener]; while
+    // no opener is wired (and always on native targets, where there are
+    // no browser tabs) the in-app ShareScreen below is the platform
+    // equivalent — the same share viewed inside the app, not a new tab.
+    if (kIsWeb && widget.tabOpener != null) {
+      widget.tabOpener!(shareOpenUrl(widget.baseUrl, share));
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ShareScreen(api: widget.api, slug: '${share['slug']}'),
+      ),
+    );
+  }
+
   Widget _actionButton(String label, VoidCallback? onPressed, {Key? key, Color? color}) => OutlinedButton(
         key: key,
         onPressed: onPressed,
@@ -287,11 +338,7 @@ class _SharesScreenState extends State<SharesScreen> {
                 _actionButton(
                   '打开',
                   key: Key('share-open-$id'),
-                  () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => ShareScreen(api: widget.api, slug: '${share['slug']}'),
-                    ),
-                  ),
+                  () => _openShare(share),
                 ),
                 _actionButton(
                   '复制链接',

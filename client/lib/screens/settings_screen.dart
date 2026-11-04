@@ -9,6 +9,7 @@ import '../models/grid_state.dart';
 import '../services/config_crypto.dart';
 import '../services/save_file.dart';
 import '../services/config_import.dart';
+import '../services/share_open.dart';
 import '../theme.dart';
 import '../widgets/pane_hover_preview.dart';
 import 'hosts_admin_screen.dart';
@@ -483,7 +484,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('分享管理'),
             trailing: const Icon(Icons.chevron_right, size: 18),
             onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => SharesScreen(api: widget.api, baseUrl: widget.baseUrl)),
+              MaterialPageRoute(builder: (_) => SharesScreen(api: widget.api, baseUrl: widget.baseUrl, tabOpener: openShareTab)),
             ),
           ),
           _sectionTitle('修改密码'),
