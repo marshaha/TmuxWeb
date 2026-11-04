@@ -204,6 +204,12 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
   /// Like [FilesScreen]'s field of the same name.
   String? _focusedPath;
 
+  /// Range-select anchor (web's filesAnchor): set by every checkbox
+  /// toggle and every toggle-pick/range click, cleared by 清空.
+  /// Web's openFiles does NOT clear it, so a stale anchor after a
+  /// navigation simply falls back to a toggle-pick in [_selectRange].
+  String? _anchorPath;
+
   @override
   void initState() {
     super.initState();
@@ -600,12 +606,73 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
   void _toggleSelected(FileEntry entry, bool selected) {
     setState(() {
       _focusedPath = entry.path;
+      // Web's checkbox branch sets the range anchor too.
+      _anchorPath = entry.path;
       if (selected) {
         _selected.add(entry.path);
       } else {
         _selected.remove(entry.path);
       }
     });
+  }
+
+  /// Web's togglePick: flip one row and move the anchor to it.
+  void _togglePick(FileEntry entry) {
+    setState(() {
+      if (_selected.contains(entry.path)) {
+        _selected.remove(entry.path);
+      } else {
+        _selected.add(entry.path);
+      }
+      _anchorPath = entry.path;
+    });
+  }
+
+  /// Web's selectRange: add every row from the anchor to the target
+  /// inclusive (never removes), then move the anchor to the target.
+  /// A missing anchor (or one no longer listed) falls back to a
+  /// toggle-pick, exactly like web.
+  void _selectRange(FileEntry entry) {
+    final entries = _listing?.entries ?? const <FileEntry>[];
+    final order = entries.map((item) => item.path).toList();
+    final anchorPath = _anchorPath;
+    final anchor = anchorPath == null ? -1 : order.indexOf(anchorPath);
+    final target = order.indexOf(entry.path);
+    if (anchor < 0 || target < 0) {
+      _togglePick(entry);
+      return;
+    }
+    final from = anchor < target ? anchor : target;
+    final to = anchor < target ? target : anchor;
+    setState(() {
+      for (var index = from; index <= to; index++) {
+        _selected.add(order[index]);
+      }
+      _anchorPath = entry.path;
+    });
+  }
+
+  /// Web's file-list click handler (minus the checkbox branch, which
+  /// stays on the Checkbox itself): Shift range-selects from the
+  /// anchor, Ctrl/Cmd toggles the pick, plain click navigates into
+  /// a dir or downloads a file — and plain click never touches the
+  /// selection. Checkboxes keep working alongside: web has both.
+  void _handleRowTap(FileEntry entry) {
+    setState(() => _focusedPath = entry.path);
+    final keys = HardwareKeyboard.instance;
+    if (keys.isShiftPressed) {
+      _selectRange(entry);
+      return;
+    }
+    if (keys.isControlPressed || keys.isMetaPressed) {
+      _togglePick(entry);
+      return;
+    }
+    if (entry.isDir) {
+      _open(entry.path);
+    } else {
+      _download(entry);
+    }
   }
 
   /// F2 renames the single selection, else the focused row — web's
@@ -842,7 +909,11 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
               TextButton(
                 key: const Key('sidebar-files-select-none'),
                 style: _chipStyle,
-                onPressed: () => setState(_selected.clear),
+                // Web's pick-none clears the range anchor as well.
+                onPressed: () => setState(() {
+                  _selected.clear();
+                  _anchorPath = null;
+                }),
                 child: const Text('清空'),
               ),
             if (_selected.length == 1)
@@ -980,7 +1051,7 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
                           onPressed: _busy ? null : () => _download(entry),
                           icon: const Icon(Icons.download_outlined, size: 18),
                         ),
-                  onTap: () => entry.isDir ? _open(entry.path) : _download(entry),
+                  onTap: () => _handleRowTap(entry),
                 ),
               ),
             ],

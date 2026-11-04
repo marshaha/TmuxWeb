@@ -249,6 +249,53 @@ void main() {
     expect(status.data, 'boom');
     expect(find.text('重试'), findsOneWidget);
   });
+
+  testWidgets('F5: Shift-click range-selects from the checkbox anchor', (tester) async {
+    final seen = <String>[];
+    await pumpPanel(tester, FakeApi(), seen: seen);
+    await tester.tap(find.byKey(const Key('sidebar-file-check-notes.md')));
+    await tester.pump();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.tap(find.byKey(const Key('sidebar-file-sub')));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pumpAndSettle();
+    expect(tester.widget<Checkbox>(find.byKey(const Key('sidebar-file-check-notes.md'))).value, isTrue);
+    expect(tester.widget<Checkbox>(find.byKey(const Key('sidebar-file-check-sub'))).value, isTrue);
+    // Range-select never navigates or downloads.
+    expect(seen, ['/srv/work']);
+  });
+
+  testWidgets('F5: Ctrl-click toggles a pick on and off', (tester) async {
+    await pumpPanel(tester, FakeApi());
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.tap(find.byKey(const Key('sidebar-file-sub')));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(tester.widget<Checkbox>(find.byKey(const Key('sidebar-file-check-sub'))).value, isTrue);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.tap(find.byKey(const Key('sidebar-file-sub')));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(tester.widget<Checkbox>(find.byKey(const Key('sidebar-file-check-sub'))).value, isFalse);
+  });
+
+  testWidgets('F5: Shift-click with no anchor yet falls back to a toggle', (tester) async {
+    await pumpPanel(tester, FakeApi());
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.tap(find.byKey(const Key('sidebar-file-notes.md')));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    expect(tester.widget<Checkbox>(find.byKey(const Key('sidebar-file-check-notes.md'))).value, isTrue);
+    expect(tester.widget<Checkbox>(find.byKey(const Key('sidebar-file-check-sub'))).value, isFalse);
+  });
+
+  testWidgets('F5: plain click still downloads a file and keeps checkboxes working', (tester) async {
+    await pumpPanel(tester, FakeApi());
+    await tester.tap(find.byKey(const Key('sidebar-file-notes.md')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已保存到'), findsOneWidget);
+  });
+
 }
 
 /// Listing with truncated set, for the F2 footer text.
