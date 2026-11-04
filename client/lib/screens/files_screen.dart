@@ -1,8 +1,8 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../api/api_client.dart';
@@ -23,10 +23,21 @@ class FilesScreen extends StatefulWidget {
 
 class _FilesScreenState extends State<FilesScreen> {
   final _pathController = TextEditingController();
+  final _pathFocusNode = FocusNode();
   FileListing? _listing;
   String? _error;
   bool _loading = true;
   bool _busy = false;
+
+  /// Monotonic request id: completions from an older directory request
+  /// are ignored, like web's filesSeq guard (commit b22f23c).
+  int _requestId = 0;
+
+  /// Paths picked with the per-row checkboxes (web's filesPicked).
+  final Set<String> _selected = {};
+
+  /// Row most recently interacted with, for the F2 / Delete shortcuts.
+  String? _focusedPath;
 
   @override
   void initState() {
@@ -37,22 +48,25 @@ class _FilesScreenState extends State<FilesScreen> {
   @override
   void dispose() {
     _pathController.dispose();
+    _pathFocusNode.dispose();
     super.dispose();
   }
 
   Future<void> _open(String path) async {
+    final requestId = ++_requestId;
     setState(() => _loading = true);
     try {
       final listing = await widget.api.listFiles(widget.pane.ref, path: path);
-      if (!mounted) return;
+      if (!mounted || requestId != _requestId) return;
       setState(() {
         _listing = listing;
         _pathController.text = listing.path;
         _error = null;
         _loading = false;
+        _selected.clear();
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || requestId != _requestId) return;
       setState(() {
         _error = '$error';
         _loading = false;
@@ -93,18 +107,14 @@ class _FilesScreenState extends State<FilesScreen> {
     }
   }
 
-  Future<void> _upload() async {
+  /// Zip one directory row, like web's file-menu '打包下载'.
+  Future<void> _zipDirectory(FileEntry entry) async {
     final listing = _listing;
     if (listing == null) return;
-    final picked = await FilePicker.pickFiles();
-    if (picked.isEmpty) return;
-    final file = picked.first;
-    final bytes = await file.xFile.readAsBytes();
     setState(() => _busy = true);
     try {
-      await widget.api.uploadFile(widget.pane.ref, listing.path, file.name, bytes);
-      await _open(listing.path);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已上传 ${file.name}')));
+      final bytes = await widget.api.zipFiles(widget.pane.ref, [entry.path], listing.path);
+      await _save(bytes, '${entry.name}.zip');
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
     } finally {
@@ -112,6 +122,101 @@ class _FilesScreenState extends State<FilesScreen> {
     }
   }
 
+  /// Zip the checkbox selection, like web's footer '下载 zip'.
+  Future<void> _zipSelection() async {
+    final listing = _listing;
+    if (listing == null || _selected.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      final bytes = await widget.api.zipFiles(widget.pane.ref, _selected.toList(), listing.path);
+      final name = '${listing.path.split('/').where((part) => part.isNotEmpty).lastOrNull ?? 'files'}.zip';
+      await _save(bytes, name);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _upload() async {
+    final listing = _listing;
+    if (listing == null) return;
+    final picked = await FilePicker.pickFiles();
+    if (picked.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      // Web's file input is multiple: upload every picked file, not
+      // just the first.
+      for (final file in picked) {
+        final bytes = await file.xFile.readAsBytes();
+        await widget.api.uploadFile(widget.pane.ref, listing.path, file.name, bytes);
+      }
+      await _open(listing.path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(picked.length == 1 ? '已上传 ${picked.first.name}' : '已上传 ${picked.length} 个文件'),
+        ));
+      }
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+
+  /// One action dispatch shared by the long-press sheet, the row
+  /// '更多' button and the right-click menu, so all three offer the
+  /// same items.
+  Future<void> _doAction(FileEntry entry, String action) async {
+    switch (action) {
+      case 'open':
+        entry.isDir ? await _open(entry.path) : await _preview(entry);
+      case 'download':
+        await _download(entry);
+      case 'zipdir':
+        await _zipDirectory(entry);
+      case 'rename':
+        await _rename(entry);
+      case 'delete':
+        await _deleteEntries([entry]);
+    }
+  }
+
+  /// Right-click menu, clamped to the viewport like web's showFileMenu
+  /// (max(6, min(x, innerWidth - width - 8))).
+  Future<void> _showContextMenu(FileEntry entry, Offset globalPosition) async {
+    _focusedPath = entry.path;
+    final size = MediaQuery.of(context).size;
+    const menuWidth = 200.0;
+    const menuHeight = 260.0;
+    final dx = globalPosition.dx.clamp(6.0, (size.width - menuWidth - 8).clamp(6.0, size.width));
+    final dy = globalPosition.dy.clamp(6.0, (size.height - menuHeight - 8).clamp(6.0, size.height));
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(dx, dy, size.width - dx, size.height - dy),
+      items: [
+        PopupMenuItem(
+          key: const Key('file-context-open'),
+          value: 'open',
+          child: Text(entry.isDir ? '打开目录' : '预览'),
+        ),
+        PopupMenuItem(
+          key: entry.isDir ? const Key('file-context-zipdir') : const Key('file-context-download'),
+          value: entry.isDir ? 'zipdir' : 'download',
+          child: Text(entry.isDir ? '打包下载' : '下载'),
+        ),
+        const PopupMenuItem(key: Key('file-context-rename'), value: 'rename', child: Text('重命名')),
+        PopupMenuItem(
+          key: const Key('file-context-delete'),
+          value: 'delete',
+          child: Text('删除', style: TextStyle(color: AppTheme.danger)),
+        ),
+      ],
+    );
+    if (!mounted || action == null) return;
+    await _doAction(entry, action);
+  }
 
   /// 行尾「更多」和长按共用：桌面右键的习惯在触屏上是长按。
   Future<void> _actions(FileEntry entry) async {
@@ -127,12 +232,12 @@ class _FilesScreenState extends State<FilesScreen> {
               title: Text(entry.isDir ? '打开目录' : '预览'),
               onTap: () => Navigator.pop(context, 'open'),
             ),
-            if (!entry.isDir)
-              ListTile(
-                leading: const Icon(Icons.download_outlined, size: 20),
-                title: const Text('下载'),
-                onTap: () => Navigator.pop(context, 'download'),
-              ),
+            ListTile(
+              key: entry.isDir ? const Key('file-action-zipdir') : const Key('file-action-download'),
+              leading: const Icon(Icons.download_outlined, size: 20),
+              title: Text(entry.isDir ? '打包下载' : '下载'),
+              onTap: () => Navigator.pop(context, entry.isDir ? 'zipdir' : 'download'),
+            ),
             const Divider(height: 1),
             ListTile(
               key: const Key('file-action-rename'),
@@ -151,16 +256,7 @@ class _FilesScreenState extends State<FilesScreen> {
       ),
     );
     if (!mounted || action == null) return;
-    switch (action) {
-      case 'open':
-        entry.isDir ? await _open(entry.path) : await _preview(entry);
-      case 'download':
-        await _download(entry);
-      case 'rename':
-        await _rename(entry);
-      case 'delete':
-        await _delete(entry);
-    }
+    await _doAction(entry, action);
   }
 
   Future<void> _rename(FileEntry entry) async {
@@ -181,6 +277,9 @@ class _FilesScreenState extends State<FilesScreen> {
               key: const Key('file-rename-input'),
               controller: controller,
               autofocus: true,
+              // 16px: web's mobile input rule — smaller text triggers
+              // iOS auto-zoom on focus.
+              style: const TextStyle(fontSize: 16),
               onSubmitted: (value) => Navigator.pop(context, value.trim()),
               decoration: const InputDecoration(labelText: '新名字'),
             ),
@@ -207,21 +306,26 @@ class _FilesScreenState extends State<FilesScreen> {
     }
   }
 
-  Future<void> _delete(FileEntry entry) async {
-    var recursive = entry.isDir;
+  /// Delete one row or the whole checkbox selection. The dialog
+  /// previews at most 5 names plus '等 N 项', like web's deleteFiles.
+  Future<void> _deleteEntries(List<FileEntry> entries) async {
+    if (entries.isEmpty) return;
+    final names = entries.map((entry) => entry.name).toList();
+    final preview = names.take(5).join('、') + (names.length > 5 ? ' 等 ${names.length} 项' : '');
+    var recursive = entries.any((entry) => entry.isDir);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('删除'),
+          title: Text(entries.length > 1 ? '删除 ${entries.length} 项' : '删除'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(entry.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text(preview, style: const TextStyle(fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
               Text('删除后无法恢复。', style: TextStyle(fontSize: 12, color: AppTheme.danger)),
-              if (entry.isDir)
+              if (entries.any((entry) => entry.isDir))
                 CheckboxListTile(
                   key: const Key('file-delete-recursive'),
                   dense: true,
@@ -246,9 +350,12 @@ class _FilesScreenState extends State<FilesScreen> {
     );
     if (!mounted || confirmed != true) return;
     try {
-      await widget.api.deleteFiles(widget.pane.ref, [entry.path], recursive: recursive);
+      await widget.api.deleteFiles(widget.pane.ref, entries.map((entry) => entry.path).toList(), recursive: recursive);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已删除 ${entry.name}')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(entries.length == 1 ? '已删除 ${entries.first.name}' : '已删除 ${entries.length} 项'),
+      ));
+      _selected.removeAll(entries.map((entry) => entry.path));
       await _open(_listing?.path ?? widget.pane.path);
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('删除失败：$error')));
@@ -326,6 +433,48 @@ class _FilesScreenState extends State<FilesScreen> {
     );
   }
 
+  FileEntry? _entryForPath(String path) {
+    final entries = _listing?.entries;
+    if (entries == null) return null;
+    for (final entry in entries) {
+      if (entry.path == path) return entry;
+    }
+    return null;
+  }
+
+  /// F2 renames the single selection, else the focused row — web's
+  /// file-list keydown rule (picked.length == 1 ? picked[0] : focused).
+  void _shortcutRename() {
+    if (_busy || _pathFocusNode.hasFocus) return;
+    FileEntry? entry;
+    if (_selected.length == 1) {
+      entry = _entryForPath(_selected.first);
+    } else if (_focusedPath != null) {
+      entry = _entryForPath(_focusedPath!);
+    }
+    if (entry != null) _rename(entry);
+  }
+
+  /// Delete deletes the selection, else the focused row (web rule).
+  void _shortcutDelete() {
+    if (_busy || _pathFocusNode.hasFocus) return;
+    final entries = _selected.isNotEmpty
+        ? _selected.map(_entryForPath).whereType<FileEntry>().toList()
+        : (_focusedPath == null ? const <FileEntry>[] : [_entryForPath(_focusedPath!)].whereType<FileEntry>().toList());
+    if (entries.isNotEmpty) _deleteEntries(entries);
+  }
+
+  void _toggleSelected(FileEntry entry, bool selected) {
+    setState(() {
+      _focusedPath = entry.path;
+      if (selected) {
+        _selected.add(entry.path);
+      } else {
+        _selected.remove(entry.path);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final listing = _listing;
@@ -354,34 +503,109 @@ class _FilesScreenState extends State<FilesScreen> {
           IconButton(tooltip: '刷新', onPressed: _busy ? null : () => _open(_pathController.text), icon: const Icon(Icons.refresh, size: 20)),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-            child: Row(children: [
-              IconButton(
-                key: const Key('files-up'),
-                tooltip: '上级目录',
-                onPressed: listing?.parent == null ? null : () => _open(listing!.parent!),
-                icon: const Icon(Icons.arrow_upward, size: 18),
-              ),
-              Expanded(
-                child: TextField(
-                  key: const Key('files-path'),
-                  controller: _pathController,
-                  autocorrect: false,
-                  style: AppTheme.mono,
-                  textInputAction: TextInputAction.go,
-                  onSubmitted: (value) => _open(value.trim()),
-                  decoration: const InputDecoration(hintText: '绝对路径', isDense: true),
+      body: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.f2): _shortcutRename,
+          const SingleActivator(LogicalKeyboardKey.delete): _shortcutDelete,
+        },
+        child: Focus(
+          autofocus: true,
+          child: SafeArea(
+            top: false,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+                  child: Row(children: [
+                    IconButton(
+                      key: const Key('files-up'),
+                      tooltip: '上级目录',
+                      onPressed: listing?.parent == null ? null : () => _open(listing!.parent!),
+                      icon: const Icon(Icons.arrow_upward, size: 18),
+                    ),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('files-path'),
+                        controller: _pathController,
+                        focusNode: _pathFocusNode,
+                        autocorrect: false,
+                        style: AppTheme.mono,
+                        textInputAction: TextInputAction.go,
+                        onSubmitted: (value) => _open(value.trim()),
+                        decoration: const InputDecoration(hintText: '绝对路径', isDense: true),
+                      ),
+                    ),
+                  ]),
                 ),
-              ),
-            ]),
+                if (_busy) const LinearProgressIndicator(minHeight: 2),
+                const Divider(height: 1),
+                Expanded(child: _buildList()),
+                if (_selected.isNotEmpty) _buildSelectionBar(),
+              ],
+            ),
           ),
-          if (_busy) const LinearProgressIndicator(minHeight: 2),
-          const Divider(height: 1),
-          Expanded(child: _buildList()),
-        ],
+        ),
+      ),
+    );
+  }
+
+  /// Footer for the checkbox selection, like web's .file-foot actions.
+  /// Rename is only offered for exactly one pick, like web (its rename
+  /// button is hidden unless picked.size == 1); batch rename is
+  /// one-at-a-time, matching web's renameFile(path).
+  Widget _buildSelectionBar() {
+    final entries = _listing?.entries ?? const <FileEntry>[];
+    final allSelected = entries.isNotEmpty && _selected.length == entries.length;
+    final selectedEntries = _selected.map(_entryForPath).whereType<FileEntry>().toList();
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+      decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
+      // Horizontally scrollable instead of an Expanded count label:
+      // the bar must survive narrow widths without forcing any
+      // button to an infinite-width constraint.
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text('已选 ${_selected.length} 项', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+          const SizedBox(width: 8),
+        TextButton(
+          key: const Key('files-select-all'),
+          onPressed: () => setState(() {
+            if (allSelected) {
+              _selected.clear();
+            } else {
+              _selected.addAll(entries.map((entry) => entry.path));
+            }
+          }),
+          child: Text(allSelected ? '取消全选' : '全选'),
+        ),
+        TextButton(
+          key: const Key('files-select-none'),
+          onPressed: () => setState(_selected.clear),
+          child: const Text('清空'),
+        ),
+        if (_selected.length == 1)
+          TextButton(
+            key: const Key('files-footer-rename'),
+            onPressed: selectedEntries.isEmpty ? null : () => _rename(selectedEntries.first),
+            child: const Text('重命名'),
+          ),
+        TextButton(
+          key: const Key('files-footer-delete'),
+          onPressed: () => _deleteEntries(selectedEntries),
+          child: Text('删除', style: TextStyle(color: AppTheme.danger)),
+        ),
+        // OutlinedButton, not FilledButton: the app theme gives
+        // FilledButton an infinite minimum width, which only lays
+        // out when the button fills its parent — in a Row with
+        // siblings it asserts. Shares actions use OutlinedButton
+        // for the same reason.
+        OutlinedButton(
+          key: const Key('files-footer-zip'),
+          onPressed: _busy ? null : _zipSelection,
+          child: const Text('下载 zip'),
+        ),
+        ]),
       ),
     );
   }
@@ -411,36 +635,58 @@ class _FilesScreenState extends State<FilesScreen> {
             );
           }
           final entry = entries[index];
-          return ListTile(
-            key: Key('file-${entry.name}'),
-            dense: true,
-            leading: Icon(
-              entry.isDir ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
-              size: 20,
-              color: entry.isDir ? AppTheme.accent : AppTheme.faint,
-            ),
-            title: Text(entry.name,
-                maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
-            subtitle: entry.isDir ? null : Text(entry.sizeLabel, style: TextStyle(fontSize: 11, color: AppTheme.faint)),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (!entry.isDir)
-                  IconButton(
-                    tooltip: '下载',
-                    onPressed: _busy ? null : () => _download(entry),
-                    icon: const Icon(Icons.download_outlined, size: 18),
+          final selected = _selected.contains(entry.path);
+          return Row(
+            children: [
+              Checkbox(
+                key: Key('file-check-${entry.name}'),
+                value: selected,
+                onChanged: (value) => _toggleSelected(entry, value ?? false),
+              ),
+              Expanded(
+                child: GestureDetector(
+                  onSecondaryTapDown: (details) => _busy ? null : _showContextMenu(entry, details.globalPosition),
+                  child: ListTile(
+                    key: Key('file-${entry.name}'),
+                    dense: true,
+                    tileColor: selected ? AppTheme.accent.withValues(alpha: 0.08) : null,
+                    leading: Icon(
+                      entry.isDir ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
+                      size: 20,
+                      color: entry.isDir ? AppTheme.accent : AppTheme.faint,
+                    ),
+                    title: Text(entry.name,
+                        maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
+                    subtitle: entry.isDir ? null : Text(entry.sizeLabel, style: TextStyle(fontSize: 11, color: AppTheme.faint)),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (!entry.isDir)
+                          IconButton(
+                            tooltip: '下载',
+                            onPressed: _busy ? null : () => _download(entry),
+                            icon: const Icon(Icons.download_outlined, size: 18),
+                          ),
+                        IconButton(
+                          key: Key('file-more-${entry.name}'),
+                          tooltip: '更多',
+                          onPressed: _busy ? null : () => _actions(entry),
+                          icon: const Icon(Icons.more_vert, size: 18),
+                        ),
+                      ],
+                    ),
+                    onTap: () {
+                      _focusedPath = entry.path;
+                      entry.isDir ? _open(entry.path) : _preview(entry);
+                    },
+                    onLongPress: _busy ? null : () {
+                      _focusedPath = entry.path;
+                      _actions(entry);
+                    },
                   ),
-                IconButton(
-                  key: Key('file-more-${entry.name}'),
-                  tooltip: '更多',
-                  onPressed: _busy ? null : () => _actions(entry),
-                  icon: const Icon(Icons.more_vert, size: 18),
                 ),
-              ],
-            ),
-            onTap: () => entry.isDir ? _open(entry.path) : _preview(entry),
-            onLongPress: _busy ? null : () => _actions(entry),
+              ),
+            ],
           );
         },
       ),

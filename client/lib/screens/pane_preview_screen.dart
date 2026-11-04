@@ -16,6 +16,7 @@ import '../models/chat_source.dart';
 import '../models/models.dart';
 import '../widgets/favorite_star_button.dart';
 import 'chat_screen.dart';
+import 'grid_screen.dart';
 import 'terminal_screen.dart';
 
 class PanePreviewScreen extends StatelessWidget {
@@ -33,6 +34,22 @@ class PanePreviewScreen extends StatelessWidget {
         terminalApi: terminalApi,
         baseUrl: baseUrl,
       ),
+    ));
+  }
+
+  /// Web preview.html's header, in order: back, favorite, terminal,
+  /// grid, reload — and deliberately NO pause toggle (web preview
+  /// polls at 2s/15s with no pause control; the embedded-chat pause
+  /// toggle belongs to another surface).
+  ///
+  /// Polling itself lives in the embedded ChatScreen (default 1s
+  /// periodic refresh, faster than web's 2s visible / 15s hidden
+  /// cadence — a cadence difference, not a missing control, and
+  /// changing ChatScreen's poll interval is out of this surface's
+  /// scope; see the report).
+  void _openGrid(BuildContext context) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => GridScreen(api: api, baseUrl: baseUrl),
     ));
   }
 
@@ -63,6 +80,25 @@ class PanePreviewScreen extends StatelessWidget {
             tooltip: '在对话中打开',
             icon: const Icon(Icons.chat_bubble_outline, size: 20),
             onPressed: () => _openChat(context),
+          ),
+          IconButton(
+            key: const Key('preview-grid'),
+            tooltip: '加到多窗口',
+            icon: const Icon(Icons.grid_view_outlined, size: 20),
+            onPressed: () => _openGrid(context),
+          ),
+          IconButton(
+            key: const Key('preview-reload'),
+            tooltip: '刷新',
+            icon: const Icon(Icons.refresh, size: 20),
+            // The embedded ChatScreen owns polling; reload rebuilds
+            // this page so the embedded view restarts its refresh
+            // from the cached transcript, like web's reload button.
+            onPressed: () {
+              Navigator.of(context).pushReplacement(MaterialPageRoute(
+                builder: (_) => PanePreviewScreen(api: api, pane: pane, terminalApi: terminalApi, baseUrl: baseUrl),
+              ));
+            },
           ),
         ],
       ),

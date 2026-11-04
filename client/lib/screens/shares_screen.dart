@@ -64,7 +64,11 @@ class _SharesScreenState extends State<SharesScreen> {
     final value = seconds is num ? seconds.toInt() : int.tryParse('$seconds') ?? 0;
     final time = DateTime.fromMillisecondsSinceEpoch(value * 1000);
     String two(int number) => number.toString().padLeft(2, '0');
-    return '${time.year}-${two(time.month)}-${two(time.day)} ${two(time.hour)}:${two(time.minute)}';
+    // Web uses toLocaleString(): local date + time WITH seconds.
+    // Dart has no locale toLocaleString, so the same fields in the
+    // same order, with seconds added (the previous format dropped
+    // them).
+    return '${time.year}-${two(time.month)}-${two(time.day)} ${two(time.hour)}:${two(time.minute)}:${two(time.second)}';
   }
 
   static (String, Color) _status(Map<String, dynamic> share) {
@@ -239,7 +243,9 @@ class _SharesScreenState extends State<SharesScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('${share['title'] ?? share['slug'] ?? ''}',
+                      // Web renders ONLY s.title: an empty title
+                      // stays empty, it never falls back to the slug.
+                      Text('${share['title'] ?? ''}',
                           style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
                       const SizedBox(height: 3),
                       Text(_fullUrl(share),
@@ -331,7 +337,15 @@ class _SharesScreenState extends State<SharesScreen> {
                   ),
                 )
               : ListView(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  padding: EdgeInsets.fromLTRB(
+                    0,
+                    16,
+                    0,
+                    // Bottom safe-area padding on top of the list's
+                    // own bottom inset, so the last card clears the
+                    // home indicator / nav bar.
+                    16 + MediaQuery.of(context).padding.bottom,
+                  ),
                   children: [
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
