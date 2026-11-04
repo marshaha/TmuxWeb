@@ -15,6 +15,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/api_client.dart';
 import '../models/chat_source.dart';
@@ -148,13 +149,27 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
               child: Row(
                 children: [
                   Expanded(
-                    child: TextField(
-                      key: const Key('search-query'),
-                      controller: _query,
-                      autocorrect: false,
-                      textInputAction: TextInputAction.search,
-                      onChanged: _onQueryChanged,
-                      onSubmitted: (_) => _search(),
+                    // Web Escape-in-field clears the query; the clear
+                    // also re-runs the (empty) search, which clears
+                    // the results, like web's input handler.
+                    child: Focus(
+                      onKeyEvent: (node, event) {
+                        if (event is KeyDownEvent &&
+                            event.logicalKey == LogicalKeyboardKey.escape &&
+                            _query.text.isNotEmpty) {
+                          _query.clear();
+                          _search();
+                          return KeyEventResult.handled;
+                        }
+                        return KeyEventResult.ignored;
+                      },
+                      child: TextField(
+                        key: const Key('search-query'),
+                        controller: _query,
+                        autocorrect: false,
+                        textInputAction: TextInputAction.search,
+                        onChanged: _onQueryChanged,
+                        onSubmitted: (_) => _search(),
                       decoration: InputDecoration(
                         hintText: '搜索服务器 / session / pane（支持正则），以及最近对话内容…',
                         suffixIcon: _query.text.isEmpty
@@ -170,6 +185,7 @@ class _HomeSearchScreenState extends State<HomeSearchScreen> {
                               ),
                       ),
                     ),
+                  ),
                   ),
                   const SizedBox(width: 8),
                   SizedBox(

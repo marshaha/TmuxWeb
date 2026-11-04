@@ -35,6 +35,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -44,6 +45,8 @@ import '../models/home_board.dart';
 import '../models/models.dart';
 import '../theme.dart';
 import '../widgets/plugin_buttons.dart';
+import 'grid_screen.dart';
+import 'hosts_admin_screen.dart';
 import 'hosts_screen.dart';
 import '../widgets/favorite_star_button.dart';
 import '../widgets/pane_hover_preview.dart';
@@ -51,6 +54,7 @@ import '../widgets/recent_block.dart';
 import 'chat_screen.dart';
 import 'home_search_screen.dart';
 import 'pane_preview_screen.dart';
+import 'shares_screen.dart';
 import 'terminal_screen.dart';
 
 const _cacheKeyPrefix = 'tmux-home-cache-v1';
@@ -170,6 +174,20 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
   Timer? _pendingTimer;
   Timer? _retryTimer;
 
+  /// Shell sidebar (web/home.html aside + shell.js): the full shell
+  /// sidebar minus the footer — side-head + 6 actions + tree-tools +
+  /// tree + recents + resizer. No settings button (web home has none).
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  List<Host>? _treeHosts;
+  String? _treeError;
+  Map<String, String> _treeStates = {};
+  Set<String> _treeFavorites = {};
+  double _sidebarWidth = ShellSidebarResizer.defaultWidth;
+  bool _sidebarCollapsed = false;
+
+  int get _treePaneCount =>
+      (_treeHosts ?? const <Host>[]).fold<int>(0, (sum, host) => sum + host.panes.length);
+
   String get _cacheKey => '$_cacheKeyPrefix:${widget.baseUrl}';
 
   @override
@@ -180,11 +198,99 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
         WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
     _loadCached();
     _load();
+    _loadSidebarData();
+    _loadSidebarPrefs();
     _intervalTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!_resumed) return;
       if (ModalRoute.of(context)?.isCurrent != true) return;
       _load();
     });
+  }
+
+  Future<void> _loadSidebarPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() {
+        _sidebarWidth = (prefs.getDouble('tmux-side-w') ?? ShellSidebarResizer.defaultWidth)
+            .clamp(ShellSidebarResizer.minWidth, ShellSidebarResizer.maxWidth);
+        _sidebarCollapsed = prefs.getBool('tmux-sidebar-collapsed') ?? false;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _saveSidebarPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('tmux-side-w', _sidebarWidth);
+      await prefs.setBool('tmux-sidebar-collapsed', _sidebarCollapsed);
+    } catch (_) {}
+  }
+
+  /// Sidebar tree data: hosts + pane states + favorite ids, each
+  /// best-effort except hosts (whose failure renders inside the tree).
+  /// Also refreshed whenever the board reloads, like web's 20s host
+  /// poll piggybacking on the board's own 15s reload here.
+  Future<void> _loadSidebarData() async {
+    try {
+      final hosts = await widget.api.hosts();
+      if (mounted) {
+        setState(() {
+          _treeHosts = hosts;
+          _treeError = null;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _treeError = '$error');
+    }
+    try {
+      final states = await widget.api.paneStates();
+      if (mounted) setState(() => _treeStates = states);
+    } catch (_) {}
+    try {
+      final data = await widget.api.homeFavorites();
+      final refs = <String>{};
+      final list = data['favorites'];
+      if (list is List) {
+        for (final item in list) {
+          if (item is String) {
+            if (item.isNotEmpty) refs.add(item);
+          } else if (item is Map) {
+            final pane = '${item['pane'] ?? item['id'] ?? ''}';
+            if (pane.isNotEmpty) refs.add(pane);
+          }
+        }
+      }
+      if (mounted) setState(() => _treeFavorites = refs);
+    } catch (_) {}
+  }
+
+  Future<void> _reloadSidebar() async {
+    await _loadSidebarData();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已刷新')));
+    }
+  }
+
+  Future<void> _refreshHost() async {
+    try {
+      final hosts = await widget.api.hosts(refresh: true);
+      if (mounted) {
+        setState(() {
+          _treeHosts = hosts;
+          _treeError = null;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _treeError = '$error');
+    }
+    try {
+      final states = await widget.api.paneStates();
+      if (mounted) setState(() => _treeStates = states);
+    } catch (_) {}
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已刷新')));
+    }
   }
 
   @override
@@ -260,6 +366,7 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
         _loading = false;
       });
       unawaited(_loadPins());
+      unawaited(_loadSidebarData());
       _scheduleFollowUps();
     } catch (error) {
       if (!mounted) return;
@@ -414,6 +521,251 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
         _previewPane = null;
         _previewTitle = '';
       });
+
+  /// The sidebar's recent block data (web home shell mount): pinned
+  /// rows first, then recent rows, from /api/home/recent?limit=12.
+  /// Names resolve like the board's own recent section (pin labels,
+  /// then board favorite titles); states come from the sidebar sweep.
+  Future<RecentBlockData> _loadSidebarRecent() async {
+    final data = await widget.api.pins(limit: 12);
+    List<Map<String, dynamic>> rawRows(Object? value) =>
+        value is List ? value.whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList() : const [];
+    final pinnedRaw = rawRows(data['pinned']);
+    final pinLabels = <String, String>{};
+    for (final row in pinnedRaw) {
+      final ref = '${row['pane'] ?? ''}';
+      final label = '${row['label'] ?? ''}';
+      if (ref.isNotEmpty && label.isNotEmpty) pinLabels[ref] = label;
+    }
+    final board = _board;
+    final favoriteTitles = board == null
+        ? <String, String>{}
+        : {for (final favorite in board.favorites) favorite.pane: favorite.displayTitle};
+    RecentRowData toRow(Map<String, dynamic> row, bool pinned) {
+      final ref = '${row['pane'] ?? ''}';
+      final rawTitle = '${row['title'] ?? ''}';
+      final number = (row['number'] as num?)?.toInt();
+      final visited = (row['visited_at'] as num?)?.toDouble() ?? 0;
+      return RecentRowData(
+        paneRef: ref,
+        label: nameForPane(
+            paneRef: ref,
+            pinLabels: pinLabels,
+            favoriteTitles: favoriteTitles,
+            fallback: rawTitle.isNotEmpty ? rawTitle : ref),
+        pinLabel: pinned ? '${row['label'] ?? ''}' : '',
+        numberLabel: number == null ? '' : '#$number',
+        status: _treeStates[ref] ?? '',
+        visitedLabel: pinned ? '' : formatRecentVisited(visited),
+        pinned: pinned,
+        starred: favoriteTitles.containsKey(ref) || _treeFavorites.contains(ref),
+      );
+    }
+
+    return RecentBlockData(
+      pinned: [for (final row in pinnedRaw) if ('${row['pane'] ?? ''}'.isNotEmpty) toRow(row, true)],
+      recent: [for (final row in rawRows(data['recent'])) if ('${row['pane'] ?? ''}'.isNotEmpty) toRow(row, false)],
+    );
+  }
+
+  /// Narrow sidebar mode (web shell.css @media(max-width:860px)).
+  bool get _sidebarNarrow => MediaQuery.of(context).size.width <= 860;
+
+  void _closeSidebarDrawer() {
+    _scaffoldKey.currentState?.closeDrawer();
+  }
+
+  void _collapseSidebar() {
+    if (_sidebarNarrow) {
+      _closeSidebarDrawer();
+    } else {
+      setState(() => _sidebarCollapsed = true);
+    }
+    unawaited(_saveSidebarPrefs());
+  }
+
+  void _openConsoleForRef(String ref) {
+    _closeSidebarDrawer();
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => HostsScreen(api: widget.api, baseUrl: widget.baseUrl, initialPaneRef: ref),
+    ));
+  }
+
+  Widget _sidebarAction({
+    required Key key,
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback onPressed,
+  }) {
+    return IconButton(
+      key: key,
+      tooltip: tooltip,
+      iconSize: 18,
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+      onPressed: onPressed,
+      icon: Icon(icon, size: 18),
+    );
+  }
+
+  /// The home shell sidebar (web/home.html aside): side-head + tree +
+  /// recents + resizer, deliberately WITHOUT a footer (web home has
+  /// none — no settings button here, unlike grid).
+  Widget _homeSidebarContent(double height) {
+    final countText = _treeHosts == null ? '载入中…' : '$_treePaneCount panes';
+    final countTooltip =
+        _treeHosts == null ? '' : '${_treeHosts!.length} 台主机 · $_treePaneCount 个 pane';
+    final board = _board;
+    final favorites = {
+      ..._treeFavorites,
+      if (board != null) for (final favorite in board.favorites) favorite.pane,
+    };
+    final knownRefs = {
+      for (final host in _treeHosts ?? const <Host>[]) for (final pane in host.panes) pane.ref,
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ShellSidebarHeader(
+          countText: countText,
+          countTooltip: countTooltip,
+          consoleButton: _sidebarAction(
+            key: const Key('home-side-console'),
+            tooltip: '聊天（控制台）',
+            icon: Icons.chat_bubble_outline,
+            onPressed: () {
+              _closeSidebarDrawer();
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => HostsScreen(api: widget.api, baseUrl: widget.baseUrl),
+              ));
+            },
+          ),
+          peerButton: _sidebarAction(
+            key: const Key('home-side-grid'),
+            tooltip: '多窗口',
+            icon: Icons.grid_view_outlined,
+            onPressed: () {
+              _closeSidebarDrawer();
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => GridScreen(api: widget.api, baseUrl: widget.baseUrl),
+              ));
+            },
+          ),
+          hostsButton: _sidebarAction(
+            key: const Key('home-side-hosts'),
+            tooltip: '远程主机',
+            icon: Icons.dns_outlined,
+            onPressed: () {
+              _closeSidebarDrawer();
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => HostsAdminScreen(api: widget.api),
+              ));
+            },
+          ),
+          sharesButton: _sidebarAction(
+            key: const Key('home-side-shares'),
+            tooltip: '管理分享',
+            icon: Icons.share_outlined,
+            onPressed: () {
+              _closeSidebarDrawer();
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => SharesScreen(api: widget.api, baseUrl: widget.baseUrl),
+              ));
+            },
+          ),
+          reloadButton: _sidebarAction(
+            key: const Key('home-side-reload'),
+            tooltip: '刷新',
+            icon: Icons.refresh,
+            onPressed: _reloadSidebar,
+          ),
+          collapseButton: _sidebarAction(
+            key: const Key('home-side-collapse'),
+            tooltip: '折叠侧边栏',
+            icon: Icons.chevron_left,
+            onPressed: _collapseSidebar,
+          ),
+          pluginButtons: PluginButtons(
+              api: widget.api,
+              baseUrl: widget.baseUrl,
+              cookieHeader: widget.api is TerminalApi
+                  ? (widget.api as TerminalApi).wsHeaders['Cookie'] ?? ''
+                  : ''),
+        ),
+        Expanded(
+          child: SessionTreeView(
+            keyPrefix: 'home-tree',
+            hosts: _treeHosts,
+            error: _treeError,
+            states: _treeStates,
+            favorites: favorites,
+            onPane: (pane) => _openConsoleForRef(pane.ref),
+            onToggleFavorite: (ref, starred) async {
+              // Web home onStar: toast + board reload.
+              if (starred) {
+                await widget.api.addHomeFavorite(ref);
+              } else {
+                await widget.api.deleteHomeFavorite(ref);
+              }
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(starred ? '已收藏到主页' : '已取消收藏')));
+              await _load();
+            },
+            onRefreshHost: (_) => _refreshHost(),
+          ),
+        ),
+        // Fixed-bottom recents with grip + fold, like web's shell
+        // mount. No hideWhenFiles (console-only) and no footer.
+        RecentBlock(
+          fixedBottom: true,
+          sidebarHeight: height,
+          knownPaneRefs: knownRefs,
+          load: _loadSidebarRecent,
+          onOpen: (ref) {
+            // Web recents onPick: touch the visit, then the page's
+            // onPane (console navigation on home).
+            unawaited(() async {
+              try {
+                await widget.api.touchHomeRecent(ref);
+              } catch (_) {}
+            }());
+            // Web home onPane navigates for any ref, tree or not.
+            _openConsoleForRef(ref);
+          },
+          onTogglePin: (ref, pinned) async {
+            await widget.api.pinPane(ref, pinned: pinned);
+            await _loadPins();
+          },
+          onRenamePin: (ref, label) async {
+            await widget.api.renamePin(ref, label);
+            await _loadPins();
+          },
+          onToggleFavorite: (ref, starred) async {
+            await _run(
+                () => starred ? widget.api.addHomeFavorite(ref) : widget.api.deleteHomeFavorite(ref),
+                starred ? '已收藏到主页' : '已取消收藏');
+          },
+          onClearUnpinned: (_) => widget.api.clearUnpinnedRecents(),
+          onRenameFavoriteTitle: (ref, label) => widget.api.renameHomeFavorite(ref, label),
+        ),
+      ],
+    );
+  }
+
+  KeyEventResult _onHomeKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      final scaffold = _scaffoldKey.currentState;
+      if (scaffold != null && scaffold.isDrawerOpen) {
+        scaffold.closeDrawer();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+    return KeyEventResult.ignored;
+  }
 
   Future<void> _showPreview(Pane pane, HoverPreview preview, String title) async {
     final origin = preview.offline ? (preview.cached ? '离线 · 缓存' : '离线') : '';
@@ -969,10 +1321,49 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                   ),
                 );
     final showPanel = wide && _previewPane != null;
+    // Shell sidebar mode is web's own 860px breakpoint (shell.css),
+    // independent of the preview drawer's 1100px breakpoint.
+    final sidebarNarrow = _sidebarNarrow;
+    final showSideOpen = sidebarNarrow || _sidebarCollapsed;
     final scaffold = Scaffold(
+      key: _scaffoldKey,
+      onDrawerChanged: sidebarNarrow
+          ? (opened) {
+              if (_sidebarCollapsed == opened) {
+                setState(() => _sidebarCollapsed = !opened);
+                unawaited(_saveSidebarPrefs());
+              }
+            }
+          : null,
+      drawer: sidebarNarrow
+          ? Drawer(
+              key: const Key('home-drawer'),
+              // Web narrow drawer: min(86vw, 320px).
+              width: (width * 0.86 < 320 ? width * 0.86 : 320.0),
+              child: LayoutBuilder(
+                builder: (context, constraints) => _homeSidebarContent(constraints.maxHeight),
+              ),
+            )
+          : null,
       appBar: AppBar(
         title: const Text('主页板'),
         actions: [
+          // Web side-open (home.html #side-open, title 显示会话列表):
+          // visible exactly when the sidebar is shut or narrow.
+          if (showSideOpen)
+            IconButton(
+              key: const Key('home-side-open'),
+              tooltip: '显示会话列表',
+              icon: const Icon(Icons.menu, size: 20),
+              onPressed: () {
+                if (sidebarNarrow) {
+                  _scaffoldKey.currentState?.openDrawer();
+                } else {
+                  setState(() => _sidebarCollapsed = false);
+                  unawaited(_saveSidebarPrefs());
+                }
+              },
+            ),
           IconButton(
             tooltip: '搜索',
             icon: const Icon(Icons.search, size: 20),
@@ -981,25 +1372,53 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
           ),
           IconButton(tooltip: '添加收藏', icon: const Icon(Icons.star_border, size: 20), onPressed: _addFavorite),
           IconButton(tooltip: '刷新', icon: const Icon(Icons.refresh, size: 20), onPressed: _load),
-          // Web's plugins-ui.js buttons on the board surface; renders
-          // nothing when the server reports no buttons.
-          PluginButtons(
-              api: widget.api,
-              baseUrl: widget.baseUrl,
-              cookieHeader: widget.api is TerminalApi
-                  ? (widget.api as TerminalApi).wsHeaders['Cookie'] ?? ''
-                  : ''),
+          // Plugin buttons moved into the sidebar header (N1: web
+          // plugins-ui.js appends them to .side-actions).
         ],
       ),
-      body: boardBody,
+      // Wide: the sidebar is an always-visible column (web shell),
+      // not a hamburger-only drawer. Narrow: Scaffold drawer above.
+      body: sidebarNarrow || _sidebarCollapsed
+          ? boardBody
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  width: _sidebarWidth,
+                  decoration: BoxDecoration(
+                    color: AppTheme.sidebar,
+                    border: Border(right: BorderSide(color: AppTheme.line)),
+                  ),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) => _homeSidebarContent(constraints.maxHeight),
+                  ),
+                ),
+                ShellSidebarResizer(
+                  width: _sidebarWidth,
+                  onWidthChanged: (sidebarWidth) => setState(() => _sidebarWidth = sidebarWidth),
+                  onResizeEnd: _saveSidebarPrefs,
+                  onReset: () {
+                    setState(() => _sidebarWidth = ShellSidebarResizer.defaultWidth);
+                    unawaited(_saveSidebarPrefs());
+                  },
+                ),
+                Expanded(child: boardBody),
+              ],
+            ),
     );
-    if (!showPanel) return scaffold;
+    // includeSemantics: false: a Focus semantics node breaks when
+    // this Scaffold is reparented into the preview Stack (wide
+    // preview tests hit identical()/node.built semantics assertions).
+    // Key routing uses the focus tree, not semantics, so Escape
+    // handling is unaffected.
+    final focused = Focus(onKeyEvent: _onHomeKeyEvent, includeSemantics: false, child: scaffold);
+    if (!showPanel) return focused;
     // Full-viewport overlay ABOVE the Scaffold (web position:fixed):
     // the backdrop dims the whole viewport including the AppBar, and
     // the drawer runs top:0 right:0 bottom:0 with the web shadow.
     return Stack(
       children: [
-        scaffold,
+        focused,
         Positioned.fill(
           child: GestureDetector(
             onTap: _closePreview,

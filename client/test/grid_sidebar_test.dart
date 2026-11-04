@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tmuxweb_client/models/models.dart';
@@ -233,6 +234,19 @@ void main() {
     await tester.tap(find.byKey(const Key('recent-clear')));
     await tester.pumpAndSettle();
     expect(api.clearedUnpinnedCalls, 1);
+  });
+
+  testWidgets('Escape closes the narrow drawer', (tester) async {
+    await pumpGrid(tester);
+    await openDrawer(tester);
+    // Focus a sidebar button first: Escape bubbles from the focused
+    // node up to the screen's Focus handler.
+    await tester.tap(find.byKey(const Key('grid-tree-expand-all')));
+    await tester.pumpAndSettle();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(tester.state<ScaffoldState>(find.byType(Scaffold).first).isDrawerOpen, isFalse);
   });
 
   testWidgets('reload header action toasts 已刷新', (tester) async {

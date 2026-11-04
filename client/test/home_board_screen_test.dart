@@ -77,7 +77,13 @@ void main() {
     await tester.pumpWidget(wrap(HomeBoardScreen(api: FakeApi(), baseUrl: _baseUrl)));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('review').first);
+    // Wide: the shell sidebar tree shows the same pane title, so
+    // scope to the board itself (its list lives in a
+    // RefreshIndicator; the sidebar has none).
+    await tester.tap(find.descendant(
+      of: find.byType(RefreshIndicator),
+      matching: find.text('review'),
+    ).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('完整预览'));
     await tester.pumpAndSettle();
@@ -228,7 +234,13 @@ void main() {
     await tester.pumpWidget(wrap(HomeBoardScreen(api: FakeApi(), baseUrl: _baseUrl)));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('review').first);
+    // Wide: the shell sidebar tree shows the same pane title, so
+    // scope to the board itself (its list lives in a
+    // RefreshIndicator; the sidebar has none).
+    await tester.tap(find.descendant(
+      of: find.byType(RefreshIndicator),
+      matching: find.text('review'),
+    ).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('完整预览'));
     await tester.pumpAndSettle();
