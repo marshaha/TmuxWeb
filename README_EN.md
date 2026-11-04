@@ -111,30 +111,6 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 - **File panel**: the path bar is editable (absolute, or relative to the pane cwd — Enter navigates, Esc cancels, focus selects the whole path). the toolbar download button zips the current directory (or just the selection when there is one); every row carries a checkbox, `Ctrl/⌘+click` toggles one item and `Shift+click` selects a range (desktop conventions), and the footer offers 全选 / 清空 / 下载 zip (N) for files *and* whole directories can be zipped: local panes zip straight from disk, remote hosts only need `tar` (the bytes come back in one SSH call and are re-containered locally). Limits: `TMUX_WEB_ZIP_MAX` (128MB uncompressed) and `TMUX_WEB_ZIP_MAX_FILES` (1000).
 - **Optional MCP mailbox**: controlled text messaging among Claude Code, Codex, and Hermes without arbitrary shell or filesystem tools.
 
-
-## Web ⇄ Flutter parity gate
-
-The web console and the Flutter client (`client/`) share one HTTP API; a feature that only lands on one side
-drifts silently. `scripts/parity.py` turns that into a hard rule: it compares **server routes**, **routes the
-Dart client actually calls**, **shared `web/assets/*.js` modules** and **pages**, and everything extra must be
-declared in `parity.json`:
-
-- `ported_*`: where the Dart side lives (the path must exist — delete it and the gate fails);
-- `web_only_*`: web-only, with the reason;
-- `pending_*`: known debt, printed in the report, not blocking.
-
-```bash
-python3 scripts/parity.py           # report, exit 1 on undeclared drift
-python3 scripts/parity.py --update  # refresh the manifest, keep written reasons
-```
-
-`tests/test_parity.py` runs it inside the server suite and `tests.yml` has a dedicated `parity` job, so a new
-endpoint without a decision about the app turns CI red without installing Flutter. For every new web feature:
-run the script, then either port it to Dart in the same change (`ported_*`) or record `pending_*` with a reason.
-
-Known debt today (`parity.json`): `recents.js` (the app has no standalone 最近 block yet) and
-`composer-files.js` (the app's chat cannot attach files yet; the upload API is already in the client).
-
 ## Supervision and chasing a disappearing session
 
 `tmux kill-session`, a broken `exec` chain or a stray `kill` all look the same: the whole session
@@ -362,7 +338,6 @@ in its manifest. Plugins share the server's interpreter: the declaration constra
 capabilities, it is not a kernel sandbox, so run untrusted plugins inside a container. See
 [`plugins/README.md`](plugins/README.md).
 
-
 ## Design boundaries
 
 - Chat mode never keeps a `tmux attach` client alive, avoiding terminal-size interference between devices.
@@ -568,7 +543,6 @@ A saved host can be dialled **through another saved host** (`jump_host_id`):
 username, port, auth_type, credential, `jump_host`, verify) and `remove_remote_host`, so an agent can register a box itself —
 `auth_type=agent` needs no secret at all, and `verify=false` stores a host that is not reachable yet.
 
-
 ## Home board: favourites, cards and search
 
 Every pane in the console sidebar has a star on the right: hollow = not saved, filled = saved. Starred panes appear on `/home`.
@@ -698,57 +672,6 @@ publish_home_card(title="eth task converged", body="ITER5 notes written, waiting
 ```
 
 Favourites and cards live in `TMUX_WEB_HOME_DB` (default `home.db`) and do not depend on tmux at all.
-
-## Mobile client (native Flutter)
-
-`client/` is a **native** Flutter client (Android / iOS) that talks to the HTTP API directly - no WebView. The web UI keeps
-evolving on its own.
-
-- login with server URL + password (session cookie) or `TMUX_WEB_API_TOKEN`; the URL is remembered, the password never is
-- host / pane tree with provider badges and screen-text fallback for plain shells
-- Local file links inside a conversation are rewritten at render time: `/abs/path`, `~/path`, `file://…` and relative paths
-  (resolved against the pane's working directory) become `/api/panes/<pane>/files/raw?path=…` and open in a new tab; text,
-  images and PDFs preview inline, everything else downloads as an attachment (the response carries a `sandbox` CSP so a
-  file can never run script in the console). Percent-encoded (non-ASCII) hrefs are decoded first and a `file.md:3685`
-  line suffix is stripped; http(s), mailto and anchor links are left alone.
-- clicking a `.md/.markdown/.mdx/.txt/.log/.json/.yaml/.csv` link opens an in-console reader instead of a new tab: markdown uses
-  the same renderer (headings, tables, code blocks, mermaid, block controls), `源码` toggles the raw text, `新标签打开` opens the
-  raw file, Esc or a backdrop click closes it; relative links and images inside the document resolve against its own folder, and a
-  nested markdown link opens in the same panel. Files above 1.2 MB start in source mode with a `渲染` switch.
-- sends are shown optimistically (发送中/已发送) and reconciled when the transcript echoes them: text is compared whitespace- and
-  wrapping-insensitively, and a rewritten/expanded echo is paired by order, so a placeholder never lingers after later replies;
-  the placeholder sits right after the last message that existed when send was pressed, not at the very end
-- Stopping a turn: while the agent works and the composer is empty the send button becomes a red stop button (square icon);
-  clicking it (or pressing Esc in the composer) sends the key that CLI expects - `Ctrl+Q` for Hermes (Ctrl+C also interrupts
-  but a second press within two seconds force-exits its TUI, so it is never sent automatically) and `Esc` for Claude Code,
-  Codex and Kimi. `POST /api/panes/{pane}/interrupt` picks the key; the Flutter client has the same stop button. Typing text turns it back into
-  the send arrow, and Enter always sends. Backed by `POST /api/panes/{pane}/key` (Escape/Enter/Tab/C-c/C-d/C-u/arrows only).
-- Reasoning strip: a small line pinned right above the composer reads `…thinking… 1m38s` (animated dots plus elapsed) while the
-  agent works and `…idle…` otherwise; the header mirrors it as `<provider> · thinking…` with a breathing dot. It is derived from the transcript (the last message is still a user message)
-  plus the pane-screen probe (`esc to interrupt`/spinner, which covers streaming agents such as codex); when both settle the line
-  disappears and the sidebar dot goes back to idle.
-- Long conversations page backwards: the first read takes 300 messages, scrolling to the top doubles it (300→600→1200…, capped by
-  `TMUX_WEB_TRANSCRIPT_LIMIT_MAX`, default 3000) and the top bar also offers 加载更早的消息; the reading position is preserved and the
-  control disappears once the session start is reached. The share action in the top bar is an icon only (arrow to the upper right).
-- The share dialog sizes itself with `100vw`, not `100%`, so it no longer jumps when the viewport or keyboard changes; on phones
-  (≤600px) it becomes a bottom sheet: full width, rounded top corners only, 88dvh cap, the form scrolls inside and the action
-  buttons stay sticky at the bottom. HTML pages are served with `Cache-Control: no-store`.
-- conversation polling every two seconds with an optimistic bubble while sending; transcripts, scroll offsets and drafts are
-  cached per pane, so switching back paints instantly and revalidates in the background
-- **per-message "copy all"** plus **per-block controls**: copy code, copy tables as TSV, copy mermaid source, and flip tables
-  between rendered and source
-- share links open by slug (optionally with a password); read-only shares hide the composer and show a banner
-- not included: terminal mode, the file browser, session creation, and mermaid rendering (use the web UI for those)
-
-```bash
-cd client
-flutter pub get
-flutter test                 # 44 unit / widget tests
-flutter build apk --release --split-per-abi
-```
-
-iOS is built by GitHub Actions on `macos-latest` (`.github/workflows/mobile.yml`): unsigned IPA by default, signed and
-uploaded to TestFlight once the Apple credentials are configured. See `client/README.md`.
 
 ## Share a conversation
 

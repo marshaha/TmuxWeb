@@ -33,8 +33,6 @@
 
 - 只读分享：创建分享时取消勾选「允许访客继续对话」，打开 `/share/<slug>` 应显示橙色「只读」徽标、底部是「只读分享：可以查看内容，但不能发送消息。」且没有输入框；`POST /share/<slug>/api/input` 返回 403 `this share is read-only`，而 `/api/transcript` 仍是 200；勾选创建的分享输入框正常且能发送。旧 `shares.db` 重启后应自动补上 `allow_input` 列（默认 1，老分享保持可对话）。
 
-- Flutter 会话切换缓存：`cd client && flutter test` 中「a cached conversation paints before the network answers」验证有缓存时首帧就渲染旧内容并显示「更新中…」，网络返回后替换且标记消失；「the draft is kept per conversation」验证草稿按会话保留；「the cache keeps a bounded working set」验证最多 8 个（测试用 2 个）。真机：在主机树里打开 A、打开 B、再回到 A，A 的消息应立刻出现（顶部短暂显示「更新中…」），滚动位置与未发送草稿保持不变。
-- 移动客户端（原生 Flutter）：`cd client && flutter test` 全绿（切块顺序与转义、表格解析/TSV、URL 规范化、cookie 登录、pane 引用编码、只读分享 403、聊天渲染与复制、块源码切换、只读隐藏输入框、发送成功/失败、登录校验与记住地址、Token 登录）。`flutter analyze` 无 error。真机冒烟：填 `http://<内网IP>:8899` + 密码 → 主机树 → 打开 `%7` → 消息可复制、表格可切源码、分享链接打开只读分享时没有输入框。构建验收：`flutter build apk --release --split-per-abi` 与 `appbundle` 成功，`apksigner verify --print-certs` 显示 `CN=TmuxWeb`。
 
 - 远端 transcript 增量传输：`cd tests && python -m unittest test_remote_hosts -k incremental` 应通过（第二次轮询只带字节偏移、文件被重写时整窗重取、文件消失时回退定位）；`python -m unittest test_remote_hosts -k gzip` 验证 gzip 负载解码与损坏负载报错。实测一台 300MB 会话的远端主机：首次 `/api/panes/<pane>/transcript` 约 8s，之后 1-2s，响应体 ≤60KB。
 
@@ -58,11 +56,9 @@
 
 - 主机表单：桌面上「主机/IP」占满一整行且输入框满宽（编辑弹窗同样）；勾选「显示凭据内容」后密码变明文、私钥去遮蔽，取消勾选恢复；勾选「不校验连接直接保存」后用错误密码、甚至填一个不可达地址添加主机都应成功：列表显示离线、指纹位置显示「指纹待首次连通时记录」；之后把地址/凭据改对，第一次连通时会自动记录并固定指纹（`accept-new`），后续按固定指纹校验。单测：`test_a_host_may_be_saved_without_a_working_credential`、`test_host_form_lets_you_reveal_and_skip_verification`。
 
-- 停止推理：让一个 agent pane 处于运行状态（提交一个耗时任务），输入框为空时右下按钮应变成红色方形停止键，标题为「停止当前推理（Esc）」；点击后状态显示「正在停止…」「已发送 Esc」，pane 收到 Esc 后该轮被打断；输入任意文字按钮变回发送箭头，清空又变回停止；在输入框按 Esc 也能停止。**Hermes 的 pane 会收到 Ctrl+Q**（状态角标显示「已发送 Ctrl+Q」），实测能中断当前回合且会话不退出；Claude/Codex/Kimi 收到 Esc。Flutter 客户端：thinking 且输入框为空时按钮为红色停止键，输入文字变回发送键。单测：`test_escape_can_be_sent_to_interrupt_a_turn`（含非法键 422、未登录 401）、`test_send_button_turns_into_a_stop_button_while_working`、`test_interrupt_uses_the_key_each_cli_expects`。
+- 停止推理：让一个 agent pane 处于运行状态（提交一个耗时任务），输入框为空时右下按钮应变成红色方形停止键，标题为「停止当前推理（Esc）」；点击后状态显示「正在停止…」「已发送 Esc」，pane 收到 Esc 后该轮被打断；输入任意文字按钮变回发送箭头，清空又变回停止；在输入框按 Esc 也能停止。**Hermes 的 pane 会收到 Ctrl+Q**（状态角标显示「已发送 Ctrl+Q」），实测能中断当前回合且会话不退出；Claude/Codex/Kimi 收到 Esc。单测：`test_escape_can_be_sent_to_interrupt_a_turn`（含非法键 422、未登录 401）、`test_send_button_turns_into_a_stop_button_while_working`、`test_interrupt_uses_the_key_each_cli_expects`。
 
-- Flutter 对齐：手机端应能（1）在侧边栏展开「主机 → session → window → pane」并看到 busy/idle 圆点；（2）进「服务器管理」新增/编辑/删除主机，勾「不校验连接直接保存」后错误密码也能存下；（3）在对话页右上角点终端图标进入 PTY，能敲命令并看到回显（断网后自动重连）；（4）输入框里 Enter 发送、Shift+Enter 换行。单测：`hosts_tree_test.dart`（树分组、状态圆点、Enter/Shift+Enter、`wsUri` 协议推导）、`hosts_admin_screen` 的对话框用例。
 
-- Flutter 文件面板：对话页右上角文件夹图标进入；应能列目录（显示文件大小）、点目录进入、点「↑」回上级、点 markdown 在弹层里渲染、点下载把文件存到应用文档目录、右上角上传/打包 zip 可用。服务器管理弹窗里每个字段的标签都在输入框**上方**，不再和框内文字重叠。单测：`files_screen_test.dart`、`hosts_tree_test.dart` 里的标签位置断言。
 
 - 主页完整预览：电脑（窗口宽 ≥1100px）点卡片右上角「↗」→ 右侧滑出抽屉，里面是完整对话（markdown 渲染、可复制、可继续发送、busy 时发送键变停止键），点右上角 ✕ 或按 Esc 关闭；把窗口缩到 1100px 以下再点同一按钮 → 直接跳到 `/preview?pane=…`，点左上角返回或用手势返回都回到 `/home`。悬停浮层现在可以用鼠标滚轮滚动，且鼠标移到浮层上不会消失。
 - 主页悬停预览：把鼠标移到收藏卡片上 → 右侧浮出「agent 回复」面板，显示最后一条 AI 回复全文（超过 6000 字标注「已截断」）；若该窗格最新一条是用户消息（busy 时常见），浮层仍显示上一条 AI 回复。移开鼠标或滚动页面时浮层消失。顶栏不应再有「回到控制台」按钮（入口在左侧树顶部）。
