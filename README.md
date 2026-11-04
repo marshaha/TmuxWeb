@@ -702,10 +702,17 @@ codex mcp add tmuxweb --url http://host:8787/mcp
 printf 'y\ny\n' | hermes mcp add tmuxweb --url http://host:8787/mcp --auth header
 ```
 
-**地址约定**：一律用 tailnet 地址（`http://100.x.y.z:8787`）。同一个 tailnet 是双向的，跨机器不需要反向隧道、
-不需要 SSH 转发；`install_relay_mcp.sh` 默认就取本机 `tailscale ip -4`，没装 tailscale 才回落到 `127.0.0.1`。
-只有**必须经跳板机**的主机（例如 `oracle` 走 `aliyun` 跳，公网地址不在 tailnet 里）才另说——那种情况在
-`remote_hosts` 里配 `jump_host_id`，relay 本身仍然连本机这一条 URL。
+**地址约定**：用的不是"Tailscale"，而是**两台机器之间有没有一条互通的私有网段**。Tailscale、EasyTier、
+ZeroTier、WireGuard、子网代理、一个物理局域网——对 TmuxWeb 都是同一件事：能不能双向访问到 `8787`。
+所以配置里写的是那个网段里的地址（`http://100.x.y.z:8787`、`http://10.x.y.z:8787` 都行）。
+
+`scripts/relay-endpoint.sh` 负责这件事，按「显式 `TMUXWEB_URL` → overlay 网卡（tailscale / easytier /
+zerotier / wireguard）→ 物理局域网默认路由地址 → `127.0.0.1`」的顺序**逐个探测**，取第一个真能通的；
+`install_relay_mcp.sh` 直接用它，所以装了 EasyTier 而没装 Tailscale 的机器一样是零配置。
+
+只有**必须经跳板机**的主机才另说（例如 `oracle` 走 `aliyun` 跳，两个网段互不可见）：那种情况在
+`remote_hosts` 里配 `jump_host_id`，relay 侧仍是同一条 URL；如果连"从它自己的网络里连回来"都做不到，
+就退到 `--hub`（stdio over ssh）或 `scripts/reverse_tunnel.sh`。
 
 **装在另一台机器上**（比如 Mac mini 的 Hermes）：只要那台机器能访问到这个 URL 就行，不需要本仓库、不需要 python3。
 
@@ -718,8 +725,8 @@ hermes mcp add tmuxweb --url http://100.x.y.z:8787/mcp --auth header
 hermes mcp test tmuxweb        # ✓ Connected · 10 tools
 ```
 
-`curl http://100.x.y.z:8787/` 回 303 就说明通（303 是未登录跳转），`/mcp` 不带 token 回 401 才是对的。
-别用 MagicDNS 短名（实测 `http://robo:8787/` 会 502），写 tailnet IP。
+判断通不通：`curl http://<那个地址>:8787/` 回 303（未登录跳转）就是通，`/mcp` 不带 token 回 401 说明
+鉴权正常。别用 MagicDNS 短名（实测 `http://robo:8787/` 回 502），写 IP。
 
 ### 机器连不回来时：反向隧道 / stdio over SSH
 

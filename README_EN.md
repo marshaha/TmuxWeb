@@ -799,11 +799,19 @@ Tools: `list_agents`, `ask_agent`, `send_agent`, `read_agent` (screen text, or `
 ./install_relay_mcp.sh --uninstall
 ```
 
-**Address convention**: always use the tailnet address (`http://100.x.y.z:8787`). A tailnet is bidirectional, so no
-reverse tunnel and no `ssh -R` is needed across machines; `install_relay_mcp.sh` defaults to this machine's
-`tailscale ip -4` and only falls back to `127.0.0.1` when Tailscale is absent. Hosts that must go **through a jump
-host** (e.g. `oracle` via `aliyun`, not on the tailnet) are the exception: set `jump_host_id` in `remote_hosts`; the
-relay still points at this one URL.
+**Address convention**: what matters is not "Tailscale" but whether the two machines share a **private network path**.
+Tailscale, EasyTier, ZeroTier, WireGuard, a subnet router or one physical LAN are the same thing to TmuxWeb: can you
+reach port 8787 both ways? So the configured address is whatever that network uses (`http://100.x.y.z:8787`,
+`http://10.x.y.z:8787`, ...).
+
+`scripts/relay-endpoint.sh` does the discovery: explicit `TMUXWEB_URL` → overlay interfaces (tailscale / easytier /
+zerotier / wireguard) → the physical LAN's default-route address → `127.0.0.1`, **probing each one** and returning the
+first that answers. `install_relay_mcp.sh` uses it, so a host running EasyTier instead of Tailscale needs no config
+either.
+
+Hosts that must go **through a jump host** are the exception (`oracle` via `aliyun`: neither sees the other's subnet).
+Set `jump_host_id` in `remote_hosts`; the relay still points at the same URL. If the host cannot reach back on *any*
+network of its own, fall back to `--hub` (stdio over ssh) or `scripts/reverse_tunnel.sh`.
 
 **Installing on a different machine** (e.g. Hermes on a Mac mini): the machine only needs to reach the URL — no repo, no
 python3. Seed the token, then register, then test:
@@ -814,8 +822,8 @@ hermes mcp add tmuxweb --url http://100.x.y.z:8787/mcp --auth header   # answer 
 hermes mcp test tmuxweb        # -> Connected, 10 tools
 ```
 
-`curl http://100.x.y.z:8787/` returning 303 means the path is open (303 is the login redirect; `/mcp` without a token
-should return 401). Use the tailnet IP rather than a MagicDNS short name — `http://robo:8787/` answered 502 in testing.
+`curl http://<address>:8787/` returning 303 means the path is open (303 is the login redirect; `/mcp` without a token
+should return 401). Use the IP rather than a MagicDNS short name — `http://robo:8787/` answered 502 in testing.
 
 ### When the machine cannot be reached at all: reverse tunnel or stdio over SSH
 

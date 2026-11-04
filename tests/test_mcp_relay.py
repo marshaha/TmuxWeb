@@ -170,15 +170,32 @@ class InstallerTests(unittest.TestCase):
         # 预置 token 的那段不能把它打到 stdout
         self.assertNotIn('echo "$TOKEN"', script)
 
-    def test_installer_defaults_to_the_tailnet_address(self):
-        """地址统一走 tailnet：跨机器直连，不用反向隧道；没装 tailscale 才回落到 127.0.0.1。"""
+    def test_installer_discovers_any_private_network_endpoint(self):
+        """地址不限定 Tailscale：EasyTier / ZeroTier / WireGuard / 局域网都算，取第一个真能通的。"""
         script = Path("install_relay_mcp.sh").read_text()
-        self.assertIn('ip -4', script)
-        self.assertIn('DEFAULT_IP=$(tailnet_ip) || DEFAULT_IP="127.0.0.1"', script)
-        self.assertIn('URL="${TMUXWEB_URL:-http://$DEFAULT_IP:8787}"', script)
-        self.assertIn('DEFAULT_IP="127.0.0.1"', script)               # 回落分支还在
+        self.assertIn("scripts/relay-endpoint.sh", script)
+        self.assertIn("${DISCOVERED:-http://127.0.0.1:8787}", script)   # 全都不通才回落
+        helper = Path("scripts/relay-endpoint.sh").read_text()
+        for overlay in ("tailscale", "easytier", "zerotier", "wireguard", "lan", "localhost"):
+            self.assertIn(overlay, helper, overlay)
         # macOS 上 tailscale 是 App 里的二进制，不在 PATH
-        self.assertIn("/Applications/Tailscale.app/Contents/MacOS/Tailscale", script)
+        self.assertIn("/Applications/Tailscale.app/Contents/MacOS/Tailscale", helper)
+        # 判据是“能双向访问到 8787”，不是某个产品名
+        self.assertIn("200|204|301|302|303|307|308|401|403", helper)
+
+    def test_the_endpoint_helper_probes_before_answering(self):
+        """--probe 只输出真能连上的那个；全都连不上时退出码 1。"""
+        result = subprocess.run(["bash", "scripts/relay-endpoint.sh", "--probe"],
+                                capture_output=True, text=True, timeout=30,
+                                env={**os.environ, "TMUXWEB_URL": "http://127.0.0.1:9"})
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "")
+
+        listed = subprocess.run(["bash", "scripts/relay-endpoint.sh", "--list"],
+                                capture_output=True, text=True, timeout=30,
+                                env={**os.environ, "TMUXWEB_URL": "http://127.0.0.1:8787"})
+        self.assertEqual(listed.returncode, 0)
+        self.assertEqual(listed.stdout.strip(), "explicit\thttp://127.0.0.1:8787")
 
 
 class ReverseTunnelTests(unittest.TestCase):

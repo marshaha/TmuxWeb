@@ -44,20 +44,15 @@ if [ -f "$DIR/.env" ]; then
   . "$DIR/.env"
   set +a
 fi
-# 默认用 tailnet 地址：其它机器（含经跳板机的）只要加入同一个 tailnet 就能直连，
-# 不用反向隧道；本机没装 tailscale 时回落到 127.0.0.1
-tailnet_ip() {
-  for candidate in tailscale /usr/bin/tailscale /opt/homebrew/bin/tailscale \
-                   /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-      ip=$("$candidate" ip -4 2>/dev/null | head -1)
-      if [ -n "$ip" ]; then printf '%s' "$ip"; return 0; fi
-    fi
-  done
-  return 1
-}
-DEFAULT_IP=$(tailnet_ip) || DEFAULT_IP="127.0.0.1"
-URL="${TMUXWEB_URL:-http://$DEFAULT_IP:8787}"
+# 地址不限定 Tailscale：EasyTier / ZeroTier / WireGuard / 子网代理 / 物理局域网都算，
+# 判据只有一条 —— 从这台机器能双向访问到 8787。scripts/relay-endpoint.sh 按
+# 「显式 URL → overlay 网卡 → 物理局域网 → 127.0.0.1」的顺序探测，取第一个真能通的。
+ENDPOINT_HELPER="$DIR/scripts/relay-endpoint.sh"
+DISCOVERED=""
+if [ -z "${TMUXWEB_URL:-}" ] && [ -f "$ENDPOINT_HELPER" ]; then
+  DISCOVERED=$(TMUX_WEB_PORT="${TMUX_WEB_PORT:-8787}" bash "$ENDPOINT_HELPER" --probe 2>/dev/null || true)
+fi
+URL="${TMUXWEB_URL:-${DISCOVERED:-http://127.0.0.1:8787}}"
 MCP_URL="${TMUXWEB_MCP_URL:-${URL%/}/mcp}"
 TOKEN="${TMUXWEB_TOKEN:-${TMUX_WEB_API_TOKEN:-}}"
 case "$(printf '%s' "${TMUX_WEB_MCP_AUTH:-on}" | tr '[:upper:]' '[:lower:]')" in
