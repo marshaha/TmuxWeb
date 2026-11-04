@@ -1,11 +1,14 @@
 import 'dart:convert';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
+import '../services/drop_files.dart';
 import '../services/save_file.dart';
 import '../theme.dart';
 
@@ -68,8 +71,8 @@ class SidebarFileView {
 /// have checkboxes, and the footer offers select-all / clear / rename
 /// / delete / zip with web's `syncFileSelection` visibility rules.
 /// Upload, rename and delete copy [FilesScreen]'s dialog and message
-/// shapes; OS drag-and-drop is deliberately not here (web's panel
-/// accepts drops too, but that is a separate extension item).
+/// shapes; OS drag-and-drop uses the same [DropTarget] seam and
+/// upload path as [FilesScreen] (web's panel accepts drops too).
 class SidebarFilePanel extends StatefulWidget {
   const SidebarFilePanel({
     super.key,
@@ -108,6 +111,19 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
   String? _error;
   bool _loading = true;
   bool _busy = false;
+
+  /// Desktop only, like [FilesScreen]: web's file panel accepts
+  /// drops, but there is no OS drop target on mobile, where the
+  /// picker button stays the only upload path.
+  static bool get _isDesktop => const {
+        TargetPlatform.macOS,
+        TargetPlatform.windows,
+        TargetPlatform.linux,
+      }.contains(defaultTargetPlatform);
+
+  /// True while an OS drag hovers the panel (web's
+  /// `.file-panel.dragging` outline).
+  bool _dragging = false;
 
   /// Monotonic request id: completions from an older directory request
   /// are ignored, like [FilesScreen]'s filesSeq guard.
@@ -277,6 +293,76 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
     await _uploadAll(picked);
   }
 
+  /// OS drop on desktop, through the same upload path as the picker
+  /// and the same shared [readDroppedUploads] seam as [FilesScreen].
+  Future<void> _handleDrop(DropDoneDetails details) async {
+    if (mounted) setState(() => _dragging = false);
+    final listing = _listing;
+    if (listing == null || _busy) return;
+    final dropped = await readDroppedUploads(details);
+    if (dropped.failure != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${dropped.failure!.name}: ${dropped.failure!.error}')),
+        );
+      }
+      return;
+    }
+    if (dropped.files.isEmpty) return;
+    await _uploadAll(dropped.files);
+  }
+
+  /// Wraps the panel in a [DropTarget] on desktop only, covering
+  /// the whole panel (path bar, list, selection bar), like web's
+  /// `#file-panel` drop listeners and [FilesScreen]'s wrapper.
+  Widget _dropWrap(Widget child) {
+    if (!_isDesktop) return child;
+    return DropTarget(
+      key: const Key('sidebar-files-drop-target'),
+      onDragEntered: (_) {
+        if (mounted) setState(() => _dragging = true);
+      },
+      onDragExited: (_) {
+        if (mounted) setState(() => _dragging = false);
+      },
+      onDragDone: _handleDrop,
+      child: Stack(
+        children: [
+          child,
+          if (_dragging) _dropOverlay(),
+        ],
+      ),
+    );
+  }
+
+  /// Web's `.file-panel.dragging` affordance, same as [FilesScreen]'s
+  /// overlay: a 2px dashed accent outline plus a drop hint.
+  /// IgnorePointer so the overlay itself can never swallow a tap if
+  /// the drag state ever goes stale.
+  Widget _dropOverlay() {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Container(
+          key: const Key('sidebar-files-drop-overlay'),
+          color: AppTheme.accent.withValues(alpha: 0.08),
+          child: CustomPaint(
+            painter: DashedDropBorderPainter(AppTheme.accent),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.file_upload_outlined, size: 32, color: AppTheme.accent),
+                  const SizedBox(height: 8),
+                  Text('松开以上传到当前目录', style: TextStyle(fontSize: 14, color: AppTheme.accent)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// Same `uploadFile` calls, same refresh, same messages as web's
   /// `uploadFiles` and [FilesScreen]'s `_uploadAll`: success always
   /// reports the count (`已上传 N 个文件`), and the first failure
@@ -435,7 +521,7 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
     final listing = _listing;
     // Web's syncFileSelection title rule for the bar download button.
     final zipTooltip = _selected.isEmpty ? '打包下载当前目录' : '打包下载选中的 ${_selected.length} 项';
-    return Column(
+    return _dropWrap(Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
@@ -529,7 +615,7 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
         Expanded(child: _buildList(listing)),
         if (_selected.isNotEmpty) _buildSelectionBar(),
       ],
-    );
+    ));
   }
 
   /// Footer for the checkbox selection, with web's `syncFileSelection`

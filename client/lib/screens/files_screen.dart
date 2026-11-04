@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../api/api_client.dart';
+import '../services/drop_files.dart';
 import '../services/save_file.dart';
 import '../models/models.dart';
 import '../theme.dart';
@@ -198,61 +199,24 @@ class _FilesScreenState extends State<FilesScreen> {
   }
 
   /// OS drop on desktop, through the same upload path as the picker.
-  /// Directories arrive as [DropItemDirectory] (desktop_drop fills
-  /// `children` only for the web drop path; the macOS plugin reports
-  /// a directory with empty children), so a dropped folder on its
-  /// own uploads nothing — exactly like web, whose drop handler
-  /// only reads `dataTransfer.files`. Entries are read in drop
-  /// order; the first unreadable entry stops the drop with
-  /// `<name>: <error>`, matching web's `uploadFiles`, which returns
-  /// on the first failure instead of continuing with the rest.
+  /// Reading uses the shared [readDroppedUploads] seam (same as the
+  /// sidebar file panel); the first unreadable entry stops the drop
+  /// with `<name>: <error>`, like web's `uploadFiles`.
   Future<void> _handleDrop(DropDoneDetails details) async {
     if (mounted) setState(() => _dragging = false);
     final listing = _listing;
     if (listing == null || _busy) return;
-    final files = <DropItem>[];
-    void collect(DropItem item) {
-      if (item is DropItemDirectory) {
-        for (final child in item.children) {
-          collect(child);
-        }
-      } else {
-        files.add(item);
+    final dropped = await readDroppedUploads(details);
+    if (dropped.failure != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${dropped.failure!.name}: ${dropped.failure!.error}')),
+        );
       }
+      return;
     }
-
-    for (final item in details.files) {
-      collect(item);
-    }
-    if (files.isEmpty) return;
-    final uploads = <({String name, List<int> bytes})>[];
-    for (final file in files) {
-      final bookmark = file.extraAppleBookmark;
-      var started = false;
-      try {
-        if (bookmark != null && bookmark.isNotEmpty) {
-          started = await DesktopDrop.instance.startAccessingSecurityScopedResource(bookmark: bookmark);
-        }
-        final bytes = await file.readAsBytes();
-        var name = file.name.isNotEmpty ? file.name : file.path.split('/').last;
-        if (name.isEmpty) name = '未知文件';
-        uploads.add((name: name, bytes: bytes));
-      } catch (error) {
-        // Web's uploadFiles returns on the first failure; a drop
-        // entry that cannot even be read stops the same way.
-        if (mounted) {
-          var name = file.name.isNotEmpty ? file.name : file.path.split('/').last;
-          if (name.isEmpty) name = '未知文件';
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$name: $error')));
-        }
-        return;
-      } finally {
-        if (started) {
-          await DesktopDrop.instance.stopAccessingSecurityScopedResource(bookmark: bookmark!);
-        }
-      }
-    }
-    await _uploadAll(uploads);
+    if (dropped.files.isEmpty) return;
+    await _uploadAll(dropped.files);
   }
 
   /// Wraps the panel body in a [DropTarget] on desktop only. The
@@ -290,7 +254,7 @@ class _FilesScreenState extends State<FilesScreen> {
           key: const Key('files-drop-overlay'),
           color: AppTheme.accent.withValues(alpha: 0.08),
           child: CustomPaint(
-            painter: _DashedBorderPainter(AppTheme.accent),
+            painter: DashedDropBorderPainter(AppTheme.accent),
             child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -843,36 +807,4 @@ class _FilesScreenState extends State<FilesScreen> {
       ),
     );
   }
-}
-
-/// Dashed rounded-rectangle outline, matching web's
-/// `.file-panel.dragging { outline: 2px dashed accent }`.
-class _DashedBorderPainter extends CustomPainter {
-  const _DashedBorderPainter(this.color);
-
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    const inset = 6.0;
-    final rect = Rect.fromLTWH(inset, inset, size.width - inset * 2, size.height - inset * 2);
-    final path = Path()..addRRect(RRect.fromRectAndRadius(rect, const Radius.circular(10)));
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    const dash = 8.0;
-    const gap = 6.0;
-    for (final metric in path.computeMetrics()) {
-      var distance = 0.0;
-      while (distance < metric.length) {
-        final end = (distance + dash).clamp(0.0, metric.length);
-        canvas.drawPath(metric.extractPath(distance, end), paint);
-        distance += dash + gap;
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(_DashedBorderPainter oldDelegate) => oldDelegate.color != color;
 }
