@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme.dart';
@@ -72,7 +74,8 @@ class RecentBlockData {
 String formatRecentVisited(double epochSeconds, {DateTime? now}) {
   if (epochSeconds <= 0) return '';
   final current = now ?? DateTime.now();
-  final seconds = (current.millisecondsSinceEpoch / 1000 - epochSeconds).round();
+  final seconds =
+      (current.millisecondsSinceEpoch / 1000 - epochSeconds).round();
   if (seconds <= 0) return '';
   if (seconds < 60) return '刚刚';
   if (seconds < 3600) return '${seconds ~/ 60} 分钟';
@@ -116,21 +119,68 @@ class _RecentRowState extends State<RecentRow> {
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: widget.data.pinLabel);
+    _controller = TextEditingController(text: _initialText());
+    _focusNode = FocusNode();
+    _focusNode.addListener(_onFocusChange);
+  }
+
+  bool _finished = true;
+  PointerDeviceKind? _lastPointerKind;
+  late final FocusNode _focusNode;
+
+  /// Web startRename initial text (recents.js:349-390): the pin's own
+  /// label, falling back to the displayed label when the pin has none.
+  String _initialText() {
+    final pin = widget.data.pinLabel.trim();
+    if (pin.isNotEmpty) return pin;
+    return widget.data.label.trim();
   }
 
   @override
   void didUpdateWidget(RecentRow oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!_editing && oldWidget.data.pinLabel != widget.data.pinLabel) {
-      _controller.text = widget.data.pinLabel;
+    if (!_editing &&
+        (oldWidget.data.pinLabel != widget.data.pinLabel ||
+            oldWidget.data.label != widget.data.label)) {
+      _controller.text = _initialText();
     }
   }
 
   @override
   void dispose() {
+    _focusNode.removeListener(_onFocusChange);
+    _focusNode.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  /// Blur saves (web's blur handler). Enter/Escape finish first and set
+  /// [_finished], so this is a no-op for them.
+  void _onFocusChange() {
+    if (!_focusNode.hasFocus && _editing && !_finished) _finish(save: true);
+  }
+
+  /// Pinned rows only (web startRename refuses unpinned rows).
+  void _startEdit() {
+    if (!widget.data.pinned || _editing) return;
+    setState(() {
+      _controller.text = _initialText();
+      _editing = true;
+      _finished = false;
+    });
+  }
+
+  void _finish({required bool save}) {
+    if (_finished) return;
+    _finished = true;
+    final raw = _controller.text.trim();
+    final clean = raw.length > 80 ? raw.substring(0, 80) : raw;
+    setState(() {
+      _editing = false;
+      if (!save) _controller.text = _initialText();
+    });
+    _focusNode.unfocus();
+    if (save) _run(() => widget.onRename(widget.data.paneRef, clean));
   }
 
   Color _dotColor() => switch (widget.data.status) {
@@ -185,124 +235,163 @@ class _RecentRowState extends State<RecentRow> {
               borderRadius: BorderRadius.circular(7),
             )
           : null,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(7),
-        onTap: _editing ? null : () => widget.onOpen(data.paneRef),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-          child: Row(
-            children: [
-              if (data.numberLabel.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: Text(data.numberLabel,
-                      style: TextStyle(fontSize: 10, color: AppTheme.faint, fontFamily: 'monospace')),
-                ),
-              Container(
-                width: 6,
-                height: 6,
-                decoration: BoxDecoration(shape: BoxShape.circle, color: _dotColor()),
-              ),
-              const SizedBox(width: 6),
-              if (_editing)
-                Expanded(
-                  child: TextField(
-                    key: Key('recent-rename-input-${data.paneRef}'),
-                    controller: _controller,
-                    autofocus: true,
-                    style: const TextStyle(fontSize: 12),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(6), borderSide: BorderSide(color: AppTheme.accent)),
+      // Web's row is an open button (.recent-open) plus sibling action
+      // buttons. The tap / double-tap / long-press recognizers live on
+      // the open area only: an InkWell with onDoubleTap wrapping the
+      // whole row holds the gesture arena and swallows the pin/star
+      // buttons' taps (verified in a scratch test), so the actions must
+      // stay siblings of the open area, not children of its InkWell.
+      child: Row(
+        children: [
+          Expanded(
+            // Web rename entry (recents.js:349-390): double-click on the
+            // open area (desktop) and 480ms touch long-press. LongPress
+            // details carry no pointer kind, so the Listener records the
+            // kind of the pointer that went down on this row.
+            child: Listener(
+              onPointerDown: (event) => _lastPointerKind = event.kind,
+              child: GestureDetector(
+                onLongPress: () {
+                  if (data.pinned && _lastPointerKind == PointerDeviceKind.touch) {
+                    _startEdit();
+                  }
+                },
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(7),
+                  onTap: _editing ? null : () => widget.onOpen(data.paneRef),
+                  onDoubleTap: data.pinned && !_editing ? _startEdit : null,
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    child: Row(
+                      children: [
+                        if (data.numberLabel.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: Text(data.numberLabel,
+                                style: TextStyle(
+                                    fontSize: 10,
+                                    color: AppTheme.faint,
+                                    fontFamily: 'monospace')),
+                          ),
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                              shape: BoxShape.circle, color: _dotColor()),
+                        ),
+                        const SizedBox(width: 6),
+                        if (_editing)
+                          Expanded(
+                            // No explicit save/cancel buttons (web: Enter saves,
+                            // Escape cancels, blur saves). Escape is caught here;
+                            // blur goes through the FocusNode listener.
+                            child: Focus(
+                              onKeyEvent: (node, event) {
+                                if (event is KeyDownEvent &&
+                                    event.logicalKey ==
+                                        LogicalKeyboardKey.escape) {
+                                  _finish(save: false);
+                                  return KeyEventResult.handled;
+                                }
+                                return KeyEventResult.ignored;
+                              },
+                              child: TextField(
+                                key: Key('recent-rename-input-${data.paneRef}'),
+                                controller: _controller,
+                                focusNode: _focusNode,
+                                autofocus: true,
+                                maxLength: 80,
+                                maxLengthEnforcement:
+                                    MaxLengthEnforcement.enforced,
+                                buildCounter: (_,
+                                        {required currentLength,
+                                        required isFocused,
+                                        required maxLength}) =>
+                                    const SizedBox.shrink(),
+                                style: const TextStyle(fontSize: 12),
+                                decoration: InputDecoration(
+                                  isDense: true,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 8),
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(6),
+                                      borderSide:
+                                          BorderSide(color: AppTheme.accent)),
+                                ),
+                                onSubmitted: (_) => _finish(save: true),
+                              ),
+                            ),
+                          )
+                        else
+                          Expanded(
+                            child: Text(
+                              data.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: data.pinned
+                                      ? FontWeight.w600
+                                      : FontWeight.w400),
+                            ),
+                          ),
+                        if (data.visitedLabel.isNotEmpty && !data.pinned)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 2),
+                            child: Text(data.visitedLabel,
+                                style: TextStyle(
+                                    fontSize: 10.5, color: AppTheme.faint)),
+                          ),
+                      ],
                     ),
-                    onSubmitted: (value) {
-                      setState(() => _editing = false);
-                      _run(() => widget.onRename(data.paneRef, value.trim()));
-                    },
-                  ),
-                )
-              else
-                Expanded(
-                  child: Text(
-                    data.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 12, fontWeight: data.pinned ? FontWeight.w600 : FontWeight.w400),
                   ),
                 ),
-              if (_editing) ...[
-                _action(
-                  key: Key('recent-rename-save-${data.paneRef}'),
-                  tooltip: '保存名字',
-                  icon: Icons.check,
-                  active: true,
-                  onPressed: () {
-                    setState(() => _editing = false);
-                    _run(() => widget.onRename(data.paneRef, _controller.text.trim()));
-                  },
-                ),
-                _action(
-                  key: Key('recent-rename-cancel-${data.paneRef}'),
-                  tooltip: '取消改名',
-                  icon: Icons.close,
-                  active: false,
-                  onPressed: () => setState(() {
-                    _controller.text = data.pinLabel;
-                    _editing = false;
-                  }),
-                ),
-              ] else ...[
-                if (data.visitedLabel.isNotEmpty && !data.pinned)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 2),
-                    child: Text(data.visitedLabel, style: TextStyle(fontSize: 10.5, color: AppTheme.faint)),
-                  ),
-                _action(
-                  key: Key('recent-pin-${data.paneRef}'),
-                  tooltip: data.pinned ? '取消固定' : '固定到上面',
-                  icon: data.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                  active: data.pinned,
-                  onPressed: () => _run(() => widget.onTogglePin(data.paneRef, !data.pinned)),
-                ),
-                if (data.pinned)
-                  _action(
-                    key: Key('recent-rename-${data.paneRef}'),
-                    tooltip: '改名',
-                    icon: Icons.edit_outlined,
-                    active: false,
-                    onPressed: () => setState(() {
-                      _controller.text = data.pinLabel;
-                      _editing = true;
-                    }),
-                  ),
-                _action(
-                  key: Key('recent-star-${data.paneRef}'),
-                  tooltip: data.starred ? '取消收藏' : '收藏到主页',
-                  icon: data.starred ? Icons.star : Icons.star_border,
-                  active: data.starred,
-                  onPressed: () => _run(() => widget.onToggleFavorite(data.paneRef, !data.starred)),
-                ),
-                if (widget.onDelete != null)
-                  _action(
-                    key: Key('delete-recent-${data.paneRef}'),
-                    tooltip: '删除记录',
-                    icon: Icons.delete_outline,
-                    active: false,
-                    onPressed: () => _run(() => widget.onDelete!(data.paneRef)),
-                  ),
-              ],
-            ],
+              ),
+            ),
           ),
-        ),
+          // Web keeps the row actions during a rename; the blur
+          // save above commits a pending edit before an action's
+          // onPressed runs, like web's pointerdown commit.
+          _action(
+            key: Key('recent-pin-${data.paneRef}'),
+            tooltip: data.pinned ? '取消固定' : '固定到上面',
+            icon: data.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+            active: data.pinned,
+            onPressed: () =>
+                _run(() => widget.onTogglePin(data.paneRef, !data.pinned)),
+          ),
+          if (data.pinned)
+            _action(
+              key: Key('recent-rename-${data.paneRef}'),
+              tooltip: '改名',
+              icon: Icons.edit_outlined,
+              active: false,
+              onPressed: _startEdit,
+            ),
+          _action(
+            key: Key('recent-star-${data.paneRef}'),
+            tooltip: data.starred ? '取消收藏' : '收藏到主页',
+            icon: data.starred ? Icons.star : Icons.star_border,
+            active: data.starred,
+            onPressed: () => _run(
+                () => widget.onToggleFavorite(data.paneRef, !data.starred)),
+          ),
+          if (widget.onDelete != null)
+            _action(
+              key: Key('delete-recent-${data.paneRef}'),
+              tooltip: '删除记录',
+              icon: Icons.delete_outline,
+              active: false,
+              onPressed: () => _run(() => widget.onDelete!(data.paneRef)),
+            ),
+        ],
       ),
     );
+    if (!data.pinned) return row;
     // Web suppresses the context menu on pinned rows (recents.js:517-519).
     // Flutter has no default row menu, so the secondary-tap gesture is
     // claimed here so no ancestor menu can open over a pinned row either.
-    if (!data.pinned) return row;
     return GestureDetector(
       key: Key('recent-row-context-suppress-${data.paneRef}'),
       onSecondaryTap: () {},
@@ -380,7 +469,8 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() {
         _collapsed = prefs.getBool(RecentBlock.collapsedKey) ?? false;
-        _height = (prefs.getDouble(RecentBlock.heightKey) ?? 240).clamp(70, 600);
+        _height =
+            (prefs.getDouble(RecentBlock.heightKey) ?? 240).clamp(70, 600);
         _heightLoaded = true;
       });
     } catch (_) {}
@@ -401,7 +491,11 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
 
   Future<void> _reload({bool force = false}) async {
     final now = DateTime.now();
-    if (!force && _lastLoad != null && now.difference(_lastLoad!) < const Duration(seconds: 15)) return;
+    if (!force &&
+        _lastLoad != null &&
+        now.difference(_lastLoad!) < const Duration(seconds: 15)) {
+      return;
+    }
     _lastLoad = now;
     RecentBlockData data;
     try {
@@ -450,9 +544,12 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
           key: ValueKey('recent-${item.paneRef}'),
           data: item,
           onOpen: widget.onOpen,
-          onTogglePin: (ref, pinned) => _afterAction(() => widget.onTogglePin(ref, pinned)),
-          onRename: (ref, label) => _afterAction(() => widget.onRenamePin(ref, label)),
-          onToggleFavorite: (ref, starred) => _afterAction(() => widget.onToggleFavorite(ref, starred)),
+          onTogglePin: (ref, pinned) =>
+              _afterAction(() => widget.onTogglePin(ref, pinned)),
+          onRename: (ref, label) =>
+              _afterAction(() => widget.onRenamePin(ref, label)),
+          onToggleFavorite: (ref, starred) =>
+              _afterAction(() => widget.onToggleFavorite(ref, starred)),
         );
     return ListView(
       key: const Key('recent-list'),
@@ -467,9 +564,11 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
               border: Border.all(color: AppTheme.green.withValues(alpha: 0.22)),
               borderRadius: BorderRadius.circular(9),
             ),
-            child: Column(children: [for (final item in data.pinned) row(item)]),
+            child:
+                Column(children: [for (final item in data.pinned) row(item)]),
           ),
-        if (data.pinned.isNotEmpty && data.recent.isNotEmpty) const SizedBox(height: 5),
+        if (data.pinned.isNotEmpty && data.recent.isNotEmpty)
+          const SizedBox(height: 5),
         for (final item in data.recent) row(item),
       ],
     );
@@ -483,7 +582,8 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
       children: [
         Expanded(
           child: Text('最近 $count',
-              style: TextStyle(fontSize: 10.5, letterSpacing: 0.06, color: AppTheme.faint)),
+              style: TextStyle(
+                  fontSize: 10.5, letterSpacing: 0.06, color: AppTheme.faint)),
         ),
         IconButton(
           key: const Key('recent-fold'),
@@ -491,8 +591,10 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
           iconSize: 18,
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-          icon: Icon(_collapsed ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-              size: 18, color: AppTheme.faint),
+          icon: Icon(
+              _collapsed ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+              size: 18,
+              color: AppTheme.faint),
           onPressed: _toggleCollapsed,
         ),
       ],
@@ -503,21 +605,24 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           header,
-          if (!_collapsed) (widget.fillHeight ? Expanded(child: _rows()) : _rows()),
+          if (!_collapsed)
+            (widget.fillHeight ? Expanded(child: _rows()) : _rows()),
         ],
       );
     }
     if (_collapsed) {
       return Container(
         padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
-        decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
+        decoration: BoxDecoration(
+            border: Border(top: BorderSide(color: AppTheme.line))),
         child: header,
       );
     }
     return Container(
       height: _heightLoaded ? _height : 240,
       padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
-      decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
+      decoration:
+          BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -526,7 +631,8 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
           GestureDetector(
             key: const Key('recent-grip'),
             onVerticalDragUpdate: (details) {
-              setState(() => _height = (_height - details.delta.dy).clamp(70, 600));
+              setState(
+                  () => _height = (_height - details.delta.dy).clamp(70, 600));
             },
             onVerticalDragEnd: (_) async {
               try {
@@ -541,7 +647,9 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
               child: Container(
                 width: 28,
                 height: 2,
-                decoration: BoxDecoration(color: AppTheme.faint, borderRadius: BorderRadius.circular(2)),
+                decoration: BoxDecoration(
+                    color: AppTheme.faint,
+                    borderRadius: BorderRadius.circular(2)),
               ),
             ),
           ),
