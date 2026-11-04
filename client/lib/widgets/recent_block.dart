@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme.dart';
+import 'pane_hover_preview.dart';
 
 /// One row of the shared "recent" block (web: web/assets/recents.js
 /// rowHtml + web/assets/recents.css). Pinned rows render in the tinted
@@ -252,7 +253,8 @@ class _RecentRowState extends State<RecentRow> {
               onPointerDown: (event) => _lastPointerKind = event.kind,
               child: GestureDetector(
                 onLongPress: () {
-                  if (data.pinned && _lastPointerKind == PointerDeviceKind.touch) {
+                  if (data.pinned &&
+                      _lastPointerKind == PointerDeviceKind.touch) {
                     _startEdit();
                   }
                 },
@@ -420,6 +422,14 @@ class RecentBlock extends StatefulWidget {
     required this.onToggleFavorite,
     this.fixedBottom = true,
     this.fillHeight = false,
+    this.activePaneRef,
+    this.hideWhenFiles = false,
+    this.isFilesPanelOpen = false,
+    this.knownPaneRefs,
+    this.sidebarHeight,
+    this.onClearUnpinned,
+    this.onRenameFavoriteTitle,
+    this.loadPreview,
   });
 
   final Future<RecentBlockData> Function() load;
@@ -438,8 +448,54 @@ class RecentBlock extends StatefulWidget {
   /// column gets an unbounded height and fails layout.
   final bool fillHeight;
 
-  static const String heightKey = 'tmux-recent-height';
-  static const String collapsedKey = 'tmux-recent-collapsed';
+  /// Web markActive (recents.js:305-312): the selected pane's ref; its
+  /// row renders .active. Null/empty means no active pane, which also
+  /// disables the pin-selected header button.
+  final String? activePaneRef;
+
+  /// Web console mount only (recents.js hideWhenFiles): when true and
+  /// [isFilesPanelOpen], the whole block hides. Other callers leave
+  /// both at their defaults and are unaffected.
+  final bool hideWhenFiles;
+  final bool isFilesPanelOpen;
+
+  /// Web render filtering (recents.js:144-156): when non-null, unpinned
+  /// rows whose pane is not in this set are dropped; pinned rows for
+  /// vanished panes stay with an offline dot. Null keeps the old
+  /// behavior (all rows shown) for callers that do not pass the tree.
+  final Set<String>? knownPaneRefs;
+
+  /// The sidebar's height, for the web ratio height model (recents.js
+  /// --recent-h): block height = ratio x sidebar height. Null falls
+  /// back to [_fallbackSidebarHeight] so existing callers don't break.
+  final double? sidebarHeight;
+
+  /// Web recent-clear (recents.js:502-516): delete all unpinned rows.
+  /// The caller deletes each ref (DELETE /api/home/recent/<pane>);
+  /// the button is disabled until a caller wires this in.
+  final Future<void> Function(List<String> paneRefs)? onClearUnpinned;
+
+  /// Web rename side effect (recents.js:349-390): renaming a favorited
+  /// pin also updates its favorite title. The caller PATCHes the
+  /// favorite title; without it the title goes stale on rename.
+  final Future<void> Function(String paneRef, String label)?
+      onRenameFavoriteTitle;
+
+  /// Hover preview (web index.html setupPanePreview): when non-null,
+  /// rows are wrapped in the shared [PaneHoverPreview] with the same
+  /// tmux-preview-delay key. Null renders rows unwrapped.
+  final Future<PanePreviewData?> Function(String paneRef)? loadPreview;
+
+  /// Web height model (recents.js:10-11): ratio of sidebar height.
+  static const String heightKey = 'tmux-recent-h';
+  static const String collapsedKey = 'tmux-recent-fold';
+  static const String _legacyHeightKey = 'tmux-recent-height';
+  static const String _legacyCollapsedKey = 'tmux-recent-collapsed';
+  static const double heightRatioDefault = 0.4;
+  static const double heightRatioMin = 0.15;
+  static const double heightRatioMax = 0.75;
+  static const double fallbackSidebarHeight = 600;
+  static const int maxUnpinnedRows = 8;
 
   @override
   State<RecentBlock> createState() => _RecentBlockState();
@@ -451,8 +507,17 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
   Timer? _timer;
   DateTime? _lastLoad;
   bool _collapsed = false;
-  double _height = 240;
+  double _ratio = RecentBlock.heightRatioDefault;
   bool _heightLoaded = false;
+
+  /// Web ratio height: block height = ratio x sidebar height.
+  double get _totalHeight {
+    final given = widget.sidebarHeight;
+    if (given != null && given > 0) return given;
+    return RecentBlock.fallbackSidebarHeight;
+  }
+
+  double get _heightPx => _ratio * _totalHeight;
 
   @override
   void initState() {
@@ -467,13 +532,66 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (!mounted) return;
+      // Fold key migration (E12): read the new key, fall back to the
+      // old one once, then write only the new key from here on.
+      var collapsed = prefs.getBool(RecentBlock.collapsedKey);
+      final legacyCollapsed = prefs.getBool(RecentBlock._legacyCollapsedKey);
+      if (collapsed == null && legacyCollapsed != null) {
+        collapsed = legacyCollapsed;
+        await prefs.setBool(RecentBlock.collapsedKey, legacyCollapsed);
+      }
+      // Height migration (E11): new key is a ratio; the old key was px,
+      // converted against the sidebar height and then persisted as a
+      // ratio so the old key is never read again after this load.
+      var ratio = prefs.getDouble(RecentBlock.heightKey);
+      if (ratio == null) {
+        final legacyPx = prefs.getDouble(RecentBlock._legacyHeightKey);
+        if (legacyPx != null) {
+          ratio = (legacyPx / _totalHeight)
+              .clamp(RecentBlock.heightRatioMin, RecentBlock.heightRatioMax);
+          await prefs.setDouble(RecentBlock.heightKey, ratio);
+        }
+      }
+      if (!mounted) return;
       setState(() {
-        _collapsed = prefs.getBool(RecentBlock.collapsedKey) ?? false;
-        _height =
-            (prefs.getDouble(RecentBlock.heightKey) ?? 240).clamp(70, 600);
+        _collapsed = collapsed ?? false;
+        _ratio = (ratio ?? RecentBlock.heightRatioDefault)
+            .clamp(RecentBlock.heightRatioMin, RecentBlock.heightRatioMax);
         _heightLoaded = true;
       });
     } catch (_) {}
+  }
+
+  /// The rows web would render (recents.js render): out-of-tree
+  /// unpinned rows dropped, pinned vanished rows kept with an offline
+  /// dot, unpinned rows capped at MAX_ROWS=8 (pinned uncapped), and the
+  /// active flag applied. Null until the first load completes.
+  RecentBlockData? get _visibleData {
+    final data = _data;
+    if (data == null) return null;
+    final known = widget.knownPaneRefs;
+    List<RecentRowData> filter(List<RecentRowData> rows) {
+      if (known == null) return rows;
+      return [
+        for (final item in rows)
+          if (item.pinned || known.contains(item.paneRef))
+            item.pinned && !known.contains(item.paneRef)
+                ? item.copyWith(status: 'offline')
+                : item,
+      ];
+    }
+
+    final active = widget.activePaneRef;
+    RecentRowData mark(RecentRowData item) => item.copyWith(
+        active: active != null && active.isNotEmpty && item.paneRef == active);
+    return RecentBlockData(
+      pinned: [for (final item in filter(data.pinned)) mark(item)],
+      recent: [
+        for (final item
+            in filter(data.recent).take(RecentBlock.maxUnpinnedRows))
+          mark(item),
+      ],
+    );
   }
 
   @override
@@ -538,19 +656,36 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
   }
 
   Widget _rows() {
-    final data = _data;
+    final data = _visibleData;
     if (data == null) return const SizedBox.shrink();
-    RecentRow row(RecentRowData item) => RecentRow(
-          key: ValueKey('recent-${item.paneRef}'),
-          data: item,
-          onOpen: widget.onOpen,
-          onTogglePin: (ref, pinned) =>
-              _afterAction(() => widget.onTogglePin(ref, pinned)),
-          onRename: (ref, label) =>
-              _afterAction(() => widget.onRenamePin(ref, label)),
-          onToggleFavorite: (ref, starred) =>
-              _afterAction(() => widget.onToggleFavorite(ref, starred)),
-        );
+    Widget row(RecentRowData item) {
+      final built = RecentRow(
+        key: ValueKey('recent-${item.paneRef}'),
+        data: item,
+        onOpen: widget.onOpen,
+        onTogglePin: (ref, pinned) =>
+            _afterAction(() => widget.onTogglePin(ref, pinned)),
+        onRename: (ref, label) => _afterAction(() async {
+          await widget.onRenamePin(ref, label);
+          // Web rename side effect: a favorited pin's favorite title
+          // follows the new label (recents.js:349-390).
+          if (item.starred) {
+            await widget.onRenameFavoriteTitle?.call(ref, label);
+          }
+        }),
+        onToggleFavorite: (ref, starred) =>
+            _afterAction(() => widget.onToggleFavorite(ref, starred)),
+      );
+      // Hover preview (web: bound to recent rows too, same delay key).
+      final loadPreview = widget.loadPreview;
+      if (loadPreview == null) return built;
+      return PaneHoverPreview(
+        paneRef: item.paneRef,
+        loadPreview: loadPreview,
+        child: built,
+      );
+    }
+
     return ListView(
       key: const Key('recent-list'),
       controller: _scroll,
@@ -576,15 +711,24 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final data = _data;
-    final count = (data?.pinned.length ?? 0) + (data?.recent.length ?? 0);
+    // Web hides the block when the file panel is open (console mount,
+    // recents.js:137-143,164-169) or when there are no rows to render
+    // (recents.js:164-169) — header included, in both cases.
+    final visible = _visibleData;
+    if ((widget.hideWhenFiles && widget.isFilesPanelOpen) ||
+        visible == null ||
+        (visible.pinned.isEmpty && visible.recent.isEmpty)) {
+      return const SizedBox.shrink();
+    }
+    final active = widget.activePaneRef;
+    final hasActive = active != null && active.isNotEmpty;
+    final activePinned =
+        hasActive && visible.pinned.any((item) => item.paneRef == active);
+    // Web head is just `最近` (recents.js:537-553 markup): no count.
+    // Header tools (recents.js:545-552): fold, pin-selected (disabled
+    // with no active pane), clear (deletes all unpinned rows).
     final header = Row(
       children: [
-        Expanded(
-          child: Text('最近 $count',
-              style: TextStyle(
-                  fontSize: 10.5, letterSpacing: 0.06, color: AppTheme.faint)),
-        ),
         IconButton(
           key: const Key('recent-fold'),
           tooltip: _collapsed ? '展开最近' : '折叠最近',
@@ -596,6 +740,36 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
               size: 18,
               color: AppTheme.faint),
           onPressed: _toggleCollapsed,
+        ),
+        Expanded(
+          child: Text('最近',
+              style: TextStyle(
+                  fontSize: 10.5, letterSpacing: 0.06, color: AppTheme.faint)),
+        ),
+        IconButton(
+          key: const Key('recent-pin-selected'),
+          tooltip: activePinned ? '取消固定当前会话' : '固定当前会话',
+          iconSize: 18,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+          icon: Icon(activePinned ? Icons.push_pin : Icons.push_pin_outlined,
+              size: 18, color: activePinned ? AppTheme.accent : AppTheme.faint),
+          onPressed: hasActive
+              ? () =>
+                  _afterAction(() => widget.onTogglePin(active, !activePinned))
+              : null,
+        ),
+        IconButton(
+          key: const Key('recent-clear'),
+          tooltip: '清空最近记录（固定的不动）',
+          iconSize: 18,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+          icon: Icon(Icons.close, size: 18, color: AppTheme.faint),
+          onPressed: widget.onClearUnpinned == null
+              ? null
+              : () => _afterAction(() => widget.onClearUnpinned!(
+                  [for (final item in visible.recent) item.paneRef])),
         ),
       ],
     );
@@ -612,6 +786,7 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
     }
     if (_collapsed) {
       return Container(
+        key: const Key('recent-block'),
         padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
         decoration: BoxDecoration(
             border: Border(top: BorderSide(color: AppTheme.line))),
@@ -619,7 +794,10 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
       );
     }
     return Container(
-      height: _heightLoaded ? _height : 240,
+      key: const Key('recent-block'),
+      height: _heightLoaded
+          ? _heightPx
+          : RecentBlock.heightRatioDefault * _totalHeight,
       padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
       decoration:
           BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
@@ -627,17 +805,28 @@ class _RecentBlockState extends State<RecentBlock> with WidgetsBindingObserver {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           // Draggable-height grip (recents.css .recent-grip): drag up
-          // to grow the block, down to shrink it; persisted locally.
+          // to grow the block, down to shrink it. Web persists a
+          // RATIO of the sidebar height (recents.js --recent-h);
+          // double-click resets to 0.4 and clears the key.
           GestureDetector(
             key: const Key('recent-grip'),
             onVerticalDragUpdate: (details) {
-              setState(
-                  () => _height = (_height - details.delta.dy).clamp(70, 600));
+              setState(() {
+                _ratio = ((_heightPx - details.delta.dy) / _totalHeight).clamp(
+                    RecentBlock.heightRatioMin, RecentBlock.heightRatioMax);
+              });
             },
             onVerticalDragEnd: (_) async {
               try {
                 final prefs = await SharedPreferences.getInstance();
-                await prefs.setDouble(RecentBlock.heightKey, _height);
+                await prefs.setDouble(RecentBlock.heightKey, _ratio);
+              } catch (_) {}
+            },
+            onDoubleTap: () async {
+              setState(() => _ratio = RecentBlock.heightRatioDefault);
+              try {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.remove(RecentBlock.heightKey);
               } catch (_) {}
             },
             child: Container(
