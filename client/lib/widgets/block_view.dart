@@ -1,15 +1,31 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/blocks.dart';
 import '../theme.dart';
+import 'mermaid_view.dart';
 
 /// Per-block toolbar + body: code, tables and mermaid sources each get their own
-/// copy button, and tables can flip between rendered and source.
+/// copy button, and tables and mermaid can flip between rendered and source.
 class BlockView extends StatefulWidget {
-  const BlockView({super.key, required this.block});
+  const BlockView({super.key, required this.block, this.baseUrl = '', this.cookieHeader = '', this.createPlatformView = true});
 
   final Block block;
+
+  /// Server base URL for mermaid rendering (the vendored mermaid.js is
+  /// fetched from `<baseUrl>/assets/mermaid/mermaid.min.js`). Empty means
+  /// no server to fetch from, so mermaid falls back to the old
+  /// source-only view; phase-2 wiring passes the chat screen's baseUrl.
+  final String baseUrl;
+
+  /// `Cookie` header value forwarded to the mermaid WebView for native
+  /// cookie injection (phase-2 passes the API client's header).
+  final String cookieHeader;
+
+  /// False in tests: the mermaid rendered view is a placeholder instead
+  /// of a platform view, which cannot run under `flutter test`.
+  final bool createPlatformView;
 
   @override
   State<BlockView> createState() => _BlockViewState();
@@ -39,9 +55,16 @@ class _BlockViewState extends State<BlockView> {
     });
   }
 
+  /// Mermaid renders only where a WebView exists and a server base URL
+  /// is known. Windows has no webview_flutter backend, so it keeps the
+  /// old source-only view; that is the reported Windows delta, not a
+  /// silent fallback.
+  bool get _canRenderMermaid =>
+      !(!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) && widget.baseUrl.isNotEmpty;
+
   @override
   Widget build(BuildContext context) {
-    final toggleable = _block.kind == BlockKind.table;
+    final toggleable = _block.kind == BlockKind.table || (_block.kind == BlockKind.mermaid && _canRenderMermaid);
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
@@ -84,7 +107,17 @@ class _BlockViewState extends State<BlockView> {
               ],
             ),
           ),
-          if (_block.kind == BlockKind.mermaid)
+          if (_block.kind == BlockKind.mermaid && _canRenderMermaid)
+            if (_showSource)
+              _SourceView(source: _block.source, mono: true)
+            else
+              MermaidView(
+                source: _block.source,
+                assetBaseUrl: widget.baseUrl,
+                cookieHeader: widget.cookieHeader,
+                createPlatformView: widget.createPlatformView,
+              )
+          else if (_block.kind == BlockKind.mermaid) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
               child: Text(
@@ -92,7 +125,8 @@ class _BlockViewState extends State<BlockView> {
                 style: TextStyle(fontSize: 11, color: AppTheme.faint, height: 1.4),
               ),
             ),
-          if (_block.kind == BlockKind.table && !_showSource)
+            _SourceView(source: _block.source, mono: true),
+          ] else if (_block.kind == BlockKind.table && !_showSource)
             _TableView(rows: _block.rows)
           else if (_block.kind == BlockKind.table)
             _SourceView(source: _block.source)
