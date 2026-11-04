@@ -296,6 +296,35 @@ void main() {
     expect(find.textContaining('已保存到'), findsOneWidget);
   });
 
+  test('F7: FileEntry.fromJson carries the API link signal', () {
+    expect(FileEntry.fromJson({'name': 'shortcut', 'path': '/x/shortcut', 'type': 'link'}).isLink, isTrue);
+    expect(FileEntry.fromJson({'name': 'shortcut', 'path': '/x/shortcut', 'type': 'link'}).isDir, isFalse);
+    expect(FileEntry.fromJson({'name': 'sub', 'path': '/x/sub', 'type': 'dir'}).isLink, isFalse);
+    expect(FileEntry.fromJson({'name': 'a.txt', 'path': '/x/a.txt', 'type': 'file'}).isLink, isFalse);
+  });
+
+  testWidgets('F7: symlink row shows a link icon, dir and file icons unchanged', (tester) async {
+    await pumpPanel(tester, _LinkApi());
+    expect(find.byIcon(Icons.link), findsOneWidget);
+    expect(find.byIcon(Icons.folder_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.insert_drive_file_outlined), findsOneWidget);
+  });
+
+}
+
+/// Listing with one dir, one file and one symlink-to-file, for F7.
+class _LinkApi extends FakeApi {
+  @override
+  Future<FileListing> listFiles(String paneRef, {String path = '', bool hidden = false}) async =>
+      FileListing(
+        path: path.isEmpty ? '/srv/work' : path,
+        parent: path.isEmpty ? null : '/srv',
+        entries: [
+          FileEntry(name: 'sub', path: '/srv/work/sub', isDir: true),
+          FileEntry(name: 'notes.md', path: '/srv/work/notes.md', isDir: false, size: 2048),
+          FileEntry(name: 'shortcut', path: '/srv/work/shortcut', isDir: false, isLink: true),
+        ],
+      );
 }
 
 /// Listing with truncated set, for the F2 footer text.

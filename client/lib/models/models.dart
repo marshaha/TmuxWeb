@@ -258,6 +258,7 @@ class FileEntry {
     required this.name,
     required this.path,
     required this.isDir,
+    this.isLink = false,
     this.size = 0,
     this.mtime = 0,
   });
@@ -265,6 +266,14 @@ class FileEntry {
   final String name;
   final String path;
   final bool isDir;
+
+  /// True when the file-list API reports `type: 'link'` — a symlink
+  /// to a non-directory (file_browser.py `_entry` resolves a link to
+  /// a directory as `dir`, so a link-to-dir is indistinguishable
+  /// from a real dir on both web and Flutter; web's renderFiles icon
+  /// rule is dir ? folder : (link ? link : file), and this field
+  /// carries exactly that signal).
+  final bool isLink;
   final int size;
   final double mtime;
 
@@ -284,6 +293,7 @@ class FileEntry {
         name: '${json['name'] ?? ''}',
         path: '${json['path'] ?? ''}',
         isDir: '${json['type'] ?? 'file'}' == 'dir',
+        isLink: '${json['type'] ?? 'file'}' == 'link',
         size: int.tryParse('${json['size'] ?? 0}') ?? 0,
         mtime: double.tryParse('${json['mtime'] ?? 0}') ?? 0,
       );

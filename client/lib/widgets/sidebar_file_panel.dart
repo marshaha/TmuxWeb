@@ -1034,8 +1034,12 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
                   key: Key('sidebar-file-${entry.name}'),
                   dense: true,
                   tileColor: selected ? AppTheme.accent.withValues(alpha: 0.08) : null,
+                  // Web renderFiles icon rule: dir ? folder :
+                  // (link ? link : file).
                   leading: Icon(
-                    entry.isDir ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
+                    entry.isDir
+                        ? Icons.folder_outlined
+                        : (entry.isLink ? Icons.link : Icons.insert_drive_file_outlined),
                     size: 20,
                     color: entry.isDir ? AppTheme.accent : AppTheme.faint,
                   ),
