@@ -43,11 +43,10 @@ class PanePreviewScreen extends StatelessWidget {
   /// polls at 2s/15s with no pause control; the embedded-chat pause
   /// toggle belongs to another surface).
   ///
-  /// Polling itself lives in the embedded ChatScreen (default 1s
-  /// periodic refresh, faster than web's 2s visible / 15s hidden
-  /// cadence — a cadence difference, not a missing control, and
-  /// changing ChatScreen's poll interval is out of this surface's
-  /// scope; see the report).
+  /// Polling itself lives in the embedded ChatScreen: this page
+  /// passes 2s, and the embedded chat switches to web's 15s hidden
+  /// interval on app-lifecycle backgrounding (visible 2s / hidden
+  /// 15s, like web preview.html's document-visibility rule).
   void _openGrid(BuildContext context) {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => GridScreen(api: api, baseUrl: baseUrl),
@@ -118,7 +117,8 @@ class PanePreviewScreen extends StatelessWidget {
         embedded: true,
         baseUrl: baseUrl,
         // Web preview.html polls 2s while visible (15s hidden); the
-        // embedded chat's 1s console cadence is too hot for a preview.
+        // embedded chat switches to 15s on lifecycle backgrounding,
+        // so this 2s visible cadence matches web exactly.
         poll: const Duration(seconds: 2),
       ),
     );

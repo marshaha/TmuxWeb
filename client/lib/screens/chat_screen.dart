@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/api_client.dart';
 import '../models/chat_source.dart';
+import '../services/pointer_kind.dart';
 import '../services/save_file.dart';
 import '../services/screen_stream.dart';
 import 'files_screen.dart';
@@ -66,7 +66,8 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen>
+    with WidgetsBindingObserver {
   final _controller = TextEditingController();
   final _scroll = ScrollController();
   final List<String> _pending = [];
@@ -87,6 +88,13 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _stale = false;
   bool _paused = false;
   bool _fullscreen = false;
+
+  /// Embedded-only hidden flag (item 6): web's document-visibility
+  /// rule, mapped onto the app lifecycle — resumed is visible, any
+  /// other state (paused, inactive, hidden, detached) is hidden.
+  /// Standalone ChatScreen never observes the lifecycle, so this
+  /// stays false there and its poll interval is untouched.
+  bool _hidden = false;
   bool _reconnecting = false;
   Timer? _timer;
   StreamSubscription<String>? _screenSub;
@@ -104,6 +112,13 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.embedded) {
+      // Start hidden when the app is already backgrounded, so the
+      // first timer is the 15s one, not a 2s tick that then restarts.
+      final lifecycle = WidgetsBinding.instance.lifecycleState;
+      _hidden = lifecycle != null && lifecycle != AppLifecycleState.resumed;
+      WidgetsBinding.instance.addObserver(this);
+    }
     final cached = _cache.read(_key);
     if (cached != null) {
       // paint what we already had, then revalidate in the background
@@ -138,6 +153,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    if (widget.embedded) WidgetsBinding.instance.removeObserver(this);
     _rememberScroll();
     _timer?.cancel();
     _sendStateTimer?.cancel();
@@ -151,33 +167,28 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Web's canAutoFocusComposer (index.html:365): only on non-mobile,
-  /// non-touch targets. Flutter has no pointer-kind MediaQuery, so the
-  /// target platform stands in: iOS / Android / Fuchsia never
-  /// autofocus, desktop and web-desktop do.
-  bool get _canAutoFocus {
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.iOS:
-      case TargetPlatform.android:
-      case TargetPlatform.fuchsia:
-        return false;
-      case TargetPlatform.linux:
-      case TargetPlatform.macOS:
-      case TargetPlatform.windows:
-        return true;
-    }
-  }
+  /// non-touch targets. The pointer-kind helper answers it exactly:
+  /// on the web target it is `matchMedia('(pointer: coarse)')`, on
+  /// native targets it is the target-platform rule (iOS / Android /
+  /// Fuchsia never autofocus, desktop does). No platform switch
+  /// remains here — the old desktop-only approximation is gone.
+  bool get _canAutoFocus => !hasCoarsePointer;
 
-  bool get _isTouchDevice {
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.iOS:
-      case TargetPlatform.android:
-      case TargetPlatform.fuchsia:
-        return true;
-      case TargetPlatform.linux:
-      case TargetPlatform.macOS:
-      case TargetPlatform.windows:
-        return false;
-    }
+  bool get _isTouchDevice => hasCoarsePointer;
+
+  /// Embedded-only visibility switch (item 6): the timer actually
+  /// changes interval here — cancel + restart with the new one —
+  /// rather than waiting for the next build or the next tick. The
+  /// live-pause flag still wins: a paused chat stays paused across
+  /// lifecycle changes, and a screen-mode chat keeps its socket
+  /// (polling is not its live path, so no timer is started for it).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!widget.embedded) return;
+    final hidden = state != AppLifecycleState.resumed;
+    if (hidden == _hidden) return;
+    _hidden = hidden;
+    if (!_paused && _screenSub == null) _startPolling();
   }
 
   /// Display title with web's `#N` short-number prefix
@@ -189,10 +200,23 @@ class _ChatScreenState extends State<ChatScreen> {
     return '$number · ${widget.source.title}';
   }
 
+  /// Effective poll interval: the caller's interval while visible,
+  /// web's 15s hidden interval while the embedded chat is hidden
+  /// (web preview.html: 2s visible / 15s hidden — the preview page
+  /// passes 2s, other embedded hosts pass their own visible cadence).
+  /// A zero poll still means no polling, hidden or not: the hidden
+  /// interval only replaces a real visible interval.
+  Duration get _effectivePoll {
+    if (widget.embedded && _hidden && widget.poll > Duration.zero) {
+      return const Duration(seconds: 15);
+    }
+    return widget.poll;
+  }
+
   void _startPolling() {
     _timer?.cancel();
-    if (!_paused && widget.poll > Duration.zero) {
-      _timer = Timer.periodic(widget.poll, (_) => _refresh());
+    if (!_paused && _effectivePoll > Duration.zero) {
+      _timer = Timer.periodic(_effectivePoll, (_) => _refresh());
     }
   }
 
@@ -639,10 +663,49 @@ class _ChatScreenState extends State<ChatScreen> {
     return '';
   }
 
+  /// The fullscreen view itself, shared by standalone and embedded
+  /// chat: body + composer with the floating exit button. Standalone
+  /// wraps it in a Scaffold (its AppBar is hidden); embedded returns
+  /// it bare (the host provides the page). Same action, same view.
+  Widget _buildFullscreenView(Transcript? data) {
+    return Stack(
+      children: [
+        Column(children: [
+          Expanded(child: _buildBody(data)),
+          _buildComposer()
+        ]),
+        Positioned(
+          top: 8,
+          right: 8,
+          child: Container(
+            decoration: BoxDecoration(
+                color: AppTheme.card,
+                borderRadius: BorderRadius.circular(999)),
+            child: IconButton(
+              key: const Key('chat-fullscreen-exit'),
+              tooltip: '退出全屏',
+              onPressed: () => setState(() => _fullscreen = false),
+              icon: const Icon(Icons.fullscreen_exit, size: 20),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final data = _data;
     if (widget.embedded) {
+      // Embedded fullscreen (item 14): the same fullscreen view as
+      // standalone — body + composer filling the embedded area, with
+      // the same floating exit button — minus the Scaffold, because
+      // the host already provides the page. The host's own chrome
+      // (preview page AppBar, drawer header, grid cell header) stays
+      // put: embedded hosts own their chrome, so embedded fullscreen
+      // fills the embedded area rather than hiding the host, and the
+      // drawer keeps working underneath.
+      if (_fullscreen) return _buildFullscreenView(data);
       return Column(children: [
         if (_reconnecting)
           Container(
@@ -653,41 +716,41 @@ class _ChatScreenState extends State<ChatScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 11.5, color: AppTheme.muted)),
           ),
-        Expanded(child: _buildBody(data)),
+        Expanded(
+          child: Stack(
+            children: [
+              _buildBody(data),
+              // The embedded chat has no AppBar, so its fullscreen
+              // toggle floats over the body like the fullscreen exit
+              // does — same key, tooltip and icon as standalone, so
+              // one toggle action serves both modes.
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Container(
+                  decoration: BoxDecoration(
+                      color: AppTheme.card,
+                      borderRadius: BorderRadius.circular(999)),
+                  child: IconButton(
+                    key: const Key('chat-fullscreen'),
+                    tooltip: '对话全屏',
+                    onPressed: () => setState(() => _fullscreen = true),
+                    icon: const Icon(Icons.fullscreen, size: 20),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
         _buildComposer(),
       ]);
     }
     if (_fullscreen) {
       // Fullscreen conversation mode (web index.html:74-84): the
       // conversation fills the screen and the AppBar chrome is hidden;
-      // the floating button exits. Scope: standalone ChatScreen only —
-      // embedded hosts (grid cells, preview drawer) own their chrome,
-      // including the grid cell maximize, which is a different feature.
-      return Scaffold(
-        body: Stack(
-          children: [
-            Column(children: [
-              Expanded(child: _buildBody(data)),
-              _buildComposer()
-            ]),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: Container(
-                decoration: BoxDecoration(
-                    color: AppTheme.card,
-                    borderRadius: BorderRadius.circular(999)),
-                child: IconButton(
-                  key: const Key('chat-fullscreen-exit'),
-                  tooltip: '退出全屏',
-                  onPressed: () => setState(() => _fullscreen = false),
-                  icon: const Icon(Icons.fullscreen_exit, size: 20),
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
+      // the floating button exits. The grid cell maximize is a
+      // different feature and is untouched.
+      return Scaffold(body: _buildFullscreenView(data));
     }
     return Scaffold(
       appBar: AppBar(
