@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -188,6 +189,54 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.delete);
     await tester.pump();
     expect(find.byKey(const Key('sidebar-file-delete-ok')), findsNothing);
+  });
+
+  testWidgets('F4: right-click file row shows menu without 打开; 下载 saves', (tester) async {
+    await pumpPanel(tester, FakeApi());
+    await tester.tap(find.byKey(const Key('sidebar-file-notes.md')), buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sidebar-file-menu-download')), findsOneWidget);
+    expect(find.byKey(const Key('sidebar-file-menu-open')), findsNothing);
+    await tester.tap(find.byKey(const Key('sidebar-file-menu-download')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已保存到'), findsOneWidget);
+  });
+
+  testWidgets('F4: right-click dir row shows 打开 and 打包下载; 打开 navigates', (tester) async {
+    final seen = <String>[];
+    await pumpPanel(tester, FakeApi(), seen: seen);
+    await tester.tap(find.byKey(const Key('sidebar-file-sub')), buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sidebar-file-menu-open')), findsOneWidget);
+    expect(find.byKey(const Key('sidebar-file-menu-zipdir')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('sidebar-file-menu-open')));
+    await tester.pumpAndSettle();
+    expect(seen.last, '/srv/work/sub');
+  });
+
+  testWidgets('F4: long-press opens the same menu; 重命名 opens the rename dialog', (tester) async {
+    await pumpPanel(tester, FakeApi());
+    await tester.longPress(find.byKey(const Key('sidebar-file-notes.md')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sidebar-file-menu-rename')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('sidebar-file-menu-rename')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sidebar-file-rename-input')), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('F4: Escape dismisses the menu; parent row has no menu', (tester) async {
+    await pumpPanel(tester, FakeApi());
+    await tester.tap(find.byKey(const Key('sidebar-file-notes.md')), buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sidebar-file-menu-rename')), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sidebar-file-menu-rename')), findsNothing);
+    await tester.tap(find.byKey(const Key('sidebar-file-parent')), buttons: kSecondaryButton);
+    await tester.pump();
+    expect(find.byKey(const Key('sidebar-file-menu-rename')), findsNothing);
   });
 
   testWidgets('F2: failed load shows the error in the footer, keeping retry',

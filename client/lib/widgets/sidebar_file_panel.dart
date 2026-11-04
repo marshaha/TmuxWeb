@@ -273,6 +273,78 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
     }
   }
 
+  /// Zip one directory row, like web's file-menu '打包下载' and
+  /// [FilesScreen]'s `_zipDirectory`.
+  Future<void> _zipDirectory(FileEntry entry) async {
+    final listing = _listing;
+    if (listing == null) return;
+    setState(() => _busy = true);
+    try {
+      final bytes = await widget.api.zipFiles(widget.pane.ref, [entry.path], listing.path);
+      await _save(bytes, '${entry.name}.zip');
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Web's file menu (setupFileMenu/showFileMenu), via showMenu like
+  /// [FilesScreen]: right-click or long-press opens a menu
+  /// positioned at the pointer, clamped to the viewport like web's
+  /// max(6, min(x, innerWidth - width - 8)) rule. Item set exactly:
+  /// 打开 (dirs only), 下载 / 打包下载 (dirs), 重命名, 删除.
+  /// Escape and barrier taps dismiss (showMenu built-ins, matching
+  /// web's Escape/pointerdown dismiss). Every action reuses the
+  /// panel's existing download/rename/delete, plus [_zipDirectory]
+  /// for a dir row. Long-press timing is the framework default
+  /// (~500ms) against web's 520ms timer — the closest Flutter
+  /// offers without a hand-rolled recognizer.
+  Future<void> _showContextMenu(FileEntry entry, Offset globalPosition) async {
+    _focusedPath = entry.path;
+    final size = MediaQuery.of(context).size;
+    const menuWidth = 160.0;
+    const menuHeight = 180.0;
+    final dx = globalPosition.dx.clamp(6.0, (size.width - menuWidth - 8).clamp(6.0, size.width));
+    final dy = globalPosition.dy.clamp(6.0, (size.height - menuHeight - 8).clamp(6.0, size.height));
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(dx, dy, size.width - dx, size.height - dy),
+      items: [
+        if (entry.isDir)
+          const PopupMenuItem(
+            key: Key('sidebar-file-menu-open'),
+            value: 'open',
+            child: Text('打开'),
+          ),
+        PopupMenuItem(
+          key: entry.isDir ? const Key('sidebar-file-menu-zipdir') : const Key('sidebar-file-menu-download'),
+          value: entry.isDir ? 'zipdir' : 'download',
+          child: Text(entry.isDir ? '打包下载' : '下载'),
+        ),
+        const PopupMenuItem(key: Key('sidebar-file-menu-rename'), value: 'rename', child: Text('重命名')),
+        PopupMenuItem(
+          key: const Key('sidebar-file-menu-delete'),
+          value: 'delete',
+          child: Text('删除', style: TextStyle(color: AppTheme.danger)),
+        ),
+      ],
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'open':
+        _open(entry.path);
+      case 'download':
+        _download(entry);
+      case 'zipdir':
+        _zipDirectory(entry);
+      case 'rename':
+        _rename(entry);
+      case 'delete':
+        _deleteEntries([entry]);
+    }
+  }
+
   /// Zip the checkbox selection, or the current directory when
   /// nothing is selected (web's `file-download` handler zips the
   /// picked paths, else the current directory; Flutter expresses the
@@ -867,7 +939,15 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
         // Transparent Material per row: the sidebar container paints a
         // background above the Scaffold's Material, which would hide
         // the ListTile ink (Flutter asserts on exactly this).
-        return Material(
+        // The GestureDetector adds web's context menu without
+        // touching the primary tap: right-click and long-press open
+        // the menu, and the long-press recognizer wins the gesture
+        // arena over the ListTile tap, so a long-press never also
+        // navigates/downloads.
+        return GestureDetector(
+          onSecondaryTapDown: (details) => _showContextMenu(entry, details.globalPosition),
+          onLongPressStart: (details) => _showContextMenu(entry, details.globalPosition),
+          child: Material(
           type: MaterialType.transparency,
           child: Row(
             children: [
@@ -904,6 +984,7 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
                 ),
               ),
             ],
+          ),
           ),
         );
       },
