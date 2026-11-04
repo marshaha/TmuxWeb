@@ -15,6 +15,13 @@ void main() {
   testWidgets('the sidebar groups panes as host → session → window', (tester) async {
     await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://127.0.0.1:8787')));
     await tester.pumpAndSettle();
+    // Narrow (800x600) console: the tree lives in a slide-over
+    // drawer, shut and collapsed by default — open it and expand all
+    // before asserting tree content (web parity C1/A2).
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
 
     // hosts
     expect(find.text('localhost'), findsOneWidget);
@@ -25,15 +32,30 @@ void main() {
     // panes stay reachable
     expect(find.byKey(const Key('pane-%7')), findsOneWidget);
     expect(find.byKey(const Key('pane-abc~%0')), findsOneWidget);
-    // and the management entry exists
-    expect(find.byKey(const Key('hosts-admin')), findsOneWidget);
+    // and the management entry exists (drawer copy — the narrow
+    // AppBar carries the same key for its own actions row).
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('narrow-drawer')),
+        matching: find.byKey(const Key('hosts-admin')),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('busy panes get an accent dot in the tree', (tester) async {
     await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://127.0.0.1:8787')));
     await tester.pumpAndSettle();
-    final panes = tester.widgetList<ListTile>(find.byType(ListTile)).where((tile) => tile.leading != null).toList();
-    expect(panes.length, greaterThanOrEqualTo(2));
+    // Pane rows are custom rows now (web console row), not ListTiles;
+    // the state dot carries its own key and decoration color.
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
+    BoxDecoration dotColor(String ref) =>
+        tester.widget<Container>(find.byKey(Key('pane-state-$ref'))).decoration! as BoxDecoration;
+    expect(dotColor('abc~%0').color, const Color(0xFFD89A3C), reason: 'busy pane is amber');
+    expect(dotColor('%7').color, AppTheme.green, reason: 'idle pane is green');
   });
 
   testWidgets('Enter sends and Shift+Enter keeps the newline', (tester) async {
@@ -107,8 +129,14 @@ void main() {
   testWidgets('wide sidebar collapses and expands again', (tester) async {
     await pumpWideHosts(tester);
     expect(find.byKey(const Key('sidebar-collapse')), findsOneWidget);
+    // The tree starts collapsed (web: empty open set) — expand first.
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('pane-%7')), findsOneWidget);
 
+    // Brand buttons live in the swipeable coarse row under the test
+    // platform default — scroll the collapse button into view first.
+    await tester.ensureVisible(find.byKey(const Key('sidebar-collapse')));
     await tester.tap(find.byKey(const Key('sidebar-collapse')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('sidebar-expand')), findsOneWidget);
@@ -117,6 +145,9 @@ void main() {
     await tester.tap(find.byKey(const Key('sidebar-expand')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('sidebar-collapse')), findsOneWidget);
+    // The restored tree is collapsed again — expand to see the pane.
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('pane-%7')), findsOneWidget);
   });
 

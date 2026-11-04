@@ -576,7 +576,17 @@ void main() {
     await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://chat.local:8899')));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('abc~%0'), findsOneWidget);
+    // Narrow console: the tree lives in a slide-over drawer, shut
+    // and collapsed by default (web parity C1/A2) — open and expand
+    // first. Pane rows no longer carry the ref subtitle (A6), so the
+    // pane is identified by its tile key, not its ref text.
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('pane-abc~%0')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('pane-abc~%0')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('pane-abc~%0')));
     await tester.pumpAndSettle();
     expect(find.text('来自 abc~%0 的回复'), findsOneWidget);

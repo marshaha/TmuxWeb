@@ -178,7 +178,12 @@ void main() {
     await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: _baseUrl)));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('home-board')));
+    // Narrow console: the drawer brand row carries the same
+    // home-board key as the AppBar — tap the AppBar copy.
+    await tester.tap(find.descendant(
+      of: find.byType(AppBar),
+      matching: find.byKey(const Key('home-board')),
+    ));
     await tester.pumpAndSettle();
     expect(find.text('主页板'), findsWidgets);
     expect(find.text('review'), findsOneWidget);
@@ -189,10 +194,22 @@ void main() {
     await tester.pumpWidget(wrap(HostsScreen(api: api, baseUrl: _baseUrl)));
     await tester.pumpAndSettle();
 
+    // Narrow console: the tree lives in a shut, collapsed drawer —
+    // open and expand before tapping a pane star.
+    await tester.tap(find.byKey(const Key('narrow-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
+    // The ctyun section can sit below the drawer viewport fold —
+    // scroll it into view before tapping its star.
+    await tester.ensureVisible(find.byKey(const Key('star-abc~%0')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('star-abc~%0')));
     await tester.pumpAndSettle();
     expect(api.unfavorited, ['abc~%0']);
 
+    await tester.ensureVisible(find.byKey(const Key('star-%7')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('star-%7')));
     await tester.pumpAndSettle();
     expect(api.addedFavorites, ['%7']);

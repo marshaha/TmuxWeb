@@ -72,6 +72,9 @@ void main() {
         wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://test.local', initialPaneRef: 'abc~%0')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('sidebar-files-close')), findsNothing);
+    // The tree starts collapsed (web parity A2) — expand to see tiles.
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('pane-abc~%0')), findsOneWidget);
     // Switching back restores %7's panel at its directory.
     await tester.pumpWidget(wrap(HostsScreen(api: FakeApi(), baseUrl: 'http://test.local', initialPaneRef: '%7')));
@@ -92,7 +95,12 @@ void main() {
     // A fresh load always starts on the session tree, even with a
     // recorded open panel for this pane.
     expect(find.byKey(const Key('sidebar-files-close')), findsNothing);
+    // The tree starts collapsed (web parity A2) — expand to see tiles.
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('pane-%7')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('sidebar-files-toggle')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('sidebar-files-toggle')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('sidebar-files-close')), findsOneWidget);
@@ -132,6 +140,9 @@ void main() {
   testWidgets('wide initialPaneRef still shows the detail pane, no pushed chat', (tester) async {
     await pumpWide(tester, initialPaneRef: '%7');
     expect(find.byKey(const Key('shell-detail-close')), findsOneWidget);
+    // The tree starts collapsed (web parity A2) — expand to see tiles.
+    await tester.tap(find.byKey(const Key('tree-expand')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('pane-%7')), findsOneWidget);
     expect(find.byKey(const Key('chat-composer')), findsOneWidget);
   });

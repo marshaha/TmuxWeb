@@ -111,6 +111,10 @@ void main() {
       for (var i = 0; i < lines.length; i++) {
         final line = lines[i];
         for (final match in hex.allMatches(line)) {
+          // Exempt: web console parity (A6) mandates #cfccc4 for the
+          // 6px unknown-state dot — a foreground dot, not a
+          // background, so the dark-theme concern does not apply.
+          if (match[1]!.toUpperCase() == 'CFCCC4') continue;
           final color = Color(int.parse('FF${match[1]}', radix: 16));
           if (luminance(color) > 0.6) offenders.add('$path:${i + 1}: ${match[0]}');
         }
