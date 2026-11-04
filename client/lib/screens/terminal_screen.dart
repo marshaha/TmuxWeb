@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -72,6 +73,58 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
   late bool _showKeys = defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android;
 
   double _fontSize = 13;
+
+  /// Web term.html pinch state: the two pointers currently down on
+  /// the terminal, the spread they started at, and the font size
+  /// they started from. Tracked in a [Listener] — not a
+  /// [ScaleGestureRecognizer] — so it never enters the gesture
+  /// arena: TerminalView's own single-pointer scroll and
+  /// selection drags are untouched, and a pinch only ever changes
+  /// the font. Mirrors web's touchstart/touchmove pair (spread
+  /// ratio, 0.05 dead zone, 9–22px clamp, persist on change).
+  final Map<int, Offset> _pinchPointers = {};
+  double? _pinchStartDistance;
+  double _pinchStartFont = 13;
+
+  double _pinchSpread() {
+    final points = _pinchPointers.values.toList();
+    return (points[0] - points[1]).distance;
+  }
+
+  void _onPinchPointerDown(PointerDownEvent event) {
+    _pinchPointers[event.pointer] = event.position;
+    if (_pinchPointers.length == 2) {
+      _pinchStartDistance = _pinchSpread();
+      _pinchStartFont = _fontSize;
+    }
+  }
+
+  void _onPinchPointerMove(PointerMoveEvent event) {
+    if (!_pinchPointers.containsKey(event.pointer)) return;
+    _pinchPointers[event.pointer] = event.position;
+    final start = _pinchStartDistance;
+    if (_pinchPointers.length != 2 || start == null || start <= 0) return;
+    final ratio = _pinchSpread() / start;
+    if ((ratio - 1).abs() < 0.05) return;
+    final size = (_pinchStartFont * ratio).round().clamp(9, 22).toDouble();
+    if (size != _fontSize) _setFontSize(size);
+  }
+
+  void _onPinchPointerUp(PointerEvent event) {
+    _pinchPointers.remove(event.pointer);
+    if (_pinchPointers.length < 2) _pinchStartDistance = null;
+  }
+
+  /// Trackpad pinch arrives as a scale signal, not two touch
+  /// pointers; web has no equivalent, but the same 9–22px clamp
+  /// and `tmux-term-font` persistence apply. Wheel scroll is a
+  /// [PointerScrollEvent], not a scale event, so it is unaffected.
+  void _onPinchPointerSignal(PointerSignalEvent event) {
+    if (event is PointerScaleEvent && event.scale != 1.0) {
+      final size = (_fontSize * event.scale).round().clamp(9, 22).toDouble();
+      if (size != _fontSize) _setFontSize(size);
+    }
+  }
 
   @override
   void initState() {
@@ -293,7 +346,13 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
     );
   }
 
-  Widget _terminalView() => TerminalView(
+  Widget _terminalView() => Listener(
+      onPointerDown: _onPinchPointerDown,
+      onPointerMove: _onPinchPointerMove,
+      onPointerUp: _onPinchPointerUp,
+      onPointerCancel: _onPinchPointerUp,
+      onPointerSignal: _onPinchPointerSignal,
+      child: TerminalView(
         _terminal,
         autofocus: !widget.embedded,
         padding: const EdgeInsets.all(6),
@@ -323,7 +382,8 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
           searchHitBackgroundCurrent: Color(0x99C96442),
           searchHitForeground: Color(0xFF1A1A1A),
         ),
-      );
+      ),
+    );
 
   /// Web term.html's .keys bar, in the same order and with the same
   /// byte sequences (esc/tab/^C/^D/enter/arrows + paste).

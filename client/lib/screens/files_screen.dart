@@ -1,6 +1,8 @@
 import 'dart:convert';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -39,6 +41,20 @@ class _FilesScreenState extends State<FilesScreen> {
 
   /// Paths picked with the per-row checkboxes (web's filesPicked).
   final Set<String> _selected = {};
+
+  /// True while an OS drag hovers the panel on desktop: web adds
+  /// `.dragging` (2px dashed accent outline) to the file panel for
+  /// exactly this state.
+  bool _dragging = false;
+
+  /// Desktop only: web's file panel accepts drops, but there is no
+  /// OS drop target on mobile, where the picker button stays the
+  /// only upload path.
+  static bool get _isDesktop => const {
+        TargetPlatform.macOS,
+        TargetPlatform.windows,
+        TargetPlatform.linux,
+      }.contains(defaultTargetPlatform);
 
   /// Row most recently interacted with, for the F2 / Delete shortcuts.
   String? _focusedPath;
@@ -144,29 +160,151 @@ class _FilesScreenState extends State<FilesScreen> {
   }
 
   Future<void> _upload() async {
-    final listing = _listing;
-    if (listing == null) return;
     final picked = await FilePicker.pickFiles();
     if (picked.isEmpty) return;
+    // Web's file input is multiple: upload every picked file, not
+    // just the first.
+    final uploads = <({String name, List<int> bytes})>[];
+    for (final file in picked) {
+      uploads.add((name: file.name, bytes: await file.xFile.readAsBytes()));
+    }
+    await _uploadAll(uploads);
+  }
+
+  /// Shared upload path for the picker button and OS drops: same
+  /// `uploadFile` calls, same refresh, same messages as web's
+  /// `uploadFiles` — success always reports the count
+  /// (`已上传 N 个文件`), and the first failure stops the batch
+  /// with `<name>: <error>`, exactly like web.
+  Future<void> _uploadAll(List<({String name, List<int> bytes})> uploads) async {
+    final listing = _listing;
+    if (listing == null || uploads.isEmpty) return;
     setState(() => _busy = true);
+    var current = '';
     try {
-      // Web's file input is multiple: upload every picked file, not
-      // just the first.
-      for (final file in picked) {
-        final bytes = await file.xFile.readAsBytes();
-        await widget.api.uploadFile(widget.pane.ref, listing.path, file.name, bytes);
+      for (final upload in uploads) {
+        current = upload.name;
+        await widget.api.uploadFile(widget.pane.ref, listing.path, upload.name, upload.bytes);
       }
       await _open(listing.path);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(picked.length == 1 ? '已上传 ${picked.first.name}' : '已上传 ${picked.length} 个文件'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已上传 ${uploads.length} 个文件')));
       }
     } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$current: $error')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// OS drop on desktop, through the same upload path as the picker.
+  /// Directories arrive as [DropItemDirectory] (desktop_drop fills
+  /// `children` only for the web drop path; the macOS plugin reports
+  /// a directory with empty children), so a dropped folder on its
+  /// own uploads nothing — exactly like web, whose drop handler
+  /// only reads `dataTransfer.files`. Entries are read in drop
+  /// order; the first unreadable entry stops the drop with
+  /// `<name>: <error>`, matching web's `uploadFiles`, which returns
+  /// on the first failure instead of continuing with the rest.
+  Future<void> _handleDrop(DropDoneDetails details) async {
+    if (mounted) setState(() => _dragging = false);
+    final listing = _listing;
+    if (listing == null || _busy) return;
+    final files = <DropItem>[];
+    void collect(DropItem item) {
+      if (item is DropItemDirectory) {
+        for (final child in item.children) {
+          collect(child);
+        }
+      } else {
+        files.add(item);
+      }
+    }
+
+    for (final item in details.files) {
+      collect(item);
+    }
+    if (files.isEmpty) return;
+    final uploads = <({String name, List<int> bytes})>[];
+    for (final file in files) {
+      final bookmark = file.extraAppleBookmark;
+      var started = false;
+      try {
+        if (bookmark != null && bookmark.isNotEmpty) {
+          started = await DesktopDrop.instance.startAccessingSecurityScopedResource(bookmark: bookmark);
+        }
+        final bytes = await file.readAsBytes();
+        var name = file.name.isNotEmpty ? file.name : file.path.split('/').last;
+        if (name.isEmpty) name = '未知文件';
+        uploads.add((name: name, bytes: bytes));
+      } catch (error) {
+        // Web's uploadFiles returns on the first failure; a drop
+        // entry that cannot even be read stops the same way.
+        if (mounted) {
+          var name = file.name.isNotEmpty ? file.name : file.path.split('/').last;
+          if (name.isEmpty) name = '未知文件';
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$name: $error')));
+        }
+        return;
+      } finally {
+        if (started) {
+          await DesktopDrop.instance.stopAccessingSecurityScopedResource(bookmark: bookmark!);
+        }
+      }
+    }
+    await _uploadAll(uploads);
+  }
+
+  /// Wraps the panel body in a [DropTarget] on desktop only. The
+  /// target covers the whole panel (path bar, list, selection bar),
+  /// like web's `#file-panel` drop listeners; the AppBar stays
+  /// outside it, as web's panel excludes the console topbar.
+  Widget _dropWrap(Widget child) {
+    if (!_isDesktop) return child;
+    return DropTarget(
+      key: const Key('files-drop-target'),
+      onDragEntered: (_) {
+        if (mounted) setState(() => _dragging = true);
+      },
+      onDragExited: (_) {
+        if (mounted) setState(() => _dragging = false);
+      },
+      onDragDone: _handleDrop,
+      child: Stack(
+        children: [
+          child,
+          if (_dragging) _dropOverlay(),
+        ],
+      ),
+    );
+  }
+
+  /// Web's `.file-panel.dragging` affordance: a 2px dashed accent
+  /// outline over the panel plus a drop hint. IgnorePointer so the
+  /// overlay itself can never swallow a tap if the drag state
+  /// ever goes stale.
+  Widget _dropOverlay() {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Container(
+          key: const Key('files-drop-overlay'),
+          color: AppTheme.accent.withValues(alpha: 0.08),
+          child: CustomPaint(
+            painter: _DashedBorderPainter(AppTheme.accent),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.file_upload_outlined, size: 32, color: AppTheme.accent),
+                  const SizedBox(height: 8),
+                  Text('松开以上传到当前目录', style: TextStyle(fontSize: 14, color: AppTheme.accent)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
 
@@ -508,7 +646,7 @@ class _FilesScreenState extends State<FilesScreen> {
           IconButton(tooltip: '刷新', onPressed: _busy ? null : () => _open(_pathController.text), icon: const Icon(Icons.refresh, size: 20)),
         ],
       ),
-      body: CallbackShortcuts(
+      body: _dropWrap(CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.f2): _shortcutRename,
           const SingleActivator(LogicalKeyboardKey.delete): _shortcutDelete,
@@ -542,6 +680,13 @@ class _FilesScreenState extends State<FilesScreen> {
                     ),
                   ]),
                 ),
+                // Web's file-foot status line, desktop only: the
+                // panel itself is the drop surface.
+                if (_isDesktop)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text('拖拽文件到此处上传', style: TextStyle(fontSize: 11, color: AppTheme.muted)),
+                  ),
                 if (_busy) const LinearProgressIndicator(minHeight: 2),
                 const Divider(height: 1),
                 Expanded(child: _buildList()),
@@ -551,6 +696,7 @@ class _FilesScreenState extends State<FilesScreen> {
           ),
         ),
       ),
+    ),
     );
   }
 
@@ -697,4 +843,36 @@ class _FilesScreenState extends State<FilesScreen> {
       ),
     );
   }
+}
+
+/// Dashed rounded-rectangle outline, matching web's
+/// `.file-panel.dragging { outline: 2px dashed accent }`.
+class _DashedBorderPainter extends CustomPainter {
+  const _DashedBorderPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const inset = 6.0;
+    final rect = Rect.fromLTWH(inset, inset, size.width - inset * 2, size.height - inset * 2);
+    final path = Path()..addRRect(RRect.fromRectAndRadius(rect, const Radius.circular(10)));
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    const dash = 8.0;
+    const gap = 6.0;
+    for (final metric in path.computeMetrics()) {
+      var distance = 0.0;
+      while (distance < metric.length) {
+        final end = (distance + dash).clamp(0.0, metric.length);
+        canvas.drawPath(metric.extractPath(distance, end), paint);
+        distance += dash + gap;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedBorderPainter oldDelegate) => oldDelegate.color != color;
 }
