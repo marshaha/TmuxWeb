@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:tmuxweb_client/api/api_client.dart';
 import 'package:tmuxweb_client/models/models.dart';
 import 'package:tmuxweb_client/theme.dart';
 import 'package:tmuxweb_client/widgets/sidebar_file_panel.dart';
@@ -79,4 +80,48 @@ void main() {
     await pumpPanel(tester, FakeApi());
     expect(find.text('localhost'), findsOneWidget);
   });
+
+  testWidgets('F2: loaded listing shows web count status, no list tail', (tester) async {
+    await pumpPanel(tester, FakeApi());
+    expect(find.text('2 项 · 拖拽文件可上传'), findsOneWidget);
+    expect(find.text('条目太多，只显示了一部分'), findsNothing);
+  });
+
+  testWidgets('F2: truncated listing shows the （已截断） status in the footer', (tester) async {
+    await pumpPanel(tester, _TruncatedApi());
+    expect(find.text('2 项（已截断） · 拖拽文件可上传'), findsOneWidget);
+    expect(find.text('条目太多，只显示了一部分'), findsNothing);
+  });
+
+  testWidgets('F2: failed load shows the error in the footer, keeping retry', (tester) async {
+    await pumpPanel(tester, _FailingListApi());
+    // The error page body and the footer both show it; assert on the
+    // footer widget itself.
+    final status = tester.widget<Text>(find.byKey(const Key('sidebar-files-status')));
+    expect(status.data, 'boom');
+    expect(find.text('重试'), findsOneWidget);
+  });
+}
+
+/// Listing with truncated set, for the F2 footer text.
+class _TruncatedApi extends FakeApi {
+  @override
+  Future<FileListing> listFiles(String paneRef, {String path = '', bool hidden = false}) async =>
+      FileListing(
+        path: path.isEmpty ? '/srv/work' : path,
+        parent: path.isEmpty ? null : '/srv',
+        entries: [
+          FileEntry(name: 'notes.md', path: '/srv/work/notes.md', isDir: false, size: 2048),
+          FileEntry(name: 'sub', path: '/srv/work/sub', isDir: true),
+        ],
+        truncated: true,
+      );
+}
+
+/// listFiles always throws, for the F2 error status.
+class _FailingListApi extends FakeApi {
+  @override
+  Future<FileListing> listFiles(String paneRef, {String path = '', bool hidden = false}) async {
+    throw ApiException(500, 'boom');
+  }
 }

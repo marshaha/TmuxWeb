@@ -631,10 +631,27 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
     ));
   }
 
-  /// Web's `.file-foot`: host chip plus status line. The chip is
-  /// hidden until the first listing lands, like web's `#file-host`
-  /// (hidden until openFiles sets it); the status text is filled in
-  /// by the F2 change below.
+  /// Web's `#file-status` texts, in openFiles/setFileStatus order:
+  /// loading always says `读取目录…` (even over a stale listing, like
+  /// web setting it before every fetch); a failed fetch shows the
+  /// error; a listing shows `N 项（已截断）· 拖拽文件可上传` (the
+  /// parenthetical only when truncated); idle falls back to web's
+  /// setFileStatus default `拖拽文件到此处上传`.
+  String get _statusText {
+    if (_loading) return '读取目录…';
+    if (_error != null) return _error!;
+    final listing = _listing;
+    if (listing != null) {
+      return '${listing.entries.length} 项${listing.truncated ? '（已截断）' : ''} · 拖拽文件可上传';
+    }
+    return '拖拽文件到此处上传';
+  }
+
+  /// Web's `.file-foot`: host chip plus the persistent status line.
+  /// The chip is hidden until the first listing lands, like web's
+  /// `#file-host` (hidden until openFiles sets it). The status line
+  /// replaces the old list tail: web has no truncated tail row, the
+  /// truncation note lives only in this footer text.
   Widget _buildFooter() {
     return Container(
       padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
@@ -658,6 +675,15 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
                 style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
               ),
             ),
+          Expanded(
+            child: Text(
+              _statusText,
+              key: const Key('sidebar-files-status'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11, color: AppTheme.muted),
+            ),
+          ),
         ],
       ),
     );
@@ -761,14 +787,8 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
       return Center(child: Text('这个目录是空的', style: TextStyle(color: AppTheme.muted)));
     }
     return ListView.builder(
-      itemCount: entries.length + (listing.truncated ? 1 : 0),
+      itemCount: entries.length,
       itemBuilder: (context, index) {
-        if (index == entries.length) {
-          return Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text('条目太多，只显示了一部分', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
-          );
-        }
         final entry = entries[index];
         final selected = _selected.contains(entry.path);
         // Transparent Material per row: the sidebar container paints a
