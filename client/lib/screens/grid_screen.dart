@@ -14,8 +14,12 @@ import '../theme.dart';
 import '../widgets/grid_pager.dart';
 import '../widgets/recent_block.dart';
 import 'chat_screen.dart';
+import 'home_board_screen.dart';
+import 'hosts_admin_screen.dart';
 import 'hosts_screen.dart';
 import '../widgets/plugin_buttons.dart';
+import 'settings_screen.dart';
+import 'shares_screen.dart';
 import 'terminal_screen.dart';
 
 const _amber = Color(0xFFD89A3C);
@@ -26,6 +30,502 @@ const _narrowWidth = 760.0;
 
 /// Pager position key, web's tmux-grid-pager-pos (grid.html:997).
 const _pagerPosKey = 'tmux-grid-pager-pos';
+
+/// Web shell sidebar state-dot colors (web/index.html .pane-state):
+/// idle green comes from the theme, busy amber and unknown grey are
+/// literal web values — AppTheme.faint is a different grey.
+const _treeUnknownGrey = Color(0xFFCFCCC4);
+
+/// The shared shell session tree (web/assets/shell.js renderTree +
+/// web/index.html renderList leaf), used by the grid and home sidebars.
+/// The console's tree in hosts_screen.dart is a separate implementation
+/// owned by another agent; this widget deliberately duplicates its
+/// rules rather than refactoring it mid-flight (dedup is a later,
+/// safe step once both surfaces are stable).
+///
+/// Rules, merged from the two web trees:
+/// - Server order everywhere: sessions and windows keep first-seen
+///   order, never alphabetical.
+/// - Host row: name + pane count + per-host refresh (title 刷新这台主机).
+/// - Session row: name ('default' when empty) + window count.
+/// - Window row: grouped by `window:window_name`, label
+///   `window: windowName` (bare window when unnamed) + pane count.
+/// - Pane leaf: active dot (green when pane.active, else faint),
+///   `#N` or `—` when unnumbered, `pane index · command` target,
+///   title line (or '(无标题)'), path line, path tooltip, state dot
+///   (idle green / busy amber / anything else unknown grey), star
+///   (收藏到主页 / 取消收藏), and the in-grid tint for rows the grid
+///   already shows (shell.css .tpane.in-grid).
+/// - No hosts: `还没有会话` (shell.js:52-56). Load failure: the error
+///   text inside the tree area (shell.js:114-118). Not loaded yet:
+///   empty (the header count still reads 载入中…).
+/// - Expansion persists under tmux-tree-open (shell.js saveOpen),
+///   starting collapsed when nothing was saved.
+class SessionTreeView extends StatefulWidget {
+  const SessionTreeView({
+    super.key,
+    required this.hosts,
+    this.error,
+    required this.states,
+    required this.favorites,
+    this.inGridRefs = const {},
+    required this.onPane,
+    required this.onToggleFavorite,
+    required this.onRefreshHost,
+    this.keyPrefix = 'tree',
+  });
+
+  /// Null until the first hosts load lands (or fails).
+  final List<Host>? hosts;
+  final String? error;
+  final Map<String, String> states;
+  final Set<String> favorites;
+  final Set<String> inGridRefs;
+  final void Function(Pane pane) onPane;
+  final Future<void> Function(String paneRef, bool starred) onToggleFavorite;
+  final Future<void> Function(String hostId) onRefreshHost;
+  final String keyPrefix;
+
+  @override
+  State<SessionTreeView> createState() => _SessionTreeViewState();
+}
+
+class _SessionTreeViewState extends State<SessionTreeView> {
+  static const _openKey = 'tmux-tree-open';
+  Set<String> _open = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOpen();
+  }
+
+  Future<void> _loadOpen() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_openKey);
+      if (raw == null || raw.isEmpty || !mounted) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        setState(() => _open = decoded.map((item) => '$item').toSet());
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveOpen() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_openKey, jsonEncode(_open.toList()));
+    } catch (_) {}
+  }
+
+  void _toggle(String key) {
+    setState(() {
+      if (_open.contains(key)) {
+        _open.remove(key);
+      } else {
+        _open.add(key);
+      }
+    });
+    unawaited(_saveOpen());
+  }
+
+  List<String> _allKeys() {
+    final keys = <String>[];
+    for (final host in widget.hosts ?? const <Host>[]) {
+      keys.add(host.id);
+      final sessions = _groupSessions(host.panes);
+      for (final session in sessions) {
+        keys.add('${host.id}/${session.$1}');
+        for (final window in _groupWindows(session.$2)) {
+          keys.add('${host.id}/${session.$1}/${window.$1}');
+        }
+      }
+    }
+    return keys;
+  }
+
+  void _expandAll() {
+    setState(() => _open = _allKeys().toSet());
+    unawaited(_saveOpen());
+  }
+
+  void _collapseAll() {
+    setState(() => _open = {});
+    unawaited(_saveOpen());
+  }
+
+  /// Sessions in first-seen order (web Map insertion order, not sorted).
+  static List<(String, List<Pane>)> _groupSessions(List<Pane> panes) {
+    final map = <String, List<Pane>>{};
+    for (final pane in panes) {
+      final key = pane.session.isEmpty ? 'default' : pane.session;
+      map.putIfAbsent(key, () => []).add(pane);
+    }
+    return [for (final entry in map.entries) (entry.key, entry.value)];
+  }
+
+  /// Windows in first-seen order, keyed `window:window_name`.
+  static List<(String, String, String, List<Pane>)> _groupWindows(List<Pane> panes) {
+    final map = <String, (String, String, List<Pane>)>{};
+    for (final pane in panes) {
+      final key = '${pane.window}:${pane.windowName}';
+      final entry = map.putIfAbsent(key, () => (pane.window, pane.windowName, <Pane>[]));
+      entry.$3.add(pane);
+    }
+    return [for (final entry in map.entries) (entry.key, entry.value.$1, entry.value.$2, entry.value.$3)];
+  }
+
+  static String _windowLabel(String window, String windowName) {
+    final label = windowName.isNotEmpty ? '$window: $windowName' : window;
+    return label.isEmpty ? 'window' : label;
+  }
+
+  Color _stateColor(String? status) => switch (status) {
+        'idle' => AppTheme.green,
+        'busy' => _amber,
+        _ => _treeUnknownGrey,
+      };
+
+  Widget _nodeHeader({
+    required String key,
+    required double indent,
+    required Widget icon,
+    required String label,
+    required String count,
+    Widget? trailing,
+  }) {
+    final open = _open.contains(key);
+    return InkWell(
+      key: Key('${widget.keyPrefix}-node-$key'),
+      onTap: () => _toggle(key),
+      child: Padding(
+        padding: EdgeInsets.only(left: indent, right: 8, top: 2, bottom: 2),
+        child: Row(
+          children: [
+            Icon(open ? Icons.expand_more : Icons.chevron_right, size: 18, color: AppTheme.faint),
+            const SizedBox(width: 4),
+            icon,
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            ),
+            const SizedBox(width: 6),
+            Text(count, style: TextStyle(fontSize: 11, color: AppTheme.faint)),
+            if (trailing != null) trailing,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _paneLeaf(Pane pane) {
+    final starred = widget.favorites.contains(pane.ref);
+    final inGrid = widget.inGridRefs.contains(pane.ref);
+    final targetParts = <String>[];
+    if (pane.index.isNotEmpty) targetParts.add('pane ${pane.index}');
+    if (pane.command.isNotEmpty) targetParts.add(pane.command);
+    final target = targetParts.isEmpty ? pane.ref : targetParts.join(' · ');
+    final leaf = InkWell(
+      key: Key('${widget.keyPrefix}-pane-${pane.ref}'),
+      onTap: () => widget.onPane(pane),
+      child: Container(
+        decoration: inGrid
+            ? BoxDecoration(
+                color: AppTheme.accent.withValues(alpha: 0.09),
+                border: Border(left: BorderSide(color: AppTheme.accent, width: 2)),
+              )
+            : null,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                      shape: BoxShape.circle, color: pane.active ? AppTheme.green : AppTheme.faint),
+                ),
+                const SizedBox(width: 7),
+                Text(pane.numberLabel.isNotEmpty ? pane.numberLabel : '—',
+                    style: TextStyle(fontSize: 10.5, color: AppTheme.faint, fontFamily: 'monospace')),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(target, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                ),
+                IconButton(
+                  key: Key('${widget.keyPrefix}-star-${pane.ref}'),
+                  tooltip: starred ? '取消收藏' : '收藏到主页',
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: Icon(starred ? Icons.star : Icons.star_border, size: 18,
+                      color: starred ? AppTheme.accent : AppTheme.faint),
+                  onPressed: () => widget.onToggleFavorite(pane.ref, !starred),
+                ),
+                const SizedBox(width: 4),
+                Container(
+                  width: 6,
+                  height: 6,
+                  decoration: BoxDecoration(shape: BoxShape.circle, color: _stateColor(widget.states[pane.ref])),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.only(left: 21, top: 3),
+              child: Text(pane.title.isNotEmpty ? pane.title : '(无标题)',
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+            ),
+            if (pane.path.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 21, top: 2),
+                child: Text(pane.path, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: AppTheme.faint, fontFamily: 'monospace')),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (pane.path.isEmpty) return leaf;
+    return Tooltip(message: pane.path, child: leaf);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tools = Padding(
+      padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text('会话', style: TextStyle(fontSize: 11, letterSpacing: 0.06, color: AppTheme.faint)),
+          ),
+          IconButton(
+            key: Key('${widget.keyPrefix}-expand-all'),
+            tooltip: '展开全部',
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            icon: const Icon(Icons.unfold_more, size: 18),
+            onPressed: _expandAll,
+          ),
+          IconButton(
+            key: Key('${widget.keyPrefix}-collapse-all'),
+            tooltip: '折叠全部',
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            icon: const Icon(Icons.unfold_less, size: 18),
+            onPressed: _collapseAll,
+          ),
+        ],
+      ),
+    );
+    final hosts = widget.hosts;
+    Widget tree;
+    if (hosts == null) {
+      tree = widget.error == null
+          ? const SizedBox.shrink()
+          : Padding(
+              padding: const EdgeInsets.all(14),
+              child: Text(widget.error!, key: Key('${widget.keyPrefix}-error'),
+                  style: TextStyle(fontSize: 12, color: AppTheme.danger)),
+            );
+    } else if (hosts.isEmpty) {
+      tree = Padding(
+        padding: const EdgeInsets.all(14),
+        child: Text('还没有会话', key: Key('${widget.keyPrefix}-empty'), style: const TextStyle(fontSize: 12)),
+      );
+    } else {
+      final rows = <Widget>[];
+      for (final host in hosts) {
+        final hostKey = host.id;
+        rows.add(_nodeHeader(
+          key: hostKey,
+          indent: 0,
+          icon: Icon(host.kind == 'local' ? Icons.computer : Icons.cloud_outlined, size: 16, color: AppTheme.faint),
+          label: host.name.isNotEmpty ? host.name : host.id,
+          count: '${host.panes.length}',
+          trailing: IconButton(
+            key: Key('${widget.keyPrefix}-refresh-${host.id}'),
+            tooltip: '刷新这台主机',
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            icon: const Icon(Icons.refresh, size: 18),
+            onPressed: () => widget.onRefreshHost(host.id),
+          ),
+        ));
+        if (!_open.contains(hostKey)) continue;
+        for (final session in _groupSessions(host.panes)) {
+          final sessionKey = '${host.id}/${session.$1}';
+          final windows = _groupWindows(session.$2);
+          rows.add(_nodeHeader(
+            key: sessionKey,
+            indent: 16,
+            icon: const Icon(Icons.folder_outlined, size: 15),
+            label: session.$1,
+            count: '${windows.length}',
+          ));
+          if (!_open.contains(sessionKey)) continue;
+          for (final window in windows) {
+            final windowKey = '${host.id}/${session.$1}/${window.$1}';
+            rows.add(_nodeHeader(
+              key: windowKey,
+              indent: 32,
+              icon: const Icon(Icons.window_outlined, size: 15),
+              label: _windowLabel(window.$2, window.$3),
+              count: '${window.$4.length}',
+            ));
+            if (!_open.contains(windowKey)) continue;
+            for (final pane in window.$4) {
+              rows.add(Padding(
+                padding: const EdgeInsets.only(left: 48),
+                child: _paneLeaf(pane),
+              ));
+            }
+          }
+        }
+      }
+      tree = ListView(key: Key('${widget.keyPrefix}-list'), padding: const EdgeInsets.only(bottom: 8), children: rows);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [tools, Expanded(child: tree)],
+    );
+  }
+}
+
+/// Web shell side-head (grid.html/home.html): brand + side-count on
+/// top, the action row wrapping below (shell.css .side-actions wraps).
+/// The peer button differs per page (grid shows 主页, home shows 多窗口);
+/// callers pass their own buttons so tooltips and keys stay page-exact.
+class ShellSidebarHeader extends StatelessWidget {
+  const ShellSidebarHeader({
+    super.key,
+    required this.countText,
+    required this.countTooltip,
+    required this.consoleButton,
+    required this.peerButton,
+    required this.hostsButton,
+    required this.sharesButton,
+    required this.reloadButton,
+    required this.collapseButton,
+    required this.pluginButtons,
+  });
+
+  final String countText;
+  final String countTooltip;
+  final Widget consoleButton;
+  final Widget peerButton;
+  final Widget hostsButton;
+  final Widget sharesButton;
+  final Widget reloadButton;
+  final Widget collapseButton;
+  final Widget pluginButtons;
+
+  @override
+  Widget build(BuildContext context) {
+    final count = Text(countText,
+        maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: AppTheme.faint));
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 8, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Expanded(
+                child: Text('会话', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          countTooltip.isEmpty ? count : Tooltip(message: countTooltip, child: count),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 2,
+            runSpacing: 2,
+            children: [consoleButton, peerButton, hostsButton, sharesButton, reloadButton, collapseButton, pluginButtons],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Web shell side-resizer (shell.js:230-270): drag 200–640px with a
+/// 60% viewport cap, double-click resets to the 268 default, width
+/// persists on drag end and on reset. Narrow screens hide it (the
+/// caller only mounts it on wide).
+class ShellSidebarResizer extends StatefulWidget {
+  const ShellSidebarResizer({
+    super.key,
+    required this.width,
+    required this.onWidthChanged,
+    required this.onResizeEnd,
+    required this.onReset,
+  });
+
+  final double width;
+  final ValueChanged<double> onWidthChanged;
+  final VoidCallback onResizeEnd;
+  final VoidCallback onReset;
+
+  static const double defaultWidth = 268;
+  static const double minWidth = 200;
+  static const double maxWidth = 640;
+
+  @override
+  State<ShellSidebarResizer> createState() => _ShellSidebarResizerState();
+}
+
+class _ShellSidebarResizerState extends State<ShellSidebarResizer> {
+  double? _dragStartWidth;
+  double _dragStartX = 0;
+
+  double _clamp(double value, double viewportWidth) {
+    final cap = math.min(ShellSidebarResizer.maxWidth, viewportWidth * 0.6);
+    return value.clamp(ShellSidebarResizer.minWidth, cap);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '拖动调整侧边栏宽度（双击恢复默认）',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.resizeColumn,
+        child: GestureDetector(
+          key: const Key('shell-sidebar-resizer'),
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragDown: (details) {
+            _dragStartX = details.globalPosition.dx;
+            _dragStartWidth = widget.width;
+          },
+          onHorizontalDragUpdate: (details) {
+            final start = _dragStartWidth;
+            if (start == null) return;
+            widget.onWidthChanged(
+                _clamp(start + details.globalPosition.dx - _dragStartX, MediaQuery.of(context).size.width));
+          },
+          onHorizontalDragEnd: (_) {
+            _dragStartWidth = null;
+            widget.onResizeEnd();
+          },
+          onDoubleTap: widget.onReset,
+          child: Container(width: 8, color: Colors.transparent),
+        ),
+      ),
+    );
+  }
+}
 
 /// Multi-window page, mirroring web/grid.html: several panes side by
 /// side (strip), in a grid, or free-positioned on a canvas, each cell
@@ -50,6 +550,9 @@ class _GridScreenState extends State<GridScreen> {
   Map<String, String> _statuses = {};
   Map<String, String> _pinLabels = {};
   Map<String, String> _favoriteTitles = {};
+  /// Favorite pane refs (web shell setFavorites accepts both plain ids
+  /// and {pane} objects; the titles map above only keeps titled rows).
+  Set<String> _favoriteRefs = {};
   SharedPreferences? _prefs;
   Timer? _statusTimer;
   String? _lastSavedJson;
@@ -80,6 +583,20 @@ class _GridScreenState extends State<GridScreen> {
 
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final ScrollController _narrowController = ScrollController();
+
+  /// Shell sidebar tree data (web shell.js state.hosts): the same
+  /// hosts() answer as _panes, kept unflattened and in server order.
+  List<Host>? _treeHosts;
+  String? _treeError;
+
+  /// Shell sidebar geometry (shared keys with the console sidebar):
+  /// width under tmux-side-w (shell.js default 268), collapse under
+  /// tmux-sidebar-collapsed.
+  double _sidebarWidth = ShellSidebarResizer.defaultWidth;
+  bool _sidebarCollapsed = false;
+
+  int get _treePaneCount =>
+      (_treeHosts ?? const <Host>[]).fold<int>(0, (sum, host) => sum + host.panes.length);
   int _narrowIndex = 0;
   double _narrowStep = 1;
   Offset? _pagerPos;
@@ -113,9 +630,24 @@ class _GridScreenState extends State<GridScreen> {
     if (index != _narrowIndex) setState(() => _narrowIndex = index);
   }
 
+  Future<void> _saveSidebarPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('tmux-side-w', _sidebarWidth);
+      await prefs.setBool('tmux-sidebar-collapsed', _sidebarCollapsed);
+    } catch (_) {}
+  }
+
   Future<void> _init() async {
     final prefs = await SharedPreferences.getInstance();
     _prefs = prefs;
+    // Shell sidebar prefs, read with the grid state (same keys the
+    // console sidebar uses, so a width/collapse choice carries over).
+    try {
+      _sidebarWidth = (prefs.getDouble('tmux-side-w') ?? ShellSidebarResizer.defaultWidth)
+          .clamp(ShellSidebarResizer.minWidth, ShellSidebarResizer.maxWidth);
+      _sidebarCollapsed = prefs.getBool('tmux-sidebar-collapsed') ?? false;
+    } catch (_) {}
     GridState restored = GridState();
     try {
       final saved = prefs.getString(GridState.gridKey);
@@ -172,9 +704,9 @@ class _GridScreenState extends State<GridScreen> {
     await _loadNames();
   }
 
-  Future<void> _loadHosts() async {
+  Future<void> _loadHosts({bool refresh = false}) async {
     try {
-      final hosts = await widget.api.hosts();
+      final hosts = await widget.api.hosts(refresh: refresh);
       if (!mounted) return;
       final byRef = <String, Pane>{};
       for (final host in hosts) {
@@ -183,13 +715,42 @@ class _GridScreenState extends State<GridScreen> {
         }
       }
       setState(() {
+        _treeHosts = hosts;
+        _treeError = null;
         _panes = byRef;
         _grid.applyDefaultModes({for (final entry in byRef.entries) entry.key: entry.value.hasTranscript});
       });
       await _saveIfChanged();
-    } catch (_) {
+    } catch (error) {
       // Titles stay as pane refs when hosts cannot load; the cells
       // themselves still work, like web with an empty titles map.
+      // The tree, unlike the cells, shows the failure inside itself
+      // (web shell.js loadHosts catch).
+      if (mounted) setState(() => _treeError = '$error');
+    }
+  }
+
+  /// Web's sidebar reload (shell.js reload button): reload the tree
+  /// and toast 已刷新.
+  Future<void> _reloadSidebar() async {
+    await _loadHosts();
+    await _loadStatuses();
+    await _loadNames();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已刷新')));
+    }
+  }
+
+  /// Web's per-host refresh (shell.js refreshHost): the same fresh
+  /// read, with the server refresh flag. Api has no per-host query
+  /// parameter, so the refresh covers the whole tree — the visible
+  /// result (fresh tree + 已刷新 toast) matches web.
+  Future<void> _refreshHost() async {
+    await _loadHosts(refresh: true);
+    await _loadStatuses();
+    await _loadNames();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已刷新')));
     }
   }
 
@@ -214,16 +775,15 @@ class _GridScreenState extends State<GridScreen> {
     }
   }
 
-  /// Web's loadNames (grid.html:1199): recent (limit 60 on web; the
-  /// Flutter Api exposes pins() with no limit parameter, so the whole
-  /// recent list is read) supplies pin labels, favorites supply
-  /// favorite titles. Parsed tolerantly: the server/fake shapes vary
-  /// between {pane,label} maps and bare pane-id strings.
+  /// Web's loadNames (grid.html:1199): recent (limit 60 on web)
+  /// supplies pin labels, favorites supply favorite titles. Parsed
+  /// tolerantly: the server/fake shapes vary between {pane,label}
+  /// maps and bare pane-id strings.
   Future<void> _loadNames() async {
     final pinLabels = <String, String>{};
     final favoriteTitles = <String, String>{};
     try {
-      final data = await widget.api.pins();
+      final data = await widget.api.pins(limit: 60);
       for (final key in ['recent', 'pinned']) {
         final list = data[key];
         if (list is List) {
@@ -237,34 +797,42 @@ class _GridScreenState extends State<GridScreen> {
         }
       }
     } catch (_) {}
+    final favoriteRefs = <String>{};
     try {
       final data = await widget.api.homeFavorites();
       final list = data['favorites'];
       if (list is List) {
         for (final item in list) {
-          if (item is Map) {
+          if (item is String) {
+            if (item.isNotEmpty) favoriteRefs.add(item);
+          } else if (item is Map) {
             final pane = '${item['pane'] ?? item['id'] ?? ''}';
             final title = '${item['title'] ?? ''}'.trim();
+            if (pane.isNotEmpty) favoriteRefs.add(pane);
             if (pane.isNotEmpty && title.isNotEmpty) favoriteTitles[pane] = title;
           }
         }
       }
     } catch (_) {}
     if (!mounted) return;
-    if (pinLabels.toString() != _pinLabels.toString() || favoriteTitles.toString() != _favoriteTitles.toString()) {
+    if (pinLabels.toString() != _pinLabels.toString() ||
+        favoriteTitles.toString() != _favoriteTitles.toString() ||
+        favoriteRefs.toString() != _favoriteRefs.toString()) {
       setState(() {
         _pinLabels = pinLabels;
         _favoriteTitles = favoriteTitles;
+        _favoriteRefs = favoriteRefs;
       });
     }
   }
 
   /// The drawer recent block's data, mirroring the hosts sidebar
   /// mount: pinned rows first, then recent rows, from GET
-  /// /api/home/recent. A row tap adds the pane to the grid (web
-  /// grid.html:303 side-foot hint: 点会话即加入窗口).
+  /// /api/home/recent?limit=12 (the sidebar mount's read). A row tap
+  /// adds the pane to the grid (web grid.html:303 side-foot hint:
+  /// 点会话即加入窗口).
   Future<RecentBlockData> _loadRecentBlock() async {
-    final data = await widget.api.pins();
+    final data = await widget.api.pins(limit: 12);
     List<Map<String, dynamic>> rawRows(Object? value) =>
         value is List ? value.whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList() : const [];
     final pinnedRaw = rawRows(data['pinned']);
@@ -301,78 +869,221 @@ class _GridScreenState extends State<GridScreen> {
     );
   }
 
-  /// Grid sidebar drawer: the shared RecentBlock, mounted like the
-  /// hosts sidebar mount (not a competing sidebar). The header
-  /// carries web's console entry exactly as of commit e353ff8,
-  /// which unified grid with home: a chat bubble (web #i-chat)
+  /// Narrow sidebar mode (web shell.css @media(max-width:860px)):
+  /// the sidebar is a drawer, not a column. The grid body's own
+  /// narrow breakpoint (760px) is a different rule and untouched.
+  bool get _sidebarNarrow => MediaQuery.of(context).size.width <= 860;
+
+  void _closeSidebarDrawer() {
+    // Close the drawer through the Scaffold: a bare Navigator pop
+    // here would pop the grid page route itself, not the drawer.
+    // Wide has no drawer, so this is a no-op there.
+    _scaffoldKey.currentState?.closeDrawer();
+  }
+
+  void _collapseSidebar() {
+    if (_sidebarNarrow) {
+      _closeSidebarDrawer();
+    } else {
+      setState(() => _sidebarCollapsed = true);
+    }
+    unawaited(_saveSidebarPrefs());
+  }
+
+  Widget _sidebarAction({
+    required Key key,
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback onPressed,
+  }) {
+    return IconButton(
+      key: key,
+      tooltip: tooltip,
+      iconSize: 18,
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+      onPressed: onPressed,
+      icon: Icon(icon, size: 18),
+    );
+  }
+
+  /// The full shell sidebar (web/grid.html side-head + tree-tools +
+  /// tree + recents + footer), shared by the wide column and the
+  /// narrow drawer. [height] is the sidebar's full height, for the
+  /// RecentBlock ratio model. The header carries web's console entry
+  /// exactly as of commit e353ff8: a chat bubble (web #i-chat)
   /// titled 聊天（控制台）, never the old #i-console terminal glyph.
-  Widget _gridDrawer() {
-    return Drawer(
-      key: const Key('grid-drawer'),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text('会话', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                ),
-                IconButton(
-                  key: const Key('grid-drawer-console'),
-                  tooltip: '聊天（控制台）',
-                  iconSize: 18,
-                  visualDensity: VisualDensity.compact,
+  Widget _gridSidebarContent(double height) {
+    final countText = _treeHosts == null ? '载入中…' : '$_treePaneCount panes';
+    final countTooltip = _treeHosts == null
+        ? ''
+        : '${_treeHosts!.length} 台主机 · $_treePaneCount 个 pane';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ShellSidebarHeader(
+          countText: countText,
+          countTooltip: countTooltip,
+          consoleButton: _sidebarAction(
+            key: const Key('grid-drawer-console'),
+            tooltip: '聊天（控制台）',
+            icon: Icons.chat_bubble_outline,
+            onPressed: () {
+              _closeSidebarDrawer();
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => HostsScreen(api: widget.api, baseUrl: widget.baseUrl),
+              ));
+            },
+          ),
+          peerButton: _sidebarAction(
+            key: const Key('grid-side-home'),
+            tooltip: '主页',
+            icon: Icons.home_outlined,
+            onPressed: () {
+              _closeSidebarDrawer();
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => HomeBoardScreen(api: widget.api, baseUrl: widget.baseUrl),
+              ));
+            },
+          ),
+          hostsButton: _sidebarAction(
+            key: const Key('grid-side-hosts'),
+            tooltip: '远程主机',
+            icon: Icons.dns_outlined,
+            onPressed: () {
+              _closeSidebarDrawer();
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => HostsAdminScreen(api: widget.api),
+              ));
+            },
+          ),
+          sharesButton: _sidebarAction(
+            key: const Key('grid-side-shares'),
+            tooltip: '管理分享',
+            icon: Icons.share_outlined,
+            onPressed: () {
+              _closeSidebarDrawer();
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => SharesScreen(api: widget.api, baseUrl: widget.baseUrl),
+              ));
+            },
+          ),
+          reloadButton: _sidebarAction(
+            key: const Key('grid-side-reload'),
+            tooltip: '刷新',
+            icon: Icons.refresh,
+            onPressed: _reloadSidebar,
+          ),
+          collapseButton: _sidebarAction(
+            key: const Key('grid-side-collapse'),
+            tooltip: '折叠侧边栏',
+            icon: Icons.chevron_left,
+            onPressed: _collapseSidebar,
+          ),
+          pluginButtons: PluginButtons(
+              api: widget.api,
+              baseUrl: widget.baseUrl,
+              cookieHeader: widget.api is TerminalApi
+                  ? (widget.api as TerminalApi).wsHeaders['Cookie'] ?? ''
+                  : ''),
+        ),
+        Expanded(
+          child: SessionTreeView(
+            keyPrefix: 'grid-tree',
+            hosts: _treeHosts,
+            error: _treeError,
+            states: _statuses,
+            favorites: _favoriteRefs,
+            inGridRefs: _grid.panes.toSet(),
+            onPane: (pane) {
+              // Web grid openPane: add/flash the cell and NEVER
+              // collapse the sidebar — the old closeDrawer() here
+              // was the deviation, removed.
+              if (!_grid.panes.contains(pane.ref)) {
+                _mutate(() => _grid.add(pane.ref));
+              }
+            },
+            onToggleFavorite: (ref, starred) async {
+              if (starred) {
+                await widget.api.addHomeFavorite(ref);
+              } else {
+                await widget.api.deleteHomeFavorite(ref);
+              }
+              await _loadNames();
+            },
+            onRefreshHost: (_) => _refreshHost(),
+          ),
+        ),
+        // Fixed-bottom recents (web grid mount): grip + persisted
+        // ratio height against the sidebar height. No surrounding
+        // Expanded: it would override the fixed height with tight
+        // constraints. No hideWhenFiles: the grid mount has none.
+        RecentBlock(
+          fixedBottom: true,
+          sidebarHeight: height,
+          activePaneRef: _grid.panes.isNotEmpty ? _grid.panes.first : null,
+          knownPaneRefs: _panes.keys.toSet(),
+          load: _loadRecentBlock,
+          onOpen: (ref) {
+            // Web recents onPick: touch the visit, then the page's
+            // onPane — and the drawer stays open (see tree onPane).
+            unawaited(() async {
+              try {
+                await widget.api.touchHomeRecent(ref);
+              } catch (_) {}
+            }());
+            _mutate(() => _grid.add(ref));
+          },
+          onTogglePin: (ref, pinned) async {
+            await widget.api.pinPane(ref, pinned: pinned);
+            await _loadNames();
+          },
+          onRenamePin: (ref, label) async {
+            await widget.api.renamePin(ref, label);
+            await _loadNames();
+          },
+          onToggleFavorite: (ref, starred) async {
+            if (starred) {
+              await widget.api.addHomeFavorite(ref);
+            } else {
+              await widget.api.deleteHomeFavorite(ref);
+            }
+            await _loadNames();
+          },
+          // Web recent-clear: the server method deletes every
+          // unpinned row itself (recents.js:502-516), so the refs
+          // the block passes are not needed here.
+          onClearUnpinned: (_) => widget.api.clearUnpinnedRecents(),
+          onRenameFavoriteTitle: (ref, label) => widget.api.renameHomeFavorite(ref, label),
+        ),
+        Container(
+          padding: EdgeInsets.fromLTRB(12, 10, 12, 10 + MediaQuery.of(context).padding.bottom),
+          decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text('点会话即加入窗口', style: TextStyle(fontSize: 11.5, color: AppTheme.faint)),
+              ),
+              Tooltip(
+                message: '设置：改密码、导入导出、退出登录',
+                child: TextButton.icon(
+                  key: const Key('grid-sidebar-settings'),
                   onPressed: () {
-                    // Close the drawer through the Scaffold: a bare
-                    // Navigator pop here would pop the grid page
-                    // route itself, not the drawer.
-                    _scaffoldKey.currentState?.closeDrawer();
+                    _closeSidebarDrawer();
                     Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => HostsScreen(
-                          api: widget.api, baseUrl: widget.baseUrl),
+                      builder: (_) => SettingsScreen(api: widget.api, baseUrl: widget.baseUrl),
                     ));
                   },
-                  icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                  icon: const Icon(Icons.settings_outlined, size: 16),
+                  label: const Text('设置'),
+                  style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-          Expanded(
-            child: RecentBlock(
-              fixedBottom: false,
-              fillHeight: true,
-              load: _loadRecentBlock,
-              onOpen: (ref) {
-                _mutate(() => _grid.add(ref));
-                _scaffoldKey.currentState?.closeDrawer();
-              },
-              onTogglePin: (ref, pinned) async {
-                await widget.api.pinPane(ref, pinned: pinned);
-                await _loadNames();
-              },
-              onRenamePin: (ref, label) async {
-                await widget.api.renamePin(ref, label);
-                await _loadNames();
-              },
-              onToggleFavorite: (ref, starred) async {
-                if (starred) {
-                  await widget.api.addHomeFavorite(ref);
-                } else {
-                  await widget.api.deleteHomeFavorite(ref);
-                }
-                await _loadNames();
-              },
-            ),
-          ),
-          Container(
-            padding: EdgeInsets.fromLTRB(16, 10, 16, 10 + MediaQuery.of(context).padding.bottom),
-            decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.line))),
-            child: Text('点会话即加入窗口', style: TextStyle(fontSize: 11.5, color: AppTheme.faint)),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -472,6 +1183,17 @@ class _GridScreenState extends State<GridScreen> {
 
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    // Web narrow drawer: Escape closes it (backdrop + Escape). Inner
+    // fields that handle Escape themselves (rename inputs) return
+    // handled first, so this only fires when nothing else claimed it.
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      final scaffold = _scaffoldKey.currentState;
+      if (scaffold != null && scaffold.isDrawerOpen) {
+        scaffold.closeDrawer();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
     final keyboard = HardwareKeyboard.instance;
     if (!(keyboard.isControlPressed || keyboard.isMetaPressed) || keyboard.isShiftPressed) {
       return KeyEventResult.ignored;
@@ -1697,17 +2419,83 @@ class _GridScreenState extends State<GridScreen> {
     );
   }
 
+  /// The grid body (cells area), without the shell sidebar. Split
+  /// out of build so the wide layout can place it beside the sidebar
+  /// column while narrow keeps it as the Scaffold body.
+  Widget _gridBody() {
+    if (_grid.panes.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('还没有窗口', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w500)),
+              const SizedBox(height: 6),
+              Text('点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。',
+                  textAlign: TextAlign.center, style: TextStyle(color: AppTheme.muted)),
+            ],
+          ),
+        ),
+      );
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final narrow = constraints.maxWidth <= _narrowWidth;
+        final areaSize = Size(constraints.maxWidth, constraints.maxHeight);
+        return Column(
+          children: [
+            if (!narrow && _grid.layout != 'strip') _sizeBar(areaSize),
+            Expanded(
+              child: narrow
+                  ? _narrowLayout(constraints.maxHeight)
+                  : _grid.isCanvas
+                      ? _canvasLayout(constraints)
+                      : _grid.isGrid
+                          ? _gridLayout(_grid.cols, constraints.maxWidth, constraints.maxHeight,
+                              showGrips: _grid.maximized == null)
+                          : _stripLayout(),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final count = _grid.panes.isEmpty ? '' : '${_grid.panes.length} 个窗口';
     // Web grid.html:228: one column only on a phone, so the layout
     // switch would be a lie — hide it (and the size bar) at ≤760px.
     final narrowAppBar = MediaQuery.sizeOf(context).width <= _narrowWidth;
+    // Shell sidebar mode is web's own 860px breakpoint (shell.css),
+    // independent of the grid body's 760px layout breakpoint.
+    final sidebarNarrow = _sidebarNarrow;
+    final showSideOpen = sidebarNarrow || _sidebarCollapsed;
     return Focus(
       onKeyEvent: _onKeyEvent,
       child: Scaffold(
         key: _scaffoldKey,
-        drawer: _gridDrawer(),
+        // Narrow: the drawer is the collapsed state; a backdrop close
+        // (or swipe) persists it, like web's backdrop click.
+        onDrawerChanged: sidebarNarrow
+            ? (opened) {
+                if (_sidebarCollapsed == opened) {
+                  setState(() => _sidebarCollapsed = !opened);
+                  unawaited(_saveSidebarPrefs());
+                }
+              }
+            : null,
+        drawer: sidebarNarrow
+            ? Drawer(
+                key: const Key('grid-drawer'),
+                // Web narrow drawer: min(86vw, 320px).
+                width: math.min(MediaQuery.sizeOf(context).width * 0.86, 320),
+                child: LayoutBuilder(
+                  builder: (context, constraints) => _gridSidebarContent(constraints.maxHeight),
+                ),
+              )
+            : null,
         appBar: AppBar(
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1718,6 +2506,22 @@ class _GridScreenState extends State<GridScreen> {
             ],
           ),
           actions: [
+            // Web side-open (grid.html #side-open, title 会话列表):
+            // visible exactly when the sidebar is shut or narrow.
+            if (showSideOpen)
+              IconButton(
+                key: const Key('grid-side-open'),
+                tooltip: '会话列表',
+                icon: const Icon(Icons.menu, size: 20),
+                onPressed: () {
+                  if (sidebarNarrow) {
+                    _scaffoldKey.currentState?.openDrawer();
+                  } else {
+                    setState(() => _sidebarCollapsed = false);
+                    unawaited(_saveSidebarPrefs());
+                  }
+                },
+              ),
             if (!narrowAppBar) ...[
               _layoutButton('并排', 'strip', const Key('grid-layout-strip')),
               _layoutButton('网格', 'grid', const Key('grid-layout-grid')),
@@ -1758,51 +2562,39 @@ class _GridScreenState extends State<GridScreen> {
               onPressed: _showPresets,
               icon: const Icon(Icons.bookmark_outline, size: 20),
             ),
-            // Web's plugins-ui.js buttons on the grid surface; renders
-            // nothing when the server reports no buttons.
-            PluginButtons(
-                api: widget.api,
-                baseUrl: widget.baseUrl,
-                cookieHeader: widget.api is TerminalApi
-                    ? (widget.api as TerminalApi).wsHeaders['Cookie'] ?? ''
-                    : ''),
+            // Plugin buttons moved into the sidebar header (N1: web
+            // plugins-ui.js appends them to .side-actions); the
+            // AppBar no longer carries them.
           ],
         ),
-        body: _grid.panes.isEmpty
-            ? Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('还没有窗口', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w500)),
-                      const SizedBox(height: 6),
-                      Text('点「添加窗口」把几个会话并排放在这里，拖动分隔线可以调宽窄。',
-                          textAlign: TextAlign.center, style: TextStyle(color: AppTheme.muted)),
-                    ],
+        // Wide: the sidebar is an always-visible column (web shell),
+        // not a hamburger-only drawer. Narrow: Scaffold drawer above.
+        body: sidebarNarrow || _sidebarCollapsed
+            ? _gridBody()
+            : Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    width: _sidebarWidth,
+                    decoration: BoxDecoration(
+                      color: AppTheme.sidebar,
+                      border: Border(right: BorderSide(color: AppTheme.line)),
+                    ),
+                    child: LayoutBuilder(
+                      builder: (context, constraints) => _gridSidebarContent(constraints.maxHeight),
+                    ),
                   ),
-                ),
-              )
-            : LayoutBuilder(
-                builder: (context, constraints) {
-                  final narrow = constraints.maxWidth <= _narrowWidth;
-                  final areaSize = Size(constraints.maxWidth, constraints.maxHeight);
-                  return Column(
-                    children: [
-                      if (!narrow && _grid.layout != 'strip') _sizeBar(areaSize),
-                      Expanded(
-                        child: narrow
-                            ? _narrowLayout(constraints.maxHeight)
-                            : _grid.isCanvas
-                                ? _canvasLayout(constraints)
-                                : _grid.isGrid
-                                    ? _gridLayout(_grid.cols, constraints.maxWidth, constraints.maxHeight,
-                                        showGrips: _grid.maximized == null)
-                                    : _stripLayout(),
-                      ),
-                    ],
-                  );
-                },
+                  ShellSidebarResizer(
+                    width: _sidebarWidth,
+                    onWidthChanged: (width) => setState(() => _sidebarWidth = width),
+                    onResizeEnd: _saveSidebarPrefs,
+                    onReset: () {
+                      setState(() => _sidebarWidth = ShellSidebarResizer.defaultWidth);
+                      unawaited(_saveSidebarPrefs());
+                    },
+                  ),
+                  Expanded(child: _gridBody()),
+                ],
               ),
       ),
     );

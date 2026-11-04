@@ -72,9 +72,15 @@ void main() {
   testWidgets('grid drawer mounts RecentBlock with the chat-bubble console entry', (tester) async {
     await pumpGrid(tester,
         saved: _gridJson(['%7']),
+        // The tapped pane becomes a grid cell; a busy state would
+        // pulse forever and pumpAndSettle could never return.
+        states: {'%7': 'idle', 'abc~%0': 'idle'},
         pinsData: {
           'recent': [
-            {'pane': 'other~%1', 'title': 'other session', 'visited_at': 0}
+            // I8 knownPaneRefs filtering (web recents.js:144-156)
+            // drops unpinned rows for panes outside the host tree,
+            // so the row must be a host pane to render at all.
+            {'pane': 'abc~%0', 'title': 'other session', 'visited_at': 0}
           ],
           'pinned': [],
         });
@@ -97,8 +103,8 @@ void main() {
     // pinned down by its remove button key, not by the raw ref.
     await tester.tap(find.text('other session'));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('grid-remove-other~%1')), findsOneWidget);
-    expect((await _savedGridJson())['panes'], ['%7', 'other~%1']);
+    expect(find.byKey(const Key('grid-remove-abc~%0')), findsOneWidget);
+    expect((await _savedGridJson())['panes'], ['%7', 'abc~%0']);
   });
 
   testWidgets('grid drawer console entry opens the console, keeping the grid underneath', (tester) async {
