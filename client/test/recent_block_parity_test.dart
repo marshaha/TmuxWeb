@@ -48,5 +48,26 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.widget<Container>(find.byKey(const Key('recent-row-%7'))).decoration, isNull);
   });
+
+  // E14: web suppresses the context menu on pinned rows (recents.js:517-519).
+  testWidgets('pinned rows claim secondary tap, unpinned rows do not', (tester) async {
+    Widget row(bool pinned) => MaterialApp(
+          home: Scaffold(
+            body: RecentRow(
+              data: RecentRowData(paneRef: '%7', label: 'review', pinned: pinned),
+              onOpen: (_) {},
+              onTogglePin: (_, __) async {},
+              onRename: (_, __) async {},
+              onToggleFavorite: (_, __) async {},
+            ),
+          ),
+        );
+    await tester.pumpWidget(row(true));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('recent-row-context-suppress-%7')), findsOneWidget);
+    await tester.pumpWidget(row(false));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('recent-row-context-suppress-%7')), findsNothing);
+  });
 }
 

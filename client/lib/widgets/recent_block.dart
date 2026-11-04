@@ -175,10 +175,7 @@ class _RecentRowState extends State<RecentRow> {
   Widget build(BuildContext context) {
     final data = widget.data;
     // Web .active (recents.css): the selected pane's row gets the accent
-    // tint. Web also suppresses the context menu on pinned rows
-    // (recents.js:517-519); Flutter has no default row menu, so the
-    // secondary-tap gesture is claimed here so no ancestor menu can
-    // open over a pinned row either.
+    // tint.
     final row = Container(
       key: Key('recent-row-${data.paneRef}'),
       constraints: const BoxConstraints(minHeight: 44),
@@ -302,7 +299,15 @@ class _RecentRowState extends State<RecentRow> {
         ),
       ),
     );
-    return row;
+    // Web suppresses the context menu on pinned rows (recents.js:517-519).
+    // Flutter has no default row menu, so the secondary-tap gesture is
+    // claimed here so no ancestor menu can open over a pinned row either.
+    if (!data.pinned) return row;
+    return GestureDetector(
+      key: Key('recent-row-context-suppress-${data.paneRef}'),
+      onSecondaryTap: () {},
+      child: row,
+    );
   }
 }
 
