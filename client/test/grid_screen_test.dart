@@ -313,7 +313,9 @@ void main() {
     for (var i = 0; i < 60; i++) {
       await tester.pump(const Duration(milliseconds: 50));
       if (find.byKey(const Key('chat-composer')).evaluate().isNotEmpty &&
-          find.byKey(const Key('grid-open-%7')).evaluate().isEmpty) break;
+          find.byKey(const Key('grid-open-%7')).evaluate().isEmpty) {
+        break;
+      }
     }
     expect(find.byKey(const Key('chat-composer')), findsOneWidget);
     expect(find.byKey(const Key('grid-open-%7')), findsNothing);
