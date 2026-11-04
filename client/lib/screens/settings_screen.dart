@@ -20,12 +20,10 @@ import 'login_screen.dart';
 /// localStorage['tmux-files-view'] pattern: pane ref → view, most
 /// recent last, capped at 60 panes (oldest trimmed first).
 ///
-/// OPEN DELTA (phase 2): Flutter has no file panel inside the sidebar
-/// at all — files are a separate page — so no view state has anything
-/// to attach to yet and nothing writes through this class. The settings
-/// toggle below only syncs the preference itself (sidebar: pane|none);
-/// claiming per-pane memory complete would be false until the sidebar
-/// file panel exists.
+/// The sidebar file panel now exists (SidebarFilePanel, mounted in
+/// the hosts sidebar), so per-pane view state has something to attach
+/// to and hosts_screen reads/writes through this class. The settings
+/// toggle below syncs the preference itself (sidebar: pane|none).
 class SidebarViewMemory {
   static const String key = 'tmux-files-view';
   static const int maxPanes = 60;
