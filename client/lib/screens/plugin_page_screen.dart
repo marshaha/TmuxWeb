@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../theme.dart';
@@ -81,8 +80,6 @@ class _PluginPageScreenState extends State<PluginPageScreen> {
   String? _error;
   int _attempt = 0;
 
-  bool get _isWindows => !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
-
   String get _pageTitle => widget.title.isEmpty ? widget.pluginName : widget.title;
 
   Uri get _pageUri => Uri.parse(pluginPageUrl(widget.baseUrl, widget.pluginName, widget.entryPath));
@@ -115,20 +112,6 @@ class _PluginPageScreenState extends State<PluginPageScreen> {
   }
 
   Widget _buildBody() {
-    if (_isWindows) {
-      // webview_flutter 4.14.1 has no Windows backend: never show an
-      // unauthenticated or half-loaded page, show the gap plainly.
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            '当前平台（Windows）暂不支持内嵌插件页面',
-            style: TextStyle(fontSize: 13),
-            textAlign: TextAlign.center,
-          ),
-        ),
-      );
-    }
     if (_error != null) {
       return Center(
         child: Padding(

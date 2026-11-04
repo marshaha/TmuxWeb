@@ -23,8 +23,8 @@ import 'web_content_view.dart';
 /// can cover init params, security settings and escaping without ever
 /// creating a platform view. [MermaidView] itself creates a platform view
 /// only when [createPlatformView] is true; tests pass false and get a
-/// placeholder box instead. Windows has no webview_flutter backend, so
-/// callers (BlockView) never render this widget on Windows at all.
+/// placeholder box instead. Windows renders through the WebView2 seam
+/// (web_content_view_windows.dart).
 String mermaidScriptUrl(String assetBaseUrl) {
   var base = assetBaseUrl.trim();
   while (base.endsWith('/')) {

@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -56,11 +55,9 @@ class _BlockViewState extends State<BlockView> {
   }
 
   /// Mermaid renders only where a WebView exists and a server base URL
-  /// is known. Windows has no webview_flutter backend, so it keeps the
-  /// old source-only view; that is the reported Windows delta, not a
-  /// silent fallback.
-  bool get _canRenderMermaid =>
-      !(!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) && widget.baseUrl.isNotEmpty;
+  /// is known. Windows renders through the WebView2 seam
+  /// (web_content_view_windows.dart), like every other target.
+  bool get _canRenderMermaid => widget.baseUrl.isNotEmpty;
 
   @override
   Widget build(BuildContext context) {

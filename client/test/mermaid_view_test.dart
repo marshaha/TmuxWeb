@@ -125,7 +125,7 @@ void main() {
       expect(find.text('graph TD\n  A --> B'), findsOneWidget);
     });
 
-    testWidgets('on Windows keeps the old source-only view even with a base URL', (tester) async {
+    testWidgets('on Windows renders through the WebView2 seam like other targets', (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.windows;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
       await tester.pumpWidget(
@@ -137,9 +137,9 @@ void main() {
           ),
         ),
       );
-      expect(find.text('Mermaid 源码（客户端暂不渲染图形，可在网页版查看）'), findsOneWidget);
-      expect(find.text('源码'), findsNothing);
-      expect(find.byKey(const Key('mermaid-platform-placeholder')), findsNothing);
+      expect(find.text('Mermaid 源码（客户端暂不渲染图形，可在网页版查看）'), findsNothing);
+      expect(find.byKey(const Key('mermaid-platform-placeholder')), findsOneWidget);
+      expect(find.text('源码'), findsOneWidget);
       // Reset in the body, not only in tearDown: the test binding
       // verifies debug variables are unset before tearDowns run.
       debugDefaultTargetPlatformOverride = null;
