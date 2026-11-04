@@ -783,13 +783,37 @@ class _SidebarFilePanelState extends State<SidebarFilePanel> {
       );
     }
     final entries = listing.entries;
-    if (entries.isEmpty) {
+    final parent = listing.parent;
+    if (entries.isEmpty && parent == null) {
       return Center(child: Text('这个目录是空的', style: TextStyle(color: AppTheme.muted)));
     }
     return ListView.builder(
-      itemCount: entries.length,
+      itemCount: entries.length + (parent == null ? 0 : 1),
       itemBuilder: (context, index) {
-        final entry = entries[index];
+        // Web renderFiles puts the `..` row first whenever a parent
+        // exists. It has no checkbox and no context menu (web's menu
+        // binds only [data-entry] rows); a modified click does
+        // nothing, like web's `if(!(ctrl||meta||shift))
+        // openFiles(dir)` guard. The F6 shortcuts likewise ignore it
+        // (web's list keydown reads [data-entry] rows only).
+        if (parent != null && index == 0) {
+          return Material(
+            type: MaterialType.transparency,
+            child: ListTile(
+              key: const Key('sidebar-file-parent'),
+              dense: true,
+              leading: Icon(Icons.subdirectory_arrow_left, size: 20, color: AppTheme.accent),
+              title: const Text('..', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13.5)),
+              onTap: () {
+                final keys = HardwareKeyboard.instance;
+                if (!keys.isShiftPressed && !keys.isControlPressed && !keys.isMetaPressed) {
+                  _open(parent);
+                }
+              },
+            ),
+          );
+        }
+        final entry = entries[parent == null ? index : index - 1];
         final selected = _selected.contains(entry.path);
         // Transparent Material per row: the sidebar container paints a
         // background above the Scaffold's Material, which would hide

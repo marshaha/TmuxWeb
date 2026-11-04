@@ -93,6 +93,24 @@ void main() {
     expect(find.text('条目太多，只显示了一部分'), findsNothing);
   });
 
+  testWidgets('F3: parent row is first and navigates up, bar up button kept', (tester) async {
+    final seen = <String>[];
+    await pumpPanel(tester, FakeApi(), seen: seen);
+    final parentRow = find.byKey(const Key('sidebar-file-parent'));
+    expect(parentRow, findsOneWidget);
+    expect(find.text('..'), findsOneWidget);
+    // The parent row precedes the first entry row.
+    final parentOffset = tester.getTopLeft(parentRow);
+    final firstEntryOffset = tester.getTopLeft(find.byKey(const Key('sidebar-file-notes.md')));
+    expect(parentOffset.dy, lessThan(firstEntryOffset.dy));
+    await tester.tap(parentRow);
+    await tester.pumpAndSettle();
+    expect(seen.last, '/srv');
+    // Web's file bar has no up control, but Flutter's stays: removing
+    // navigation would be a regression, so both exist.
+    expect(find.byKey(const Key('sidebar-files-up')), findsOneWidget);
+  });
+
   testWidgets('F2: failed load shows the error in the footer, keeping retry', (tester) async {
     await pumpPanel(tester, _FailingListApi());
     // The error page body and the footer both show it; assert on the
