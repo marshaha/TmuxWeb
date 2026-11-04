@@ -16,11 +16,27 @@ class ScreenStream {
   final Map<String, String> headers;
 
   final _controller = StreamController<String>();
+  final _reconnectingController = StreamController<bool>.broadcast();
   AppSocket? _socket;
   Timer? _retry;
   bool _closed = false;
+  bool _reconnecting = false;
 
   Stream<String> get stream => _controller.stream;
+
+  /// True while a dropped socket is waiting out its 1500ms timer (or
+  /// has failed to connect and is retrying). ChatScreen shows its
+  /// `重连中…` badge from this; the stream only emits on change, so
+  /// readers should also check [isReconnecting] when subscribing.
+  Stream<bool> get reconnecting => _reconnectingController.stream;
+
+  bool get isReconnecting => _reconnecting;
+
+  void _setReconnecting(bool value) {
+    if (_reconnecting == value) return;
+    _reconnecting = value;
+    _reconnectingController.add(value);
+  }
 
   void start() {
     _connect();
@@ -35,12 +51,15 @@ class ScreenStream {
         return;
       }
       _socket = socket;
+      _setReconnecting(false);
       socket.stream.listen(
         (data) {
           if (_closed || data is! String) return;
           try {
             final decoded = jsonDecode(data);
-            if (decoded is Map && decoded['type'] == 'capture' && decoded['content'] is String) {
+            if (decoded is Map &&
+                decoded['type'] == 'capture' &&
+                decoded['content'] is String) {
               _controller.add(decoded['content'] as String);
             }
           } catch (_) {
@@ -59,6 +78,7 @@ class ScreenStream {
   void _scheduleReconnect() {
     if (_closed) return;
     _socket = null;
+    _setReconnecting(true);
     _retry?.cancel();
     _retry = Timer(const Duration(milliseconds: 1500), _connect);
   }
@@ -67,7 +87,9 @@ class ScreenStream {
     _closed = true;
     _retry?.cancel();
     await _socket?.close();
+    _setReconnecting(false);
     await _controller.close();
+    await _reconnectingController.close();
   }
 }
 
@@ -84,7 +106,8 @@ String trimCapture(String text, {int maxLines = 600, int maxBytes = 160000}) {
   var result = text;
   final lines = result.split('\n');
   if (lines.length > maxLines) {
-    result = '… 只显示最近 $maxLines 行 …\n${lines.sublist(lines.length - maxLines).join('\n')}';
+    result =
+        '… 只显示最近 $maxLines 行 …\n${lines.sublist(lines.length - maxLines).join('\n')}';
   }
   if (result.length > maxBytes) {
     final tail = result.substring(result.length - maxBytes);
