@@ -22,10 +22,16 @@ import '../theme.dart';
 /// the POST /api/session exchange that makes native sockets work), which
 /// this screen must not regress.
 class TerminalScreen extends StatefulWidget {
-  const TerminalScreen({super.key, required this.api, required this.pane, this.embedded = false});
+  const TerminalScreen(
+      {super.key, required this.api, required this.pane, this.embedded = false, this.onOpenInConsole});
 
   final TerminalApi api;
   final Pane pane;
+
+  /// Web's term page links back to the console. Supplied by full-page
+  /// terminal pushes that can build a console route; null (and hence
+  /// no button) for embedded terminals and for pushes without one.
+  final VoidCallback? onOpenInConsole;
 
   /// Inside a grid cell there is no room for the page chrome: only
   /// the terminal view, like web's /term?embed=1 iframe.
@@ -433,6 +439,13 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
             onPressed: _manualRetry,
             icon: const Icon(Icons.refresh, size: 20),
           ),
+          if (widget.onOpenInConsole != null)
+            IconButton(
+              key: const Key('terminal-open-console'),
+              tooltip: '在控制台打开',
+              onPressed: widget.onOpenInConsole,
+              icon: const Icon(Icons.chat_bubble_outline, size: 20),
+            ),
         ],
       ),
       backgroundColor: const Color(0xFF111111),

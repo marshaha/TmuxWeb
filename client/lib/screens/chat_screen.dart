@@ -11,6 +11,7 @@ import '../models/chat_source.dart';
 import '../services/save_file.dart';
 import '../services/screen_stream.dart';
 import 'files_screen.dart';
+import 'hosts_screen.dart';
 import 'terminal_screen.dart';
 import '../models/models.dart';
 import '../models/transcript_cache.dart';
@@ -621,12 +622,21 @@ class _ChatScreenState extends State<ChatScreen> {
   void _openPathDir(String path) {
     final source = widget.source;
     if (source is! PaneChatSource) return;
-    // FilesScreen has no initial-path parameter, so a linked directory
-    // lands on the pane's working directory; the user navigates from
-    // there. (FilesScreen itself is outside this batch's scope.)
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => FilesScreen(api: source.api, pane: source.pane),
+      builder: (_) =>
+          FilesScreen(api: source.api, pane: source.pane, initialPath: path),
     ));
+  }
+
+  /// Session cookie for mermaid rendering, derived from the pane
+  /// source's API when it carries one (TerminalApi); empty for share
+  /// sources, which render mermaid source-only.
+  String get _cookieHeader {
+    final api = widget.source.chatApi;
+    // Explicit `as` cast (the codebase's established pattern): property
+    // and getter accesses do not get `is`-promotion here.
+    if (api is TerminalApi) return (api as TerminalApi).wsHeaders['Cookie'] ?? '';
+    return '';
   }
 
   @override
@@ -738,7 +748,16 @@ class _ChatScreenState extends State<ChatScreen> {
                 final source = widget.source;
                 if (api == null || source is! PaneChatSource) return;
                 Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => TerminalScreen(api: api, pane: source.pane),
+                  builder: (_) => TerminalScreen(
+                    api: api,
+                    pane: source.pane,
+                    onOpenInConsole: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => HostsScreen(
+                                api: source.api,
+                                baseUrl: widget.baseUrl,
+                                initialPaneRef: source.pane.ref))),
+                  ),
                 ));
               },
               icon: const Icon(Icons.terminal, size: 20),
@@ -835,7 +854,10 @@ class _ChatScreenState extends State<ChatScreen> {
         final position = index - offset;
         if (position < messages.length) {
           return MessageTile(
-              message: messages[position], pathLinks: _pathLinkActions);
+              message: messages[position],
+              pathLinks: _pathLinkActions,
+              baseUrl: widget.baseUrl,
+              cookieHeader: _cookieHeader);
         }
         final text = _pending[position - messages.length];
         final failed = _failed.contains(text);
@@ -846,6 +868,8 @@ class _ChatScreenState extends State<ChatScreen> {
               message:
                   ChatMessage(id: 'pending-$index', role: 'user', text: text),
               pathLinks: _pathLinkActions,
+              baseUrl: widget.baseUrl,
+              cookieHeader: _cookieHeader,
             ),
             if (failed)
               Padding(

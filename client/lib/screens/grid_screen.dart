@@ -13,6 +13,7 @@ import '../theme.dart';
 import '../widgets/grid_pager.dart';
 import 'chat_screen.dart';
 import 'hosts_screen.dart';
+import '../widgets/plugin_buttons.dart';
 import 'terminal_screen.dart';
 
 const _amber = Color(0xFFD89A3C);
@@ -434,7 +435,10 @@ class _GridScreenState extends State<GridScreen> {
             // (hosts/detail view), never a full ChatScreen.
             onPressed: () {
               Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => HostsScreen(api: widget.api, baseUrl: widget.baseUrl),
+                builder: (_) => HostsScreen(
+                    api: widget.api,
+                    baseUrl: widget.baseUrl,
+                    initialPaneRef: ref),
               ));
             },
             icon: const _PageGlyph(),
@@ -1373,6 +1377,14 @@ class _GridScreenState extends State<GridScreen> {
               onPressed: _showPresets,
               icon: const Icon(Icons.bookmark_outline, size: 20),
             ),
+            // Web's plugins-ui.js buttons on the grid surface; renders
+            // nothing when the server reports no buttons.
+            PluginButtons(
+                api: widget.api,
+                baseUrl: widget.baseUrl,
+                cookieHeader: widget.api is TerminalApi
+                    ? (widget.api as TerminalApi).wsHeaders['Cookie'] ?? ''
+                    : ''),
           ],
         ),
         body: _grid.panes.isEmpty

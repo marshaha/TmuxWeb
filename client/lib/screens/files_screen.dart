@@ -12,10 +12,14 @@ import '../theme.dart';
 
 /// File panel for one pane: browse, preview, download, upload and zip.
 class FilesScreen extends StatefulWidget {
-  const FilesScreen({super.key, required this.api, required this.pane});
+  const FilesScreen({super.key, required this.api, required this.pane, this.initialPath});
 
   final Api api;
   final Pane pane;
+
+  /// Directory to open first (chat path-link "打开目录"); defaults to
+  /// the pane's working directory when absent or empty.
+  final String? initialPath;
 
   @override
   State<FilesScreen> createState() => _FilesScreenState();
@@ -42,7 +46,8 @@ class _FilesScreenState extends State<FilesScreen> {
   @override
   void initState() {
     super.initState();
-    _open(widget.pane.path);
+    final initial = widget.initialPath;
+    _open(initial != null && initial.isNotEmpty ? initial : widget.pane.path);
   }
 
   @override

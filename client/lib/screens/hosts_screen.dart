@@ -10,6 +10,7 @@ import '../theme.dart';
 import '../widgets/pane_hover_preview.dart';
 import '../widgets/recent_block.dart';
 import 'chat_screen.dart';
+import '../widgets/plugin_buttons.dart';
 import 'grid_screen.dart';
 import 'home_board_screen.dart';
 import 'hosts_admin_screen.dart';
@@ -28,10 +29,16 @@ import 'terminal_screen.dart';
 /// sidebar (web's side-resizer, shell.js) and collapsing it are in this
 /// cut: drag the handle, double-click it to reset to 280, both persisted.
 class HostsScreen extends StatefulWidget {
-  const HostsScreen({super.key, required this.api, required this.baseUrl});
+  const HostsScreen(
+      {super.key, required this.api, required this.baseUrl, this.initialPaneRef});
 
   final Api api;
   final String baseUrl;
+
+  /// Pane ref to select once hosts load (grid "在控制台打开" and
+  /// terminal "在控制台打开" deep links). Wide shell shows it in the
+  /// detail pane; narrow only highlights its tree row.
+  final String? initialPaneRef;
 
   @override
   State<HostsScreen> createState() => _HostsScreenState();
@@ -48,6 +55,9 @@ class _HostsScreenState extends State<HostsScreen> {
   /// Wide-shell only: the pane shown in the detail pane. Null means the
   /// detail shows the home board. Never set on narrow screens (taps push).
   Pane? _selectedPane;
+
+  /// Whether the [HostsScreen.initialPaneRef] deep link has been applied.
+  bool _initialPaneApplied = false;
 
   /// Web's narrow breakpoint: at or below 860px the sidebar is an overlay.
   static const double _wideBreakpoint = 861;
@@ -197,6 +207,19 @@ class _HostsScreenState extends State<HostsScreen> {
         final selected = _selectedPane;
         if (selected != null && !hosts.any((host) => host.panes.any((pane) => pane.ref == selected.ref))) {
           _selectedPane = null;
+        }
+        // Deep-link selection, applied once on the first load that has
+        // hosts; later reloads never override the user's own selection.
+        if (!_initialPaneApplied) {
+          _initialPaneApplied = true;
+          final ref = widget.initialPaneRef;
+          if (ref != null && _selectedPane == null) {
+            for (final host in hosts) {
+              for (final pane in host.panes) {
+                if (pane.ref == ref) _selectedPane = pane;
+              }
+            }
+          }
         }
       });
       unawaited(_refreshStates());
@@ -348,6 +371,10 @@ class _HostsScreenState extends State<HostsScreen> {
   /// button shows the board in the detail pane instead of pushing a page.
   List<Widget> _actions({required bool wide}) {
     final density = wide ? VisualDensity.compact : null;
+    final api = widget.api;
+    final cookie = api is TerminalApi
+        ? (api as TerminalApi).wsHeaders['Cookie'] ?? ''
+        : '';
     return [
       IconButton(
         key: const Key('grid'),
@@ -398,6 +425,10 @@ class _HostsScreenState extends State<HostsScreen> {
       IconButton(
           tooltip: '打开分享链接', visualDensity: density, onPressed: _openShare, icon: const Icon(Icons.link, size: 20)),
       IconButton(tooltip: '刷新', visualDensity: density, onPressed: _load, icon: const Icon(Icons.refresh, size: 20)),
+      // Web's plugins-ui.js buttons, appended to the console's action
+      // row; renders nothing when the server reports no buttons.
+      PluginButtons(
+          api: api, baseUrl: widget.baseUrl, cookieHeader: cookie),
     ];
   }
 
@@ -643,7 +674,18 @@ class _HostsScreenState extends State<HostsScreen> {
                   key: const Key('shell-detail-terminal'),
                   tooltip: '终端',
                   onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => TerminalScreen(api: terminalApi, pane: pane))),
+                      MaterialPageRoute(
+                          builder: (_) => TerminalScreen(
+                                api: terminalApi,
+                                pane: pane,
+                                onOpenInConsole: () =>
+                                    Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                            builder: (_) => HostsScreen(
+                                                api: widget.api,
+                                                baseUrl: widget.baseUrl,
+                                                initialPaneRef: pane.ref))),
+                              ))),
                   icon: const Icon(Icons.terminal, size: 20),
                 ),
               IconButton(

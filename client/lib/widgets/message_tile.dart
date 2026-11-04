@@ -17,11 +17,22 @@ import 'path_link_text.dart';
 /// syntax); without it the tile renders exactly as before.
 class MessageTile extends StatefulWidget {
   const MessageTile(
-      {super.key, required this.message, this.onCopied, this.pathLinks});
+      {super.key,
+      required this.message,
+      this.onCopied,
+      this.pathLinks,
+      this.baseUrl = '',
+      this.cookieHeader = ''});
 
   final ChatMessage message;
   final void Function(String text)? onCopied;
   final PathLinkActions? pathLinks;
+
+  /// Server base URL + session cookie header, forwarded to BlockView so
+  /// mermaid blocks can render (empty = source-only fallback, as in
+  /// share screens which pass neither).
+  final String baseUrl;
+  final String cookieHeader;
 
   @override
   State<MessageTile> createState() => _MessageTileState();
@@ -117,7 +128,10 @@ class _MessageTileState extends State<MessageTile> {
                   inlineSyntaxes: pathLinks == null ? null : [PathLinkSyntax()],
                 )
               else
-                BlockView(block: block),
+                BlockView(
+                    block: block,
+                    baseUrl: widget.baseUrl,
+                    cookieHeader: widget.cookieHeader),
             const Divider(height: 20),
             Row(
               children: [

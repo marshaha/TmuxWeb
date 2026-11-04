@@ -17,6 +17,7 @@ import '../models/models.dart';
 import '../widgets/favorite_star_button.dart';
 import 'chat_screen.dart';
 import 'grid_screen.dart';
+import 'hosts_screen.dart';
 import 'terminal_screen.dart';
 
 class PanePreviewScreen extends StatelessWidget {
@@ -72,7 +73,16 @@ class PanePreviewScreen extends StatelessWidget {
               tooltip: '终端',
               icon: const Icon(Icons.terminal, size: 20),
               onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => TerminalScreen(api: terminalApi!, pane: pane),
+                builder: (_) => TerminalScreen(
+                  api: terminalApi!,
+                  pane: pane,
+                  onOpenInConsole: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                          builder: (_) => HostsScreen(
+                              api: api,
+                              baseUrl: baseUrl,
+                              initialPaneRef: pane.ref))),
+                ),
               )),
             ),
           IconButton(
@@ -107,6 +117,9 @@ class PanePreviewScreen extends StatelessWidget {
         terminalApi: terminalApi,
         embedded: true,
         baseUrl: baseUrl,
+        // Web preview.html polls 2s while visible (15s hidden); the
+        // embedded chat's 1s console cadence is too hot for a preview.
+        poll: const Duration(seconds: 2),
       ),
     );
   }

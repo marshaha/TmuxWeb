@@ -43,6 +43,8 @@ import '../models/chat_source.dart';
 import '../models/home_board.dart';
 import '../models/models.dart';
 import '../theme.dart';
+import '../widgets/plugin_buttons.dart';
+import 'hosts_screen.dart';
 import '../widgets/favorite_star_button.dart';
 import '../widgets/pane_hover_preview.dart';
 import '../widgets/recent_block.dart';
@@ -846,7 +848,16 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
                       tooltip: '终端',
                       icon: const Icon(Icons.terminal, size: 20),
                       onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) => TerminalScreen(api: api as TerminalApi, pane: pane),
+                        builder: (_) => TerminalScreen(
+                          api: api as TerminalApi,
+                          pane: pane,
+                          onOpenInConsole: () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                  builder: (_) => HostsScreen(
+                                      api: api,
+                                      baseUrl: widget.baseUrl,
+                                      initialPaneRef: pane.ref))),
+                        ),
                       )),
                     ),
                   IconButton(
@@ -970,6 +981,14 @@ class _HomeBoardScreenState extends State<HomeBoardScreen> with WidgetsBindingOb
           ),
           IconButton(tooltip: '添加收藏', icon: const Icon(Icons.star_border, size: 20), onPressed: _addFavorite),
           IconButton(tooltip: '刷新', icon: const Icon(Icons.refresh, size: 20), onPressed: _load),
+          // Web's plugins-ui.js buttons on the board surface; renders
+          // nothing when the server reports no buttons.
+          PluginButtons(
+              api: widget.api,
+              baseUrl: widget.baseUrl,
+              cookieHeader: widget.api is TerminalApi
+                  ? (widget.api as TerminalApi).wsHeaders['Cookie'] ?? ''
+                  : ''),
         ],
       ),
       body: boardBody,
