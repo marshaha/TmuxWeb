@@ -48,12 +48,20 @@ class RecentBlockData {
   final List<RecentRowData> recent;
 }
 
-/// Web's MM-DD HH:MM visited label, shared by the sidebar and home mounts.
-String formatRecentVisited(double epochSeconds) {
+/// Web's relative visited label (recents.js relativeTime), shared by the
+/// sidebar and home mounts: `刚刚` / `N 分钟` / `N 小时` / `N 天`, with
+/// no suffix. A stamp at or after `now` (or <= 0) renders as '' — web
+/// returns '' when the rounded second delta is 0. Pinned rows never
+/// show a time at all (RecentRow suppresses it); callers also pass ''.
+String formatRecentVisited(double epochSeconds, {DateTime? now}) {
   if (epochSeconds <= 0) return '';
-  final at = DateTime.fromMillisecondsSinceEpoch((epochSeconds * 1000).round());
-  String two(int value) => value.toString().padLeft(2, '0');
-  return '${two(at.month)}-${two(at.day)} ${two(at.hour)}:${two(at.minute)}';
+  final current = now ?? DateTime.now();
+  final seconds = (current.millisecondsSinceEpoch / 1000 - epochSeconds).round();
+  if (seconds <= 0) return '';
+  if (seconds < 60) return '刚刚';
+  if (seconds < 3600) return '${seconds ~/ 60} 分钟';
+  if (seconds < 86400) return '${seconds ~/ 3600} 小时';
+  return '${seconds ~/ 86400} 天';
 }
 
 /// One recent row: number, status dot, label, then the per-row actions —
