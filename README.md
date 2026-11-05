@@ -712,6 +712,13 @@ printf 'y\ny\n' | hermes mcp add tmuxweb --url http://host:8787/mcp --auth heade
 `http://<本机>:3300/mcp`，以后新增别的 MCP（fetch、数据库、别的内部服务）在 hub 里加一条即可，
 客户端不用改；只想给某个服务器单独开路由时用 `/mcp/<server>`（工具名保持原样）。
 
+**探测一律测直连**：有 HTTP 代理的机器上，代理会把别的网段答成 200/502，把真正可达的地址
+掩盖掉（实测 ctyun：直连 tailnet `100.123.123.3` 通、直连局域网不通，而代理恰好反过来）。
+所以 `relay-endpoint.sh` / `install_relay_mcp.sh` 的探测都带 `--noproxy '*'`，按 tailnet →
+物理局域网 → 127.0.0.1 的顺序取第一个**直连**能通的。客户端自己带代理（比如 Hermes 的 httpx
+读 `http_proxy`）时，把目标 IP 加进 `NO_PROXY` 即可；改不动客户端环境才退到 `mcp_relay.py`
+这类 stdio 桥。
+
 **地址约定**：用的不是"Tailscale"，而是**两台机器之间有没有一条互通的私有网段**。Tailscale、EasyTier、
 ZeroTier、WireGuard、子网代理、一个物理局域网——对 TmuxWeb 都是同一件事：能不能双向访问到 `8787`。
 所以配置里写的是那个网段里的地址（`http://100.x.y.z:8787`、`http://10.x.y.z:8787` 都行）。

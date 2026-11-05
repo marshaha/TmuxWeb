@@ -810,6 +810,14 @@ Each agent configures `http://<host>:3300/mcp` once; adding another MCP server (
 service) happens in the hub and no client changes — `/mcp/<server>` exposes a single server with unprefixed tool
 names for drop-in use.
 
+**Probe directly, never through a proxy**: on a host with an HTTP proxy configured, the proxy happily
+answers 200/502 for *other* networks and hides the address that is really reachable (measured on ctyun:
+direct to the tailnet `100.123.123.3` works, direct to the LAN does not — and the proxy is exactly the
+opposite). `relay-endpoint.sh` and `install_relay_mcp.sh` therefore probe with `--noproxy '*'` and take the
+first address that answers **directly** (tailnet → physical LAN → `127.0.0.1`). If the *client* carries its
+own proxy settings (Hermes' httpx reads `http_proxy`), add the target IP to `NO_PROXY`; only fall back to a
+stdio bridge when the client environment cannot be changed.
+
 **Address convention**: what matters is not "Tailscale" but whether the two machines share a **private network path**.
 Tailscale, EasyTier, ZeroTier, WireGuard, a subnet router or one physical LAN are the same thing to TmuxWeb: can you
 reach port 8787 both ways? So the configured address is whatever that network uses (`http://100.x.y.z:8787`,

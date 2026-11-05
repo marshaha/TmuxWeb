@@ -182,6 +182,9 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("/Applications/Tailscale.app/Contents/MacOS/Tailscale", helper)
         # 判据是“能双向访问到 8787”，不是某个产品名
         self.assertIn("200|204|301|302|303|307|308|401|403", helper)
+        # 探测必须走直连：有代理的机器上，代理会把其它网段答成 200/502，选错地址
+        self.assertIn("--noproxy '*'", helper)
+        self.assertIn("--noproxy '*'", script)
 
     def test_the_endpoint_helper_probes_before_answering(self):
         """--probe 只输出真能连上的那个；全都连不上时退出码 1。"""

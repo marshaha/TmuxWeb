@@ -69,7 +69,8 @@ fi
 reachable() {
   command -v curl >/dev/null 2>&1 || return 0
   [ "$ASSUME_UNREACHABLE" = "1" ] && return 1
-  code=$(curl -s -m 3 -o /dev/null -w '%{http_code}' "${1%/}/" 2>/dev/null || true)
+  # --noproxy：探测必须测直连，代理会把别的网段答成 200/502
+  code=$(curl -s --noproxy '*' -m 4 -o /dev/null -w '%{http_code}' "${1%/}/" 2>/dev/null || true)
   case "$code" in
     200|204|301|302|303|307|308|401|403) return 0 ;;
     *) return 1 ;;
