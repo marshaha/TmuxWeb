@@ -804,6 +804,12 @@ Tools: `list_agents`, `ask_agent`, `send_agent`, `read_agent` (screen text, or `
 ./install_relay_mcp.sh --uninstall
 ```
 
+**Several machines or several MCP servers? Put a gateway in front.** This host runs
+[MCPHub](https://github.com/samanhappy/mcphub) in `~/mcphub` on port 3300 with the TmuxWeb relay as one upstream.
+Each agent configures `http://<host>:3300/mcp` once; adding another MCP server (fetch, a database, an internal
+service) happens in the hub and no client changes — `/mcp/<server>` exposes a single server with unprefixed tool
+names for drop-in use.
+
 **Address convention**: what matters is not "Tailscale" but whether the two machines share a **private network path**.
 Tailscale, EasyTier, ZeroTier, WireGuard, a subnet router or one physical LAN are the same thing to TmuxWeb: can you
 reach port 8787 both ways? So the configured address is whatever that network uses (`http://100.x.y.z:8787`,

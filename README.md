@@ -707,6 +707,11 @@ codex mcp add tmuxweb --url http://host:8787/mcp
 printf 'y\ny\n' | hermes mcp add tmuxweb --url http://host:8787/mcp --auth header
 ```
 
+**多台机器/多个 MCP 时先看网关**：这台机器上跑着一个 [MCPHub](https://github.com/samanhappy/mcphub)
+（`~/mcphub`，端口 3300），TmuxWeb 的 relay 作为它的一条上游。各家 agent 只配一次
+`http://<本机>:3300/mcp`，以后新增别的 MCP（fetch、数据库、别的内部服务）在 hub 里加一条即可，
+客户端不用改；只想给某个服务器单独开路由时用 `/mcp/<server>`（工具名保持原样）。
+
 **地址约定**：用的不是"Tailscale"，而是**两台机器之间有没有一条互通的私有网段**。Tailscale、EasyTier、
 ZeroTier、WireGuard、子网代理、一个物理局域网——对 TmuxWeb 都是同一件事：能不能双向访问到 `8787`。
 所以配置里写的是那个网段里的地址（`http://100.x.y.z:8787`、`http://10.x.y.z:8787` 都行）。
