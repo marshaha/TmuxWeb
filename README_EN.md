@@ -615,6 +615,9 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   title, path, a **preview of the last message**, and the pane reference. Clicking a card jumps back to the console with that pane
   selected (`/?pane=<pane>`).
 - **Board cards** — notes, results and alerts an agent published through the `publish_home_card` MCP tool; removable in the UI.
+  The body is rendered as **markdown** (bold, lists, code, links, tables - the same
+  `marked` + `.md` pipeline), clamped to ~6 lines on the card; clicking opens the preview for the
+  full text, and links inside the body open in a new tab instead of opening the card.
 - **“Screen capture” is not a terminal** — the chat fallback used `tmux capture-pane`, i.e. a text snapshot rendered into HTML,
   rebuilt from scratch every frame; a full-screen TUI makes that expensive. Terminal mode is a real xterm + PTY (incremental VT
   writes). Agent panes therefore offer a “用终端打开（xterm）” button instead of capturing.

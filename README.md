@@ -582,7 +582,9 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 主页（`/home`）左侧保留与控制台一致的**可折叠会话树**（主机 → session → window → pane，带 busy/idle 状态点与收藏星标；宽屏时可折叠、折叠状态记在 `localStorage`，窄屏时变成抽屉 + 遮罩）。右侧是看板：
 
 - **收藏卡片**：卡片名可改（铅笔图标 → 输入新名字，或「恢复默认」）；默认名是 **session · window · 主机**（tmux 的 pane title 常常只是主机名，所以不再直接用它）；卡片右上角有**完整预览**按钮：电脑上从右侧滑出抽屉，里面是完整的对话页（markdown/代码/表格、可继续发送、可停止、每 2 秒刷新），手机等窄屏则直接跳到 `/preview?pane=…`，返回手势/按钮回到主页；**鼠标悬停卡片会浮出最后一条 agent 回复的完整内容**（浮层可直接用鼠标滚轮滚动）（若最新一条是用户消息，则自动往上找最近的一条 AI 回复，最多 6000 字）；另有状态徽标（busy / idle / 离线；busy 且在等回复时显示「思考中…」并跳动）、provider、标题、路径、**最近一条对话预览**、pane 引用；点卡片直接跳回控制台并选中该 pane（`/?pane=<pane>`）
-- **看板卡片**：agent 通过 MCP 工具 `publish_home_card` 推上来的结论/告警/链接，可在主页删除
+- **看板卡片**：agent 通过 MCP 工具 `publish_home_card` 推上来的结论/告警/链接，可在主页删除；
+  正文按 **markdown** 渲染（粗体/列表/代码/链接/表格，复用 marked 与 `.md` 样式），卡片里约 6 行封顶，
+  点卡片进预览看全文，正文里的链接新窗口打开、不会误触发卡片
 - **「抓屏」和「终端」是两件事**：聊天模式兜底时用 `tmux capture-pane` 取一份**文本快照**（把整屏文字 + ANSI 转成 HTML 塞进页面），它没有终端语义、每帧整屏重建，全屏 TUI 会卡；「终端」模式是真正的 xterm + PTY（增量写 VT 序列，只重绘变化的格子）。所以 agent 会话读不到 transcript 时不再抓屏，而是给一个「用终端打开（xterm）」按钮。
 - **tmux 路径只探测一次**：探测到的绝对路径（例如 macmini 的 `/opt/homebrew/bin/tmux`）会存进主机记录（`remote_hosts.tmux_path`），之后所有命令、以及终端模式的 PTY attach 都直接用它——之前 macmini 切终端会报 `zsh:1:1 command not found: tmux`，就是因为 attach 那条命令没带上解析出的路径。主机管理页会显示这个路径，没有时提示「tmux 路径待首次连通时记录」。
 - **传输窗口自动适应**：不需要配参数——每次「发现会话」的拉取耗时 >8s 就把该主机的 tail 窗口减半（4MB→1MB 下限），耗时 <2.5s 就加倍回 4MB；实测 oracle（弱网）从 14–30s 降到 5–7s，消息条数不变。
