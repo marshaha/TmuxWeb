@@ -824,7 +824,27 @@ URL:     http://<host>:8787/mcp
 Header:  Authorization: Bearer <TMUX_WEB_API_TOKEN>
 ```
 
-Tools: `list_agents`, `ask_agent`, `send_agent`, `read_agent` (screen text, or `transcript=true`).
+Tools: `list_agents`, `ask_agent`, `send_agent` (`submit=false` types without pressing Enter),
+`send_file`, `read_agent` (screen text, or `transcript=true`).
+
+**Enter is checked, not guessed.** Text goes in through `paste-buffer` and `C-m` is sent separately.
+With a large prompt a TUI is still digesting the paste and eats the first Enter - the classic "the
+text is in the box but nothing was submitted". The console now presses Enter, waits 0.45s,
+compares the screen, and presses again while the screen is frozen (up to 3 times; an extra Enter on
+an empty prompt is a no-op). The initial wait scales with the text length (0.12s + 1 char / 2500,
+capped at 1.8s) and gets a little longer over ssh.
+
+**`send_file` moves bytes across hosts** by relaying them through the console into the target pane's
+`upload_files/`, then typing `[file] <absolute path> (N bytes)` into that pane. Neither machine needs
+a shared mount or ssh trust between them.
+
+```json
+{"tool": "send_file", "arguments": {"target": "#125", "path": "/home/me/report.md",
+                                    "note": "read this first", "notify": true}}
+```
+
+Limit 64MB by default (`TMUXWEB_SEND_FILE_MAX`); the destination name cannot contain path
+separators; `notify=false` writes the file without interrupting the agent.
 
 ```bash
 ./install_relay_mcp.sh --dry-run   # preview, token masked

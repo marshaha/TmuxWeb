@@ -392,6 +392,37 @@ class TmuxBackend:
             self.validate_pane(pane_id)
         self._run("send-keys", "-t", pane_id, key)
 
+    def screen(self, pane_id: str, lines: int = 12) -> str:
+        """Plain text of the pane's last lines (cheap, no history)."""
+        try:
+            return self._run("capture-pane", "-p", "-t", pane_id, "-S", f"-{max(1, lines)}")
+        except TmuxError:
+            return ""
+
+    def press_enter_until_submitted(self, pane_id: str, text: str, python: bool = False,
+                                    tries: int = 3) -> int:
+        """Submit the pasted text; repeat Enter while the screen does not move.
+
+        A big paste keeps a TUI busy for a while: the first C-m can arrive while
+        it is still swallowing the paste and gets eaten, which is exactly the
+        "text is in the prompt but nothing was sent" report.  Waiting longer is a
+        guess; looking at the screen is not - if nothing changed after Enter,
+        press it again (an extra Enter on an empty prompt is a no-op).
+        """
+        delay = 0.12 + (0.25 if python else 0.0) + min(1.8, len(text) / 2500.0)
+        time.sleep(delay)
+        presses = 0
+        for attempt in range(max(1, tries)):
+            before = self.screen(pane_id) if attempt + 1 < tries else ""
+            self._run("send-keys", "-t", pane_id, "C-m")
+            presses += 1
+            if attempt + 1 >= tries:
+                break
+            time.sleep(0.45)
+            if self.screen(pane_id) != before:
+                break
+        return presses
+
     def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None) -> None:
         if pane is None:
             pane = self.validate_pane(pane_id)
@@ -403,8 +434,8 @@ class TmuxBackend:
             self._run("load-buffer", "-b", buffer_name, "-", input_bytes=text.encode())
             self._run("paste-buffer", "-b", buffer_name, "-d", "-t", pane_id)
             if submit:
-                time.sleep(0.25 if pane.get("command") == "python3" else 0.12)
-                self._run("send-keys", "-t", pane_id, "C-m")
+                self.press_enter_until_submitted(pane_id, text,
+                                                 python=pane.get("command") == "python3")
         finally:
             subprocess.run(
                 ["tmux", "delete-buffer", "-b", buffer_name],
@@ -598,6 +629,7 @@ class RelayAskRequest(BaseModel):
 class RelayMessageRequest(BaseModel):
     target: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=100_000)
+    submit: bool = True
 
 
 _PS_CACHE: dict[str, object] = {"at": 0.0, "table": {}}

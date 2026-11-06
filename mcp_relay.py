@@ -34,7 +34,7 @@ import sys
 import urllib.parse
 from typing import Any, BinaryIO
 
-from relay_client import RelayError, base_url, request, token
+from relay_client import RelayError, base_url, request, request_raw, token
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "tmuxweb-relay"
@@ -89,6 +89,55 @@ class RelayTools:
         result = request("/api/relay/message", {"target": target, "text": text,
                                                 "submit": bool(arguments.get("submit", True))})
         return {"target": target, "sent": True, "pane": result.get("pane")}
+
+    def send_file(self, arguments: dict) -> dict:
+        """Copy a local file into the target pane's ``upload_files/``.
+
+        Cross-host by design: the bytes travel through the console (the only
+        thing both hosts can reach), land next to the target's working directory,
+        and the target is told the absolute path - it never needs a mount or an
+        ssh key of its own.
+        """
+        target = self._target(arguments)
+        source = str(arguments.get("path") or "").strip()
+        if not source:
+            raise ValueError("path is required (a file readable by this agent)")
+        if not os.path.isfile(source):
+            raise ValueError("no such file: %s" % source)
+        name = str(arguments.get("name") or "").strip() or os.path.basename(source)
+        if not name or "/" in name or "\\" in name or name in {".", ".."}:
+            raise ValueError("invalid file name: %s" % name)
+        limit = int(os.environ.get("TMUXWEB_SEND_FILE_MAX") or 64 * 1024 * 1024)
+        size = os.path.getsize(source)
+        if size > limit:
+            raise ValueError("file is %d bytes, over the %d limit" % (size, limit))
+        with open(source, "rb") as handle:
+            data = handle.read()
+        directory = ""
+        try:
+            peers = request("/api/relay/peers").get("peers", [])
+            for peer in peers:
+                if target in (peer.get("id"), peer.get("handle"), str(peer.get("number"))):
+                    base = peer.get("path") or ""
+                    if base:
+                        directory = base.rstrip("/") + "/upload_files"
+                    break
+        except RelayError:
+            directory = ""
+        query = urllib.parse.urlencode({"name": name, **({"dir": directory} if directory else {})})
+        result = request_raw(pane_path(target, f"/files/upload?{query}"), data)
+        note = str(arguments.get("note") or "").strip()
+        message = note or f'user uploaded file "{name}" ({size} bytes)'
+        sent = False
+        if arguments.get("notify", True):
+            try:
+                self.send_agent({"target": target, "text": f"[file] {result.get('path') or name} "
+                                                          f"({size} bytes) — {message}"})
+                sent = True
+            except RelayError:
+                sent = False
+        return {"target": target, "path": result.get("path"), "size": result.get("size", size),
+                "notified": sent}
 
     def read_agent(self, arguments: dict) -> dict:
         target = self._target(arguments)
@@ -180,6 +229,7 @@ class RelayTools:
             "ask_agent": self.ask_agent,
             "send_agent": self.send_agent,
             "read_agent": self.read_agent,
+            "send_file": self.send_file,
             "publish_home_card": self.publish_home_card,
             "list_remote_hosts": self.list_remote_hosts,
             "add_remote_host": self.add_remote_host,
@@ -236,6 +286,26 @@ def tool_schemas() -> list[dict]:
                     "submit": {"type": "boolean", "default": True},
                 },
                 "required": ["target", "text"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "send_file",
+            "description": ("Copy a file from this machine into another agent's working directory "
+                            "(its upload_files/ folder) and tell that agent the absolute path. "
+                            "Works across hosts: the bytes go through the console, so the two "
+                            "machines need no shared mount and no ssh trust between them."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": target,
+                    "path": {"type": "string", "description": "local file to send (absolute path)"},
+                    "name": {"type": "string", "description": "name at the destination (default: the same basename)"},
+                    "note": {"type": "string", "description": "text to send along with the file"},
+                    "notify": {"type": "boolean", "default": True,
+                               "description": "also type a one-line notice into the target's pane"},
+                },
+                "required": ["target", "path"],
                 "additionalProperties": False,
             },
         },

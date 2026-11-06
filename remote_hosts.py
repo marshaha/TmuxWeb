@@ -1911,16 +1911,45 @@ class SSHRunner:
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote key send failed")
 
-    def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None) -> None:
+    def screen(self, pane_id: str, lines: int = 12, timeout: int = 15) -> str:
+        """Plain text of the pane's last lines, over one ssh round trip."""
+        command = (f"${{TMUX_BIN:-tmux}} capture-pane -p -t {shlex.quote(pane_id)} "
+                   f"-S -{max(1, lines)}")
+        completed = self.run(command, timeout=timeout)
+        if completed.returncode != 0:
+            return ""
+        return completed.stdout.decode(errors="replace")
+
+    def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None,
+             tries: int = 3, submit_delay: float | None = None) -> None:
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
         name = "web-" + secrets.token_hex(6)
-        clear = f"${{TMUX_BIN:-tmux}} send-keys -t {shlex.quote(pane_id)} C-u; sleep 0.05; " if submit else ""
-        submit_cmd = f"; sleep 0.15; ${{TMUX_BIN:-tmux}} send-keys -t {shlex.quote(pane_id)} C-m" if submit else ""
-        command = clear + f"${{TMUX_BIN:-tmux}} load-buffer -b {name} -; ${{TMUX_BIN:-tmux}} paste-buffer -b {name} -d -t {shlex.quote(pane_id)}" + submit_cmd
+        tmux = "${TMUX_BIN:-tmux}"
+        target = shlex.quote(pane_id)
+        clear = f"{tmux} send-keys -t {target} C-u; sleep 0.05; " if submit else ""
+        command = (clear + f"{tmux} load-buffer -b {name} -; "
+                   f"{tmux} paste-buffer -b {name} -d -t {target}")
         completed = self.run(command, input_bytes=text.encode())
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote send failed")
+        if not submit:
+            return
+        # Same story as the local backend: a long paste over ssh can still be
+        # in flight when the first C-m lands, so press again while the screen is
+        # frozen.  An extra Enter on an empty prompt does nothing.
+        delay = submit_delay if submit_delay is not None else 0.18 + min(2.0, len(text) / 2500.0)
+        time.sleep(delay)
+        for attempt in range(max(1, tries)):
+            before = self.screen(pane_id) if attempt + 1 < tries else ""
+            pressed = self.run(f"{tmux} send-keys -t {target} C-m", timeout=15)
+            if pressed.returncode != 0:
+                raise RuntimeError(pressed.stderr.decode(errors="replace").strip() or "remote send failed")
+            if attempt + 1 >= tries:
+                return
+            time.sleep(0.5)
+            if self.screen(pane_id) != before:
+                return
 
 
 class RemoteTerminalSession:

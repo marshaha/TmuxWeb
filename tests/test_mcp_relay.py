@@ -2,6 +2,7 @@ import io
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -68,6 +69,47 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(path, "/api/relay/message")
         self.assertEqual(payload, {"target": "abc~%3", "text": "run the tests", "submit": True})
 
+    def test_send_file_uploads_into_the_target_upload_folder(self):
+        recorder = Recorder({"/api/relay/peers": {"peers": [
+            {"id": "abc~%3", "handle": "#12", "number": 12, "path": "/srv/work"}]},
+            "/files/upload": {"status": "uploaded", "path": "/srv/work/upload_files/plan.md",
+                              "size": 5},
+            "/api/relay/message": {"pane": "abc~%3"}})
+        raw_calls = []
+
+        def raw(path, data, **kwargs):
+            raw_calls.append((path, data))
+            return {"status": "uploaded", "path": "/srv/work/upload_files/plan.md", "size": len(data)}
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "plan.md"
+            source.write_bytes(b"hello")
+            with patch.object(mcp_relay, "request", recorder), \
+                    patch.object(mcp_relay, "request_raw", raw):
+                result = mcp_relay.RelayTools().send_file({"target": "abc~%3", "path": str(source)})
+
+        path, data = raw_calls[0]
+        self.assertEqual(data, b"hello")
+        self.assertIn("name=plan.md", path)
+        self.assertIn("dir=%2Fsrv%2Fwork%2Fupload_files", path)
+        self.assertEqual(result["path"], "/srv/work/upload_files/plan.md")
+        self.assertTrue(result["notified"])
+        # 目标 agent 得知道文件在哪
+        message = [call for call in recorder.calls if call[0] == "/api/relay/message"][0][1]
+        self.assertIn("/srv/work/upload_files/plan.md", message["text"])
+
+    def test_send_file_rejects_bad_input(self):
+        tools = mcp_relay.RelayTools()
+        with self.assertRaises(ValueError):
+            tools.send_file({"target": "abc~%3"})
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "a.txt"
+            source.write_bytes(b"x")
+            with self.assertRaises(ValueError):
+                tools.send_file({"target": "abc~%3", "path": str(source), "name": "../escape.txt"})
+            with self.assertRaises(ValueError):
+                tools.send_file({"target": "abc~%3", "path": str(Path(directory) / "missing")})
+
     def test_read_agent_uses_capture_or_transcript(self):
         recorder = Recorder({"/capture": {"content": "screen text"},
                              "/transcript": {"provider": "codex", "session_id": "s1",
@@ -105,7 +147,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(init["result"]["serverInfo"]["name"], "tmuxweb-relay")
         listing = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
-        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "read_agent",
+        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "send_file", "read_agent",
                                        "publish_home_card", "list_home", "remove_home_card",
                                        "list_remote_hosts", "add_remote_host", "remove_remote_host"})
         self.assertEqual(tools["ask_agent"]["inputSchema"]["required"], ["target", "question"])

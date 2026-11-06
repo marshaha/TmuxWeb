@@ -221,6 +221,48 @@ class FakeSSHRunner:
                 FakeSSHRunner.screen = "❯ " + match.group(0) + ' "' + FakeSSHRunner.auto_reply + '"\n'
 
 
+class EnterUntilSubmittedTests(unittest.TestCase):
+    """「文字进了 prompt 但没有回车」：屏幕不动就再按一次。"""
+
+    class Backend(tmux_web.TmuxBackend):
+        def __init__(self, screens):
+            self.screens = list(screens)
+            self.sent = []
+        def _run(self, *args, **kwargs):
+            self.sent.append(args)
+            return ""
+        def screen(self, pane_id, lines=12):
+            return self.screens.pop(0) if self.screens else ""
+
+    def presses(self, backend):
+        return [call for call in backend.sent if call[:2] == ("send-keys", "-t") and call[-1] == "C-m"]
+
+    def test_one_enter_when_the_screen_moves(self):
+        backend = self.Backend(["before", "after"])
+        with patch("tmux_web.time.sleep"):
+            backend.press_enter_until_submitted("%1", "hello")
+        self.assertEqual(len(self.presses(backend)), 1)
+
+    def test_presses_again_while_the_screen_is_frozen(self):
+        backend = self.Backend(["same", "same", "same", "moved"])
+        with patch("tmux_web.time.sleep"):
+            backend.press_enter_until_submitted("%1", "hello")
+        self.assertEqual(len(self.presses(backend)), 2)
+
+    def test_gives_up_after_the_third_press(self):
+        backend = self.Backend(["same"] * 20)
+        with patch("tmux_web.time.sleep"):
+            backend.press_enter_until_submitted("%1", "hello")
+        self.assertEqual(len(self.presses(backend)), 3)
+
+    def test_long_text_waits_longer(self):
+        backend = self.Backend(["a", "b"])
+        waits = []
+        with patch("tmux_web.time.sleep", side_effect=lambda seconds: waits.append(seconds)):
+            backend.press_enter_until_submitted("%1", "x" * 5000)
+        self.assertGreater(waits[0], 1.0, "长文本先多等一下，别急着按回车")
+
+
 class TmuxWebTests(unittest.TestCase):
     def setUp(self):
         self.tmux = FakeTmux()
@@ -603,8 +645,12 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(calls[0][0], ("send-keys", "-t", "%4", "C-u"))
         self.assertEqual(calls[1][0][0], "load-buffer")
         self.assertEqual(calls[2][0][0], "paste-buffer")
-        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.05, 0.12])
-        self.assertEqual(calls[3][0], ("send-keys", "-t", "%4", "C-m"))
+        # 粘贴后先等一拍再回车；屏幕没动会再补一次（这里 screen() 是空的，等于一直没动）
+        self.assertEqual(sleep.call_args_list[0].args[0], 0.05)
+        self.assertGreaterEqual(sleep.call_args_list[1].args[0], 0.12)
+        enters = [call[0] for call in calls if call[0][:2] == ("send-keys", "-t") and call[0][-1] == "C-m"]
+        self.assertGreaterEqual(len(enters), 1)
+        self.assertEqual(enters[0], ("send-keys", "-t", "%4", "C-m"))
 
     def test_reverse_jsonl_reader_returns_tail_without_full_read(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1654,7 +1700,7 @@ class TmuxWebTests(unittest.TestCase):
 
         listing = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()
         self.assertEqual({tool["name"] for tool in listing["result"]["tools"]},
-                         {"list_agents", "ask_agent", "send_agent", "read_agent",
+                         {"list_agents", "ask_agent", "send_agent", "send_file", "read_agent",
                           "publish_home_card", "list_home", "remove_home_card",
                           "list_remote_hosts", "add_remote_host", "remove_remote_host"})
 
@@ -1687,7 +1733,7 @@ class TmuxWebTests(unittest.TestCase):
             # the rest of the API keeps its token/cookie check
             still_protected = client.get("/api/hosts")
         self.assertEqual(open_mcp.status_code, 200)
-        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 10)
+        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 11)
         self.assertEqual(still_protected.status_code, 401)
 
     def test_mcp_endpoint_requires_the_api_token(self):

@@ -47,7 +47,7 @@ class RelayPlugin(Plugin):
             auth(request)
             transport, pane_id, pane, host_name = await asyncio.to_thread(services.relay_target, payload.target)
             try:
-                await asyncio.to_thread(transport.send, pane_id, payload.text, True)
+                await asyncio.to_thread(transport.send, pane_id, payload.text, payload.submit)
             except (services.tmux_error, RuntimeError, OSError, ValueError) as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
             services.relay_log.appendleft({

@@ -700,14 +700,31 @@ URL:     http://<host>:8787/mcp
 Header:  Authorization: Bearer <TMUX_WEB_API_TOKEN>
 ```
 
-四个工具，覆盖所有受管主机（含 SSH 远端）：
+覆盖所有受管主机（含 SSH 远端）：
 
 | 工具 | 作用 |
 | --- | --- |
 | `list_agents` | 列出所有主机上的 agent pane（target / 主机 / CLI / 空闲或忙碌 / 目录 / 标题） |
 | `ask_agent` | 向某个 pane 提问并等待回答（busy 快速失败、可 `force`、timeout 5–600s） |
-| `send_agent` | 只输入文字，不等回答 |
+| `send_agent` | 只输入文字，不等回答（`submit=false` 就只打字不回车） |
+| `send_file` | 把本机文件送到对方 pane 目录的 `upload_files/`，并把绝对路径告诉它 |
 | `read_agent` | 读它的屏幕（默认）或结构化 transcript（`transcript=true`） |
+
+**回车这件事**：`send_agent` / `ask_agent` 先用 `paste-buffer` 写入，再单独发 `C-m`。粘贴大的
+prompt 时 TUI 可能还在处理，第一个回车会被吃掉——表现就是「文字确实进了输入框，但没发出去」。
+现在的做法是**看屏幕**：按下回车后 0.45s 比对一次抓屏，屏幕没动就再按一次（最多 3 次；空输入
+框上多按一次回车是空操作）。等待时间本身也按文本长度缩放（0.12s + 1 字符 / 2500，上限 1.8s），
+远端走 ssh 时再多给一点。
+
+**传文件**跨主机设计：字节经控制台转一次，落到目标 pane 当前目录的 `upload_files/`，然后给那个
+agent 打一行 `[file] <绝对路径> (N bytes)`。两台机器**不需要**共享挂载，也不需要互相信任 ssh。
+
+```json
+{"tool": "send_file", "arguments": {"target": "#125", "path": "/home/me/report.md",
+                                    "note": "先看这份", "notify": true}}
+```
+
+上限默认 64MB（`TMUXWEB_SEND_FILE_MAX`），文件名不允许带路径分隔符，`notify=false` 就只落盘不打扰对方。
 
 安装：
 
