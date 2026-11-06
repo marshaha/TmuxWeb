@@ -83,8 +83,13 @@ def probe_local() -> list[dict]:
             for spec in AGENTS if spec["name"] in found]
 
 
-def command_for(agent: str, args_text: str = "") -> list[str]:
+def command_for(agent: str, args_text: str = "", binary: str = "") -> list[str]:
     """``agent`` + its free-form arguments, as an argv list.
+
+    ``binary`` is the absolute path the probe found on *that* host.  Using it
+    matters: a tmux pane does not necessarily inherit the PATH that ``command -v``
+    saw over ssh, so a bare ``claude`` can fail with 127 and take the whole
+    session down with it.
 
     Raises ``ValueError`` for an unknown agent or unbalanced quoting, both of
     which the caller turns into a 422 instead of starting something surprising.
@@ -96,9 +101,24 @@ def command_for(agent: str, args_text: str = "") -> list[str]:
         extra = shlex.split(args_text or "")
     except ValueError as exc:
         raise ValueError("agent arguments are not valid shell words: %s" % exc) from exc
-    return [spec["name"], *extra]
+    head = (binary or "").strip() or spec["name"]
+    return [head, *extra]
 
 
 def render(command: list[str]) -> str:
     """One shell-safe string, which is what ``tmux new-session`` wants."""
     return shlex.join(command)
+
+
+def with_keep_open(command: list[str]) -> str:
+    """Agent command + a shell that survives it.
+
+    An agent started in a tmux session *is* the session: if it exits (no PATH,
+    not logged in, a typo in the arguments) tmux closes the session and the user
+    is left staring at a console that "created something" and then lost it.  Keep
+    the pane, print why it ended, and drop into a shell.
+    """
+    name = shlex.quote(command[0] if command else "agent")
+    return (f"{render(command)}; __tmuxweb_rc=$?; "
+            "printf '\n[%s 已退出，code %s] 会话保留，可直接继续输入\n' "
+            f"{name} \"$__tmuxweb_rc\"; exec \"${{SHELL:-bash}}\"")

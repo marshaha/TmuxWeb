@@ -140,7 +140,7 @@ class TmuxBackend:
         return completed.stdout.decode(errors="replace")
 
     def create_session(self, name: str, path: str = "", command: list[str] | None = None,
-                       create_dir: bool = True) -> dict:
+                       create_dir: bool = True, keep_open: bool = True) -> dict:
         try:
             name = normalize_session_name(name)
         except ValueError as exc:
@@ -166,7 +166,7 @@ class TmuxBackend:
         if directory:
             args += ["-c", directory]
         if command:
-            args += [agent_catalog.render(command)]
+            args += [agent_catalog.with_keep_open(command) if keep_open else agent_catalog.render(command)]
         try:
             self._run(*args)
         except TmuxError as exc:
@@ -487,6 +487,8 @@ class SessionCreateRequest(BaseModel):
     agent: str = Field(default="", max_length=32)
     agent_args: str = Field(default="", max_length=512)
     create_dir: bool = True
+    # Keep the pane alive (and say why) when the agent exits immediately.
+    keep_open: bool = True
 
 
 class ZipRequest(BaseModel):
@@ -2213,18 +2215,22 @@ def create_app(
             transport, host_id = runner_for(host), payload.host
         command = None
         if (payload.agent or "").strip():
-            try:
-                command = agent_catalog.command_for(payload.agent, payload.agent_args)
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-            installed = {item["name"] for item in await agents_for(host_id)}
-            if command[0] not in installed:
+            installed = {item["name"]: item for item in await agents_for(host_id)}
+            wanted = (payload.agent or "").strip().lower()
+            if wanted not in installed:
                 raise HTTPException(
                     status_code=422,
-                    detail="agent not installed on this host: %s" % command[0])
+                    detail="agent not installed on this host: %s" % wanted)
+            try:
+                # 绝对路径：tmux pane 的 PATH 不一定和 ssh 探测时看到的一样
+                command = agent_catalog.command_for(payload.agent, payload.agent_args,
+                                                    binary=installed[wanted].get("path", ""))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
             created = await asyncio.to_thread(
-                transport.create_session, payload.name, payload.path, command, payload.create_dir)
+                transport.create_session, payload.name, payload.path, command,
+                payload.create_dir, payload.keep_open)
             panes = await asyncio.to_thread(transport.list_panes)
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             message = str(exc)

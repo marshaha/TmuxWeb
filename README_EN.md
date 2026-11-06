@@ -582,6 +582,12 @@ The `+` next to a host opens **New tmux session**; every field is optional:
   and no `--version` calls (macOS has no `timeout` to bound them).
 - **Agent arguments (optional)** - split with shell rules and appended verbatim (`--model o3`,
   `--dangerously-skip-permissions`). Unbalanced quoting is a 422, never silently dropped.
+- **Started by absolute path** - a tmux pane's PATH is not the PATH ssh saw: on oracle `claude`
+  lives in `~/.local/bin`, so a bare `claude` is `command not found` (exit 127). The session is
+  therefore started with `/home/ubuntu/.local/bin/claude`, not `claude`.
+- **An exiting agent does not take the session with it** - `keep_open=true` by default: the pane
+  prints `[<path> exited, code N] session kept ...` and `exec $SHELL`. Pass `"keep_open": false`
+  to get the old "agent exits, session ends" behaviour.
 
     GET  /api/hosts/{host}/agents           # {"agents":[{"name","label","path"}], ...}, cached 5 min
     GET  /api/hosts/{host}/agents?refresh=1 # re-probe (one ssh round trip per host)

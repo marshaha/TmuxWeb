@@ -1386,7 +1386,7 @@ class SSHRunner:
         return completed.stdout.decode(errors="replace")
 
     def create_session(self, name: str, path: str = "", command: list[str] | None = None,
-                       create_dir: bool = True) -> dict:
+                       create_dir: bool = True, keep_open: bool = True) -> dict:
         """Start a detached tmux session on the remote host.
 
         A missing directory is created when ``create_dir`` is set (the default):
@@ -1413,7 +1413,9 @@ class SSHRunner:
             target = ""
         session = f"{tmux} new-session -d -s {shlex.quote(name)}{target}"
         if command:
-            session += f" {shlex.quote(shlex.join(command))}"
+            shell_text = (agent_catalog.with_keep_open(command) if keep_open
+                          else agent_catalog.render(command))
+            session += f" {shlex.quote(shell_text)}"
         pieces.append(session)
         completed = self.run(" && ".join(pieces))
         detail = completed.stderr.decode(errors="replace").strip()

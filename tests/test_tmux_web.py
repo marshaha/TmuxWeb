@@ -44,7 +44,7 @@ class FakeTmux(TmuxBackend):
         self.created = []
         self.auto_reply = None
 
-    def create_session(self, name, path="", command=None, create_dir=True):
+    def create_session(self, name, path="", command=None, create_dir=True, keep_open=True):
         try:
             name = normalize_session_name(name)
         except ValueError as exc:
@@ -63,6 +63,9 @@ class FakeTmux(TmuxBackend):
         self.created.append((name, path))
         self.created_commands = getattr(self, "created_commands", [])
         self.created_commands.append((name, list(command) if command else []))
+        self.created_shell = getattr(self, "created_shell", [])
+        self.created_shell.append(agent_catalog.with_keep_open(command) if (command and keep_open)
+                                  else (agent_catalog.render(command) if command else ""))
         pane = {"id": "%12", "pane_id": "%12", "target": "%s:0.0" % name, "session": name,
                 "window": "0", "window_name": "shell", "index": "0", "command": "zsh",
                 "title": "new session", "path": path or "/work/repo", "active": True}
@@ -171,12 +174,13 @@ class FakeSSHRunner:
         self.host = host
         self.created = []
     def check(self): return "TMUX_REMOTE_OK"
-    def create_session(self, name, path="", command=None, create_dir=True):
+    def create_session(self, name, path="", command=None, create_dir=True, keep_open=True):
         name = normalize_session_name(name)
         self.created.append((name, path))
         FakeSSHRunner.created = (name, path)
         FakeSSHRunner.created_command = list(command) if command else []
         FakeSSHRunner.created_create_dir = create_dir
+        FakeSSHRunner.created_keep_open = keep_open
         return {"session": name, "path": path, "created_dir": create_dir and bool(path),
                 "command": " ".join(command or [])}
 
@@ -1753,8 +1757,23 @@ class TmuxWebTests(unittest.TestCase):
                     "name": "agent-run", "path": directory,
                     "agent": "codex", "agent_args": '--model o3 -c "a b"'})
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(self.tmux.created_commands[0], ("agent-run", ["codex", "--model", "o3", "-c", "a b"]))
-        self.assertEqual(response.json()["session"]["command"], "codex --model o3 -c 'a b'")
+        # 用探测到的绝对路径：tmux pane 的 PATH 和 ssh 探测时不一定一样
+        self.assertEqual(self.tmux.created_commands[0],
+                         ("agent-run", ["/usr/local/bin/codex", "--model", "o3", "-c", "a b"]))
+        self.assertEqual(response.json()["session"]["command"], "/usr/local/bin/codex --model o3 -c 'a b'")
+        # agent 退出后会话不被带走：ctyun 上 claude 不在 PATH，127 直接把会话关了
+        shell = self.tmux.created_shell[0]
+        self.assertIn('exec "${SHELL:-bash}"', shell)
+        self.assertIn("已退出", shell)
+
+    def test_keep_open_can_be_turned_off(self):
+        self.login()
+        installed = [{"name": "codex", "label": "Codex", "path": "/usr/bin/codex"}]
+        with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=installed):
+            response = self.client.post("/api/sessions", json={
+                "name": "no-keep", "agent": "codex", "keep_open": False})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(self.tmux.created_shell[0], "/usr/bin/codex")
 
     def test_agent_must_be_known_and_installed(self):
         self.login()
@@ -1803,8 +1822,10 @@ class TmuxWebTests(unittest.TestCase):
             "host": host["id"], "name": "remote-agent", "path": "/srv/new dir",
             "agent": "kimi", "agent_args": "--yolo"})
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(FakeSSHRunner.created_command, ["kimi", "--yolo"])
+        self.assertEqual(FakeSSHRunner.created_command,
+                         ["/home/u/.kimi-code/bin/kimi", "--yolo"])
         self.assertTrue(FakeSSHRunner.created_create_dir)
+        self.assertTrue(FakeSSHRunner.created_keep_open)
 
     def test_session_creation_validates_name_path_and_duplicates(self):
         self.login()

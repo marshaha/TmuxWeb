@@ -556,6 +556,12 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
   等常见安装目录），不需要远端有 `python3`，也不跑 `--version`（macOS 没有 `timeout`，跑一次就慢一截）。
 - **agent 参数（可选）**：按 shell 词法切分后原样跟在该 agent 后面，例如 `--model o3`、
   `--dangerously-skip-permissions`。引号没闭合会直接 422，不会被悄悄吞掉。
+- **用探测到的绝对路径启动**：tmux pane 的 PATH 和 ssh 探测时看到的不一定一样
+  （oracle 上 `claude` 装在 `~/.local/bin`，非交互 shell 里 `command not found`，exit 127）。
+  所以命令行里写的是 `/home/ubuntu/.local/bin/claude`，不是裸 `claude`。
+- **agent 退出不带走会话**：默认 `keep_open=true`，agent 一退出就先打印
+  `[<路径> 已退出，code N] 会话保留…` 再 `exec $SHELL`，省得“创建成功然后会话凭空消失”。
+  想要“agent 退出即结束会话”就传 `"keep_open": false`。
 
 接口：
 
