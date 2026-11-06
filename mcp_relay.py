@@ -481,7 +481,9 @@ def tool_schemas() -> list[dict]:
                 "properties": {
                     "title": {"type": "string", "minLength": 1, "maxLength": 200},
                     "body": {"type": "string", "maxLength": 20000,
-                             "description": "plain text or markdown; keep it short enough to read on a card"},
+                             "description": ("markdown - rendered on the card (bold, lists, code, links, "
+                                             "tables); the card shows about 6 lines and clicking it opens the "
+                                             "full text, so lead with the conclusion")},
                     "pane": {"type": "string", "description": "optional pane target this card belongs to, e.g. \"%12\""},
                     "kind": {"type": "string", "enum": ["note", "result", "alert", "link"], "default": "note"},
                 },
