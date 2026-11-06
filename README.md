@@ -722,6 +722,10 @@ prompt 时 TUI 可能还在处理，第一个回车会被吃掉——表现就�
 （可带 `agent_args`、`keep_open`），返回里带 `pane` 与新分配的 `#N`，后面 `send_agent`/`read_agent`
 直接用这个 `#N` 就行。`host` 既接受主机 id 也接受主机名（`oracle`、`macmini`）。
 
+网页端也有入口：顶栏垃圾桶图标「关闭这个窗格」，点了先弹二次确认（会显示 `#N` 和 `session:window`），
+确认后调 `DELETE /api/panes/{pane}`，只关这一个；关完如果同会话还有别的 pane 会自动落到它上面，
+最后一个则显示「窗格已关闭，会话也随之结束」。
+
 **关的时候先想 pane，不要整会话**：一个会话里常有好几个 agent，`kill_session` 传 `pane`
 （`#125` 或 `host~%12` 都行）只关那一个，返回 `session_alive` 告诉你会话是否还在；传 `session`
 才是整会话连锅端。对应的 HTTP 接口是 `DELETE /api/panes/{pane}` 和 `DELETE /api/sessions/{name}?host=`。

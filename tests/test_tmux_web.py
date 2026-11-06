@@ -1240,6 +1240,11 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn('<symbol id="i-plus"', response.text)
         self.assertIn("async function submitSessionForm(", response.text)
         self.assertIn("api('/api/sessions'", response.text)
+        # 关闭窗格：顶栏入口 + 二次确认 + 打 DELETE
+        self.assertIn('id="pane-close"', response.text)
+        self.assertIn('id="pane-close-dialog"', response.text)
+        self.assertIn("关闭这个窗格？", response.text)
+        self.assertIn("`/api/panes/${encodeURIComponent(id)}`,{method:'DELETE'}", response.text)
         self.assertIn("e.stopPropagation();state.sessionHost=add.dataset.newSession", response.text)
 
         # per-message copy + per-block controls (code / mermaid / table)

@@ -846,6 +846,11 @@ a shared mount or ssh trust between them.
                                     "note": "read this first", "notify": true}}
 ```
 
+The web console has the same thing: the trash icon in the top bar ("Close this pane") asks for
+confirmation first (showing `#N` and `session:window`), then calls `DELETE /api/panes/{pane}`. If the
+session still has other panes the console lands on one of them; the last pane reports
+"pane closed, the session ended with it".
+
 **Close a pane before closing a session.** A session often hosts several agents: `kill_session` with
 `pane` (a `#125` handle or a `host~%12` id) closes exactly that one and reports `session_alive`;
 `session` is the sledgehammer. HTTP: `DELETE /api/panes/{pane}` and `DELETE /api/sessions/{name}?host=`.
