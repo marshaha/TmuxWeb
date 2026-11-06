@@ -176,6 +176,21 @@ class TmuxBackend:
         return {"session": name, "path": directory, "created_dir": made_directory,
                 "command": agent_catalog.render(command) if command else ""}
 
+    def kill_session(self, name: str) -> dict:
+        """Close a session (and every window/pane in it)."""
+        try:
+            name = normalize_session_name(name)
+        except ValueError as exc:
+            raise TmuxError(str(exc)) from exc
+        try:
+            self._run("kill-session", "-t", name)
+        except TmuxError as exc:
+            detail = str(exc)
+            if "can't find session" in detail or "no such session" in detail:
+                raise TmuxError("no such session: %s" % name) from exc
+            raise
+        return {"session": name, "killed": True}
+
     def list_panes(self) -> list[dict]:
         format_string = FIELD_SEPARATOR.join([
             "#{pane_id}", "#{session_name}:#{window_index}.#{pane_index}",
@@ -1247,7 +1262,18 @@ def create_app(
 
         workers = max(4, min(32, int(os.environ.get("TMUX_WEB_STATE_WORKERS", "24"))))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(describe, jobs))
+            states = list(pool.map(describe, jobs))
+        # 编号在这里统一带上：relay / 主页 / MCP 拿到的 peer 都自带 #N
+        try:
+            numbers = home.ensure_numbers([state["id"] for state in states if state.get("id")])
+        except (sqlite3.Error, ValueError):
+            numbers = {}
+        for state in states:
+            number = numbers.get(state.get("id"))
+            if number:
+                state["number"] = number
+                state["handle"] = f"#{number}"
+        return states
 
     # ``collect_pane_states`` inspects every pane on every host; the console polls
     # it every 9s and the Home board needs it for its counters. Cache it briefly and
@@ -2285,7 +2311,37 @@ def create_app(
                 metadata["id"] = pane_ref(host_id, metadata.get("pane_id") or metadata["id"])
             metadata.setdefault("host_id", host_id)
             fresh.append(metadata)
+        if fresh:
+            # 新 pane 立刻拿号：侧栏/MCP 都不用等下一次全量刷新
+            numbers = await asyncio.to_thread(home.ensure_numbers, [pane["id"] for pane in fresh])
+            for pane in fresh:
+                number = numbers.get(pane["id"])
+                if number:
+                    pane["number"] = number
+                    pane["handle"] = f"#{number}"
         return {"session": created, "host": host_id, "panes": fresh}
+
+    @app.delete("/api/sessions/{name}")
+    async def delete_session(request: Request, name: str, host: str = "localhost"):
+        """Close one tmux session (all of its windows and panes)."""
+        require_auth(request)
+        if host in ("", "localhost"):
+            transport, host_id = tmux, "localhost"
+        else:
+            try:
+                record = remote_hosts.get_host(host, include_credential=True)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="remote host not found") from exc
+            transport, host_id = runner_for(record), host
+        try:
+            killed = await asyncio.to_thread(transport.kill_session, name)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            message = str(exc)
+            status = 404 if "no such session" in message else 422
+            if status == 422 and "session name" not in message:
+                status = 503
+            raise HTTPException(status_code=status, detail=message) from exc
+        return {"session": killed.get("session", name), "host": host_id, "killed": True}
 
     @app.post("/api/remote-hosts/scan-key")
     async def scan_remote_key(request: Request):

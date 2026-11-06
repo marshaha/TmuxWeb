@@ -73,6 +73,18 @@ class FakeTmux(TmuxBackend):
         return {"session": name, "path": path, "created_dir": made_directory,
                 "command": agent_catalog.render(command) if command else ""}
 
+    def kill_session(self, name):
+        try:
+            name = normalize_session_name(name)
+        except ValueError as exc:
+            raise TmuxError(str(exc)) from exc
+        if not any(pane["session"] == name for pane in self.panes):
+            raise TmuxError("no such session: %s" % name)
+        self.panes = [pane for pane in self.panes if pane["session"] != name]
+        self.killed = getattr(self, "killed", [])
+        self.killed.append(name)
+        return {"session": name, "killed": True}
+
     def list_panes(self):
         return self.panes
 
@@ -183,6 +195,10 @@ class FakeSSHRunner:
         FakeSSHRunner.created_keep_open = keep_open
         return {"session": name, "path": path, "created_dir": create_dir and bool(path),
                 "command": " ".join(command or [])}
+
+    def kill_session(self, name):
+        FakeSSHRunner.killed = name
+        return {"session": name, "killed": True}
 
     def probe_agents(self, timeout=12):
         return [dict(item) for item in getattr(self, "agents", [])]
@@ -1700,7 +1716,8 @@ class TmuxWebTests(unittest.TestCase):
 
         listing = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()
         self.assertEqual({tool["name"] for tool in listing["result"]["tools"]},
-                         {"list_agents", "ask_agent", "send_agent", "send_file", "read_agent",
+                         {"list_agents", "ask_agent", "send_agent", "create_session", "kill_session",
+                                        "send_file", "read_agent",
                           "publish_home_card", "list_home", "remove_home_card",
                           "list_remote_hosts", "add_remote_host", "remove_remote_host"})
 
@@ -1733,7 +1750,7 @@ class TmuxWebTests(unittest.TestCase):
             # the rest of the API keeps its token/cookie check
             still_protected = client.get("/api/hosts")
         self.assertEqual(open_mcp.status_code, 200)
-        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 11)
+        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 13)
         self.assertEqual(still_protected.status_code, 401)
 
     def test_mcp_endpoint_requires_the_api_token(self):
@@ -1882,6 +1899,29 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/sessions", json={"name": "codex"}).status_code, 409)
         self.assertEqual(self.client.post("/api/sessions", json={"host": "deadbeefdeadbeef",
                                                                  "name": "ok"}).status_code, 404)
+
+    def test_deletes_a_local_session(self):
+        self.login()
+        response = self.client.delete("/api/sessions/codex")   # FakeTmux 里唯一的会话
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["killed"], True)
+        self.assertNotIn("codex", {pane["session"] for pane in self.tmux.panes})
+        self.assertEqual(self.client.delete("/api/sessions/codex").status_code, 404)
+
+    def test_deletes_a_remote_session(self):
+        host_key = ("10.0.0.6 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l"
+                    "+Kg3QGMCbo2")
+        fingerprint = host_key_fingerprint(host_key)
+        self.login()
+        host = self.client.post("/api/remote-hosts", json={
+            "name": "kill-box", "hostname": "10.0.0.6", "port": 22, "username": "ubuntu",
+            "auth_type": "agent", "credential": "", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        }).json()
+        response = self.client.delete(f"/api/sessions/old-agent?host={host['id']}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(FakeSSHRunner.killed, "old-agent")
+        self.assertEqual(self.client.delete("/api/sessions/old?host=deadbeefdeadbeef").status_code, 404)
 
     def test_creates_a_session_on_a_remote_host(self):
         host_key = ("10.0.0.5 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l"

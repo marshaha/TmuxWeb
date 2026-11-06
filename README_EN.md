@@ -825,7 +825,9 @@ Header:  Authorization: Bearer <TMUX_WEB_API_TOKEN>
 ```
 
 Tools: `list_agents`, `ask_agent`, `send_agent` (`submit=false` types without pressing Enter),
-`send_file`, `read_agent` (screen text, or `transcript=true`).
+`create_session` (any host, optionally with `agent` / `agent_args`, returns the new `#N`),
+`kill_session` (by session name, `host` accepts an id or a name), `send_file`,
+`read_agent` (screen text, or `transcript=true`).
 
 **Enter is checked, not guessed.** Text goes in through `paste-buffer` and `C-m` is sent separately.
 With a large prompt a TUI is still digesting the paste and eats the first Enter - the classic "the
@@ -887,7 +889,7 @@ python3. Seed the token, then register, then test:
 ```bash
 printf 'MCP_TMUXWEB_API_KEY=%s\n' '<token>' >> ~/.hermes/.env && chmod 600 ~/.hermes/.env
 hermes mcp add tmuxweb --url http://100.x.y.z:8787/mcp --auth header   # answer y to both prompts
-hermes mcp test tmuxweb        # -> Connected, 10 tools
+hermes mcp test tmuxweb        # -> Connected, 13 tools
 ```
 
 `curl http://<address>:8787/` returning 303 means the path is open (303 is the login redirect; `/mcp` without a token

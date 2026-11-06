@@ -90,6 +90,73 @@ class RelayTools:
                                                 "submit": bool(arguments.get("submit", True))})
         return {"target": target, "sent": True, "pane": result.get("pane")}
 
+    def _resolve_host(self, value: str) -> str:
+        """Accept a host id, a host name or "localhost" - names are friendlier."""
+        wanted = (value or "").strip()
+        if wanted in ("", "localhost"):
+            return "localhost"
+        try:
+            hosts = request("/api/hosts").get("hosts", [])
+        except RelayError:
+            return wanted
+        for host in hosts:
+            if wanted in (host.get("id"), (host.get("name") or "")):
+                return host.get("id") or wanted
+        for host in hosts:
+            if (host.get("name") or "").lower() == wanted.lower():
+                return host.get("id") or wanted
+        return wanted
+
+    def create_session(self, arguments: dict) -> dict:
+        """Start a tmux session, optionally already running an agent."""
+        name = self._text(arguments, "name", limit=64)
+        host = self._resolve_host(str(arguments.get("host") or "localhost"))
+        payload = {
+            "host": host,
+            "name": name,
+            "path": str(arguments.get("path") or ""),
+            "create_dir": bool(arguments.get("create_dir", True)),
+        }
+        agent = str(arguments.get("agent") or "").strip()
+        if agent:
+            payload["agent"] = agent
+            payload["agent_args"] = str(arguments.get("agent_args") or "")
+            payload["keep_open"] = bool(arguments.get("keep_open", True))
+        result = request("/api/sessions", payload, timeout=120)
+        session = result.get("session") or {}
+        panes = result.get("panes") or []
+        pane_id = panes[0].get("id") if panes else None
+        number = panes[0].get("number") if panes else None
+        if pane_id and not number:
+            # 新会话的编号在 peers 里分配，顺手带回去，方便 agent 之间用 #N 指代
+            try:
+                for peer in request("/api/relay/peers").get("peers", []):
+                    if peer.get("id") == pane_id:
+                        number = peer.get("number")
+                        break
+            except RelayError:
+                number = None
+        return {
+            "host": result.get("host", host),
+            "session": session.get("session", name),
+            "path": session.get("path", payload["path"]),
+            "created_dir": session.get("created_dir", False),
+            "command": session.get("command", ""),
+            "pane": pane_id,
+            "number": number,
+            "handle": f"#{number}" if number else pane_id,
+        }
+
+    def kill_session(self, arguments: dict) -> dict:
+        """Close a tmux session - every window and pane in it goes away."""
+        name = self._text(arguments, "session", limit=64)
+        host = self._resolve_host(str(arguments.get("host") or "localhost"))
+        result = request(f"/api/sessions/{urllib.parse.quote(name, safe='')}"
+                         f"?host={urllib.parse.quote(host, safe='')}",
+                         method="DELETE", timeout=60)
+        return {"host": result.get("host", host), "session": result.get("session", name),
+                "killed": True}
+
     def send_file(self, arguments: dict) -> dict:
         """Copy a local file into the target pane's ``upload_files/``.
 
@@ -230,6 +297,8 @@ class RelayTools:
             "send_agent": self.send_agent,
             "read_agent": self.read_agent,
             "send_file": self.send_file,
+            "create_session": self.create_session,
+            "kill_session": self.kill_session,
             "publish_home_card": self.publish_home_card,
             "list_remote_hosts": self.list_remote_hosts,
             "add_remote_host": self.add_remote_host,
@@ -286,6 +355,43 @@ def tool_schemas() -> list[dict]:
                     "submit": {"type": "boolean", "default": True},
                 },
                 "required": ["target", "text"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "create_session",
+            "description": ("Start a new tmux session on any managed host, optionally already running a "
+                            "coding agent (hermes/claude/codex/kimi/... as installed on that host). "
+                            "A missing working directory is created. Use list_agents to see which "
+                            "agents a host has."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": 64,
+                             "description": "session name ([A-Za-z0-9][A-Za-z0-9_.-]*)"},
+                    "host": {"type": "string", "description": "host id or name, default localhost"},
+                    "path": {"type": "string", "description": "working directory (created when missing)"},
+                    "agent": {"type": "string", "description": "start this agent instead of a shell"},
+                    "agent_args": {"type": "string", "description": "extra arguments for the agent"},
+                    "create_dir": {"type": "boolean", "default": True},
+                    "keep_open": {"type": "boolean", "default": True,
+                                  "description": "keep the pane alive if the agent exits immediately"},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "kill_session",
+            "description": ("Close a tmux session on a managed host. Every window and pane in it is lost, "
+                            "so prefer asking the agent in it to finish first."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "host": {"type": "string", "description": "host id or name, default localhost"},
+                },
+                "required": ["session"],
                 "additionalProperties": False,
             },
         },

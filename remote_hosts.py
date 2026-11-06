@@ -1428,6 +1428,18 @@ class SSHRunner:
                 "created_dir": "TMUXWEB_DIR_CREATED" in stdout,
                 "command": shlex.join(command) if command else ""}
 
+    def kill_session(self, name: str) -> dict:
+        """Close a remote session; ``no such session`` is reported as such."""
+        name = normalize_session_name(name)
+        quoted = shlex.quote(name)
+        command = (f"${{TMUX_BIN:-tmux}} kill-session -t {quoted} 2>&1 || "
+                   f"{{ echo \"no such session: {name}\" >&2; exit 3; }}")
+        completed = self.run(command)
+        detail = completed.stderr.decode(errors="replace").strip()
+        if completed.returncode != 0:
+            raise RuntimeError(detail or "tmux kill-session failed")
+        return {"session": name, "killed": True}
+
     def probe_agents(self, timeout: int = 12) -> list[dict]:
         """Which coding agents this host can start (one ssh round trip)."""
         completed = self.run(agent_catalog.PROBE_SCRIPT, timeout=timeout)

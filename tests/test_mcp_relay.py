@@ -29,8 +29,11 @@ class Recorder:
         self.calls = []
         self.responses = responses or {}
 
-    def __call__(self, path, payload=None, *, timeout=30.0):
+    def __call__(self, path, payload=None, *, timeout=30.0, method=None):
         self.calls.append((path, payload, timeout))
+        if method:
+            self.methods = getattr(self, "methods", [])
+            self.methods.append(method)
         for key, value in self.responses.items():
             if key in path:
                 return value
@@ -68,6 +71,45 @@ class ToolTests(unittest.TestCase):
         path, payload, _ = recorder.calls[0]
         self.assertEqual(path, "/api/relay/message")
         self.assertEqual(payload, {"target": "abc~%3", "text": "run the tests", "submit": True})
+
+    def test_create_session_passes_the_agent_and_returns_the_pane(self):
+        recorder = Recorder({"/api/hosts": {"hosts": [{"id": "abc123", "name": "oracle"}]},
+                             "/api/sessions": {"host": "abc123",
+                                               "session": {"session": "aiisp", "path": "/srv/aiisp",
+                                                           "created_dir": True, "command": "claude"},
+                                               "panes": [{"id": "abc123~%156", "handle": "#153"}]},
+                             "/api/relay/peers": {"peers": [{"id": "abc123~%156", "number": 153}]}})
+        with patch.object(mcp_relay, "request", recorder):
+            result = mcp_relay.RelayTools().create_session({
+                "name": "aiisp", "host": "oracle", "path": "/srv/aiisp",
+                "agent": "claude", "agent_args": "--model sonnet"})
+        path, payload, _ = [call for call in recorder.calls if call[0] == "/api/sessions"][0]
+        self.assertEqual(path, "/api/sessions")
+        self.assertEqual(payload["host"], "abc123", "主机名要解析成 id")
+        self.assertEqual(payload["agent"], "claude")
+        self.assertEqual(payload["agent_args"], "--model sonnet")
+        self.assertTrue(payload["keep_open"])
+        self.assertEqual(result["session"], "aiisp")
+        self.assertEqual(result["handle"], "#153")
+        self.assertTrue(result["created_dir"])
+
+    def test_create_session_without_agent_stays_a_plain_shell(self):
+        recorder = Recorder({"/api/sessions": {"host": "localhost",
+                                               "session": {"session": "dev", "path": ""}}})
+        with patch.object(mcp_relay, "request", recorder):
+            mcp_relay.RelayTools().create_session({"name": "dev"})
+        payload = [call for call in recorder.calls if call[0] == "/api/sessions"][0][1]
+        self.assertNotIn("agent", payload)
+        self.assertEqual(payload["host"], "localhost")
+
+    def test_kill_session_resolves_the_host_name(self):
+        recorder = Recorder({"/api/hosts": {"hosts": [{"id": "abc123", "name": "Oracle"}]},
+                             "/api/sessions/aiisp": {"session": "aiisp", "host": "abc123"}})
+        with patch.object(mcp_relay, "request", recorder):
+            result = mcp_relay.RelayTools().kill_session({"session": "aiisp", "host": "oracle"})
+        paths = [call[0] for call in recorder.calls]
+        self.assertIn("/api/sessions/aiisp?host=abc123", paths)
+        self.assertTrue(result["killed"])
 
     def test_send_file_uploads_into_the_target_upload_folder(self):
         recorder = Recorder({"/api/relay/peers": {"peers": [
@@ -147,7 +189,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(init["result"]["serverInfo"]["name"], "tmuxweb-relay")
         listing = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
-        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "send_file", "read_agent",
+        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "create_session",
+                                       "kill_session", "send_file", "read_agent",
                                        "publish_home_card", "list_home", "remove_home_card",
                                        "list_remote_hosts", "add_remote_host", "remove_remote_host"})
         self.assertEqual(tools["ask_agent"]["inputSchema"]["required"], ["target", "question"])

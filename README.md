@@ -708,6 +708,8 @@ Header:  Authorization: Bearer <TMUX_WEB_API_TOKEN>
 | `ask_agent` | 向某个 pane 提问并等待回答（busy 快速失败、可 `force`、timeout 5–600s） |
 | `send_agent` | 只输入文字，不等回答（`submit=false` 就只打字不回车） |
 | `send_file` | 把本机文件送到对方 pane 目录的 `upload_files/`，并把绝对路径告诉它 |
+| `create_session` | 在任意主机开 tmux 会话：`name` + 可选 `host`/`path`/`agent`/`agent_args`，目录不存在会建，返回 `#N` 编号 |
+| `kill_session` | 关掉某个会话（连同它所有窗口；`host` 可写主机名） |
 | `read_agent` | 读它的屏幕（默认）或结构化 transcript（`transcript=true`） |
 
 **回车这件事**：`send_agent` / `ask_agent` 先用 `paste-buffer` 写入，再单独发 `C-m`。粘贴大的
@@ -715,6 +717,11 @@ prompt 时 TUI 可能还在处理，第一个回车会被吃掉——表现就�
 现在的做法是**看屏幕**：按下回车后 0.45s 比对一次抓屏，屏幕没动就再按一次（最多 3 次；空输入
 框上多按一次回车是空操作）。等待时间本身也按文本长度缩放（0.12s + 1 字符 / 2500，上限 1.8s），
 远端走 ssh 时再多给一点。
+
+**开会话/关会话**：`create_session` 就是控制台那个「新建会话」，`agent` 选了就直接把 agent 拉起来
+（可带 `agent_args`、`keep_open`），返回里带 `pane` 与新分配的 `#N`，后面 `send_agent`/`read_agent`
+直接用这个 `#N` 就行。`kill_session` 按会话名关整个会话，`host` 既接受主机 id 也接受主机名
+（`oracle`、`macmini`）。
 
 **传文件**跨主机设计：字节经控制台转一次，落到目标 pane 当前目录的 `upload_files/`，然后给那个
 agent 打一行 `[file] <绝对路径> (N bytes)`。两台机器**不需要**共享挂载，也不需要互相信任 ssh。
@@ -786,7 +793,7 @@ printf 'MCP_TMUXWEB_API_KEY=%s\n' '<token>' >> ~/.hermes/.env && chmod 600 ~/.he
 # 2) 注册（两个提示都答 y：requires auth / enable all）
 hermes mcp add tmuxweb --url http://100.x.y.z:8787/mcp --auth header
 # 3) 验证
-hermes mcp test tmuxweb        # ✓ Connected · 10 tools
+hermes mcp test tmuxweb        # ✓ Connected · 13 tools
 ```
 
 判断通不通：`curl http://<那个地址>:8787/` 回 303（未登录跳转）就是通，`/mcp` 不带 token 回 401 说明

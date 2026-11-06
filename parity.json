@@ -66,7 +66,8 @@
   "web_only_api": {
     "/api/panes/{}/files/download": "App 下载走 /files/raw + saveFileBytes（同一份字节，不用 attachment 响应头）",
     "/api/panes/{}/files/stat": "网页专用的路径链接探测；App 的路径导航走文件面板",
-    "/api/hosts/{}/agents": "Flutter 客户端自 2026-11 起暂停维护；恢复时在新建会话对话框补 agent 下拉（同为 web_only 的 /api/sessions 增强字段）"
+    "/api/hosts/{}/agents": "Flutter 客户端自 2026-11 起暂停维护；恢复时在新建会话对话框补 agent 下拉（同为 web_only 的 /api/sessions 增强字段）",
+    "/api/sessions/{}": "Flutter 客户端自 2026-11 起暂停维护；恢复时在会话列表加长按删除"
   },
   "web_only_assets": {
     "downloads.js": "App 用系统保存对话框（save_file_io/web）直接落盘，不需要网页那层下载确认卡片",
