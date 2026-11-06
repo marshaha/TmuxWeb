@@ -13,6 +13,7 @@ import subprocess
 import time
 
 import agent_status
+import agent_catalog
 import tempfile
 import shlex
 import logging
@@ -1384,22 +1385,53 @@ class SSHRunner:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "SSH connection failed")
         return completed.stdout.decode(errors="replace")
 
-    def create_session(self, name: str, path: str = "") -> dict:
-        """Start a detached tmux session on the remote host."""
+    def create_session(self, name: str, path: str = "", command: list[str] | None = None,
+                       create_dir: bool = True) -> dict:
+        """Start a detached tmux session on the remote host.
+
+        A missing directory is created when ``create_dir`` is set (the default):
+        the console is usually used to start a session in a directory it just
+        invented, and requiring a separate manual mkdir is friction.  Creation
+        failures still surface the directory name, not some tmux message.
+        """
         name = normalize_session_name(name)
         directory = str(path or "").strip()
-        command = f"${{TMUX_BIN:-tmux}} new-session -d -s {shlex.quote(name)}"
+        tmux = "${TMUX_BIN:-tmux}"
+        pieces = []
         if directory:
             quoted = shlex.quote(directory)
-            command = (f"if [ -d {quoted} ]; then ${{TMUX_BIN:-tmux}} new-session -d -s {shlex.quote(name)} "
-                       f"-c {quoted}; else echo 'no such directory: {directory}' >&2; exit 3; fi")
-        completed = self.run(command)
+            if create_dir:
+                # Say which case happened, so the console can tell the user a
+                # directory was created instead of guessing (or lying).
+                pieces.append(
+                    f"if [ -d {quoted} ]; then echo TMUXWEB_DIR_EXISTED; "
+                    f"else mkdir -p {quoted} 2>/dev/null && echo TMUXWEB_DIR_CREATED || "
+                    f"{{ echo 'cannot create directory: {directory}' >&2; exit 4; }}; fi")
+            pieces.append(f"[ -d {quoted} ] || {{ echo 'no such directory: {directory}' >&2; exit 3; }}")
+            target = f" -c {quoted}"
+        else:
+            target = ""
+        session = f"{tmux} new-session -d -s {shlex.quote(name)}{target}"
+        if command:
+            session += f" {shlex.quote(shlex.join(command))}"
+        pieces.append(session)
+        completed = self.run(" && ".join(pieces))
         detail = completed.stderr.decode(errors="replace").strip()
         if completed.returncode != 0:
             if "duplicate session" in detail:
                 raise RuntimeError("session already exists: %s" % name)
             raise RuntimeError(detail or "tmux new-session failed")
-        return {"session": name, "path": directory}
+        stdout = completed.stdout.decode(errors="replace")
+        return {"session": name, "path": directory,
+                "created_dir": "TMUXWEB_DIR_CREATED" in stdout,
+                "command": shlex.join(command) if command else ""}
+
+    def probe_agents(self, timeout: int = 12) -> list[dict]:
+        """Which coding agents this host can start (one ssh round trip)."""
+        completed = self.run(agent_catalog.PROBE_SCRIPT, timeout=timeout)
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "agent probe failed")
+        return agent_catalog.parse_probe(completed.stdout.decode(errors="replace"))
 
     def list_panes(self, timeout: int = 15) -> list[dict]:
         fmt = FIELD_SEPARATOR.join([

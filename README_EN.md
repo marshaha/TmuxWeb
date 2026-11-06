@@ -569,6 +569,29 @@ username, port, auth_type, credential, `jump_host`, verify) and `remove_remote_h
 `auth_type=agent` needs no secret at all, and `verify=false` stores a host that is not reachable yet.
 
 
+## New session: create the directory, optionally start an agent
+
+The `+` next to a host opens **New tmux session**; every field is optional:
+
+- **Working directory** - created with `mkdir -p` when missing (on the remote host, by the remote
+  host). If it cannot be created the error carries the path. Pass `"create_dir": false` to keep the
+  old behaviour where a missing directory is a 422.
+- **Start agent (optional)** - the dropdown lists only agents actually installed on *that* host;
+  leaving it empty starts a plain shell. Detection is one POSIX `sh` probe (`command -v` plus
+  `~/.local/bin`, `~/.kimi-code/bin`, `/opt/homebrew/bin`, ...), so the far side needs no `python3`
+  and no `--version` calls (macOS has no `timeout` to bound them).
+- **Agent arguments (optional)** - split with shell rules and appended verbatim (`--model o3`,
+  `--dangerously-skip-permissions`). Unbalanced quoting is a 422, never silently dropped.
+
+    GET  /api/hosts/{host}/agents           # {"agents":[{"name","label","path"}], ...}, cached 5 min
+    GET  /api/hosts/{host}/agents?refresh=1 # re-probe (one ssh round trip per host)
+    POST /api/sessions {"host","name","path","agent","agent_args","create_dir"}
+
+    => {"session":{"session","path","created_dir","command"}, "panes":[...]}
+
+The catalogue lives in `agent_catalog.py` (hermes / claude / codex / kimi / opencode / gemini);
+adding one is a single line in `AGENTS`, and both the UI and the API pick it up.
+
 ## Home board: favourites, cards and search
 
 Every pane in the console sidebar has a star on the right: hollow = not saved, filled = saved. Starred panes appear on `/home`.

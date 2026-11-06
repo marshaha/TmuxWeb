@@ -37,6 +37,7 @@ import file_browser
 from home_store import HomeStore
 import mcp_relay
 import agent_status
+import agent_catalog
 import relay
 import transcript_reader
 from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, RemoteHostStore, RemoteTerminalSession, SSHRunner,
@@ -138,26 +139,42 @@ class TmuxBackend:
             raise TmuxError(detail or "tmux command failed")
         return completed.stdout.decode(errors="replace")
 
-    def create_session(self, name: str, path: str = "") -> dict:
+    def create_session(self, name: str, path: str = "", command: list[str] | None = None,
+                       create_dir: bool = True) -> dict:
         try:
             name = normalize_session_name(name)
         except ValueError as exc:
             raise TmuxError(str(exc)) from exc
         directory = str(path or "").strip()
-        args = ["new-session", "-d", "-s", name]
+        made_directory = False
         if directory:
             resolved = Path(directory).expanduser()
             if not resolved.is_dir():
-                raise TmuxError("no such directory: %s" % directory)
+                if not create_dir:
+                    raise TmuxError("no such directory: %s" % directory)
+                if resolved.exists():
+                    raise TmuxError("not a directory: %s" % directory)
+                # A fresh session usually means a fresh project directory; make
+                # it instead of making the user go and do it by hand.
+                try:
+                    resolved.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise TmuxError("cannot create directory %s: %s" % (directory, exc)) from exc
+                made_directory = True
             directory = str(resolved)
+        args = ["new-session", "-d", "-s", name]
+        if directory:
             args += ["-c", directory]
+        if command:
+            args += [agent_catalog.render(command)]
         try:
             self._run(*args)
         except TmuxError as exc:
             if "duplicate session" in str(exc):
                 raise TmuxError("session already exists: %s" % name) from exc
             raise
-        return {"session": name, "path": directory}
+        return {"session": name, "path": directory, "created_dir": made_directory,
+                "command": agent_catalog.render(command) if command else ""}
 
     def list_panes(self) -> list[dict]:
         format_string = FIELD_SEPARATOR.join([
@@ -466,6 +483,10 @@ class SessionCreateRequest(BaseModel):
     host: str = Field(default="localhost", max_length=64)
     name: str = Field(min_length=1, max_length=64)
     path: str = Field(default="", max_length=4096)
+    # Optional: start the session already running a coding agent.
+    agent: str = Field(default="", max_length=32)
+    agent_args: str = Field(default="", max_length=512)
+    create_dir: bool = True
 
 
 class ZipRequest(BaseModel):
@@ -2147,9 +2168,40 @@ def create_app(
         raise HTTPException(status_code=405, detail="this MCP endpoint only accepts POST",
                             headers={"Allow": "POST"})
 
+    AGENT_CACHE: dict[str, tuple[float, list]] = {}
+    AGENT_CACHE_TTL = 300.0
+
+    async def agents_for(host_id: str, refresh: bool = False) -> list[dict]:
+        """What a host can start, cached: probing costs one ssh round trip."""
+        key = host_id or "localhost"
+        cached = AGENT_CACHE.get(key)
+        if cached and not refresh and (time.monotonic() - cached[0]) < AGENT_CACHE_TTL:
+            return [dict(item) for item in cached[1]]
+        if key in ("", "localhost"):
+            found = await asyncio.to_thread(agent_catalog.probe_local)
+        else:
+            try:
+                host = remote_hosts.get_host(key, include_credential=True)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="remote host not found") from exc
+            found = await asyncio.to_thread(lambda: runner_for(host).probe_agents())
+        AGENT_CACHE[key] = (time.monotonic(), found)
+        return [dict(item) for item in found]
+
+    @app.get("/api/hosts/{host_id}/agents")
+    async def list_host_agents(request: Request, host_id: str, refresh: bool = False):
+        require_auth(request)
+        agents = await agents_for(host_id, refresh=refresh)
+        return {"host": host_id, "agents": agents}
+
     @app.post("/api/sessions", status_code=201)
     async def create_session(request: Request, payload: SessionCreateRequest):
-        """Create a detached tmux session on the local host or a remote one."""
+        """Create a detached tmux session on the local host or a remote one.
+
+        ``agent`` is optional: when given (and installed on that host) the session
+        starts with the agent instead of a bare shell, with ``agent_args`` passed
+        through as extra argv.
+        """
         require_auth(request)
         if payload.host in ("", "localhost"):
             transport, host_id = tmux, "localhost"
@@ -2159,13 +2211,30 @@ def create_app(
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail="remote host not found") from exc
             transport, host_id = runner_for(host), payload.host
+        command = None
+        if (payload.agent or "").strip():
+            try:
+                command = agent_catalog.command_for(payload.agent, payload.agent_args)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            installed = {item["name"] for item in await agents_for(host_id)}
+            if command[0] not in installed:
+                raise HTTPException(
+                    status_code=422,
+                    detail="agent not installed on this host: %s" % command[0])
         try:
-            created = await asyncio.to_thread(transport.create_session, payload.name, payload.path)
+            created = await asyncio.to_thread(
+                transport.create_session, payload.name, payload.path, command, payload.create_dir)
             panes = await asyncio.to_thread(transport.list_panes)
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             message = str(exc)
-            status = 409 if ("already exists" in message or "duplicate" in message) else 422
-            if status == 422 and "no such directory" not in message and "session name" not in message:
+            if "already exists" in message or "duplicate" in message:
+                status = 409
+            elif any(marker in message for marker in
+                     ("no such directory", "cannot create directory", "not a directory",
+                      "session name", "agent")):
+                status = 422
+            else:
                 status = 503
             raise HTTPException(status_code=status, detail=message) from exc
         session = created["session"]

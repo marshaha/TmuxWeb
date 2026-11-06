@@ -16,6 +16,7 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 
 import tmux_web
+import agent_catalog
 from tmux_web import ANSI_RE, TmuxBackend, TmuxError, create_app, ensure_share_schema
 import relay
 from tests.fake_terminal import FakeTerminalFactory
@@ -43,21 +44,31 @@ class FakeTmux(TmuxBackend):
         self.created = []
         self.auto_reply = None
 
-    def create_session(self, name, path=""):
+    def create_session(self, name, path="", command=None, create_dir=True):
         try:
             name = normalize_session_name(name)
         except ValueError as exc:
             raise TmuxError(str(exc)) from exc
         if any(pane["session"] == name for pane in self.panes):
             raise TmuxError("session already exists: %s" % name)
+        made_directory = False
         if path and not Path(path).is_dir():
-            raise TmuxError("no such directory: %s" % path)
+            if not create_dir:
+                raise TmuxError("no such directory: %s" % path)
+            try:
+                Path(path).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise TmuxError("cannot create directory %s: %s" % (path, exc)) from exc
+            made_directory = True
         self.created.append((name, path))
+        self.created_commands = getattr(self, "created_commands", [])
+        self.created_commands.append((name, list(command) if command else []))
         pane = {"id": "%12", "pane_id": "%12", "target": "%s:0.0" % name, "session": name,
                 "window": "0", "window_name": "shell", "index": "0", "command": "zsh",
                 "title": "new session", "path": path or "/work/repo", "active": True}
         self.panes.append(pane)
-        return {"session": name, "path": path}
+        return {"session": name, "path": path, "created_dir": made_directory,
+                "command": agent_catalog.render(command) if command else ""}
 
     def list_panes(self):
         return self.panes
@@ -160,11 +171,17 @@ class FakeSSHRunner:
         self.host = host
         self.created = []
     def check(self): return "TMUX_REMOTE_OK"
-    def create_session(self, name, path=""):
+    def create_session(self, name, path="", command=None, create_dir=True):
         name = normalize_session_name(name)
         self.created.append((name, path))
         FakeSSHRunner.created = (name, path)
-        return {"session": name, "path": path}
+        FakeSSHRunner.created_command = list(command) if command else []
+        FakeSSHRunner.created_create_dir = create_dir
+        return {"session": name, "path": path, "created_dir": create_dir and bool(path),
+                "command": " ".join(command or [])}
+
+    def probe_agents(self, timeout=12):
+        return [dict(item) for item in getattr(self, "agents", [])]
     def list_panes(self, timeout=15):
         extra = [{"id": pane_ref(self.host["id"], "%11"), "pane_id": "%11", "host_id": self.host["id"],
                   "target": "%s:0.0" % name, "session": name, "window": "0", "window_name": "shell",
@@ -1705,6 +1722,89 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(body["host"], "localhost")
         self.assertEqual([pane["id"] for pane in body["panes"]], ["%12"])
         self.assertEqual(self.tmux.created, [("agent-test", directory)])
+
+    def test_creates_a_missing_directory_before_starting_the_session(self):
+        self.login()
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / "proj" / "nested"
+            response = self.client.post("/api/sessions",
+                                        json={"name": "fresh", "path": str(target)})
+            self.assertEqual(response.status_code, 201)
+            self.assertTrue(target.is_dir(), "创建会话时应顺手把目录建出来")
+            self.assertEqual(self.tmux.created, [("fresh", str(target))])
+            self.assertTrue(response.json()["session"]["created_dir"])
+
+    def test_create_dir_false_keeps_the_missing_directory_error(self):
+        self.login()
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / "absent"
+            response = self.client.post("/api/sessions",
+                                        json={"name": "keep", "path": str(target), "create_dir": False})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("no such directory", response.json()["detail"])
+        self.assertFalse(target.exists())
+
+    def test_starts_the_session_with_an_agent_and_its_arguments(self):
+        self.login()
+        installed = [{"name": "codex", "label": "Codex", "path": "/usr/local/bin/codex"}]
+        with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=installed):
+            with tempfile.TemporaryDirectory() as directory:
+                response = self.client.post("/api/sessions", json={
+                    "name": "agent-run", "path": directory,
+                    "agent": "codex", "agent_args": '--model o3 -c "a b"'})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(self.tmux.created_commands[0], ("agent-run", ["codex", "--model", "o3", "-c", "a b"]))
+        self.assertEqual(response.json()["session"]["command"], "codex --model o3 -c 'a b'")
+
+    def test_agent_must_be_known_and_installed(self):
+        self.login()
+        self.assertEqual(self.client.post("/api/sessions",
+                                          json={"name": "x1", "agent": "nope"}).status_code, 422)
+        with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=[]):
+            response = self.client.post("/api/sessions", json={"name": "x2", "agent": "claude"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("not installed", response.json()["detail"])
+        # 引号没闭合的 args 不能被偷偷吞掉
+        self.assertEqual(self.client.post("/api/sessions",
+                                          json={"name": "x3", "agent": "claude",
+                                                "agent_args": '--x "unclosed'}).status_code, 422)
+
+    def test_lists_the_agents_a_host_can_run(self):
+        self.login()
+        installed = [{"name": "hermes", "label": "Hermes", "path": "/home/u/.local/bin/hermes"}]
+        with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=installed) as probe:
+            first = self.client.get("/api/hosts/localhost/agents")
+            second = self.client.get("/api/hosts/localhost/agents")
+            self.client.get("/api/hosts/localhost/agents", params={"refresh": 1})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual([item["name"] for item in first.json()["agents"]], ["hermes"])
+        self.assertEqual(second.json()["agents"], first.json()["agents"])
+        self.assertEqual(probe.call_count, 2, "第二次应该走缓存，refresh=1 才重新探测")
+
+    def test_lists_agents_on_a_remote_host_over_ssh(self):
+        host_key = ("10.0.0.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l"
+                    "+Kg3QGMCbo2")
+        fingerprint = host_key_fingerprint(host_key)
+        self.login()
+        host = self.client.post("/api/remote-hosts", json={
+            "name": "agent-box", "hostname": "10.0.0.9", "port": 22, "username": "ubuntu",
+            "auth_type": "agent", "credential": "", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        }).json()
+        FakeSSHRunner.agents = [{"name": "kimi", "label": "Kimi Code", "path": "/home/u/.kimi-code/bin/kimi"}]
+        try:
+            response = self.client.get("/api/hosts/%s/agents" % host["id"])
+        finally:
+            FakeSSHRunner.agents = []
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["name"] for item in response.json()["agents"]], ["kimi"])
+
+        response = self.client.post("/api/sessions", json={
+            "host": host["id"], "name": "remote-agent", "path": "/srv/new dir",
+            "agent": "kimi", "agent_args": "--yolo"})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(FakeSSHRunner.created_command, ["kimi", "--yolo"])
+        self.assertTrue(FakeSSHRunner.created_create_dir)
 
     def test_session_creation_validates_name_path_and_duplicates(self):
         self.login()

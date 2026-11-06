@@ -545,6 +545,30 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 `auth_type=agent` 用本机 ssh-agent 密钥，agent 无需传任何密码；`verify=false` 时即使暂时连不上也会保存，等下次连通再固定指纹。
 
 
+## 新建会话：目录自动创建 + 直接拉起 agent
+
+侧边栏每个主机后面的 `+` 打开「新建 tmux 会话」，三个字段都可留空：
+
+- **工作目录**：目录不存在就自动 `mkdir -p`（远端同样是远端自己建），建不出来才报错并把目录名带回来。
+  不想要这个行为时传 `"create_dir": false`，此时恢复成「目录不存在就 422」。
+- **启动 agent（可选）**：下拉里只列**这台主机真的装了的** agent，不选就是普通 shell。
+  扫描走一条 POSIX `sh` 探针（`command -v` + `~/.local/bin`、`~/.kimi-code/bin`、`/opt/homebrew/bin`
+  等常见安装目录），不需要远端有 `python3`，也不跑 `--version`（macOS 没有 `timeout`，跑一次就慢一截）。
+- **agent 参数（可选）**：按 shell 词法切分后原样跟在该 agent 后面，例如 `--model o3`、
+  `--dangerously-skip-permissions`。引号没闭合会直接 422，不会被悄悄吞掉。
+
+接口：
+
+    GET  /api/hosts/{host}/agents           # {"agents":[{"name","label","path"}], ...}，缓存 5 分钟
+    GET  /api/hosts/{host}/agents?refresh=1 # 强制重新探测（每台一次 ssh 往返）
+    POST /api/sessions {"host","name","path","agent","agent_args","create_dir"}
+
+    返回 {"session":{"session","path","created_dir","command"}, "panes":[...]}
+
+支持的 agent 目录在 `agent_catalog.py`（hermes / claude / codex / kimi / opencode / gemini）；
+加新的只要往 `AGENTS` 里加一行，UI 和接口自动带上。探测结果按主机缓存，别的地方要「这台机器能跑什么」
+直接读缓存，不要再 ssh。
+
 ## 主页：收藏、看板与搜索
 
 （主页右上角有「主机 / 分享 / 刷新」，回到控制台的入口在左侧会话树顶部。）控制台左侧每个 pane 右侧有一个五角星：空心 = 未收藏，实心 = 已收藏（点一下切换）。收藏的会话会出现在 `/home` 主页。
