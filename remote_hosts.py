@@ -1428,6 +1428,25 @@ class SSHRunner:
                 "created_dir": "TMUXWEB_DIR_CREATED" in stdout,
                 "command": shlex.join(command) if command else ""}
 
+    def kill_pane(self, pane_id: str) -> dict:
+        """Close one remote pane and report whether its session survived."""
+        if not PANE_ID_RE.fullmatch(pane_id):
+            raise ValueError("invalid pane id")
+        tmux = "${TMUX_BIN:-tmux}"
+        target = shlex.quote(pane_id)
+        session = self.run(f"{tmux} display-message -p -t {target} '#{{session_name}}' 2>/dev/null",
+                           timeout=15).stdout.decode(errors="replace").strip()
+        killed = self.run(f"{tmux} kill-pane -t {target}", timeout=15)
+        if killed.returncode != 0:
+            detail = killed.stderr.decode(errors="replace").strip()
+            if "no such pane" in detail or "can't find pane" in detail:
+                raise RuntimeError("no such pane: %s" % pane_id)
+            raise RuntimeError(detail or "tmux kill-pane failed")
+        alive = False
+        if session:
+            alive = self.run(f"{tmux} has-session -t {shlex.quote(session)}", timeout=15).returncode == 0
+        return {"pane": pane_id, "session": session, "session_alive": alive}
+
     def kill_session(self, name: str) -> dict:
         """Close a remote session; ``no such session`` is reported as such."""
         name = normalize_session_name(name)

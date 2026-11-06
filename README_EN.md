@@ -826,7 +826,8 @@ Header:  Authorization: Bearer <TMUX_WEB_API_TOKEN>
 
 Tools: `list_agents`, `ask_agent`, `send_agent` (`submit=false` types without pressing Enter),
 `create_session` (any host, optionally with `agent` / `agent_args`, returns the new `#N`),
-`kill_session` (by session name, `host` accepts an id or a name), `send_file`,
+`kill_session` (`pane` closes one pane and leaves the session alive; `session` closes everything),
+`send_file`,
 `read_agent` (screen text, or `transcript=true`).
 
 **Enter is checked, not guessed.** Text goes in through `paste-buffer` and `C-m` is sent separately.
@@ -844,6 +845,10 @@ a shared mount or ssh trust between them.
 {"tool": "send_file", "arguments": {"target": "#125", "path": "/home/me/report.md",
                                     "note": "read this first", "notify": true}}
 ```
+
+**Close a pane before closing a session.** A session often hosts several agents: `kill_session` with
+`pane` (a `#125` handle or a `host~%12` id) closes exactly that one and reports `session_alive`;
+`session` is the sledgehammer. HTTP: `DELETE /api/panes/{pane}` and `DELETE /api/sessions/{name}?host=`.
 
 Limit 64MB by default (`TMUXWEB_SEND_FILE_MAX`); the destination name cannot contain path
 separators; `notify=false` writes the file without interrupting the agent.

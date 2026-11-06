@@ -176,6 +176,24 @@ class TmuxBackend:
         return {"session": name, "path": directory, "created_dir": made_directory,
                 "command": agent_catalog.render(command) if command else ""}
 
+    def kill_pane(self, pane_id: str) -> dict:
+        """Close one pane; the session survives if it has other panes."""
+        pane = self.validate_pane(pane_id)
+        session = pane.get("session") or ""
+        try:
+            self._run("kill-pane", "-t", pane_id)
+        except TmuxError as exc:
+            if "no such pane" in str(exc) or "can't find pane" in str(exc):
+                raise TmuxError("no such pane: %s" % pane_id) from exc
+            raise
+        alive = True
+        if session:
+            try:
+                self._run("has-session", "-t", session)
+            except TmuxError:
+                alive = False
+        return {"pane": pane_id, "session": session, "session_alive": alive}
+
     def kill_session(self, name: str) -> dict:
         """Close a session (and every window/pane in it)."""
         try:
@@ -2320,6 +2338,22 @@ def create_app(
                     pane["number"] = number
                     pane["handle"] = f"#{number}"
         return {"session": created, "host": host_id, "panes": fresh}
+
+    @app.delete("/api/panes/{pane_id}")
+    async def delete_pane(request: Request, pane_id: str):
+        """Close one pane only - the session stays if it has other panes."""
+        require_auth(request)
+        try:
+            transport, actual = pane_transport(pane_id)
+        except HTTPException:
+            raise
+        try:
+            killed = await asyncio.to_thread(transport.kill_pane, actual)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            message = str(exc)
+            raise HTTPException(status_code=404 if "no such pane" in message else 503,
+                                detail=message) from exc
+        return killed
 
     @app.delete("/api/sessions/{name}")
     async def delete_session(request: Request, name: str, host: str = "localhost"):

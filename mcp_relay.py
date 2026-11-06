@@ -148,14 +148,26 @@ class RelayTools:
         }
 
     def kill_session(self, arguments: dict) -> dict:
-        """Close a tmux session - every window and pane in it goes away."""
+        """Close a pane, or a whole session.
+
+        ``pane`` kills just that pane (the session stays if other panes are left);
+        ``session`` closes everything.  A session with several panes should be
+        trimmed with ``pane`` rather than nuked.
+        """
+        pane = str(arguments.get("pane") or "").strip()
+        if pane:
+            result = request(f"/api/panes/{urllib.parse.quote(pane, safe='')}",
+                             method="DELETE", timeout=60)
+            return {"scope": "pane", "pane": result.get("pane", pane),
+                    "session": result.get("session", ""),
+                    "session_alive": result.get("session_alive", False), "killed": True}
         name = self._text(arguments, "session", limit=64)
         host = self._resolve_host(str(arguments.get("host") or "localhost"))
         result = request(f"/api/sessions/{urllib.parse.quote(name, safe='')}"
                          f"?host={urllib.parse.quote(host, safe='')}",
                          method="DELETE", timeout=60)
-        return {"host": result.get("host", host), "session": result.get("session", name),
-                "killed": True}
+        return {"scope": "session", "host": result.get("host", host),
+                "session": result.get("session", name), "killed": True}
 
     def send_file(self, arguments: dict) -> dict:
         """Copy a local file into the target pane's ``upload_files/``.
@@ -383,15 +395,19 @@ def tool_schemas() -> list[dict]:
         },
         {
             "name": "kill_session",
-            "description": ("Close a tmux session on a managed host. Every window and pane in it is lost, "
-                            "so prefer asking the agent in it to finish first."),
+            "description": ("Close a tmux pane or a whole session. Pass `pane` to close just that pane "
+                            "(the session survives if it has other panes) - that is the polite option "
+                            "when a session has several windows. Pass `session` to close everything in "
+                            "it. Ask the agent to finish first either way."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session": {"type": "string", "minLength": 1, "maxLength": 64},
-                    "host": {"type": "string", "description": "host id or name, default localhost"},
+                    "pane": {"type": "string", "description": "pane to close, e.g. #125 or host~%12"},
+                    "session": {"type": "string", "maxLength": 64,
+                                "description": "session to close (all of its panes)"},
+                    "host": {"type": "string", "description": "host id or name, used with session"},
                 },
-                "required": ["session"],
+                "anyOf": [{"required": ["pane"]}, {"required": ["session"]}],
                 "additionalProperties": False,
             },
         },

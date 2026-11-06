@@ -102,6 +102,16 @@ class ToolTests(unittest.TestCase):
         self.assertNotIn("agent", payload)
         self.assertEqual(payload["host"], "localhost")
 
+    def test_kill_session_can_aim_at_one_pane(self):
+        recorder = Recorder({"/api/panes/abc~%253": {"pane": "abc~%3", "session": "work",
+                                                     "session_alive": True}})
+        with patch.object(mcp_relay, "request", recorder):
+            result = mcp_relay.RelayTools().kill_session({"pane": "abc~%3"})
+        self.assertEqual(recorder.calls[0][0], "/api/panes/abc~%253")
+        self.assertEqual(recorder.methods, ["DELETE"])
+        self.assertEqual(result["scope"], "pane")
+        self.assertTrue(result["session_alive"])
+
     def test_kill_session_resolves_the_host_name(self):
         recorder = Recorder({"/api/hosts": {"hosts": [{"id": "abc123", "name": "Oracle"}]},
                              "/api/sessions/aiisp": {"session": "aiisp", "host": "abc123"}})

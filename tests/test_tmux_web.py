@@ -73,6 +73,15 @@ class FakeTmux(TmuxBackend):
         return {"session": name, "path": path, "created_dir": made_directory,
                 "command": agent_catalog.render(command) if command else ""}
 
+    def kill_pane(self, pane_id):
+        pane = next((item for item in self.panes if item["id"] == pane_id), None)
+        if pane is None:
+            raise TmuxError("no such pane: %s" % pane_id)
+        session = pane["session"]
+        self.panes = [item for item in self.panes if item["id"] != pane_id]
+        alive = any(item["session"] == session for item in self.panes)
+        return {"pane": pane_id, "session": session, "session_alive": alive}
+
     def kill_session(self, name):
         try:
             name = normalize_session_name(name)
@@ -195,6 +204,10 @@ class FakeSSHRunner:
         FakeSSHRunner.created_keep_open = keep_open
         return {"session": name, "path": path, "created_dir": create_dir and bool(path),
                 "command": " ".join(command or [])}
+
+    def kill_pane(self, pane_id):
+        FakeSSHRunner.killed_pane = pane_id
+        return {"pane": pane_id, "session": "remote", "session_alive": True}
 
     def kill_session(self, name):
         FakeSSHRunner.killed = name
@@ -1899,6 +1912,25 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/sessions", json={"name": "codex"}).status_code, 409)
         self.assertEqual(self.client.post("/api/sessions", json={"host": "deadbeefdeadbeef",
                                                                  "name": "ok"}).status_code, 404)
+
+    def test_deletes_a_single_pane_and_keeps_the_session(self):
+        self.login()
+        self.tmux.panes.append({**self.tmux.panes[0], "id": "%5", "target": "codex:0.1",
+                                "window": "0", "window_name": "shell", "command": "zsh"})
+        response = self.client.delete("/api/panes/%254")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["pane"], "%4")
+        self.assertEqual(body["session"], "codex")
+        self.assertTrue(body["session_alive"], "同会话还有别的 pane，会话不能一起没")
+        self.assertEqual([pane["id"] for pane in self.tmux.panes], ["%5"])
+
+    def test_deleting_the_last_pane_says_the_session_is_gone(self):
+        self.login()
+        response = self.client.delete("/api/panes/%254")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["session_alive"])
+        self.assertEqual(self.client.delete("/api/panes/%254").status_code, 404)
 
     def test_deletes_a_local_session(self):
         self.login()
