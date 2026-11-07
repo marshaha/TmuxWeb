@@ -1978,6 +1978,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(body["provider"], "claude")
         self.assertEqual(body["current"], "claude-opus-5-5")
         self.assertIn("opus", body["presets"])
+        self.assertEqual(body["provider_label"], "Anthropic")
         self.assertFalse(body["picker_only"])
 
     def test_switching_model_types_the_slash_command(self):

@@ -442,6 +442,11 @@ if [ -n "$sqlite_bin" ] && [ -f "$HOME/.hermes/state.db" ] \
     "select coalesce(model,'') from sessions where id='$sid'" 2>/dev/null | head -1)
   header "$sid" hermes-rows "$HOME/.hermes/state.db"
   printf 'TMUXWEB_MODEL%s%s\n' "$sep" "$model"
+  # 模型走哪个 provider（config.yaml 的 model.provider），下拉里要显示出来
+  route=$(awk '/^model:[[:space:]]*$/{f=1;next} f&&/^[^[:space:]]/{exit}
+      f&&/^[[:space:]]+provider:/{sub(/^[[:space:]]+provider:[[:space:]]*/,"");gsub(/"/,"");print;exit}' \
+    "$HOME/.hermes/config.yaml" 2>/dev/null)
+  printf 'TMUXWEB_MODEL_PROVIDER%s%s\n' "$sep" "$route"
   # 必须走 emit：header 已经声明白 "$encoding"，这里直接 cat 会让客户端拿到
   # "声明 gzip、实际明文" 的负载（报 Not a gzipped file）
   "$sqlite_bin" -readonly -json "$HOME/.hermes/state.db" \
@@ -511,10 +516,30 @@ try:
         model = row[0] or ""
 except Exception:  # noqa: BLE001 - the model line is optional
     model = ""
+route = ""
+try:
+    import re as _re
+    with open(os.path.expanduser("~/.hermes/config.yaml"), errors="replace") as handle:
+        _inside = False
+        for _line in handle.read().splitlines():
+            if not _inside:
+                if _re.match(r"^model:\s*$", _line):
+                    _inside = True
+                continue
+            if _line and not _line[0].isspace():
+                break
+            _m = _re.match(r'^\s+provider:\s*"?([\w./-]+)"?', _line)
+            if _m:
+                route = _m.group(1)
+                break
+except Exception:  # noqa: BLE001 - the route line is optional too
+    route = ""
 sys.stdout.write(
     "TMUXWEB_STATUS%sunknown\nTMUXWEB_PROVIDER%shermes\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%shermes-rows\n"
-    "TMUXWEB_PRIMARY%s%s\nTMUXWEB_ENCODING%snone\nTMUXWEB_MODEL%s%s\nTMUXWEB_STAMP%s%d %d\nTMUXWEB_PAYLOAD\n"
-    % (sep, sep, sep, sid, sep, sep, db, sep, sep, model, sep, int(info.st_mtime), info.st_size)
+    "TMUXWEB_PRIMARY%s%s\nTMUXWEB_ENCODING%snone\nTMUXWEB_MODEL%s%s\n"
+    "TMUXWEB_MODEL_PROVIDER%s%s\nTMUXWEB_STAMP%s%d %d\nTMUXWEB_PAYLOAD\n"
+    % (sep, sep, sep, sid, sep, sep, db, sep, sep, model, sep, route,
+       sep, int(info.st_mtime), info.st_size)
 )
 sys.stdout.write(json.dumps(rows, ensure_ascii=False))
 PYTHON
@@ -1676,6 +1701,7 @@ class SSHRunner:
         data["pane"] = pane_id
         if not data.get("model"):
             data["model"] = header.get("TMUXWEB_MODEL", "")
+        data["model_provider"] = header.get("TMUXWEB_MODEL_PROVIDER", "")
         data.setdefault("host_id", self.host.get("id"))
         primary = header.get("TMUXWEB_PRIMARY", "")
         probe = [primary] if primary else []

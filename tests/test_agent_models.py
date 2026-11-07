@@ -37,5 +37,38 @@ class SwitchCommandTests(unittest.TestCase):
         self.assertEqual(agent_models.preset_for("bash"), [])
 
 
+class ProviderLabelTests(unittest.TestCase):
+    def test_vendor_labels_and_configured_route(self):
+        self.assertEqual(agent_models.provider_label("claude"), "Anthropic")
+        self.assertEqual(agent_models.provider_label("codex"), "OpenAI")
+        self.assertEqual(agent_models.provider_label("kimi"), "Kimi Code")
+        # Hermes 走哪个网关是用户自己的配置，配置了就用它
+        self.assertEqual(agent_models.provider_label("hermes", "axera"), "axera")
+        self.assertEqual(agent_models.provider_label("hermes"), "Hermes")
+        self.assertEqual(agent_models.provider_label(""), "")
+
+    def test_hermes_route_ignores_comments_and_lookalike_keys(self):
+        import tempfile
+        from pathlib import Path as P
+
+        with tempfile.TemporaryDirectory() as home:
+            config = P(home) / ".hermes" / "config.yaml"
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                "# Hermes Agent CLI Configuration\n"
+                "providers:\n"
+                "  elsewhere:\n"
+                "    provider: wrong\n"
+                "model:\n"
+                "  default: gpt-5.6-sol\n"
+                "  # route for this box\n"
+                "  provider: \"ctyun\"\n"
+                "agent:\n"
+                "  max_turns: 500\n"
+            )
+            self.assertEqual(agent_models.hermes_route(home), "ctyun")
+            self.assertEqual(agent_models.hermes_route(home + "-missing"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

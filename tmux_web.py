@@ -2655,14 +2655,18 @@ def create_app(
         provider = pane_provider(pane)
         if not agent_models.supported(provider):
             raise HTTPException(status_code=422, detail="this pane is not an agent with a model picker")
-        current = ""
+        current, current_data = "", {}
         try:
             transport, actual = pane_transport(pane_id)
-            data = await asyncio.to_thread(transport.transcript, actual, 1, pane)
-            current = (data or {}).get("model") or ""
+            current_data = await asyncio.to_thread(transport.transcript, actual, 1, pane) or {}
+            current = current_data.get("model") or ""
         except (HTTPException, TmuxError, RuntimeError, OSError, ValueError):
             current = ""
+        configured = (current_data.get("model_provider") or "") if isinstance(current_data, dict) else ""
+        if not configured and provider == "hermes" and pane.get("host_id") in (None, "localhost"):
+            configured = agent_models.hermes_route()
         return {"pane": pane_id, "provider": provider, "current": current,
+                "provider_label": agent_models.provider_label(provider, configured),
                 "presets": agent_models.preset_for(provider),
                 "picker_only": agent_models.picker_only(provider),
                 "template": agent_models.switch_command(provider, "MODEL").replace("MODEL", "{model}")}

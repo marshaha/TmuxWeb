@@ -854,13 +854,14 @@ confirmation first (showing `#N` and `session:window`), then calls `DELETE /api/
 session still has other panes the console lands on one of them; the last pane reports
 "pane closed, the session ended with it".
 
-**Switching models happens in the chat.** The gear dropdown under the composer shows the model the
-agent is running and, on pick, the console types that agent's own `/model <id>` into the pane — one
-line of text, no new protocol.
+**Switching models happens in the chat.** The gear dropdown right of the attach button groups models
+by provider (`OpenAI · gpt-6-luna`, `ctyun · gpt-5.5`, …); picking one types that agent's own
+`/model <id>` into the pane — one line of text, no new protocol.
 
-- The current model is *read*, not assumed: claude / codex / kimi come from the last record of their
-  session file, hermes from `sessions.model` in `state.db` (remotes ship it in the probe header as
-  `TMUXWEB_MODEL`).
+- The current model *and* its provider are read, not assumed: claude / codex / kimi from the last
+  record of their session file, hermes from `sessions.model` in `state.db` plus
+  `model.provider` in `config.yaml` (remotes ship both as `TMUXWEB_MODEL` /
+  `TMUXWEB_MODEL_PROVIDER`).
 - Presets are just conveniences (claude accepts `opus`/`sonnet`/`haiku` aliases); anything else goes
   through "custom".
 - **Kimi Code is special**: `/model <anything>` answers `Unknown model alias`; only the bare `/model`

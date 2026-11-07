@@ -728,11 +728,13 @@ prompt 时 TUI 可能还在处理，第一个回车会被吃掉——表现就�
 确认后调 `DELETE /api/panes/{pane}`，只关这一个；关完如果同会话还有别的 pane 会自动落到它上面，
 最后一个则显示「窗格已关闭，会话也随之结束」。
 
-**切换模型就在对话里**：聊天输入框下面那行有个齿轮下拉，显示这个 agent 现在用的模型，选中后
-控制台替你把 agent 自己的 `/model <id>` 敲进去——不是新协议，就是一行文本。
+**切换模型就在对话里**：附件按钮右边有个齿轮下拉，按 provider 分组显示这个 agent 现在用的模型
+（`OpenAI · gpt-6-luna`、`ctyun · gpt-5.5`…），选中后控制台替你把 agent 自己的 `/model <id>`
+敲进去——不是新协议，就是一行文本。
 
-- 当前模型是**读出来的**，不是猜的：claude / codex / kimi 从各自会话文件最后一条记录里取，
-  hermes 读 `state.db` 的 `sessions.model`（远端由探测脚本随 header 一起回传 `TMUXWEB_MODEL`）。
+- 当前模型和 provider 都是**读出来的**，不是猜的：claude / codex / kimi 从各自会话文件最后一条
+  记录里取，hermes 读 `state.db` 的 `sessions.model`，provider 取 `config.yaml` 的 `model.provider`
+  （远端由探测脚本随 header 回传 `TMUXWEB_MODEL` / `TMUXWEB_MODEL_PROVIDER`）。
 - 预设只是常用项（claude 认 `opus`/`sonnet`/`haiku` 这类别名），其余用「自定义…」直接输入。
 - **Kimi Code 例外**：`/model <任何东西>` 都回 `Unknown model alias`，它只认无参的 `/model` 打开自己的菜单，
   所以那里显示「打开模型菜单…」，点了只是把 `/model` 敲进去，选择在 agent 里用方向键完成。

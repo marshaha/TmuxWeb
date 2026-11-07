@@ -34,6 +34,23 @@ SWITCH_TEMPLATES = {
 PICKER_ONLY = {"kimi"}
 
 
+# 下拉里按 provider 分组显示：模型属于哪家，是切模型时最先要看清的东西。
+PROVIDER_LABELS = {
+    "claude": "Anthropic",
+    "codex": "OpenAI",
+    "kimi": "Kimi Code",
+    "hermes": "Hermes",
+}
+
+
+def provider_label(provider: str, configured: str = "") -> str:
+    """Group heading for the picker: the vendor, or the route Hermes is using."""
+    configured = (configured or "").strip()
+    if configured:
+        return configured
+    return PROVIDER_LABELS.get((provider or "").lower(), (provider or "").capitalize())
+
+
 def providers() -> tuple[str, ...]:
     return tuple(PRESETS)
 
@@ -60,6 +77,36 @@ def switch_command(provider: str, model: str = "") -> str:
     if len(model) > 80 or any(ch in model for ch in "\r\n\t"):
         raise ValueError("that model id is not usable")
     return template.format(model=model)
+
+
+def hermes_route(home=None) -> str:
+    """`model.provider` from ~/.hermes/config.yaml (the route Hermes is on).
+
+    Read with a regex instead of a YAML parser: the console's venv does not ship
+    PyYAML, and we only need the one scalar.
+    """
+    import os
+    import re
+    from pathlib import Path
+
+    home = home or os.path.expanduser("~")
+    path = Path(home) / ".hermes" / "config.yaml"
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return ""
+    inside = False
+    for line in text.splitlines():
+        if not inside:
+            if re.match(r"^model:\s*$", line):
+                inside = True
+            continue
+        if line and not line[0].isspace():
+            break                      # 下一个顶层键，model 块结束
+        found = re.match(r'^\s+provider:\s*"?([\w./-]+)"?', line)
+        if found:
+            return found.group(1)
+    return ""
 
 
 def supported(provider: str) -> bool:
