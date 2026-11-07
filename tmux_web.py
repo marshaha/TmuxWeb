@@ -38,6 +38,7 @@ from home_store import HomeStore
 import mcp_relay
 import agent_status
 import agent_catalog
+import agent_models
 import relay
 import transcript_reader
 from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, RemoteHostStore, RemoteTerminalSession, SSHRunner,
@@ -432,27 +433,49 @@ class TmuxBackend:
         except TmuxError:
             return ""
 
+    @staticmethod
+    def submit_fingerprint(text: str) -> str:
+        """The bit of text we look for in the input box after pressing Enter."""
+        joined = " ".join((text or "").split())
+        return joined[-40:] if joined else ""
+
+    def still_in_prompt(self, pane_id: str, text: str, lines: int = 6) -> bool:
+        """Is the text we just typed still sitting in the prompt box?
+
+        Comparing whole screens is unreliable (TUIs repaint constantly, so "the
+        screen changed" does not mean "it was submitted"); looking for our own
+        text in the bottom rows is the direct question.
+        """
+        fingerprint = self.submit_fingerprint(text)
+        if not fingerprint:
+            return False
+        screen = self._run("capture-pane", "-p", "-t", pane_id) if hasattr(self, "_run") else ""
+        bottom = " ".join(" ".join(screen.splitlines()[-max(2, lines):]).split())
+        return fingerprint in bottom
+
     def press_enter_until_submitted(self, pane_id: str, text: str, python: bool = False,
                                     tries: int = 3) -> int:
-        """Submit the pasted text; repeat Enter while the screen does not move.
+        """Press Enter until the text actually leaves the prompt box.
 
-        A big paste keeps a TUI busy for a while: the first C-m can arrive while
-        it is still swallowing the paste and gets eaten, which is exactly the
-        "text is in the prompt but nothing was sent" report.  Waiting longer is a
-        guess; looking at the screen is not - if nothing changed after Enter,
-        press it again (an extra Enter on an empty prompt is a no-op).
+        A paste bigger than the TUI can digest makes the first C-m land while it
+        is still consuming input, and the key is dropped - the "text is in the
+        box but nothing was sent" report.  Waiting longer is a guess; watching our
+        own text in the bottom rows is not.  An extra Enter on an empty prompt is
+        a no-op, so a false positive costs nothing.
         """
         delay = 0.12 + (0.25 if python else 0.0) + min(1.8, len(text) / 2500.0)
         time.sleep(delay)
         presses = 0
         for attempt in range(max(1, tries)):
-            before = self.screen(pane_id) if attempt + 1 < tries else ""
             self._run("send-keys", "-t", pane_id, "C-m")
             presses += 1
             if attempt + 1 >= tries:
                 break
-            time.sleep(0.45)
-            if self.screen(pane_id) != before:
+            time.sleep(0.5)
+            try:
+                if not self.still_in_prompt(pane_id, text):
+                    break
+            except TmuxError:
                 break
         return presses
 
@@ -657,6 +680,11 @@ class RelayAskRequest(BaseModel):
     timeout: int = Field(default=180, ge=5, le=600)
     force: bool = False
     source: str = Field(default="", max_length=120)
+
+
+class ModelSwitchRequest(BaseModel):
+    # empty is allowed for CLIs whose /model opens its own picker
+    model: str = Field(default="", max_length=80)
 
 
 class RelayMessageRequest(BaseModel):
@@ -1073,6 +1101,13 @@ def create_app(
             return tmux.validate_pane(pane_id)
         except TmuxError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    def pane_provider(pane: dict) -> str:
+        """Same resolution the pane listing uses (process tree first, then command)."""
+        return (pane.get("provider")
+                or transcript_reader.provider_for_pane(
+                    pane, local_process_table() if pane.get("host_id") in (None, "localhost") else None)
+                or transcript_reader.provider_for_command(pane.get("command")) or "")
 
     def pane_transport(pane_ref: str):
         pane_ref = resolve_pane_ref(pane_ref)
@@ -2611,6 +2646,44 @@ def create_app(
             return {"status": "sent", "pane": pane_id, "submit": payload.submit}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/panes/{pane_id}/models")
+    async def pane_models(request: Request, pane_id: str):
+        """Which model this pane runs now, and what a switch would send."""
+        require_auth(request)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        provider = pane_provider(pane)
+        if not agent_models.supported(provider):
+            raise HTTPException(status_code=422, detail="this pane is not an agent with a model picker")
+        current = ""
+        try:
+            transport, actual = pane_transport(pane_id)
+            data = await asyncio.to_thread(transport.transcript, actual, 1, pane)
+            current = (data or {}).get("model") or ""
+        except (HTTPException, TmuxError, RuntimeError, OSError, ValueError):
+            current = ""
+        return {"pane": pane_id, "provider": provider, "current": current,
+                "presets": agent_models.preset_for(provider),
+                "picker_only": agent_models.picker_only(provider),
+                "template": agent_models.switch_command(provider, "MODEL").replace("MODEL", "{model}")}
+
+    @app.post("/api/panes/{pane_id}/model")
+    async def switch_pane_model(request: Request, pane_id: str, payload: ModelSwitchRequest):
+        """Type the agent's own ``/model <id>`` into the pane."""
+        require_auth(request)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        provider = pane_provider(pane)
+        try:
+            command = agent_models.switch_command(provider, payload.model)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            transport, actual = pane_transport(pane_id)
+            await asyncio.to_thread(transport.send, actual, command, True, pane=pane)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"status": "sent", "pane": pane_id, "provider": provider, "model": payload.model,
+                "command": command}
 
     @app.post("/api/panes/{pane_id}/interrupt")
     async def interrupt_pane(request: Request, pane_id: str):

@@ -541,7 +541,8 @@ class RemoteHostTests(unittest.TestCase):
 
         def fake_run(command, **kwargs):
             calls.append(command)
-            return Result(discovery if "TMUXWEB_MODE" not in command and "tail -c 262144" in command else follow)
+            # 增量请求按偏移 tail（`tail -c +N`），发现请求是整段脚本
+            return Result(follow if "tail -c +" in command else discovery)
             # discovery script contains the Claude/Codex locator; the follow script stats + tails
 
         runner.run = fake_run

@@ -68,7 +68,9 @@
     "/api/panes/{}/files/stat": "网页专用的路径链接探测；App 的路径导航走文件面板",
     "/api/hosts/{}/agents": "Flutter 客户端自 2026-11 起暂停维护；恢复时在新建会话对话框补 agent 下拉（同为 web_only 的 /api/sessions 增强字段）",
     "/api/sessions/{}": "Flutter 客户端自 2026-11 起暂停维护；恢复时在会话列表加长按删除",
-    "/api/panes/{}": "Flutter 客户端自 2026-11 起暂停维护；恢复时在 pane 列表加长按关闭"
+    "/api/panes/{}": "Flutter 客户端自 2026-11 起暂停维护；恢复时在 pane 列表加长按关闭",
+    "/api/panes/{}/models": "Flutter 客户端自 2026-11 起暂停维护；恢复时在对话页顶栏补模型选择（读当前 model + 预设）",
+    "/api/panes/{}/model": "Flutter 客户端自 2026-11 起暂停维护；恢复时同上，POST 切换到 agent 自己的 /model"
   },
   "web_only_assets": {
     "downloads.js": "App 用系统保存对话框（save_file_io/web）直接落盘，不需要网页那层下载确认卡片",

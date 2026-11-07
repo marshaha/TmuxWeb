@@ -260,20 +260,21 @@ class EnterUntilSubmittedTests(unittest.TestCase):
         def _run(self, *args, **kwargs):
             self.sent.append(args)
             return ""
-        def screen(self, pane_id, lines=12):
-            return self.screens.pop(0) if self.screens else ""
+        def still_in_prompt(self, pane_id, text, lines=6):
+            # "same" = 那行字还留在输入框里，需要再按一次
+            return self.screens.pop(0) == "same" if self.screens else False
 
     def presses(self, backend):
         return [call for call in backend.sent if call[:2] == ("send-keys", "-t") and call[-1] == "C-m"]
 
     def test_one_enter_when_the_screen_moves(self):
-        backend = self.Backend(["before", "after"])
+        backend = self.Backend(["moved"])
         with patch("tmux_web.time.sleep"):
             backend.press_enter_until_submitted("%1", "hello")
         self.assertEqual(len(self.presses(backend)), 1)
 
     def test_presses_again_while_the_screen_is_frozen(self):
-        backend = self.Backend(["same", "same", "same", "moved"])
+        backend = self.Backend(["same", "moved"])
         with patch("tmux_web.time.sleep"):
             backend.press_enter_until_submitted("%1", "hello")
         self.assertEqual(len(self.presses(backend)), 2)
@@ -285,7 +286,7 @@ class EnterUntilSubmittedTests(unittest.TestCase):
         self.assertEqual(len(self.presses(backend)), 3)
 
     def test_long_text_waits_longer(self):
-        backend = self.Backend(["a", "b"])
+        backend = self.Backend(["moved"])
         waits = []
         with patch("tmux_web.time.sleep", side_effect=lambda seconds: waits.append(seconds)):
             backend.press_enter_until_submitted("%1", "x" * 5000)
@@ -1965,6 +1966,45 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/sessions", json={"name": "codex"}).status_code, 409)
         self.assertEqual(self.client.post("/api/sessions", json={"host": "deadbeefdeadbeef",
                                                                  "name": "ok"}).status_code, 404)
+
+    def test_lists_the_models_a_pane_can_switch_to(self):
+        self.login()
+        self.tmux.panes[0].update({"command": "claude", "provider": "claude"})
+        self.tmux.transcript = lambda pane_id, limit=1, pane=None: {
+            "provider": "claude", "messages": [{"id": "1"}], "model": "claude-opus-5-5"}
+        response = self.client.get("/api/panes/%254/models")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["provider"], "claude")
+        self.assertEqual(body["current"], "claude-opus-5-5")
+        self.assertIn("opus", body["presets"])
+        self.assertFalse(body["picker_only"])
+
+    def test_switching_model_types_the_slash_command(self):
+        self.login()
+        self.tmux.panes[0].update({"command": "claude", "provider": "claude"})
+        sent = []
+        self.tmux.send = lambda pane_id, text, submit=True, pane=None: sent.append((pane_id, text, submit))
+        response = self.client.post("/api/panes/%254/model", json={"model": "opus"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["command"], "/model opus")
+        self.assertEqual(sent[0][:3], ("%4", "/model opus", True))
+
+    def test_kimi_only_opens_its_picker(self):
+        self.login()
+        self.tmux.panes[0].update({"command": "kimi-code", "provider": "kimi"})
+        sent = []
+        self.tmux.send = lambda pane_id, text, submit=True, pane=None: sent.append(text)
+        response = self.client.post("/api/panes/%254/model", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["command"], "/model")
+        self.assertEqual(sent, ["/model"])
+
+    def test_a_shell_pane_has_no_model_picker(self):
+        self.login()
+        self.tmux.panes[0].update({"command": "zsh", "provider": None})
+        self.assertEqual(self.client.get("/api/panes/%254/models").status_code, 422)
+        self.assertEqual(self.client.post("/api/panes/%254/model", json={"model": "opus"}).status_code, 422)
 
     def test_deletes_a_single_pane_and_keeps_the_session(self):
         self.login()
