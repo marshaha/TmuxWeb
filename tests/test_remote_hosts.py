@@ -33,6 +33,31 @@ def clear_tmux_cache(host):
     remote_hosts._TMUX_BIN_FAILED.pop(key, None)
 
 
+class HermesSessionChoiceTests(unittest.TestCase):
+    """同一个 cwd 里并存多个 hermes 会话时，每个 pane 要落到自己的那个。"""
+
+    def setUp(self):
+        self.script = remote_hosts.REMOTE_TRANSCRIPT_SCRIPT
+
+    def test_picks_the_session_started_closest_to_the_pane(self):
+        # 按「最近活跃」挑会让同 cwd 的所有 pane 显示同一个对话（#34/#35/#37 都撞在一起）
+        self.assertIn("abs(coalesce(s.started_at,0) - $started_at)", self.script)
+        self.assertIn("ps -o etime=", self.script)
+
+    def test_session_hint_walks_four_levels_of_the_process_tree(self):
+        self.assertIn("great=$(for child in $grand; do pgrep -P \"$child\"", self.script)
+        self.assertIn("for pid in $root $kids $grand $great", self.script)
+
+    def test_elapsed_time_is_converted_to_an_epoch(self):
+        self.assertIn("NF==4) s=$1*86400+$2*3600+$3*60+$4", self.script)
+        self.assertIn("started_at=$(( $(date +%s) - pane_elapsed ))", self.script)
+
+    def test_falls_back_when_the_cwd_has_no_session(self):
+        # oracle 的 pane 换过目录，cwd 在库里没有会话：不能整条对话空着
+        self.assertIn("select s.id from sessions s order by", self.script)
+        self.assertIn('"$limit" "$started_at" <<\'PYTHON\'', self.script)
+
+
 class RemoteTranscriptEncodingTests(unittest.TestCase):
     """header 声明了 gzip，写 payload 的分支就必须过 emit。"""
 

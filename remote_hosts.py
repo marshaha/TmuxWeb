@@ -154,8 +154,10 @@ error() { printf 'TMUXWEB_ERROR%s%s\n' "$sep" "$1"; exit "${2:-20}"; }
 session_hint() {
   root=${1:-0}
   [ -n "$root" ] || return 1
-  for pid in $root $(pgrep -P "$root" 2>/dev/null) \
-      $(for child in $(pgrep -P "$root" 2>/dev/null); do pgrep -P "$child" 2>/dev/null; done); do
+  kids=$(pgrep -P "$root" 2>/dev/null)
+  grand=$(for child in $kids; do pgrep -P "$child" 2>/dev/null; done)
+  great=$(for child in $grand; do pgrep -P "$child" 2>/dev/null; done)
+  for pid in $root $kids $grand $great; do
     [ -n "$pid" ] || continue
     args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
     case "$args" in
@@ -409,9 +411,27 @@ fi
 if [ -n "$sqlite_bin" ] && [ -f "$HOME/.hermes/state.db" ] \
     && "$sqlite_bin" -readonly -json :memory: 'select 1' >/dev/null 2>&1; then
   cwd_sql=$(printf '%s' "$cwd" | sed "s/'/''/g")
+  # pane 启动的绝对时间：挑会话时用来判断「哪个会话是这个窗口的」
+  pane_elapsed=$(ps -o etime= -p "$pane_pid" 2>/dev/null | tr -d ' ' | awk -F'[-:]' '
+    { if (NF==4) s=$1*86400+$2*3600+$3*60+$4
+      else if (NF==3) s=$1*3600+$2*60+$3
+      else if (NF==2) s=$1*60+$2
+      else s=$1
+      print s }')
+  [ -n "$pane_elapsed" ] || pane_elapsed=0
+  started_at=$(( $(date +%s) - pane_elapsed ))
   if [ -z "$sid" ]; then
+    # 同一个 cwd 里常常并存好几个 hermes 会话（每个 pane 一个）。按「最近活跃」挑会让所有
+    # pane 都落到同一个会话上——看着就是几个窗口显示一样的对话。改成挑起始时间离本 pane
+    # 启动最近的：pane 是 `hermes` 之后才有的会话，谁先起就是谁。
     sid=$("$sqlite_bin" -readonly "$HOME/.hermes/state.db" \
-      "select s.id from sessions s where s.cwd='$cwd_sql' order by (select count(*) from messages m where m.session_id=s.id and m.active=1 and coalesce(m.content,'')<>'')=0, coalesce(s.last_activity_at,s.started_at) desc limit 1" 2>/dev/null)
+      "select s.id from sessions s where s.cwd='$cwd_sql' order by (select count(*) from messages m where m.session_id=s.id and m.active=1 and coalesce(m.content,'')<>'')=0, abs(coalesce(s.started_at,0) - $started_at) asc limit 1" 2>/dev/null)
+    if [ -z "$sid" ]; then
+      # 这个 cwd 没记过会话（pane 里换过目录、或者是别的 profile 起的）：退一步按
+      # 「启动时间最接近本 pane」挑，总比整个对话视图空着强
+      sid=$("$sqlite_bin" -readonly "$HOME/.hermes/state.db" \
+        "select s.id from sessions s order by (select count(*) from messages m where m.session_id=s.id and m.active=1 and coalesce(m.content,'')<>'')=0, abs(coalesce(s.started_at,0) - $started_at) asc limit 1" 2>/dev/null)
+    fi
   fi
   [ -n "$sid" ] || error "no Hermes session for $cwd" 23
   header "$sid" hermes-rows "$HOME/.hermes/state.db"
@@ -434,13 +454,14 @@ else
   done
 fi
 if [ -n "$py" ] && [ -f "$HOME/.hermes/state.db" ]; then
-  exec "$py" - "$HOME/.hermes/state.db" "$cwd" "$sid" "$limit" <<'PYTHON'
+  exec "$py" - "$HOME/.hermes/state.db" "$cwd" "$sid" "$limit" "$started_at" <<'PYTHON'
 import json
 import os
 import sqlite3
 import sys
 
 db, cwd, sid, limit = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+pane_start = float(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5].strip() else 0.0
 sep = "<::>"
 try:
     con = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=5)
@@ -452,6 +473,16 @@ try:
             "  and coalesce(m.content,'')<>'')=0,"
             " coalesce(s.last_activity_at, s.started_at) desc limit 1",
             (cwd,),
+        ).fetchone()
+        sid = row["id"] if row else ""
+    if not sid:
+        # 这个 cwd 没有会话记录时退一步：挑启动时间离本 pane 最近的，别让对话视图空着
+        row = con.execute(
+            "select s.id from sessions s order by"
+            " (select count(*) from messages m where m.session_id=s.id and m.active=1"
+            "  and coalesce(m.content,'')<>'')=0,"
+            " abs(coalesce(s.started_at,0) - ?) asc limit 1",
+            (pane_start,),
         ).fetchone()
         sid = row["id"] if row else ""
     if not sid:
@@ -469,7 +500,7 @@ info = os.stat(db)
 sys.stdout.write(
     "TMUXWEB_STATUS%sunknown\nTMUXWEB_PROVIDER%shermes\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%shermes-rows\n"
     "TMUXWEB_PRIMARY%s%s\nTMUXWEB_ENCODING%snone\nTMUXWEB_STAMP%s%d %d\nTMUXWEB_PAYLOAD\n"
-    % (sep, sep, sid, sep, sep, db, sep, sep, int(info.st_mtime), info.st_size)
+    % (sep, sep, sep, sid, sep, sep, db, sep, sep, int(info.st_mtime), info.st_size)
 )
 sys.stdout.write(json.dumps(rows, ensure_ascii=False))
 PYTHON
