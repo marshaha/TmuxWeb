@@ -111,3 +111,223 @@ def hermes_route(home=None) -> str:
 
 def supported(provider: str) -> bool:
     return (provider or "").lower() in SWITCH_TEMPLATES
+
+
+# ---------------------------------------------------------------- Hermes 的模型清单
+#
+# Hermes 没有"可选模型"的静态列表：每个 provider 都是一条 OpenAI 兼容的
+# /v1/models。下拉要列全，就得去问 provider 本人（`hermes model` 也是这么干的）。
+
+MODELS_CACHE_TTL = 300
+_MODELS_CACHE = {}
+
+
+def provider_map(text: str) -> dict:
+    """{provider: {base_url, key_env, ...}} from config.yaml's ``providers:`` block."""
+    providers = {}
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        if lines[index].startswith("providers:"):
+            index += 1
+            current = None
+            while index < len(lines):
+                line = lines[index]
+                if line and not line[0].isspace():
+                    break                      # 下一个顶层键
+                stripped = line.strip()
+                index += 1
+                if not stripped or stripped.startswith("#"):
+                    continue
+                indent = len(line) - len(line.lstrip())
+                key, _, value = stripped.partition(":")
+                value = value.strip().strip('"').strip("'")
+                if indent <= 2:
+                    current = key
+                    providers.setdefault(current, {})
+                elif current:
+                    providers[current][key] = value
+            break
+        index += 1
+    return providers
+
+
+def _key_for(entry: dict, environ=None) -> str:
+    import os
+    environ = os.environ if environ is None else environ
+    name = entry.get("key_env") or ""
+    if name and environ.get(name):
+        return environ[name]
+    if name:
+        from pathlib import Path
+        home = Path(environ.get("HOME") or "~").expanduser()
+        try:
+            for line in (home / ".hermes" / ".env").read_text(errors="replace").splitlines():
+                if line.startswith(name + "="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except OSError:
+            pass
+    return entry.get("api_key", "")
+
+
+def fetch_models(base_url: str, key: str, timeout: float = 8.0) -> list:
+    """Ask an OpenAI-compatible endpoint for its model ids."""
+    import json
+    import urllib.request
+
+    if not base_url:
+        return []
+    headers = {"User-Agent": "TmuxWeb/1.0"}   # 有的网关直接 403 掉 python-urllib 的默认 UA
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    request = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.load(response)
+    except Exception:  # noqa: BLE001 - a dead provider must not break the picker
+        return []
+    items = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+    names = []
+    for item in items:
+        name = (item or {}).get("id") if isinstance(item, dict) else None
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return names
+
+
+def hermes_models(home=None, runner=None, route: str = "", ttl: int = MODELS_CACHE_TTL) -> list:
+    """Models behind the provider Hermes is currently pointed at (cached)."""
+    import time
+
+    home = home or ""
+    if runner is None:
+        cache_key = ("local", route)
+    else:
+        host = getattr(runner, "host_id", None) or getattr(runner, "host", {}).get("id") \
+            or getattr(runner, "address", "") or str(id(runner))
+        cache_key = (host, route)
+    cached = _MODELS_CACHE.get(cache_key)
+    now = time.time()
+    if cached and now - cached[0] < ttl:
+        return cached[1]
+    if runner is not None:
+        names = _remote_models(runner, route)
+    else:
+        from pathlib import Path
+        base = Path(home or "~").expanduser()
+        try:
+            text = (base / ".hermes" / "config.yaml").read_text(errors="replace")
+        except OSError:
+            text = ""
+        providers = provider_map(text)
+        route = route or hermes_route(str(base))
+        entry = providers.get(route, {})
+        try:
+            names = fetch_models(entry.get("base_url", ""), _key_for(entry))
+        except Exception:  # noqa: BLE001 - a broken provider must not break the picker
+            names = []
+    if names:
+        _MODELS_CACHE[cache_key] = (now, names)
+    return names
+
+
+REMOTE_MODELS_SCRIPT = r"""
+python3 - <<'PYX'
+import json, os, re, sys, urllib.request
+
+def block(text, key):
+    out, inside = [], False
+    for line in text.splitlines():
+        if not inside:
+            if re.match(r"^%s:\s*$" % key, line):
+                inside = True
+            continue
+        if line and not line[0].isspace():
+            break
+        out.append(line)
+    return out
+
+home = os.path.expanduser("~")
+try:
+    cfg = open(os.path.join(home, ".hermes", "config.yaml"), errors="replace").read()
+except OSError:
+    sys.exit(0)
+
+route = ""
+providers, current = {}, ""
+for line in cfg.splitlines():
+    if line.startswith("providers:"):
+        continue
+
+# model.provider
+for line in block(cfg, "model"):
+    m = re.match(r'\s+provider:\s*"?([\w./-]+)"?', line)
+    if m:
+        route = m.group(1)
+        break
+
+# providers.<route>.{base_url,key_env}
+lines = cfg.splitlines()
+inside, current = False, ""
+for line in lines:
+    if not inside:
+        if line.startswith("providers:"):
+            inside = True
+        continue
+    if line and not line[0].isspace():
+        break
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+    indent = len(line) - len(line.lstrip())
+    key, _, value = stripped.partition(":")
+    value = value.strip().strip('"').strip("'")
+    if indent <= 2:
+        current = key
+        providers.setdefault(current, {})
+    elif current:
+        providers[current][key] = value
+
+entry = providers.get(route) or {}
+base_url = entry.get("base_url", "")
+key_env = entry.get("key_env", "")
+api_key = os.environ.get(key_env, "") if key_env else ""
+if not api_key and key_env:
+    try:
+        for line in open(os.path.join(home, ".hermes", ".env"), errors="replace"):
+            if line.startswith(key_env + "="):
+                api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    except OSError:
+        pass
+if not base_url:
+    sys.exit(0)
+
+headers = {"User-Agent": "TmuxWeb/1.0"}   # 默认 urllib UA 会被部分网关 403
+if api_key:
+    headers["Authorization"] = "Bearer " + api_key
+request = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
+try:
+    with urllib.request.urlopen(request, timeout=8) as response:
+        payload = json.load(response)
+except Exception:
+    sys.exit(0)
+for item in payload.get("data") or []:
+    name = (item or {}).get("id") if isinstance(item, dict) else None
+    if name:
+        print(name)
+PYX
+"""
+
+
+def _remote_models(runner, route: str = "") -> list:
+    try:
+        result = runner.run(REMOTE_MODELS_SCRIPT, timeout=25)
+    except Exception:  # noqa: BLE001 - remote listing is a nicety, never a blocker
+        return []
+    output = getattr(result, "stdout", b"") or b""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", "replace")
+    return [line.strip() for line in output.splitlines() if line.strip() and " " not in line.strip()]

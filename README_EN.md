@@ -862,8 +862,12 @@ by provider (`OpenAI · gpt-6-luna`, `ctyun · gpt-5.5`, …); picking one types
   record of their session file, hermes from `sessions.model` in `state.db` plus
   `model.provider` in `config.yaml` (remotes ship both as `TMUXWEB_MODEL` /
   `TMUXWEB_MODEL_PROVIDER`).
-- Presets are just conveniences (claude accepts `opus`/`sonnet`/`haiku` aliases); anything else goes
-  through "custom".
+- **Hermes gets the real list**: the provider in `config.yaml` is an OpenAI-compatible endpoint, so the
+  console asks its `/v1/models` (locally, or by running the same snippet on the remote host) and caches
+  the answer for five minutes — that is why the dropdown shows what the gateway actually offers (19 on
+  the local axera route, 50 on oracle's ctyun). If the call fails it falls back to "current + custom"
+  instead of blocking the picker.
+- claude / codex use aliases/model ids as presets; anything else goes through "custom".
 - **Kimi Code is special**: `/model <anything>` answers `Unknown model alias`; only the bare `/model`
   opens its picker, so there the control reads "open model menu" and the choice is made inside the
   agent with the arrow keys.

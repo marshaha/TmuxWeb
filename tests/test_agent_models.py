@@ -70,5 +70,86 @@ class ProviderLabelTests(unittest.TestCase):
             self.assertEqual(agent_models.hermes_route(home + "-missing"), "")
 
 
+class HermesModelListTests(unittest.TestCase):
+    """Hermes 没有静态模型表：去 provider 的 /v1/models 问。"""
+
+    CONFIG = (
+        "# comment at column 0\n"
+        "model:\n"
+        "  default: \"gpt-5.6-sol\"\n"
+        "  # provider for this box\n"
+        "  provider: \"ctyun\"\n"
+        "providers:\n"
+        "  axera:\n"
+        "    name: axera\n"
+        "    base_url: https://axera.example/v1\n"
+        "    key_env: AXERA_API_KEY\n"
+        "  ctyun:\n"
+        "    name: ctyun\n"
+        "    base_url: https://ctyun.example/v1\n"
+        "    key_env: CTYUN_API_KEY\n"
+        "agent:\n"
+        "  max_turns: 500\n"
+    )
+
+    def test_provider_map_reads_names_urls_and_keys(self):
+        providers = agent_models.provider_map(self.CONFIG)
+        self.assertEqual(sorted(providers), ["axera", "ctyun"])
+        self.assertEqual(providers["ctyun"]["base_url"], "https://ctyun.example/v1")
+        self.assertEqual(providers["axera"]["key_env"], "AXERA_API_KEY")
+
+    def test_models_come_from_the_providers_endpoint(self):
+        import tempfile
+        from pathlib import Path as P
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as home:
+            config = P(home) / ".hermes" / "config.yaml"
+            config.parent.mkdir(parents=True)
+            config.write_text(self.CONFIG)
+            seen = {}
+
+            def fake_fetch(base_url, key, timeout=8.0):
+                seen["base_url"], seen["key"] = base_url, key
+                return ["gpt-5.5", "gpt-5.6-sol"]
+
+            with mock.patch.dict("os.environ", {"CTYUN_API_KEY": "k-123"}), \
+                    mock.patch.object(agent_models, "fetch_models", fake_fetch):
+                models = agent_models.hermes_models(home)
+                again = agent_models.hermes_models(home)      # 命中缓存
+        self.assertEqual(models, ["gpt-5.5", "gpt-5.6-sol"])
+        self.assertEqual(again, models)
+        self.assertEqual(seen["base_url"], "https://ctyun.example/v1")
+        self.assertEqual(seen["key"], "k-123")
+
+    def test_a_dead_provider_returns_no_models_instead_of_raising(self):
+        from unittest import mock
+        with mock.patch.object(agent_models, "fetch_models", side_effect=OSError("down")):
+            self.assertEqual(agent_models.hermes_models(None, None, "ghost"), [])
+
+    def test_fetch_sends_a_user_agent(self):
+        # 有的网关对 python-urllib 的默认 UA 直接 403
+        import io
+        from unittest import mock
+
+        captured = {}
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            captured["ua"] = request.get_header("User-agent")
+            return Response(b'{"data": [{"id": "m1"}, {"id": "m2"}]}')
+
+        import urllib.request as urlrequest
+        with mock.patch.object(urlrequest, "urlopen", fake_urlopen):
+            self.assertEqual(agent_models.fetch_models("https://x/v1", "k"), ["m1", "m2"])
+        self.assertEqual(captured["ua"], "TmuxWeb/1.0")
+
+
 if __name__ == "__main__":
     unittest.main()

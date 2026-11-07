@@ -816,9 +816,11 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
         select.dataset.pickerOnly='1';wrap.hidden=false;return;}
       const group=(data.provider_label||data.provider||'模型');
       // 收起时只会显示选中项，所以 provider 也写进每一项，不靠分组标题传达
+      const presets=data.presets||[];
+      const ordered=current&&presets.includes(current)?[current,...presets.filter(p=>p!==current)]:presets;
       const options=[];
-      if(current&&!(data.presets||[]).includes(current))options.push([current,`${group} · ${current}（当前）`]);
-      for(const preset of data.presets||[])options.push([preset,`${group} · ${preset}${preset===current?'（当前）':''}`]);
+      if(current&&!presets.includes(current))options.push([current,`${group} · ${current}（当前）`]);
+      for(const preset of ordered)options.push([preset,`${group} · ${preset}${preset===current?'（当前）':''}`]);
       options.push(['__custom__','自定义…']);
       select.innerHTML=`<optgroup label="${esc(group)}">`
         +options.map(([value,label])=>`<option value="${esc(value)}">${esc(label)}</option>`).join('')

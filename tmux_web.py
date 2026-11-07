@@ -2663,11 +2663,25 @@ def create_app(
         except (HTTPException, TmuxError, RuntimeError, OSError, ValueError):
             current = ""
         configured = (current_data.get("model_provider") or "") if isinstance(current_data, dict) else ""
-        if not configured and provider == "hermes" and pane.get("host_id") in (None, "localhost"):
+        remote = pane.get("host_id") not in (None, "localhost")
+        if not configured and provider == "hermes" and not remote:
             configured = agent_models.hermes_route()
+        presets = agent_models.preset_for(provider)
+        if provider == "hermes":
+            # Hermes 的"可选模型"就是 provider 的 /v1/models，去问它本人
+            try:
+                runner = None
+                if remote:
+                    runner, _ = pane_transport(pane_id)
+                if runner is not None and hasattr(runner, "run"):
+                    presets = await asyncio.to_thread(agent_models.hermes_models, None, runner, configured)
+                else:
+                    presets = await asyncio.to_thread(agent_models.hermes_models, None, None, configured)
+            except (HTTPException, RuntimeError, OSError, ValueError):
+                presets = []
         return {"pane": pane_id, "provider": provider, "current": current,
                 "provider_label": agent_models.provider_label(provider, configured),
-                "presets": agent_models.preset_for(provider),
+                "presets": presets,
                 "picker_only": agent_models.picker_only(provider),
                 "template": agent_models.switch_command(provider, "MODEL").replace("MODEL", "{model}")}
 
