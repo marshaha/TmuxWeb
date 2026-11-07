@@ -151,5 +151,29 @@ class HermesModelListTests(unittest.TestCase):
         self.assertEqual(captured["ua"], "TmuxWeb/1.0")
 
 
+class RemoteModelListTests(unittest.TestCase):
+    def test_route_is_passed_on_the_same_line_as_python(self):
+        """脚本常量以换行开头：前缀必须跟 python3 同一行，否则 VARIABLE=x 单独成行不生效。"""
+        from unittest import mock
+
+        class Runner:
+            host_id = "h1"
+            def __init__(self):
+                self.commands = []
+            def run(self, command, timeout=None):
+                self.commands.append(command)
+                class Result:
+                    returncode = 0
+                    stdout = b"m1\nm2\n"
+                    stderr = b""
+                return Result()
+
+        runner = Runner()
+        models = agent_models._remote_models(runner, "axera")
+        self.assertEqual(models, ["m1", "m2"])
+        self.assertTrue(runner.commands[0].startswith("TMUXWEB_ROUTE='axera' python3 -"),
+                        runner.commands[0][:60])
+
+
 if __name__ == "__main__":
     unittest.main()

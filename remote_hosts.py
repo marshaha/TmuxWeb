@@ -141,10 +141,13 @@ header() {
     printf 'TMUXWEB_PRIMARY%s%s\n' "$sep" "$3"
     stamps=$(stat -c '%Y %s' -- "$3" 2>/dev/null || stat -f '%m %z' -- "$3" 2>/dev/null)
     printf 'TMUXWEB_STAMP%s%s\n' "$sep" "$stamps"
-    # 会话文件里最后一条 model：模型选择器要显示"现在跑的是哪个"
-    model=$(grep -o '"model"[[:space:]]*:[[:space:]]*"[^"]*"' -- "$3" 2>/dev/null \
-      | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
-    printf 'TMUXWEB_MODEL%s%s\n' "$sep" "$model"
+    # 会话文件里最后一条 model：模型选择器要显示"现在跑的是哪个"。
+    # 只对 jsonl 做：hermes 走 state.db（二进制，且会话行里有 model，别去 grep 整个库）。
+    if [ "$2" = jsonl ]; then
+      model=$(grep -o '"model"[[:space:]]*:[[:space:]]*"[^"]*"' -- "$3" 2>/dev/null \
+        | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
+      printf 'TMUXWEB_MODEL%s%s\n' "$sep" "$model"
+    fi
   fi
   printf 'TMUXWEB_PAYLOAD\n'
 }
@@ -179,6 +182,23 @@ session_hint() {
 # Codex / Claude 有时被 shell 包着启动（`zsh -c 'codex …'`、后台进程、runtime 外壳），
 # pane_current_command 就退化成 zsh/bash。这时只能看 pane_pid 的后代在跑什么，
 # 否则脚本会直接报 "unsupported pane command"，对话视图也就空着。
+# `--provider axera` 在命令行上，比 config.yaml 的 model.provider 更接近事实：
+# 同一个 config 下可以开不同 provider 的会话（model.provider 只是默认值）。
+provider_hint() {
+  root=${1:-0}
+  [ -n "$root" ] || return 1
+  kids=$(pgrep -P "$root" 2>/dev/null)
+  grand=$(for child in $kids; do pgrep -P "$child" 2>/dev/null; done)
+  great=$(for child in $grand; do pgrep -P "$child" 2>/dev/null; done)
+  for pid in $root $kids $grand $great; do
+    [ -n "$pid" ] || continue
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+    case "$args" in
+      *--provider*) printf '%s' "$(printf '%s\n' "$args" | sed -n 's/.*--provider[ =]\([A-Za-z0-9._/-]*\).*/\1/p' | head -1)"; return 0 ;;
+    esac
+  done
+  return 1
+}
 args_match() {  # $1=args $2=agent 名
   case "$1" in
     *"/$2 "*|*"/$2"|*"/$2-"*|"$2 "*|"$2"|"$2-"*) return 0 ;;
@@ -440,13 +460,17 @@ if [ -n "$sqlite_bin" ] && [ -f "$HOME/.hermes/state.db" ] \
   [ -n "$sid" ] || error "no Hermes session for $cwd" 23
   model=$("$sqlite_bin" -readonly "$HOME/.hermes/state.db" \
     "select coalesce(model,'') from sessions where id='$sid'" 2>/dev/null | head -1)
+  # 模型走哪个 provider（config.yaml 的 model.provider），下拉里要显示出来。
+  # 必须在 header 之前打印：header 末尾那行 TMUXWEB_PAYLOAD 是负载的开始，
+  # 后面再补 header 字段会被当成负载（声明 gzip、实际是明文 → Not a gzipped file）。
+  route=$(provider_hint "$pane_pid" || true)
+  if [ -z "$route" ]; then
+    route=$(awk '/^model:[[:space:]]*$/{f=1;next} f&&/^[^[:space:]]/{exit}
+        f&&/^[[:space:]]+provider:/{sub(/^[[:space:]]+provider:[[:space:]]*/,"");gsub(/"/,"");print;exit}' \
+      "$HOME/.hermes/config.yaml" 2>/dev/null)
+  fi
+  printf 'TMUXWEB_MODEL%s%s\nTMUXWEB_MODEL_PROVIDER%s%s\n' "$sep" "$model" "$sep" "$route"
   header "$sid" hermes-rows "$HOME/.hermes/state.db"
-  printf 'TMUXWEB_MODEL%s%s\n' "$sep" "$model"
-  # 模型走哪个 provider（config.yaml 的 model.provider），下拉里要显示出来
-  route=$(awk '/^model:[[:space:]]*$/{f=1;next} f&&/^[^[:space:]]/{exit}
-      f&&/^[[:space:]]+provider:/{sub(/^[[:space:]]+provider:[[:space:]]*/,"");gsub(/"/,"");print;exit}' \
-    "$HOME/.hermes/config.yaml" 2>/dev/null)
-  printf 'TMUXWEB_MODEL_PROVIDER%s%s\n' "$sep" "$route"
   # 必须走 emit：header 已经声明白 "$encoding"，这里直接 cat 会让客户端拿到
   # "声明 gzip、实际明文" 的负载（报 Not a gzipped file）
   "$sqlite_bin" -readonly -json "$HOME/.hermes/state.db" \

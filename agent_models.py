@@ -255,18 +255,16 @@ try:
 except OSError:
     sys.exit(0)
 
-route = ""
+route = os.environ.get("TMUXWEB_ROUTE", "").strip()
 providers, current = {}, ""
-for line in cfg.splitlines():
-    if line.startswith("providers:"):
-        continue
 
-# model.provider
-for line in block(cfg, "model"):
-    m = re.match(r'\s+provider:\s*"?([\w./-]+)"?', line)
-    if m:
-        route = m.group(1)
-        break
+# model.provider（命令行 --provider 已经在调用前给了就优先，config 只是默认值）
+if not route:
+    for line in block(cfg, "model"):
+        m = re.match(r'\s+provider:\s*"?([\w./-]+)"?', line)
+        if m:
+            route = m.group(1)
+            break
 
 # providers.<route>.{base_url,key_env}
 lines = cfg.splitlines()
@@ -323,8 +321,13 @@ PYX
 
 
 def _remote_models(runner, route: str = "") -> list:
+    # 注意 lstrip：脚本常量以换行开头，直接拼前缀会让 `VAR=x` 单独成行（不生效）
+    script = REMOTE_MODELS_SCRIPT.lstrip("\n")
+    command = script
+    if route:
+        command = "TMUXWEB_ROUTE='%s' " % route.replace("'", "") + script
     try:
-        result = runner.run(REMOTE_MODELS_SCRIPT, timeout=25)
+        result = runner.run(command, timeout=25)
     except Exception:  # noqa: BLE001 - remote listing is a nicety, never a blocker
         return []
     output = getattr(result, "stdout", b"") or b""
