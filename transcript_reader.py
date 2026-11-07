@@ -107,7 +107,8 @@ def provider_from_argv(argv):
         if not base or base.startswith("-"):
             continue
         for agent in AGENT_NAMES:
-            if base == agent or base.startswith(agent + "."):
+            # kimi-code / hermes-agent / claude-code：包一层壳也算同一个 agent
+            if base == agent or base.startswith(agent + ".") or base.startswith(agent + "-"):
                 return agent
     return None
 
@@ -180,6 +181,31 @@ def content_text(content, allowed_types):
         if isinstance(text, str) and text:
             parts.append(text)
     return "\n".join(parts).strip()
+
+
+MODEL_RE = None
+
+
+def tail_model(path, tail: int = 262144) -> str:
+    """最后一条记录里的 ``"model": "…"``。
+
+    Every agent records the model it used in its own session file (claude jsonl,
+    codex rollout, kimi wire, hermes state.db); the model picker only needs the
+    newest one, so a tail read is enough and costs nothing next to the transcript.
+    """
+    global MODEL_RE
+    if MODEL_RE is None:
+        import re as _re
+        MODEL_RE = _re.compile(r'"model"\s*:\s*"([^"]{1,80})"')
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as handle:
+            handle.seek(max(0, size - tail))
+            chunk = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    found = MODEL_RE.findall(chunk)
+    return found[-1].strip() if found else ""
 
 
 def _mtime(path):
@@ -313,7 +339,9 @@ def parse_claude(lines, limit, session_id="", mtime=0):
 
 def read_claude(home, cwd, title, limit, hint=None, screen=None):
     path = _claude_session_path(home, cwd, title, screen, hint)
-    return parse_claude(reverse_lines(path), limit, path.stem, _mtime(path))
+    data = parse_claude(reverse_lines(path), limit, path.stem, _mtime(path))
+    data["path"] = str(path)
+    return data
 
 
 def _codex_session_path(home, cwd, title, hint=None):
@@ -384,7 +412,9 @@ def parse_codex(lines, limit, session_id="", mtime=0):
 def read_codex(home, cwd, title, limit, hint=None):
     session_id, path = _codex_session_path(home, cwd, title, hint)
     with path.open(errors="replace") as handle:
-        return parse_codex(handle, limit, session_id, _mtime(path))
+        data = parse_codex(handle, limit, session_id, _mtime(path))
+    data["path"] = str(path)
+    return data
 
 
 def _kimi_session_path(home, cwd, title):
@@ -553,7 +583,9 @@ def parse_kimi(lines, limit, session_id="", mtime=0):
 def read_kimi(home, cwd, title, limit):
     state, path = _kimi_session_path(home, cwd, title)
     session_id = str(state.get("id") or path.parents[1].name)
-    return parse_kimi(reverse_lines(path), limit, session_id, _mtime(path))
+    data = parse_kimi(reverse_lines(path), limit, session_id, _mtime(path))
+    data["path"] = str(path)
+    return data
 
 
 def _hermes_session(connection, cwd, hint):
@@ -683,7 +715,26 @@ def read_transcript(provider, cwd, title, limit=200, home=None, hint=None, scree
         data = READERS[provider](home, cwd, title, limit)
     if not data.get("messages"):
         raise TranscriptError("this session has no messages yet")
+    if not data.get("model"):
+        primary = data.get("path") or ""
+        if primary:
+            data["model"] = tail_model(primary)
+        elif provider == "hermes":
+            data["model"] = hermes_model(Path(home), data.get("session_id") or "")
     return data
+
+
+def hermes_model(home, session_id) -> str:
+    """Hermes keeps the model on the session row, not in the messages."""
+    if not session_id:
+        return ""
+    db_path = Path(home) / ".hermes" / "state.db"
+    try:
+        with sqlite3.connect("file:%s?mode=ro" % db_path, uri=True, timeout=5) as connection:
+            row = connection.execute("select model from sessions where id = ?", (session_id,)).fetchone()
+    except sqlite3.Error:
+        return ""
+    return (row[0] or "").strip() if row else ""
 
 
 def pane_screen(pane, lines=80):

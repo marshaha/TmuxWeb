@@ -141,6 +141,10 @@ header() {
     printf 'TMUXWEB_PRIMARY%s%s\n' "$sep" "$3"
     stamps=$(stat -c '%Y %s' -- "$3" 2>/dev/null || stat -f '%m %z' -- "$3" 2>/dev/null)
     printf 'TMUXWEB_STAMP%s%s\n' "$sep" "$stamps"
+    # 会话文件里最后一条 model：模型选择器要显示"现在跑的是哪个"
+    model=$(tail -c 262144 -- "$3" 2>/dev/null \
+      | sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | tail -1)
+    printf 'TMUXWEB_MODEL%s%s\n' "$sep" "$model"
   fi
   printf 'TMUXWEB_PAYLOAD\n'
 }
@@ -177,7 +181,7 @@ session_hint() {
 # 否则脚本会直接报 "unsupported pane command"，对话视图也就空着。
 args_match() {  # $1=args $2=agent 名
   case "$1" in
-    *"/$2 "*|*"/$2"|"$2 "*|"$2") return 0 ;;
+    *"/$2 "*|*"/$2"|*"/$2-"*|"$2 "*|"$2"|"$2-"*) return 0 ;;
     *"/bin/$2"*) return 0 ;;
     *"/$2.js"*|*"/$2/bin/"*) return 0 ;;
   esac
@@ -434,7 +438,10 @@ if [ -n "$sqlite_bin" ] && [ -f "$HOME/.hermes/state.db" ] \
     fi
   fi
   [ -n "$sid" ] || error "no Hermes session for $cwd" 23
+  model=$("$sqlite_bin" -readonly "$HOME/.hermes/state.db" \
+    "select coalesce(model,'') from sessions where id='$sid'" 2>/dev/null | head -1)
   header "$sid" hermes-rows "$HOME/.hermes/state.db"
+  printf 'TMUXWEB_MODEL%s%s\n' "$sep" "$model"
   # 必须走 emit：header 已经声明白 "$encoding"，这里直接 cat 会让客户端拿到
   # "声明 gzip、实际明文" 的负载（报 Not a gzipped file）
   "$sqlite_bin" -readonly -json "$HOME/.hermes/state.db" \
@@ -497,10 +504,17 @@ except Exception as exc:  # noqa: BLE001 - report and let the caller fall back
     sys.stderr.write("hermes transcript export failed: %s\n" % exc)
     sys.exit(4)
 info = os.stat(db)
+model = ""
+try:
+    row = con.execute("select coalesce(model,'') from sessions where id=?", (sid,)).fetchone()
+    if row:
+        model = row[0] or ""
+except Exception:  # noqa: BLE001 - the model line is optional
+    model = ""
 sys.stdout.write(
     "TMUXWEB_STATUS%sunknown\nTMUXWEB_PROVIDER%shermes\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%shermes-rows\n"
-    "TMUXWEB_PRIMARY%s%s\nTMUXWEB_ENCODING%snone\nTMUXWEB_STAMP%s%d %d\nTMUXWEB_PAYLOAD\n"
-    % (sep, sep, sep, sid, sep, sep, db, sep, sep, int(info.st_mtime), info.st_size)
+    "TMUXWEB_PRIMARY%s%s\nTMUXWEB_ENCODING%snone\nTMUXWEB_MODEL%s%s\nTMUXWEB_STAMP%s%d %d\nTMUXWEB_PAYLOAD\n"
+    % (sep, sep, sep, sid, sep, sep, db, sep, sep, model, sep, int(info.st_mtime), info.st_size)
 )
 sys.stdout.write(json.dumps(rows, ensure_ascii=False))
 PYTHON
@@ -1660,6 +1674,8 @@ class SSHRunner:
         stamp = header.get("TMUXWEB_STAMP", "")
         data["mtime"] = self._probe_mtime(stamp)
         data["pane"] = pane_id
+        if not data.get("model"):
+            data["model"] = header.get("TMUXWEB_MODEL", "")
         data.setdefault("host_id", self.host.get("id"))
         primary = header.get("TMUXWEB_PRIMARY", "")
         probe = [primary] if primary else []
@@ -2004,15 +2020,18 @@ class SSHRunner:
         # frozen.  An extra Enter on an empty prompt does nothing.
         delay = submit_delay if submit_delay is not None else 0.18 + min(2.0, len(text) / 2500.0)
         time.sleep(delay)
+        fingerprint = " ".join((text or "").split())[-40:]
         for attempt in range(max(1, tries)):
-            before = self.screen(pane_id) if attempt + 1 < tries else ""
             pressed = self.run(f"{tmux} send-keys -t {target} C-m", timeout=15)
             if pressed.returncode != 0:
                 raise RuntimeError(pressed.stderr.decode(errors="replace").strip() or "remote send failed")
-            if attempt + 1 >= tries:
+            if attempt + 1 >= tries or not fingerprint:
                 return
             time.sleep(0.5)
-            if self.screen(pane_id) != before:
+            # 屏幕还在动不代表提交了：直接看我们那行字还在不在底部输入框里
+            screen = self.run(f"{tmux} capture-pane -p -t {target}", timeout=15)
+            bottom = " ".join(" ".join(screen.stdout.decode(errors="replace").splitlines()[-6:]).split())
+            if fingerprint not in bottom:
                 return
 
 
