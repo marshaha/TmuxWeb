@@ -732,6 +732,54 @@ class TmuxWebTests(unittest.TestCase):
             ("user", "用户问题"), ("assistant", "可见回答")
         ])
 
+    def test_reads_kimi_2x_wire_where_the_answer_is_streamed_parts(self):
+        """kimi 2.3.3：用户是 context.append_message，回答是 content.part 的流。"""
+        self.tmux.panes[0].update({"command": "kimi", "title": "配置 provider", "path": "/Users/me"})
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            session = home / ".kimi-code" / "sessions" / "wd_me_abc" / "session_2ff99be8"
+            wire = session / "agents" / "main" / "wire.jsonl"
+            wire.parent.mkdir(parents=True)
+            (session / "state.json").write_text(json.dumps({
+                "id": "session_2ff99be8", "cwd": "/Users/me", "title": "配置 provider",
+                "archived": False, "updatedAt": 1794011808758,
+            }))
+            events = [
+                {"type": "turn.prompt", "time": 1788788631968,
+                 "input": [{"type": "text", "text": "配置 hermes provider"}],
+                 "promptId": "msg_1"},
+                {"type": "context.append_message", "time": 1788788631,
+                 "message": {"role": "user", "origin": {"kind": "user"}, "id": "msg_1",
+                             "content": [{"type": "text", "text": "配置 hermes provider"}]}},
+                {"type": "context.append_loop_event", "time": 1788788631976,
+                 "event": {"type": "step.begin", "turnId": "0", "step": 1, "uuid": "step-a"}},
+                {"type": "context.append_loop_event", "time": 1788788632000,
+                 "event": {"type": "content.part", "turnId": "0", "step": 1, "stepUuid": "step-a",
+                           "part": {"type": "think", "think": "私下的推理"}}},
+                {"type": "context.append_loop_event", "time": 1788788632100,
+                 "event": {"type": "content.part", "turnId": "0", "step": 1, "stepUuid": "step-a",
+                           "part": {"type": "text", "text": "我先看一下本地配置。"}}},
+                {"type": "context.append_loop_event", "time": 1788788632200,
+                 "event": {"type": "content.part", "turnId": "0", "step": 1, "stepUuid": "step-a",
+                           "part": {"type": "text", "text": "然后改 provider。"}}},
+                {"type": "tool.call", "time": 1788788632300, "uuid": "tool-1"},
+                {"type": "context.append_message", "time": 1788788700,
+                 "message": {"role": "user", "origin": {"kind": "user"}, "id": "msg_2",
+                             "content": [{"type": "text", "text": "谢谢"}]}},
+            ]
+            wire.write_text("".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events))
+            backend = TmuxBackend()
+            backend.validate_pane = lambda pane_id: self.tmux.panes[0]
+            with patch("tmux_web.Path.home", return_value=home):
+                result = backend.transcript("%4", 20)
+        self.assertEqual(result["provider"], "kimi")
+        messages = [(item["role"], item["text"]) for item in result["messages"]]
+        self.assertEqual(messages, [
+            ("user", "配置 hermes provider"),
+            ("assistant", "我先看一下本地配置。\n\n然后改 provider。"),
+            ("user", "谢谢"),
+        ], "同一 step 的 text 片段要拼成一条，think 不能露出来")
+
     def test_a_transcript_still_reads_when_the_pane_pid_is_unavailable(self):
         """拿不到 pane_pid（没有 tmux server / 调用方自带 pane dict）只是少了 --resume 提示，不能整条 transcript 报错。"""
         backend = TmuxBackend()

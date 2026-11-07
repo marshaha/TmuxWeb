@@ -417,44 +417,131 @@ def _kimi_session_path(home, cwd, title):
     return pool[0][0], pool[0][1]
 
 
+def _kimi_time(value):
+    """kimi 写的是毫秒；老版本偶尔是秒或 ISO 串。"""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            value = int(text)
+        else:
+            return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number / 1000 if number > 10**11 else number
+
+
 def parse_kimi(lines, limit, session_id="", mtime=0):
-    """Parse Kimi wire.jsonl. ``lines`` must be newest-first."""
+    """Parse Kimi wire.jsonl. ``lines`` must be newest-first.
+
+    Two layouts exist and both are still in the wild:
+
+    * kimi 1.x — one ``agent.message.appended`` per chat message, with
+      ``message.meta.source`` telling user input (``input``) from model output (``llm``).
+    * kimi 2.x (2.3.3 here) — user turns land as ``context.append_message``; the
+      assistant answer is streamed as ``context.append_loop_event`` events whose
+      ``event.type`` is ``content.part`` and ``event.part.type`` is ``text`` (``think``
+      parts are the model's private reasoning and are dropped).  Parts of one step
+      belong to one answer, so they are joined back together.
+    """
     max_records = limit_cap(limit)
-    records = []
-    seen = set()
+    items: list[dict] = []
+    seen: set[str] = set()
     has_more = False
+    seq = 0
+
+    def add(record):
+        nonlocal seq
+        record["_seq"] = seq
+        seq += 1
+        items.append(record)
+
+    step_parts: dict[str, list[str]] = {}
+    step_time: dict[str, float] = {}
+    step_order: list[str] = []
+
     for line in lines:
         try:
             event = json.loads(line)
         except ValueError:
             continue
-        if event.get("type") != "agent.message.appended":
+        kind = event.get("type")
+        if kind == "agent.message.appended":                       # kimi 1.x
+            envelope = event.get("message") or {}
+            message = envelope.get("message") or {}
+            meta = envelope.get("meta") or {}
+            role = message.get("role")
+            source = meta.get("source")
+            if role == "user" and source != "input":
+                continue
+            if role == "assistant" and source != "llm":
+                continue
+            if role not in ("user", "assistant"):
+                continue
+            text = content_text(message.get("content"), ("text",))
+            if not text:
+                continue
+            message_id = meta.get("userMessageId") or meta.get("messageId")
+            if not message_id:
+                import hashlib
+                message_id = hashlib.sha256(
+                    ("%s:%s:%s" % (event.get("time"), role, text)).encode()).hexdigest()
+            add({"id": str(message_id), "role": role, "text": text,
+                 "timestamp": _kimi_time(event.get("time"))})
+        elif kind == "context.append_message":                     # kimi 2.x user turn
+            message = event.get("message") or {}
+            role = message.get("role")
+            origin = (message.get("origin") or {}).get("kind")
+            if role not in ("user", "assistant"):
+                continue
+            if role == "user" and origin and origin != "user":
+                continue
+            text = content_text(message.get("content"), ("text",))
+            if not text:
+                continue
+            message_id = message.get("id") or message.get("promptId") or ""
+            if not message_id:
+                import hashlib
+                message_id = hashlib.sha256(
+                    ("%s:%s" % (event.get("time"), text)).encode()).hexdigest()
+            add({"id": str(message_id), "role": role, "text": text,
+                 "timestamp": _kimi_time(event.get("time"))})
+        elif kind == "context.append_loop_event":                  # kimi 2.x assistant stream
+            inner = event.get("event") or {}
+            if inner.get("type") != "content.part":
+                continue
+            part = inner.get("part") or {}
+            if part.get("type") != "text":
+                continue
+            text = part.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            step_id = str(inner.get("stepUuid") or "%s:%s" % (inner.get("turnId"), inner.get("step")))
+            if step_id not in step_parts:
+                step_parts[step_id] = []
+                step_order.append(step_id)
+                step_time[step_id] = _kimi_time(event.get("time"))
+            step_parts[step_id].append(text)
+        else:
             continue
-        envelope = event.get("message") or {}
-        message = envelope.get("message") or {}
-        meta = envelope.get("meta") or {}
-        role = message.get("role")
-        source = meta.get("source")
-        if role == "user" and source != "input":
-            continue
-        if role == "assistant" and source != "llm":
-            continue
-        if role not in ("user", "assistant"):
-            continue
-        text = content_text(message.get("content"), ("text",))
+        if len(items) + len(step_parts) >= max_records:
+            break
+
+    for step_id in step_order:
+        text = "\n\n".join(part.strip() for part in reversed(step_parts[step_id]) if part.strip()).strip()
         if not text:
             continue
-        message_id = meta.get("userMessageId") or meta.get("messageId")
-        if not message_id:
-            import hashlib
-            message_id = hashlib.sha256(("%s:%s:%s" % (event.get("time"), role, text)).encode()).hexdigest()
-        if message_id in seen:
+        add({"id": step_id, "role": "assistant", "text": text, "timestamp": step_time.get(step_id, 0.0)})
+
+    items.sort(key=lambda record: (record.get("timestamp") or 0.0, -record["_seq"]), reverse=True)
+    records = []
+    for record in items:
+        if record["id"] in seen:
             continue
-        seen.add(message_id)
-        timestamp = event.get("time")
-        if isinstance(timestamp, (int, float)):
-            timestamp = timestamp / 1000
-        records.append({"id": str(message_id), "role": role, "text": text, "timestamp": timestamp})
+        seen.add(record["id"])
+        record.pop("_seq", None)
+        records.append(record)
         if len(records) >= max_records:
             has_more = True
             break
