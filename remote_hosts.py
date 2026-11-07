@@ -142,8 +142,8 @@ header() {
     stamps=$(stat -c '%Y %s' -- "$3" 2>/dev/null || stat -f '%m %z' -- "$3" 2>/dev/null)
     printf 'TMUXWEB_STAMP%s%s\n' "$sep" "$stamps"
     # 会话文件里最后一条 model：模型选择器要显示"现在跑的是哪个"
-    model=$(tail -c 262144 -- "$3" 2>/dev/null \
-      | sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | tail -1)
+    model=$(grep -o '"model"[[:space:]]*:[[:space:]]*"[^"]*"' -- "$3" 2>/dev/null \
+      | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
     printf 'TMUXWEB_MODEL%s%s\n' "$sep" "$model"
   fi
   printf 'TMUXWEB_PAYLOAD\n'

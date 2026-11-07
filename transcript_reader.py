@@ -202,9 +202,14 @@ def tail_model(path, tail: int = 262144) -> str:
         with open(path, "rb") as handle:
             handle.seek(max(0, size - tail))
             chunk = handle.read().decode("utf-8", "replace")
+        found = MODEL_RE.findall(chunk)
+        if not found:
+            # 尾部可能全是工具输出（没有 "model" 字段），退回读全文；只在一次
+            # 取不到时才付这个代价，且文件通常几十 MB 以内
+            with open(path, "rb") as handle:
+                found = MODEL_RE.findall(handle.read().decode("utf-8", "replace"))
     except OSError:
         return ""
-    found = MODEL_RE.findall(chunk)
     return found[-1].strip() if found else ""
 
 
