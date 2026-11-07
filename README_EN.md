@@ -854,6 +854,22 @@ confirmation first (showing `#N` and `session:window`), then calls `DELETE /api/
 session still has other panes the console lands on one of them; the last pane reports
 "pane closed, the session ended with it".
 
+**Switching models happens in the chat.** The gear dropdown under the composer shows the model the
+agent is running and, on pick, the console types that agent's own `/model <id>` into the pane — one
+line of text, no new protocol.
+
+- The current model is *read*, not assumed: claude / codex / kimi come from the last record of their
+  session file, hermes from `sessions.model` in `state.db` (remotes ship it in the probe header as
+  `TMUXWEB_MODEL`).
+- Presets are just conveniences (claude accepts `opus`/`sonnet`/`haiku` aliases); anything else goes
+  through "custom".
+- **Kimi Code is special**: `/model <anything>` answers `Unknown model alias`; only the bare `/model`
+  opens its picker, so there the control reads "open model menu" and the choice is made inside the
+  agent with the arrow keys.
+- API: `GET /api/panes/{pane}/models` (`provider`/`current`/`presets`/`picker_only`) and
+  `POST /api/panes/{pane}/model` (`{"model": "opus"}`, empty for kimi).
+- No evidence of a model means an empty field, never a made-up default.
+
 **Close a pane before closing a session.** A session often hosts several agents: `kill_session` with
 `pane` (a `#125` handle or a `host~%12` id) closes exactly that one and reports `session_alive`;
 `session` is the sledgehammer. HTTP: `DELETE /api/panes/{pane}` and `DELETE /api/sessions/{name}?host=`.
