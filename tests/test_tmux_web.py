@@ -1999,6 +1999,25 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(body["provider_label"], "Anthropic")
         self.assertFalse(body["picker_only"])
 
+    def test_hermes_groups_and_provider_switch(self):
+        self.login()
+        self.tmux.panes[0].update({"command": "hermes", "provider": "hermes"})
+        self.tmux.transcript = lambda pane_id, limit=1, pane=None: {
+            "provider": "hermes", "messages": [{"id": "1"}], "model": "deepseek-flash",
+            "model_provider": "axera"}
+        groups = [{"provider": "axera", "models": ["deepseek-flash", "glm-5.3"]},
+                  {"provider": "ctyun", "models": ["gpt-5.6-sol"]}]
+        with mock.patch.object(tmux_web.agent_models, "hermes_groups", return_value=groups):
+            body = self.client.get("/api/panes/%254/models").json()
+        self.assertEqual([group["provider"] for group in body["groups"]], ["axera", "ctyun"])
+        self.assertEqual(body["current_provider"], "axera")
+        sent = []
+        self.tmux.send = lambda pane_id, text, submit=True, pane=None: sent.append(text)
+        response = self.client.post("/api/panes/%254/model", json={"model": "gpt-5.6-sol", "provider": "ctyun"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["command"], "/model gpt-5.6-sol --provider ctyun")
+        self.assertEqual(sent, ["/model gpt-5.6-sol --provider ctyun"])
+
     def test_switching_model_types_the_slash_command(self):
         self.login()
         self.tmux.panes[0].update({"command": "claude", "provider": "claude"})

@@ -686,6 +686,8 @@ class RelayAskRequest(BaseModel):
 class ModelSwitchRequest(BaseModel):
     # empty is allowed for CLIs whose /model opens its own picker
     model: str = Field(default="", max_length=80)
+    # which provider the model belongs to (Hermes keeps several in one config)
+    provider: str = Field(default="", max_length=60)
 
 
 class RelayMessageRequest(BaseModel):
@@ -2669,21 +2671,25 @@ def create_app(
         if not configured and provider == "hermes" and not remote:
             configured = agent_models.hermes_route()
         presets = agent_models.preset_for(provider)
+        groups = []
         if provider == "hermes":
-            # Hermes 的"可选模型"就是 provider 的 /v1/models，去问它本人
+            # Hermes 的"可选模型"就是各 provider 的 /v1/models；config 里通常不止一组
             try:
                 runner = None
                 if remote:
                     runner, _ = pane_transport(pane_id)
-                if runner is not None and hasattr(runner, "run"):
-                    presets = await asyncio.to_thread(agent_models.hermes_models, None, runner, configured)
-                else:
-                    presets = await asyncio.to_thread(agent_models.hermes_models, None, None, configured)
+                    if not hasattr(runner, "run"):
+                        runner = None
+                groups = await asyncio.to_thread(agent_models.hermes_groups, None, runner, configured)
             except (HTTPException, RuntimeError, OSError, ValueError):
-                presets = []
+                groups = []
+            if groups:
+                presets = list(groups[0]["models"])
         return {"pane": pane_id, "provider": provider, "current": current,
                 "provider_label": agent_models.provider_label(provider, configured),
+                "current_provider": configured,
                 "presets": presets,
+                "groups": groups,
                 "picker_only": agent_models.picker_only(provider),
                 "template": agent_models.switch_command(provider, "MODEL").replace("MODEL", "{model}")}
 
@@ -2694,7 +2700,9 @@ def create_app(
         pane = await asyncio.to_thread(pane_or_404, pane_id)
         provider = pane_provider(pane)
         try:
-            command = agent_models.switch_command(provider, payload.model)
+            command = agent_models.switch_command(
+                provider, payload.model,
+                payload.provider if provider == "hermes" else "")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:

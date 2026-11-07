@@ -11,6 +11,15 @@ class SwitchCommandTests(unittest.TestCase):
         self.assertEqual(agent_models.switch_command("codex", "gpt-5.6-sol"), "/model gpt-5.6-sol")
         self.assertEqual(agent_models.switch_command("hermes", "deepseek-flash"), "/model deepseek-flash")
 
+    def test_switching_across_providers_names_the_provider(self):
+        # Hermes 一个 config 里挂好几组 provider，跨组必须带 --provider
+        self.assertEqual(agent_models.switch_command("hermes", "gpt-5.6-sol", "ctyun"),
+                         "/model gpt-5.6-sol --provider ctyun")
+        self.assertEqual(agent_models.switch_command("hermes", "deepseek-flash"),
+                         "/model deepseek-flash")
+        with self.assertRaises(ValueError):
+            agent_models.switch_command("hermes", "x", "bad provider; rm -rf /")
+
     def test_kimi_opens_its_own_picker(self):
         # `kimi` 回 "Unknown model alias" 给任何参数，只能用无参形式
         self.assertTrue(agent_models.picker_only("kimi"))
@@ -68,6 +77,28 @@ class ProviderLabelTests(unittest.TestCase):
             )
             self.assertEqual(agent_models.hermes_route(home), "ctyun")
             self.assertEqual(agent_models.hermes_route(home + "-missing"), "")
+
+
+    def test_groups_cover_every_provider_in_the_config(self):
+        import tempfile
+        from pathlib import Path as P
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as home:
+            config = P(home) / ".hermes" / "config.yaml"
+            config.parent.mkdir(parents=True)
+            config.write_text(HermesModelListTests.CONFIG)
+
+            def fake_fetch(base_url, key, timeout=8.0):
+                return {"https://axera.example/v1": ["a1", "a2"],
+                        "https://ctyun.example/v1": ["c1"]}.get(base_url, [])
+
+            with mock.patch.object(agent_models, "fetch_models", fake_fetch), \
+                    mock.patch.dict("os.environ", {"CTYUN_API_KEY": "k", "AXERA_API_KEY": "k"}):
+                groups = agent_models.hermes_groups(home, route="ctyun")
+        self.assertEqual([group["provider"] for group in groups], ["ctyun", "axera"])
+        self.assertEqual(groups[0]["models"], ["c1"])
+        self.assertEqual(groups[1]["models"], ["a1", "a2"])
 
 
 class HermesModelListTests(unittest.TestCase):
@@ -164,7 +195,7 @@ class RemoteModelListTests(unittest.TestCase):
                 self.commands.append(command)
                 class Result:
                     returncode = 0
-                    stdout = b"m1\nm2\n"
+                    stdout = b"axera<::>m1\naxera<::>m2\n"
                     stderr = b""
                 return Result()
 

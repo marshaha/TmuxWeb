@@ -63,8 +63,12 @@ def picker_only(provider: str) -> bool:
     return (provider or "").lower() in PICKER_ONLY
 
 
-def switch_command(provider: str, model: str = "") -> str:
-    """The exact line to type into the pane."""
+def switch_command(provider: str, model: str = "", route: str = "") -> str:
+    """The exact line to type into the pane.
+
+    ``route`` is the provider the model belongs to: Hermes keeps several of them
+    in one config and needs ``/model <id> --provider <name>`` to cross over.
+    """
     provider = (provider or "").lower()
     template = SWITCH_TEMPLATES.get(provider)
     if template is None:
@@ -76,6 +80,12 @@ def switch_command(provider: str, model: str = "") -> str:
         raise ValueError("model is required")
     if len(model) > 80 or any(ch in model for ch in "\r\n\t"):
         raise ValueError("that model id is not usable")
+    route = (route or "").strip()
+    if route:
+        if len(route) > 60 or any(ch in route for ch in "\r\n\t ") or not all(
+                ch.isalnum() or ch in "._-/" for ch in route):
+            raise ValueError("that provider name is not usable")
+        return template.format(model=model) + " --provider " + route
     return template.format(model=model)
 
 
@@ -118,7 +128,7 @@ def supported(provider: str) -> bool:
 # Hermes 没有"可选模型"的静态列表：每个 provider 都是一条 OpenAI 兼容的
 # /v1/models。下拉要列全，就得去问 provider 本人（`hermes model` 也是这么干的）。
 
-MODELS_CACHE_TTL = 300
+MODELS_CACHE_TTL = 900
 _MODELS_CACHE = {}
 
 
@@ -288,36 +298,111 @@ for line in lines:
     elif current:
         providers[current][key] = value
 
-entry = providers.get(route) or {}
-base_url = entry.get("base_url", "")
-key_env = entry.get("key_env", "")
-api_key = os.environ.get(key_env, "") if key_env else ""
-if not api_key and key_env:
-    try:
-        for line in open(os.path.join(home, ".hermes", ".env"), errors="replace"):
-            if line.startswith(key_env + "="):
-                api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
-                break
-    except OSError:
-        pass
-if not base_url:
-    sys.exit(0)
+def key_for(entry):
+    name = entry.get("key_env", "")
+    key = os.environ.get(name, "") if name else ""
+    if not key and name:
+        try:
+            for line in open(os.path.join(home, ".hermes", ".env"), errors="replace"):
+                if line.startswith(name + "="):
+                    key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        except OSError:
+            pass
+    return key
 
-headers = {"User-Agent": "TmuxWeb/1.0"}   # 默认 urllib UA 会被部分网关 403
-if api_key:
-    headers["Authorization"] = "Bearer " + api_key
-request = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
-try:
-    with urllib.request.urlopen(request, timeout=8) as response:
-        payload = json.load(response)
-except Exception:
-    sys.exit(0)
-for item in payload.get("data") or []:
-    name = (item or {}).get("id") if isinstance(item, dict) else None
-    if name:
-        print(name)
+
+order = []
+for name in ([route] if route else []) + list(providers):
+    if name and name in providers and name not in order:
+        order.append(name)
+
+for name in order:
+    entry = providers.get(name) or {}
+    base_url = entry.get("base_url", "")
+    if not base_url:
+        continue
+    headers = {"User-Agent": "TmuxWeb/1.0"}   # 默认 urllib UA 会被部分网关 403
+    key = key_for(entry)
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    try:
+        with urllib.request.urlopen(urllib.request.Request(base_url.rstrip("/") + "/models",
+                                                           headers=headers), timeout=8) as response:
+            payload = json.load(response)
+    except Exception:
+        continue
+    names = [(item or {}).get("id") if isinstance(item, dict) else None
+             for item in (payload.get("data") or [])]
+    for model in names:
+        if model:
+            print("%s<::>%s" % (name, model))
 PYX
 """
+
+
+def hermes_groups(home=None, runner=None, route: str = "", ttl: int = MODELS_CACHE_TTL) -> list:
+    """[{provider, models}] for every provider in config.yaml (current route first)."""
+    import time
+
+    cache_key = (getattr(runner, "host_id", None) or (getattr(runner, "address", "") if runner else "local"), "__all__", route)
+    cached = _MODELS_CACHE.get(cache_key)
+    now = time.time()
+    if cached and now - cached[0] < ttl:
+        return cached[1]
+
+    groups = []
+    if runner is not None:
+        for line in _remote_group_lines(runner, route):
+            name, _, model = line.partition("<::>")
+            if not model:
+                continue
+            if not groups or groups[-1]["provider"] != name:
+                groups.append({"provider": name, "models": []})
+            groups[-1]["models"].append(model)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        from pathlib import Path
+
+        base = Path(home or "~").expanduser()
+        try:
+            text = (base / ".hermes" / "config.yaml").read_text(errors="replace")
+        except OSError:
+            text = ""
+        providers = provider_map(text)
+        order = ([route] if route else []) + [name for name in providers if name != route]
+        order = [name for name in order if name in providers]
+
+        def load(name):
+            entry = providers.get(name) or {}
+            try:
+                return name, fetch_models(entry.get("base_url", ""), _key_for(entry))
+            except Exception:  # noqa: BLE001 - one dead provider must not hide the rest
+                return name, []
+
+        if order:
+            with ThreadPoolExecutor(max_workers=min(6, len(order))) as pool:
+                for name, models in pool.map(load, order):
+                    if models:
+                        groups.append({"provider": name, "models": models})
+    if groups:
+        _MODELS_CACHE[cache_key] = (now, groups)
+    return groups
+
+
+def _remote_group_lines(runner, route: str = "") -> list:
+    script = REMOTE_MODELS_SCRIPT.lstrip("\n")
+    command = script
+    if route:
+        command = "TMUXWEB_ROUTE='%s' " % route.replace("'", "") + script
+    try:
+        result = runner.run(command, timeout=45)
+    except Exception:  # noqa: BLE001 - remote listing is a nicety, never a blocker
+        return []
+    output = getattr(result, "stdout", b"") or b""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", "replace")
+    return [line.strip() for line in output.splitlines() if "<::>" in line]
 
 
 def _remote_models(runner, route: str = "") -> list:
@@ -333,4 +418,9 @@ def _remote_models(runner, route: str = "") -> list:
     output = getattr(result, "stdout", b"") or b""
     if isinstance(output, bytes):
         output = output.decode("utf-8", "replace")
-    return [line.strip() for line in output.splitlines() if line.strip() and " " not in line.strip()]
+    models = []
+    for line in output.splitlines():
+        name, _, model = line.partition("<::>")
+        if model.strip():
+            models.append(model.strip())
+    return models

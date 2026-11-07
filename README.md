@@ -735,9 +735,11 @@ prompt 时 TUI 可能还在处理，第一个回车会被吃掉——表现就�
 - 当前模型和 provider 都是**读出来的**，不是猜的：claude / codex / kimi 从各自会话文件最后一条
   记录里取，hermes 读 `state.db` 的 `sessions.model`，provider 取 `config.yaml` 的 `model.provider`
   （远端由探测脚本随 header 回传 `TMUXWEB_MODEL` / `TMUXWEB_MODEL_PROVIDER`）。
-- **Hermes 的模型清单是真清单**：`config.yaml` 里那个 provider 本身就是 OpenAI 兼容端点，控制台去
-  问它的 `/v1/models`（本地直连、远端在对方机器上跑同一段脚本），缓存 5 分钟；所以下拉里是这个网关
-  实际给的模型（本机 axera 19 个，oracle 的 ctyun 50 个）。拿不到就退回「当前 + 自定义」，不会卡住界面。
+- **Hermes 的模型清单是真清单，而且按 provider 分组**：`config.yaml` 里每个 provider 都是 OpenAI
+  兼容端点，控制台逐个问 `/v1/models`（本地直连、远端在对方机器上跑同一段脚本），缓存 15 分钟。
+  菜单里每组可折叠，默认只展开当前用的那组（本机 axera 19 个 + ctyun 50 个）；顶部有筛选框。
+- 跨组切换发的是 `/model <id> --provider <name>`（Hermes 自己的语法），同组切换就是 `/model <id>`。
+  拿不到清单时退回「当前 + 自定义」，不会卡住界面。
 - claude / codex 用别名/模型 id 作为预设，其余用「自定义…」直接输入。
 - **Kimi Code 例外**：`/model <任何东西>` 都回 `Unknown model alias`，它只认无参的 `/model` 打开自己的菜单，
   所以那里显示「打开模型菜单…」，点了只是把 `/model` 敲进去，选择在 agent 里用方向键完成。
