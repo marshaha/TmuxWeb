@@ -415,8 +415,10 @@ if [ -n "$sqlite_bin" ] && [ -f "$HOME/.hermes/state.db" ] \
   fi
   [ -n "$sid" ] || error "no Hermes session for $cwd" 23
   header "$sid" hermes-rows "$HOME/.hermes/state.db"
+  # 必须走 emit：header 已经声明白 "$encoding"，这里直接 cat 会让客户端拿到
+  # "声明 gzip、实际明文" 的负载（报 Not a gzipped file）
   "$sqlite_bin" -readonly -json "$HOME/.hermes/state.db" \
-    "select id, role, content, timestamp from messages where session_id='$sid' and active=1 and role in ('user','assistant') and coalesce(content,'')<>'' order by id desc limit $limit" 2>/dev/null
+    "select id, role, content, timestamp from messages where session_id='$sid' and active=1 and role in ('user','assistant') and coalesce(content,'')<>'' order by id desc limit $limit" 2>/dev/null | emit
   exit 0
 fi
 
@@ -466,8 +468,8 @@ except Exception as exc:  # noqa: BLE001 - report and let the caller fall back
 info = os.stat(db)
 sys.stdout.write(
     "TMUXWEB_STATUS%sunknown\nTMUXWEB_PROVIDER%shermes\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%shermes-rows\n"
-    "TMUXWEB_PRIMARY%s%s\nTMUXWEB_STAMP%s%d %d\nTMUXWEB_PAYLOAD\n"
-    % (sep, sep, sid, sep, sep, db, sep, int(info.st_mtime), info.st_size)
+    "TMUXWEB_PRIMARY%s%s\nTMUXWEB_ENCODING%snone\nTMUXWEB_STAMP%s%d %d\nTMUXWEB_PAYLOAD\n"
+    % (sep, sep, sid, sep, sep, db, sep, sep, int(info.st_mtime), info.st_size)
 )
 sys.stdout.write(json.dumps(rows, ensure_ascii=False))
 PYTHON

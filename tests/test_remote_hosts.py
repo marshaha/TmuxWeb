@@ -1,3 +1,4 @@
+import gzip
 import json
 import os
 import subprocess
@@ -30,6 +31,40 @@ def clear_tmux_cache(host):
     key = remote_hosts.tmux_cache_key(host)
     remote_hosts._TMUX_BIN_CACHE.pop(key, None)
     remote_hosts._TMUX_BIN_FAILED.pop(key, None)
+
+
+class RemoteTranscriptEncodingTests(unittest.TestCase):
+    """header 声明了 gzip，写 payload 的分支就必须过 emit。"""
+
+    def setUp(self):
+        self.script = remote_hosts.REMOTE_TRANSCRIPT_SCRIPT
+
+    def test_every_writer_honours_the_declared_encoding(self):
+        # 每一条 header ... 后面要么走 emit，要么自己声明 encoding=none
+        self.assertIn('| emit', self.script)
+        self.assertIn('then gzip -c; else cat; fi', self.script)
+
+    def test_hermes_sqlite_binary_branch_pipes_through_emit(self):
+        """macmini 上 sqlite3 存在；这条分支曾经输出明文却声明 gzip，
+        客户端报 `Not a gzipped file (b'[{')`，#36 就是它。"""
+        self.assertIn('order by id desc limit $limit" 2>/dev/null | emit', self.script)
+
+    def test_hermes_python_fallback_declares_plain_text(self):
+        self.assertIn("TMUXWEB_ENCODING%snone", self.script)
+
+    def test_gzipped_payload_is_decompressed(self):
+        body = b'[{"id":1,"role":"user","content":"hi"}]'
+        payload = gzip.compress(body)
+        stdout = (b'TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_ENCODING<::>gzip\n'
+                  b'TMUXWEB_PAYLOAD\n' + payload)
+        header, text = parse_transcript_response(stdout)
+        self.assertEqual(header["TMUXWEB_PROVIDER"], "hermes")
+        self.assertEqual(text, body.decode())
+
+    def test_plain_payload_is_left_alone(self):
+        stdout = b'TMUXWEB_ENCODING<::>none\nTMUXWEB_PAYLOAD\n[{"id":1}]'
+        _, text = parse_transcript_response(stdout)
+        self.assertEqual(text, '[{"id":1}]')
 
 
 class RemoteHostTests(unittest.TestCase):
