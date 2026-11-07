@@ -312,6 +312,24 @@ class TmuxWebTests(unittest.TestCase):
         response = self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
         self.assertEqual(response.status_code, 303)
 
+    def test_a_slow_capture_does_not_drop_the_live_socket(self):
+        """慢链路（上传/下载大文件时）一次抓屏超时不该把聊天断开。"""
+        self.login()
+        calls = {"n": 0}
+        original = self.tmux.capture_ansi
+
+        def flaky(pane_id, history=500, pane=None):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise RuntimeError("remote command timed out after 15s")
+            return original(pane_id, history, pane=pane)
+
+        self.tmux.capture_ansi = flaky
+        with self.client.websocket_connect("/ws/panes/%254") as socket:
+            payload = socket.receive_json()
+        self.assertEqual(payload["type"], "capture")
+        self.assertGreaterEqual(calls["n"], 3)
+
     def test_requires_login_and_rejects_wrong_password(self):
         self.assertEqual(self.client.get("/", follow_redirects=False).status_code, 303)
         self.assertEqual(self.client.get("/api/panes").status_code, 401)

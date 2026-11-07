@@ -9,6 +9,8 @@ import os
 import re
 import secrets
 import sqlite3
+import select
+import shutil
 import subprocess
 import time
 
@@ -793,6 +795,10 @@ def ssh_mux_dir() -> Path:
     except OSError:
         pass
     return directory
+
+
+def head_bytes_cmd(count: int) -> str:
+    return f"head -c {int(count)}"
 
 
 def ssh_mux_path(host: dict) -> Path:
@@ -1861,6 +1867,83 @@ class SSHRunner:
         if len(completed.stdout) > max_bytes:
             raise RuntimeError("file is larger than the download limit")
         return completed.stdout
+
+    def file_size(self, path: str) -> int | None:
+        """Byte size of a remote file (None when it cannot be read)."""
+        if "\x00" in path or "\n" in path:
+            return None
+        quoted = shlex.quote(path)
+        # GNU stat 是 -c%s，BSD/macOS 是 -f%z；两边都试一次，反正只有一次往返
+        completed = self.run(f"stat -c%s -- {quoted} 2>/dev/null || stat -f%z -- {quoted} 2>/dev/null",
+                             timeout=20)
+        if completed.returncode != 0:
+            return None
+        try:
+            return int(completed.stdout.decode(errors="replace").strip().split()[0])
+        except (ValueError, IndexError):
+            return None
+
+    def stream_file(self, path: str, max_bytes: int, chunk: int = 65536,
+                    idle_timeout: float = 90.0):
+        """Yield a remote file in chunks instead of buffering the whole thing.
+
+        A home uplink can deliver 25 KB/s while the same link accepts 800 KB/s the
+        other way, so a 20 MB video blows any fixed timeout and the browser sees a
+        dropped download.  Streaming decouples us from the link speed: the file
+        arrives as fast as the line allows, and only *silence* is a failure.
+        """
+        if "\x00" in path or "\n" in path:
+            raise ValueError("invalid path")
+        quoted = shlex.quote(path)
+        command = (f"if [ ! -f {quoted} ]; then echo 'no such file: {path}' >&2; exit 44; fi; "
+                   f"{head_bytes_cmd(max_bytes + 1)} -- {quoted}")
+        process, directory = self.spawn(command)
+        sent = 0
+        try:
+            assert process.stdout is not None
+            while True:
+                ready, _, _ = select.select([process.stdout], [], [], idle_timeout)
+                if not ready:
+                    raise RuntimeError("remote download stalled for %ds" % int(idle_timeout))
+                data = os.read(process.stdout.fileno(), chunk)
+                if not data:
+                    break
+                sent += len(data)
+                if sent > max_bytes:
+                    raise RuntimeError("file is larger than the download limit")
+                yield data
+            code = process.wait(timeout=10)
+            if code != 0:
+                detail = (process.stderr.read() if process.stderr else b"").decode(errors="replace")
+                raise RuntimeError(detail.strip() or "remote file could not be read")
+        finally:
+            if process.poll() is None:
+                process.kill()
+            shutil.rmtree(directory, ignore_errors=True)
+
+    def spawn(self, remote_command: str, *, resolve_tmux: bool = False):
+        """Start one ssh invocation with stdout as a pipe (used by stream_file)."""
+        directory = tempfile.mkdtemp(prefix="tmux-remote-")
+        base = Path(directory)
+        known_hosts = self._known_hosts(base)
+        identity_file, password_file = self._prepare_auth(self.host, base, "")
+        jump_proxy, hop_passwords = self.build_jump_proxy(base)
+        environment = os.environ.copy()
+        if password_file or hop_passwords:
+            askpass = base / "askpass.sh"
+            self._write_askpass(base, password_file, hop_passwords, askpass)
+            environment["SSH_ASKPASS"] = str(askpass)
+            environment["SSH_ASKPASS_REQUIRE"] = "force"
+            environment["DISPLAY"] = ":0"
+        command, extra_environment = self.command(
+            remote_command, known_hosts=str(known_hosts), identity_file=identity_file,
+            tmux_bin=self.tmux_binary() if resolve_tmux else None,
+            host_key_pinned=self.host_key_pinned(), jump_proxy=jump_proxy,
+        )
+        environment.update(extra_environment)
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=environment, start_new_session=True)
+        return process, directory
 
     def zip_files(self, paths: list[str], base: str, max_bytes: int, max_files: int) -> bytes:
         """Pull a ``tar`` stream in one SSH call and re-container it as a zip.

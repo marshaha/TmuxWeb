@@ -33,6 +33,68 @@ def clear_tmux_cache(host):
     remote_hosts._TMUX_BIN_FAILED.pop(key, None)
 
 
+class StreamFileTests(unittest.TestCase):
+    """慢链路下载：按块回传，只有"长时间没有数据"才算失败。"""
+
+    def make_runner(self):
+        import remote_hosts
+        return remote_hosts.SSHRunner({"id": "h1", "username": "u", "hostname": "100.0.0.1",
+                                       "port": 22, "auth_type": "key"})
+
+    def fake_process(self, payload: bytes, code: int = 0):
+        import os
+        import threading
+        read_fd, write_fd = os.pipe()
+        # 管道只有 64KB 缓冲：大块数据必须边写边读，否则测试自己会死锁
+        def writer():
+            try:
+                with os.fdopen(write_fd, "wb") as handle:
+                    handle.write(payload)
+            except BrokenPipeError:
+                pass
+        threading.Thread(target=writer, daemon=True).start()
+
+        class Process:
+            def __init__(self):
+                self.stdout = os.fdopen(read_fd, "rb")
+                self.stderr = None
+            def wait(self, timeout=None):
+                return code
+            def poll(self):
+                return code
+            def kill(self):
+                pass
+        return Process()
+
+    def test_streams_the_file_in_chunks(self):
+        from unittest import mock
+        runner = self.make_runner()
+        payload = b"a" * 200000
+        with mock.patch.object(runner, "spawn", return_value=(self.fake_process(payload), "/tmp")), \
+                mock.patch("remote_hosts.shutil.rmtree"):
+            chunks = list(runner.stream_file("/x", max_bytes=1_000_000, chunk=65536))
+        self.assertEqual(b"".join(chunks), payload)
+        self.assertGreater(len(chunks), 2)
+
+    def test_refuses_a_file_over_the_limit(self):
+        from unittest import mock
+        runner = self.make_runner()
+        with mock.patch.object(runner, "spawn",
+                               return_value=(self.fake_process(b"z" * 500000), "/tmp")), \
+                mock.patch("remote_hosts.shutil.rmtree"):
+            with self.assertRaises(RuntimeError):
+                list(runner.stream_file("/x", max_bytes=100000))
+
+    def test_reports_a_remote_error(self):
+        from unittest import mock
+        runner = self.make_runner()
+        with mock.patch.object(runner, "spawn",
+                               return_value=(self.fake_process(b"", code=44), "/tmp")), \
+                mock.patch("remote_hosts.shutil.rmtree"):
+            with self.assertRaises(RuntimeError):
+                list(runner.stream_file("/x", max_bytes=1000))
+
+
 class HermesFreshPaneTests(unittest.TestCase):
     """新建 pane 的会话还是空的，不能因此把别人的旧对话挑过来。"""
 

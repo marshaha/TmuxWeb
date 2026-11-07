@@ -31,7 +31,8 @@ from urllib.parse import parse_qs, quote
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, RedirectResponse,
+                               Response, StreamingResponse)
 from pydantic import BaseModel, Field
 import file_browser
 from home_store import HomeStore
@@ -947,7 +948,8 @@ def create_app(
         return session_token(token_seed(), secret)
     api_token = (os.environ.get("TMUX_WEB_API_TOKEN") or "").strip()
     # File transfers are buffered in memory, so both directions are capped.
-    download_limit = int(os.environ.get("TMUX_WEB_FILE_DOWNLOAD_MAX", str(64 * 1024 * 1024)))
+    # 远端下载现在是流式的，内存不再随文件大小增长：默认放到 512MB，视频之类才下得动
+    download_limit = int(os.environ.get("TMUX_WEB_FILE_DOWNLOAD_MAX", str(512 * 1024 * 1024)))
     zip_limit = int(os.environ.get("TMUX_WEB_ZIP_MAX", str(file_browser.DEFAULT_ZIP_BYTES)))
     zip_max_files = int(os.environ.get("TMUX_WEB_ZIP_MAX_FILES", str(file_browser.DEFAULT_ZIP_FILES)))
     upload_limit = int(os.environ.get("TMUX_WEB_FILE_UPLOAD_MAX", str(256 * 1024 * 1024)))
@@ -2917,22 +2919,43 @@ def create_app(
             raise HTTPException(status_code=422, detail="path is required")
         try:
             transport, _actual, _pane = await file_target(pane_id)
-            payload = await asyncio.to_thread(transport.download_file, path, download_limit)
         except HTTPException:
             raise
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         name = os.path.basename(path.rstrip("/")) or "download"
         media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        return Response(
-            content=payload,
-            media_type=media_type,
-            headers={
-                "Content-Disposition": "attachment; filename*=UTF-8''" + quote(name, safe=""),
-                "Content-Length": str(len(payload)),
-                "Cache-Control": "no-store",
-            },
-        )
+        headers = {
+            "Content-Disposition": "attachment; filename*=UTF-8''" + quote(name, safe=""),
+            "Cache-Control": "no-store",
+        }
+        # 远端主机（尤其家用上行只有几十 KB/s）走流式：固定超时会把"慢"误判成失败
+        stream_file = getattr(transport, "stream_file", None)
+        if stream_file is not None:
+            try:
+                size = await asyncio.to_thread(transport.file_size, path)
+            except (RuntimeError, OSError, ValueError):
+                size = None
+            if size:
+                headers["Content-Length"] = str(size)
+            chunks = stream_file(path, download_limit)
+
+            def relay():
+                try:
+                    for chunk in chunks:
+                        yield chunk
+                finally:
+                    close = getattr(chunks, "close", None)
+                    if close:
+                        close()
+
+            return StreamingResponse(relay(), media_type=media_type, headers=headers)
+        try:
+            payload = await asyncio.to_thread(transport.download_file, path, download_limit)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        headers["Content-Length"] = str(len(payload))
+        return Response(content=payload, media_type=media_type, headers=headers)
 
     @app.post("/api/panes/{pane_id}/files/zip")
     async def zip_pane_files(request: Request, pane_id: str, payload: ZipRequest):
@@ -3714,17 +3737,28 @@ def create_app(
         digest: str | None = None
         interval = 0.7
         lines = stream_first_lines
+        misses = 0
         try:
             while True:
                 snapshot = getattr(transport, "snapshot_ansi", None)
-                if snapshot is None:
-                    capture_ansi = getattr(transport, "capture_ansi", transport.capture)
-                    content = await asyncio.to_thread(capture_ansi, actual_pane_id, lines, pane=pane)
-                    new_digest = hashlib.sha1(content.encode()).hexdigest()
-                    payload = None if digest == new_digest else content
-                    digest = new_digest
-                else:
-                    digest, payload = await asyncio.to_thread(snapshot, actual_pane_id, lines, digest, pane=pane)
+                try:
+                    if snapshot is None:
+                        capture_ansi = getattr(transport, "capture_ansi", transport.capture)
+                        content = await asyncio.to_thread(capture_ansi, actual_pane_id, lines, pane=pane)
+                        new_digest = hashlib.sha1(content.encode()).hexdigest()
+                        payload = None if digest == new_digest else content
+                        digest = new_digest
+                    else:
+                        digest, payload = await asyncio.to_thread(snapshot, actual_pane_id, lines, digest, pane=pane)
+                    misses = 0
+                except (RuntimeError, OSError, ValueError):
+                    # 慢链路（或正在上传/下载大文件）会让一次抓屏超时；那是"这次没抓到"，
+                    # 不是"这个 pane 没了"。以前这里直接 return，浏览器就断了。
+                    misses += 1
+                    if misses >= 8:
+                        raise
+                    await asyncio.sleep(min(5.0, 0.8 * misses))
+                    continue
                 # the first frame carries some scrollback, the rest is tail-only
                 lines = stream_lines
                 if payload is not None:
