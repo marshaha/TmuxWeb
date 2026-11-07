@@ -33,6 +33,16 @@ def clear_tmux_cache(host):
     remote_hosts._TMUX_BIN_FAILED.pop(key, None)
 
 
+class HermesFreshPaneTests(unittest.TestCase):
+    """新建 pane 的会话还是空的，不能因此把别人的旧对话挑过来。"""
+
+    def test_the_sql_no_longer_prefers_sessions_that_have_messages(self):
+        import remote_hosts
+        script = remote_hosts.REMOTE_TRANSCRIPT_SCRIPT
+        self.assertIn("order by abs(coalesce(s.started_at,0) - $started_at) asc limit 1", script)
+        self.assertNotIn("coalesce(m.content,'')<>'')=0", script)
+
+
 class HermesSessionChoiceTests(unittest.TestCase):
     """同一个 cwd 里并存多个 hermes 会话时，每个 pane 要落到自己的那个。"""
 

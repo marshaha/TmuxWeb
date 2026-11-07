@@ -827,7 +827,9 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
         +'</optgroup>';
       select.value=current||((data.presets||[])[0]||'__custom__');
       select.dataset.template=data.template||'/model {model}';wrap.hidden=false;
-    }catch(error){wrap.hidden=true;}}
+    }catch(error){wrap.hidden=true;
+      // pane 列表和进程探测有先后：刚建好的 agent pane 第一次可能还没认出来，稍后再问一次
+      if(state.modelsToken===token)setTimeout(()=>{if(state.selected===id&&state.modelsToken===token)loadPaneModels(id);},3000);}}
   async function switchPaneModel(value){const id=state.selected;if(!id||!value)return;
     const pickerOnly=$('model-picker').dataset.pickerOnly==='1';
     let model=value;

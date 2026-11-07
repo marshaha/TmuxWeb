@@ -449,12 +449,12 @@ if [ -n "$sqlite_bin" ] && [ -f "$HOME/.hermes/state.db" ] \
     # pane 都落到同一个会话上——看着就是几个窗口显示一样的对话。改成挑起始时间离本 pane
     # 启动最近的：pane 是 `hermes` 之后才有的会话，谁先起就是谁。
     sid=$("$sqlite_bin" -readonly "$HOME/.hermes/state.db" \
-      "select s.id from sessions s where s.cwd='$cwd_sql' order by (select count(*) from messages m where m.session_id=s.id and m.active=1 and coalesce(m.content,'')<>'')=0, abs(coalesce(s.started_at,0) - $started_at) asc limit 1" 2>/dev/null)
+      "select s.id from sessions s where s.cwd='$cwd_sql' order by abs(coalesce(s.started_at,0) - $started_at) asc limit 1" 2>/dev/null)
     if [ -z "$sid" ]; then
       # 这个 cwd 没记过会话（pane 里换过目录、或者是别的 profile 起的）：退一步按
       # 「启动时间最接近本 pane」挑，总比整个对话视图空着强
       sid=$("$sqlite_bin" -readonly "$HOME/.hermes/state.db" \
-        "select s.id from sessions s order by (select count(*) from messages m where m.session_id=s.id and m.active=1 and coalesce(m.content,'')<>'')=0, abs(coalesce(s.started_at,0) - $started_at) asc limit 1" 2>/dev/null)
+        "select s.id from sessions s order by abs(coalesce(s.started_at,0) - $started_at) asc limit 1" 2>/dev/null)
     fi
   fi
   [ -n "$sid" ] || error "no Hermes session for $cwd" 23
@@ -504,20 +504,16 @@ try:
     con.row_factory = sqlite3.Row
     if not sid:
         row = con.execute(
-            "select s.id from sessions s where s.cwd=? order by"
-            " (select count(*) from messages m where m.session_id=s.id and m.active=1"
-            "  and coalesce(m.content,'')<>'')=0,"
-            " coalesce(s.last_activity_at, s.started_at) desc limit 1",
-            (cwd,),
+            # 新 pane 的会话往往还是空的：别因为"空"就把别人的旧对话挑过来
+            "select s.id from sessions s where s.cwd=? order by abs(coalesce(s.started_at,0) - ?)"
+            " asc limit 1",
+            (cwd, pane_start),
         ).fetchone()
         sid = row["id"] if row else ""
     if not sid:
         # 这个 cwd 没有会话记录时退一步：挑启动时间离本 pane 最近的，别让对话视图空着
         row = con.execute(
-            "select s.id from sessions s order by"
-            " (select count(*) from messages m where m.session_id=s.id and m.active=1"
-            "  and coalesce(m.content,'')<>'')=0,"
-            " abs(coalesce(s.started_at,0) - ?) asc limit 1",
+            "select s.id from sessions s order by abs(coalesce(s.started_at,0) - ?) asc limit 1",
             (pane_start,),
         ).fetchone()
         sid = row["id"] if row else ""
