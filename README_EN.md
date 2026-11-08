@@ -184,6 +184,18 @@ The 「附件」 button sits in the first row **inside** the composer card, sepa
   knows what to read;
 - switching panes clears the strip; the upload limit is the file panel's `TMUX_WEB_FILE_UPLOAD_MAX` (256MB default).
 
+### Video plays right in the chat
+
+A video link in a message (`.mp4`, `.webm`, `.mov`, `.m4v`, `.ogv`, `.ogg`, `.mkv` - case insensitive, query strings
+fine) or a path to a local video file (`/path/clip.mp4`, rewritten to `/files/raw`) becomes an inline player:
+
+- `preload="metadata"` - only duration and the first frame until someone presses play, so a phone on mobile data does
+  not pull the whole clip just to read the chat;
+- the original link stays in the caption, for saving or opening in a window;
+- local videos come from `/api/panes/{pane}/files/raw`, which now answers `video/*` and `audio/*` as `inline` (iOS
+  Safari downloads the file instead of playing it otherwise);
+- only `http(s)` and `blob` qualify - a `javascript:` or `data:` URL never turns into a player.
+
 ### Multi-window on a phone
 
 - The toolbar slims down to icons (add / presets / home) and the layout switch disappears: a phone is always
