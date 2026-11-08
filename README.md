@@ -889,6 +889,27 @@ TMUX_WEB_ALLOWED_HOSTS=chat.example.com
 - WebSocket（实时聊天/终端）CF 默认支持；`/ws/*` 不需要额外配置。
 - MCP 端点 `POST /mcp` 同理走同一域名，客户端 URL 写 `https://chat.example.com/mcp`。
 
+### 直连：同一局域网 / Tailscale 里绕开 Cloudflare
+
+CF 隧道对单请求限制 100MB 和 100 秒；同一网段或同一个 tailnet 里的人其实可以直连这台机器，传输不走 CF，
+文件也不离开内网。控制台只负责把地址列出来，**要不要用由你决定**：
+
+1. 打开 设置 › 直连地址，里面是本机所有可用入口（局域网 IP、Tailscale IP，以及起了 `tailscale serve` 之后的
+   `https://<node>.<tailnet>.ts.net`），每行一个复制按钮。
+2. 想给 tailnet 一个带真证书的 https 入口（浏览器不会报混合内容）：
+
+```bash
+sudo tailscale set --operator=$USER        # 只需一次
+./scripts/enable_direct.sh serve           # tailscale serve --bg 8787
+```
+
+   tailnet 管理台里要先把 HTTPS 证书打开（DNS 页 → Enable HTTPS）。
+3. 局域网内直接 `http://<本机IP>:8787` 即可（明文 http，只在可信内网用）。
+
+`.env` 里的 `TMUX_WEB_PUBLIC_URL` 写公网入口（例如 `https://chat.example.com`），设置面板就能判断并提示
+"当前页面走 Cloudflare"，同时把内网地址排在前面。这台机器上实测同一条 20MB 文件：经 CF 下载受链路抖动影响，
+直连稳定在局域网带宽上限。
+
 ## 数据与隐私
 
 以下内容不会进入仓库，并且不应手工提交：

@@ -235,8 +235,10 @@ class SettingsPageWiringTests(unittest.TestCase):
                        "导出密码至少 6 位", "密码不对，或者文件被改过"):
             self.assertIn(marker, script)
         # one section with two tabs, not two separate rows
-        # 修改密码 / 导入导出 / 插件 / 主题 —— every one of them starts collapsed
-        self.assertEqual(script.count('class="ts-row"'), 4)
+        # 修改密码 / 直连地址 / 导入导出 / 插件 / 主题 —— every one of them starts collapsed
+        self.assertEqual(script.count('class="ts-row"'), 5)
+        self.assertIn("/api/system/addresses", script)
+        self.assertIn('id="ts-direct-panel"', script)
         self.assertIn("data-ts-tab=\"export\"", script)
         self.assertIn("data-ts-tab=\"import\"", script)
         self.assertIn('id="ts-import-file" type="file"', script)

@@ -12,6 +12,7 @@ import os
 import fcntl
 import re
 import secrets
+import urllib.parse
 import signal
 import struct
 import subprocess
@@ -1599,6 +1600,97 @@ def create_app(
         if "theme" in saved:
             response.set_cookie(THEME_COOKIE, saved["theme"], samesite="lax", max_age=60 * 60 * 24 * 365, path="/")
         return response
+
+    _tailnet_name: dict = {"at": 0.0, "name": ""}
+
+    def tailnet_name() -> str:
+        """MagicDNS name for this node (empty when tailscale is absent)."""
+        import subprocess as sp
+        import time as _time
+
+        cached = _tailnet_name
+        if _time.time() - cached["at"] < 600:
+            return cached["name"]
+        name = ""
+        try:
+            raw = sp.run(["tailscale", "status", "--json"], capture_output=True, text=True,
+                         timeout=5).stdout
+            name = (json.loads(raw).get("Self") or {}).get("DNSName") or ""
+        except (OSError, sp.SubprocessError, ValueError):
+            name = ""
+        _tailnet_name.update({"at": _time.time(), "name": name.rstrip(".")})
+        return cached["name"] if False else _tailnet_name["name"]
+
+    def tailscale_serve_active() -> bool:
+        import subprocess as sp
+        try:
+            out = sp.run(["tailscale", "serve", "status"], capture_output=True, text=True,
+                         timeout=5).stdout
+        except (OSError, sp.SubprocessError):
+            return False
+        return bool(out.strip()) and "No serve config" not in out
+
+    def local_addresses() -> list[dict]:
+        """Ways to reach this console: LAN, tailnet, and the public URL if set.
+
+        A user on the same LAN or tailnet can skip Cloudflare entirely - no
+        100 MB body cap, no 100 s request limit, and the file never leaves the
+        private network.  We only *list* the entries; picking one is the user's
+        decision (see the 直连 block in settings).
+        """
+        import subprocess as sp
+
+        found: list[dict] = []
+
+        def add(url: str, kind: str, label: str):
+            if url and all(item["url"] != url for item in found):
+                found.append({"url": url, "kind": kind, "label": label})
+
+        port = os.environ.get("TMUX_WEB_PORT", "8787")
+        try:
+            listed = sp.run(["ip", "-4", "-o", "addr", "show", "scope", "global"],
+                            capture_output=True, text=True, timeout=5).stdout
+        except (OSError, sp.SubprocessError):
+            listed = ""
+        # 只认真实网卡：docker0/br-*/veth/tun 这些地址用户永远连不上，列出来只会误导
+        for line in listed.splitlines():
+            parts = line.split()
+            if len(parts) < 4 or parts[2] != "inet":
+                continue
+            interface = parts[1].rstrip(":")
+            if interface.startswith(("docker", "br-", "veth", "virbr", "tun", "tap", "tailscale", "lo")):
+                continue
+            address = parts[3].split("/")[0]
+            if address.startswith(("169.254.", "172.17.")):
+                continue
+            add(f"http://{address}:{port}", "lan", f"局域网 · {address}")
+        try:
+            tail = sp.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, sp.SubprocessError):
+            tail = ""
+        if tail:
+            add(f"http://{tail}:{port}", "tailnet", f"Tailscale · {tail}")
+            # 只有真的起了 tailscale serve 才列 HTTPS 那条，否则点进去是连不上的
+            name = os.environ.get("TMUX_WEB_TAILNET_NAME", "").strip()
+            if not name and tailscale_serve_active():
+                name = tailnet_name()
+            if name:
+                add(f"https://{name}", "tailnet", f"Tailscale HTTPS · {name}")
+        public = (os.environ.get("TMUX_WEB_PUBLIC_URL") or "").strip()
+        if public:
+            add(public.rstrip("/"), "public", "公网（Cloudflare）")
+        return found
+
+    @app.get("/api/system/addresses")
+    async def system_addresses(request: Request):
+        """Direct entries for this install; the UI shows them in 设置 › 直连."""
+        require_auth(request)
+        entries = await asyncio.to_thread(local_addresses)
+        host = request.headers.get("host", "")
+        current = next((item for item in entries
+                        if urllib.parse.urlparse(item["url"]).netloc == host), None)
+        return {"host": host, "current_kind": current["kind"] if current else "public",
+                "addresses": entries}
 
     @app.get("/api/settings")
     async def settings_info(request: Request):

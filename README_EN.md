@@ -959,6 +959,27 @@ Without `TMUX_WEB_TRUST_PROXY` every request appears to come from the proxy's IP
 single shared bucket and a few failures lock everyone out for 60 seconds. WebSockets work through Cloudflare as-is, and
 the MCP endpoint is simply `https://chat.example.com/mcp`.
 
+### Direct access from the same LAN or tailnet
+
+Cloudflare caps a proxied request at 100 MB and 100 seconds. Anyone on the same subnet or the same tailnet can talk to
+this machine directly instead: no Cloudflare in the path, no caps, and the bytes never leave the private network. The
+console only *lists* the entries - picking one is the user's call:
+
+1. 设置 › 直连地址 shows every address this install answers on (LAN IP, Tailscale IP, and
+   `https://<node>.<tailnet>.ts.net` once `tailscale serve` is running), each with a copy button.
+2. A real certificate for the tailnet entry (so the browser sees no mixed content):
+
+```bash
+sudo tailscale set --operator=$USER        # once
+./scripts/enable_direct.sh serve           # tailscale serve --bg 8787
+```
+
+   HTTPS certificates have to be enabled for the tailnet first (admin console → DNS → Enable HTTPS).
+3. On the LAN, `http://<host-ip>:8787` works as-is (plain http - trusted networks only).
+
+Set `TMUX_WEB_PUBLIC_URL` (e.g. `https://chat.example.com`) in `.env` and the settings panel will say which entry the
+current page is using and put the private addresses first.
+
 ## Data and privacy
 
 The following must never be committed:

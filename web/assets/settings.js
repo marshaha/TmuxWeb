@@ -11,6 +11,10 @@
  */
 (() => {
   const STYLE = `
+  .ts-direct-row{display:flex;align-items:center;gap:8px;margin:6px 0;padding:6px 8px;border:1px solid var(--line);border-radius:9px;background:var(--surface2)}
+  .ts-direct-row code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .ts-direct-kind{flex:none;padding:1px 5px;border-radius:5px;background:var(--accent);color:#fff;font-size:10px;letter-spacing:.04em}
+  .ts-copy{flex:none;height:24px;padding:0 8px;font-size:11px}
   .ts-dialog{width:min(calc(100vw - 24px),560px);max-width:560px;max-height:86dvh;overflow:auto;padding:0;
     border:1px solid var(--line,#dddcd5);border-radius:18px;background:var(--card);color:var(--ink,#242421);
     box-shadow:0 24px 80px #0003;font:14px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif}
@@ -121,6 +125,16 @@
         <label class="ts-field">确认新密码<input id="ts-pw-confirm" type="password" autocomplete="new-password" minlength="6"></label>
         <p class="ts-state" id="ts-pw-state" role="status"></p>
         <div class="ts-btns"><button class="ts-btn primary" id="ts-pw-submit" type="submit">修改密码</button></div>
+      </div>
+    </section>
+
+    <section class="ts-block">
+      <button class="ts-row" type="button" id="ts-direct-toggle" aria-expanded="false" aria-controls="ts-direct-panel">
+        <span>直连地址</span><span class="ts-caret" aria-hidden="true"></span>
+      </button>
+      <div class="ts-panel" id="ts-direct-panel" hidden>
+        <p class="ts-hint" id="ts-direct-hint">同一局域网或 Tailscale 里可以直接连服务器，传输不经过 Cloudflare（没有 100MB / 100 秒限制）。</p>
+        <div id="ts-direct-list"></div>
       </div>
     </section>
 
@@ -609,6 +623,35 @@
     }
   }
 
+  async function loadDirectEntries() {
+    const list = $('ts-direct-list');
+    const hint = $('ts-direct-hint');
+    if (!list) return;
+    list.innerHTML = '<p class="ts-hint">读取中…</p>';
+    try {
+      const data = await api('/api/system/addresses');
+      const entries = (data.addresses || []).filter(item => item.kind !== 'public');
+      if (!entries.length) {
+        list.innerHTML = '<p class="ts-hint">这台机器没有可用的局域网 / Tailscale 地址。</p>';
+        return;
+      }
+      const currentHost = data.host || location.host;
+      list.innerHTML = entries.map(item => {
+        const here = new URL(item.url).host === currentHost;
+        return `<div class="ts-direct-row"><span class="ts-direct-kind">${esc(item.kind === 'tailnet' ? 'TS' : 'LAN')}</span>`
+          + `<code>${esc(item.url)}</code>`
+          + (here ? '<span class="ts-state ok">当前</span>' : '')
+          + `<button class="ts-btn ts-copy" type="button" data-copy="${esc(item.url)}">复制</button></div>`;
+      }).join('');
+      const cf = (data.addresses || []).find(item => item.kind === 'public');
+      hint.textContent = cf
+        ? `当前页面走 ${cf.url}（Cloudflare）。下面这些地址不经 CF，局域网/tailnet 里用它们传文件最快。`
+        : '局域网/Tailscale 直连地址：传输不经过 Cloudflare。';
+    } catch (error) {
+      list.innerHTML = `<p class="ts-state bad">读取失败：${esc(error.message)}</p>`;
+    }
+  }
+
   async function open() {
     if (!dialog) return;
     sections.forEach(([id]) => toggleSection(id, false));
@@ -623,6 +666,7 @@
     loadSidebarPref();
     loadPreviewPref();
     loadPlugins();          // fills the row's counter; the list itself stays collapsed
+    loadDirectEntries();
     // Chrome/Firefox auto-focus the first control, Safari draws its blue ring on it: park the focus on
     // the dialog instead, so opening 设置 never comes with a highlighted row
     for (const element of dialog.querySelectorAll('.ts-row, .ts-btn, a, button, input')) {
@@ -662,7 +706,8 @@
     dialog = $('ts-dialog');
     dialog.querySelector('h2').id = 'ts-title';
 
-    sections = [['ts-pw-toggle', 'ts-pw-panel'], ['ts-io-toggle', 'ts-io-panel'],
+    sections = [['ts-pw-toggle', 'ts-pw-panel'], ['ts-direct-toggle', 'ts-direct-panel'],
+                ['ts-io-toggle', 'ts-io-panel'],
                 ['ts-plugin-toggle', 'ts-plugin-panel'], ['ts-theme-toggle', 'ts-theme-panel']];
     for (const [toggleId] of sections) $(toggleId).onclick = () => {
       toggleSection(toggleId);
@@ -673,6 +718,24 @@
     }
     for (const button of buttons) button.onclick = () => open();
     $('ts-close').onclick = () => dialog.close();
+    dialog.addEventListener('click', event => {
+      const button = event.target.closest('[data-copy]');
+      if (!button) return;
+      event.preventDefault();
+      const text = button.dataset.copy;
+      const done = () => { button.textContent = '已复制'; setTimeout(() => { button.textContent = '复制'; }, 1200); };
+      const legacyCopy = () => {
+        const area = document.createElement('textarea');
+        area.value = text; document.body.appendChild(area); area.select();
+        try { document.execCommand('copy'); done(); } catch (error) { /* ignore */ }
+        area.remove();
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(legacyCopy);
+      } else {
+        legacyCopy();
+      }
+    });
     $('ts-sidebar-memory').addEventListener('click', () => toggleSidebarMemory());
     $('ts-preview-delay').addEventListener('change', event => savePreviewDelay(event.target.value));
     $('ts-themes').addEventListener('click', event => {

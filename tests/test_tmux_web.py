@@ -315,6 +315,67 @@ class TmuxWebTests(unittest.TestCase):
         response = self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
         self.assertEqual(response.status_code, 303)
 
+    def _fake_ip_output(self):
+        return (
+            "1: lo    inet 127.0.0.1/8 scope host lo\n"
+            "2: eno1    inet 10.168.236.31/23 brd 10.168.237.255 scope global eno1\n"
+            "3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\n"
+            "4: br-9c1    inet 172.18.0.1/16 brd 172.18.255.255 scope global br-9c1\n"
+            "5: veth12ab    inet 172.19.0.7/16 brd 172.19.255.255 scope global veth12ab\n"
+        )
+
+    def _patch_addresses(self, serve="No serve config", json_dns="robo.neko-chroma.ts.net."):
+        """直连地址端点靠外部命令取地址，测试里把 subprocess.run 换掉。"""
+        from types import SimpleNamespace
+        import subprocess
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            joined = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+            calls.append(joined)
+            if cmd[:2] == ["ip", "-4"]:
+                return SimpleNamespace(stdout=self._fake_ip_output(), stderr="", returncode=0)
+            if joined.startswith("tailscale ip"):
+                return SimpleNamespace(stdout="100.123.123.3\n", stderr="", returncode=0)
+            if joined.startswith("tailscale status"):
+                return SimpleNamespace(stdout='{"Self": {"DNSName": "%s"}}' % json_dns, stderr="", returncode=0)
+            if joined.startswith("tailscale serve"):
+                return SimpleNamespace(stdout=serve, stderr="", returncode=0)
+            raise AssertionError("unexpected command: " + joined)
+
+        return mock.patch.object(subprocess, "run", fake_run), calls
+
+    def test_direct_addresses_skip_docker_bridges(self):
+        """docker0/br-/veth 的地址用户连不上，列出来只会误导。"""
+        self.login()
+        patcher, _ = self._patch_addresses()
+        with patcher:
+            payload = self.client.get("/api/system/addresses").json()
+        urls = [item["url"] for item in payload["addresses"]]
+        self.assertIn("http://10.168.236.31:8787", urls)
+        self.assertIn("http://100.123.123.3:8787", urls)
+        self.assertFalse([u for u in urls if "172.1" in u or "127.0.0.1" in u], urls)
+
+    def test_tailnet_https_entry_only_when_serve_is_configured(self):
+        """没起 tailscale serve 的时候不能列 https 那条，点进去是连不上的。"""
+        self.login()
+        patcher, _ = self._patch_addresses()
+        with patcher:
+            first = self.client.get("/api/system/addresses").json()
+        self.assertFalse([a for a in first["addresses"] if a["url"].startswith("https://")],
+                         first["addresses"])
+
+        patcher, _ = self._patch_addresses(serve="https://robo.neko-chroma.ts.net (tailnet only)\n")
+        with patcher:
+            second = self.client.get("/api/system/addresses").json()
+        https = [a["url"] for a in second["addresses"] if a["url"].startswith("https://")]
+        self.assertEqual(["https://robo.neko-chroma.ts.net"], https)
+
+    def test_direct_addresses_need_a_login(self):
+        response = self.client.get("/api/system/addresses", follow_redirects=False)
+        self.assertIn(response.status_code, (303, 401, 403))
+
     def test_a_slow_capture_does_not_drop_the_live_socket(self):
         """慢链路（上传/下载大文件时）一次抓屏超时不该把聊天断开。"""
         self.login()
