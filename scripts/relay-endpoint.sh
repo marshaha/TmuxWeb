@@ -80,7 +80,9 @@ fi
 
 probe() {  # $1=url
   command -v curl >/dev/null 2>&1 || return 0
-  code=$(curl -s -m 3 -o /dev/null -w '%{http_code}' "${1%/}/" 2>/dev/null || true)
+  # --noproxy：一定要测「直连」。有代理的机器上，代理会把别的网段答成 200/502，
+  # 把真正可达的地址（比如 tailnet）掩盖掉，也会让不可达的地址看起来可达。
+  code=$(curl -s --noproxy '*' -m 4 -o /dev/null -w '%{http_code}' "${1%/}/" 2>/dev/null || true)
   case "$code" in
     200|204|301|302|303|307|308|401|403) return 0 ;;
     *) return 1 ;;

@@ -9,10 +9,13 @@ import os
 import re
 import secrets
 import sqlite3
+import select
+import shutil
 import subprocess
 import time
 
 import agent_status
+import agent_catalog
 import tempfile
 import shlex
 import logging
@@ -140,6 +143,13 @@ header() {
     printf 'TMUXWEB_PRIMARY%s%s\n' "$sep" "$3"
     stamps=$(stat -c '%Y %s' -- "$3" 2>/dev/null || stat -f '%m %z' -- "$3" 2>/dev/null)
     printf 'TMUXWEB_STAMP%s%s\n' "$sep" "$stamps"
+    # 会话文件里最后一条 model：模型选择器要显示"现在跑的是哪个"。
+    # 只对 jsonl 做：hermes 走 state.db（二进制，且会话行里有 model，别去 grep 整个库）。
+    if [ "$2" = jsonl ]; then
+      model=$(grep -o '"model"[[:space:]]*:[[:space:]]*"[^"]*"' -- "$3" 2>/dev/null \
+        | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
+      printf 'TMUXWEB_MODEL%s%s\n' "$sep" "$model"
+    fi
   fi
   printf 'TMUXWEB_PAYLOAD\n'
 }
@@ -153,8 +163,10 @@ error() { printf 'TMUXWEB_ERROR%s%s\n' "$sep" "$1"; exit "${2:-20}"; }
 session_hint() {
   root=${1:-0}
   [ -n "$root" ] || return 1
-  for pid in $root $(pgrep -P "$root" 2>/dev/null) \
-      $(for child in $(pgrep -P "$root" 2>/dev/null); do pgrep -P "$child" 2>/dev/null; done); do
+  kids=$(pgrep -P "$root" 2>/dev/null)
+  grand=$(for child in $kids; do pgrep -P "$child" 2>/dev/null; done)
+  great=$(for child in $grand; do pgrep -P "$child" 2>/dev/null; done)
+  for pid in $root $kids $grand $great; do
     [ -n "$pid" ] || continue
     args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
     case "$args" in
@@ -172,9 +184,26 @@ session_hint() {
 # Codex / Claude 有时被 shell 包着启动（`zsh -c 'codex …'`、后台进程、runtime 外壳），
 # pane_current_command 就退化成 zsh/bash。这时只能看 pane_pid 的后代在跑什么，
 # 否则脚本会直接报 "unsupported pane command"，对话视图也就空着。
+# `--provider axera` 在命令行上，比 config.yaml 的 model.provider 更接近事实：
+# 同一个 config 下可以开不同 provider 的会话（model.provider 只是默认值）。
+provider_hint() {
+  root=${1:-0}
+  [ -n "$root" ] || return 1
+  kids=$(pgrep -P "$root" 2>/dev/null)
+  grand=$(for child in $kids; do pgrep -P "$child" 2>/dev/null; done)
+  great=$(for child in $grand; do pgrep -P "$child" 2>/dev/null; done)
+  for pid in $root $kids $grand $great; do
+    [ -n "$pid" ] || continue
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+    case "$args" in
+      *--provider*) printf '%s' "$(printf '%s\n' "$args" | sed -n 's/.*--provider[ =]\([A-Za-z0-9._/-]*\).*/\1/p' | head -1)"; return 0 ;;
+    esac
+  done
+  return 1
+}
 args_match() {  # $1=args $2=agent 名
   case "$1" in
-    *"/$2 "*|*"/$2"|"$2 "*|"$2") return 0 ;;
+    *"/$2 "*|*"/$2"|*"/$2-"*|"$2 "*|"$2"|"$2-"*) return 0 ;;
     *"/bin/$2"*) return 0 ;;
     *"/$2.js"*|*"/$2/bin/"*) return 0 ;;
   esac
@@ -408,14 +437,46 @@ fi
 if [ -n "$sqlite_bin" ] && [ -f "$HOME/.hermes/state.db" ] \
     && "$sqlite_bin" -readonly -json :memory: 'select 1' >/dev/null 2>&1; then
   cwd_sql=$(printf '%s' "$cwd" | sed "s/'/''/g")
+  # pane 启动的绝对时间：挑会话时用来判断「哪个会话是这个窗口的」
+  pane_elapsed=$(ps -o etime= -p "$pane_pid" 2>/dev/null | tr -d ' ' | awk -F'[-:]' '
+    { if (NF==4) s=$1*86400+$2*3600+$3*60+$4
+      else if (NF==3) s=$1*3600+$2*60+$3
+      else if (NF==2) s=$1*60+$2
+      else s=$1
+      print s }')
+  [ -n "$pane_elapsed" ] || pane_elapsed=0
+  started_at=$(( $(date +%s) - pane_elapsed ))
   if [ -z "$sid" ]; then
+    # 同一个 cwd 里常常并存好几个 hermes 会话（每个 pane 一个）。按「最近活跃」挑会让所有
+    # pane 都落到同一个会话上——看着就是几个窗口显示一样的对话。改成挑起始时间离本 pane
+    # 启动最近的：pane 是 `hermes` 之后才有的会话，谁先起就是谁。
     sid=$("$sqlite_bin" -readonly "$HOME/.hermes/state.db" \
-      "select s.id from sessions s where s.cwd='$cwd_sql' order by (select count(*) from messages m where m.session_id=s.id and m.active=1 and coalesce(m.content,'')<>'')=0, coalesce(s.last_activity_at,s.started_at) desc limit 1" 2>/dev/null)
+      "select s.id from sessions s where s.cwd='$cwd_sql' order by abs(coalesce(s.started_at,0) - $started_at) asc limit 1" 2>/dev/null)
+    if [ -z "$sid" ]; then
+      # 这个 cwd 没记过会话（pane 里换过目录、或者是别的 profile 起的）：退一步按
+      # 「启动时间最接近本 pane」挑，总比整个对话视图空着强
+      sid=$("$sqlite_bin" -readonly "$HOME/.hermes/state.db" \
+        "select s.id from sessions s order by abs(coalesce(s.started_at,0) - $started_at) asc limit 1" 2>/dev/null)
+    fi
   fi
   [ -n "$sid" ] || error "no Hermes session for $cwd" 23
+  model=$("$sqlite_bin" -readonly "$HOME/.hermes/state.db" \
+    "select coalesce(model,'') from sessions where id='$sid'" 2>/dev/null | head -1)
+  # 模型走哪个 provider（config.yaml 的 model.provider），下拉里要显示出来。
+  # 必须在 header 之前打印：header 末尾那行 TMUXWEB_PAYLOAD 是负载的开始，
+  # 后面再补 header 字段会被当成负载（声明 gzip、实际是明文 → Not a gzipped file）。
+  route=$(provider_hint "$pane_pid" || true)
+  if [ -z "$route" ]; then
+    route=$(awk '/^model:[[:space:]]*$/{f=1;next} f&&/^[^[:space:]]/{exit}
+        f&&/^[[:space:]]+provider:/{sub(/^[[:space:]]+provider:[[:space:]]*/,"");gsub(/"/,"");print;exit}' \
+      "$HOME/.hermes/config.yaml" 2>/dev/null)
+  fi
+  printf 'TMUXWEB_MODEL%s%s\nTMUXWEB_MODEL_PROVIDER%s%s\n' "$sep" "$model" "$sep" "$route"
   header "$sid" hermes-rows "$HOME/.hermes/state.db"
+  # 必须走 emit：header 已经声明白 "$encoding"，这里直接 cat 会让客户端拿到
+  # "声明 gzip、实际明文" 的负载（报 Not a gzipped file）
   "$sqlite_bin" -readonly -json "$HOME/.hermes/state.db" \
-    "select id, role, content, timestamp from messages where session_id='$sid' and active=1 and role in ('user','assistant') and coalesce(content,'')<>'' order by id desc limit $limit" 2>/dev/null
+    "select id, role, content, timestamp from messages where session_id='$sid' and active=1 and role in ('user','assistant') and coalesce(content,'')<>'' order by id desc limit $limit" 2>/dev/null | emit
   exit 0
 fi
 
@@ -431,24 +492,31 @@ else
   done
 fi
 if [ -n "$py" ] && [ -f "$HOME/.hermes/state.db" ]; then
-  exec "$py" - "$HOME/.hermes/state.db" "$cwd" "$sid" "$limit" <<'PYTHON'
+  exec "$py" - "$HOME/.hermes/state.db" "$cwd" "$sid" "$limit" "$started_at" <<'PYTHON'
 import json
 import os
 import sqlite3
 import sys
 
 db, cwd, sid, limit = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+pane_start = float(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5].strip() else 0.0
 sep = "<::>"
 try:
     con = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=5)
     con.row_factory = sqlite3.Row
     if not sid:
         row = con.execute(
-            "select s.id from sessions s where s.cwd=? order by"
-            " (select count(*) from messages m where m.session_id=s.id and m.active=1"
-            "  and coalesce(m.content,'')<>'')=0,"
-            " coalesce(s.last_activity_at, s.started_at) desc limit 1",
-            (cwd,),
+            # 新 pane 的会话往往还是空的：别因为"空"就把别人的旧对话挑过来
+            "select s.id from sessions s where s.cwd=? order by abs(coalesce(s.started_at,0) - ?)"
+            " asc limit 1",
+            (cwd, pane_start),
+        ).fetchone()
+        sid = row["id"] if row else ""
+    if not sid:
+        # 这个 cwd 没有会话记录时退一步：挑启动时间离本 pane 最近的，别让对话视图空着
+        row = con.execute(
+            "select s.id from sessions s order by abs(coalesce(s.started_at,0) - ?) asc limit 1",
+            (pane_start,),
         ).fetchone()
         sid = row["id"] if row else ""
     if not sid:
@@ -463,10 +531,37 @@ except Exception as exc:  # noqa: BLE001 - report and let the caller fall back
     sys.stderr.write("hermes transcript export failed: %s\n" % exc)
     sys.exit(4)
 info = os.stat(db)
+model = ""
+try:
+    row = con.execute("select coalesce(model,'') from sessions where id=?", (sid,)).fetchone()
+    if row:
+        model = row[0] or ""
+except Exception:  # noqa: BLE001 - the model line is optional
+    model = ""
+route = ""
+try:
+    import re as _re
+    with open(os.path.expanduser("~/.hermes/config.yaml"), errors="replace") as handle:
+        _inside = False
+        for _line in handle.read().splitlines():
+            if not _inside:
+                if _re.match(r"^model:\s*$", _line):
+                    _inside = True
+                continue
+            if _line and not _line[0].isspace():
+                break
+            _m = _re.match(r'^\s+provider:\s*"?([\w./-]+)"?', _line)
+            if _m:
+                route = _m.group(1)
+                break
+except Exception:  # noqa: BLE001 - the route line is optional too
+    route = ""
 sys.stdout.write(
     "TMUXWEB_STATUS%sunknown\nTMUXWEB_PROVIDER%shermes\nTMUXWEB_SESSION%s%s\nTMUXWEB_FORMAT%shermes-rows\n"
-    "TMUXWEB_PRIMARY%s%s\nTMUXWEB_STAMP%s%d %d\nTMUXWEB_PAYLOAD\n"
-    % (sep, sep, sid, sep, sep, db, sep, int(info.st_mtime), info.st_size)
+    "TMUXWEB_PRIMARY%s%s\nTMUXWEB_ENCODING%snone\nTMUXWEB_MODEL%s%s\n"
+    "TMUXWEB_MODEL_PROVIDER%s%s\nTMUXWEB_STAMP%s%d %d\nTMUXWEB_PAYLOAD\n"
+    % (sep, sep, sep, sid, sep, sep, db, sep, sep, model, sep, route,
+       sep, int(info.st_mtime), info.st_size)
 )
 sys.stdout.write(json.dumps(rows, ensure_ascii=False))
 PYTHON
@@ -702,6 +797,10 @@ def ssh_mux_dir() -> Path:
     return directory
 
 
+def head_bytes_cmd(count: int) -> str:
+    return f"head -c {int(count)}"
+
+
 def ssh_mux_path(host: dict) -> Path:
     token = hashlib.sha256(
         f"{host.get('hostname')}\0{host.get('port')}\0{host.get('username')}".encode()
@@ -797,6 +896,17 @@ def parse_tmux_panes(raw: str, host_id: str, separator: str = FIELD_SEPARATOR) -
 
 def _format_jump_spec(parsed: dict) -> str:
     return f"{parsed['username']}@{parsed['hostname']}:{parsed['port']}"
+
+
+class UploadOffsetMismatch(RuntimeError):
+    """The ``.part`` file on the far side is not where the client thinks it is."""
+
+    def __init__(self, offset: str):
+        super().__init__("upload offset mismatch")
+        try:
+            self.offset = int(str(offset).strip() or 0)
+        except ValueError:
+            self.offset = 0
 
 
 class RemoteHostStore:
@@ -1384,22 +1494,86 @@ class SSHRunner:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "SSH connection failed")
         return completed.stdout.decode(errors="replace")
 
-    def create_session(self, name: str, path: str = "") -> dict:
-        """Start a detached tmux session on the remote host."""
+    def create_session(self, name: str, path: str = "", command: list[str] | None = None,
+                       create_dir: bool = True, keep_open: bool = True) -> dict:
+        """Start a detached tmux session on the remote host.
+
+        A missing directory is created when ``create_dir`` is set (the default):
+        the console is usually used to start a session in a directory it just
+        invented, and requiring a separate manual mkdir is friction.  Creation
+        failures still surface the directory name, not some tmux message.
+        """
         name = normalize_session_name(name)
         directory = str(path or "").strip()
-        command = f"${{TMUX_BIN:-tmux}} new-session -d -s {shlex.quote(name)}"
+        tmux = "${TMUX_BIN:-tmux}"
+        pieces = []
         if directory:
             quoted = shlex.quote(directory)
-            command = (f"if [ -d {quoted} ]; then ${{TMUX_BIN:-tmux}} new-session -d -s {shlex.quote(name)} "
-                       f"-c {quoted}; else echo 'no such directory: {directory}' >&2; exit 3; fi")
-        completed = self.run(command)
+            if create_dir:
+                # Say which case happened, so the console can tell the user a
+                # directory was created instead of guessing (or lying).
+                pieces.append(
+                    f"if [ -d {quoted} ]; then echo TMUXWEB_DIR_EXISTED; "
+                    f"else mkdir -p {quoted} 2>/dev/null && echo TMUXWEB_DIR_CREATED || "
+                    f"{{ echo 'cannot create directory: {directory}' >&2; exit 4; }}; fi")
+            pieces.append(f"[ -d {quoted} ] || {{ echo 'no such directory: {directory}' >&2; exit 3; }}")
+            target = f" -c {quoted}"
+        else:
+            target = ""
+        session = f"{tmux} new-session -d -s {shlex.quote(name)}{target}"
+        if command:
+            shell_text = (agent_catalog.with_keep_open(command) if keep_open
+                          else agent_catalog.render(command))
+            session += f" {shlex.quote(shell_text)}"
+        pieces.append(session)
+        completed = self.run(" && ".join(pieces))
         detail = completed.stderr.decode(errors="replace").strip()
         if completed.returncode != 0:
             if "duplicate session" in detail:
                 raise RuntimeError("session already exists: %s" % name)
             raise RuntimeError(detail or "tmux new-session failed")
-        return {"session": name, "path": directory}
+        stdout = completed.stdout.decode(errors="replace")
+        return {"session": name, "path": directory,
+                "created_dir": "TMUXWEB_DIR_CREATED" in stdout,
+                "command": shlex.join(command) if command else ""}
+
+    def kill_pane(self, pane_id: str) -> dict:
+        """Close one remote pane and report whether its session survived."""
+        if not PANE_ID_RE.fullmatch(pane_id):
+            raise ValueError("invalid pane id")
+        tmux = "${TMUX_BIN:-tmux}"
+        target = shlex.quote(pane_id)
+        session = self.run(f"{tmux} display-message -p -t {target} '#{{session_name}}' 2>/dev/null",
+                           timeout=15).stdout.decode(errors="replace").strip()
+        killed = self.run(f"{tmux} kill-pane -t {target}", timeout=15)
+        if killed.returncode != 0:
+            detail = killed.stderr.decode(errors="replace").strip()
+            if "no such pane" in detail or "can't find pane" in detail:
+                raise RuntimeError("no such pane: %s" % pane_id)
+            raise RuntimeError(detail or "tmux kill-pane failed")
+        alive = False
+        if session:
+            alive = self.run(f"{tmux} has-session -t {shlex.quote(session)}", timeout=15).returncode == 0
+        return {"pane": pane_id, "session": session, "session_alive": alive}
+
+    def kill_session(self, name: str) -> dict:
+        """Close a remote session; ``no such session`` is reported as such."""
+        name = normalize_session_name(name)
+        quoted = shlex.quote(name)
+        command = (f"${{TMUX_BIN:-tmux}} kill-session -t {quoted} 2>&1 || "
+                   f"{{ echo \"no such session: {name}\" >&2; exit 3; }}")
+        completed = self.run(command)
+        detail = completed.stderr.decode(errors="replace").strip()
+        if completed.returncode != 0:
+            raise RuntimeError(detail or "tmux kill-session failed")
+        return {"session": name, "killed": True}
+
+    def probe_agents(self, timeout: int = 12) -> list[dict]:
+        """Which coding agents this host can start (one ssh round trip)."""
+        completed = self.run(agent_catalog.PROBE_SCRIPT, timeout=timeout)
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "agent probe failed")
+        return agent_catalog.parse_probe(completed.stdout.decode(errors="replace"))
 
     def list_panes(self, timeout: int = 15) -> list[dict]:
         fmt = FIELD_SEPARATOR.join([
@@ -1562,6 +1736,9 @@ class SSHRunner:
         stamp = header.get("TMUXWEB_STAMP", "")
         data["mtime"] = self._probe_mtime(stamp)
         data["pane"] = pane_id
+        if not data.get("model"):
+            data["model"] = header.get("TMUXWEB_MODEL", "")
+        data["model_provider"] = header.get("TMUXWEB_MODEL_PROVIDER", "")
         data.setdefault("host_id", self.host.get("id"))
         primary = header.get("TMUXWEB_PRIMARY", "")
         probe = [primary] if primary else []
@@ -1702,6 +1879,83 @@ class SSHRunner:
             raise RuntimeError("file is larger than the download limit")
         return completed.stdout
 
+    def file_size(self, path: str) -> int | None:
+        """Byte size of a remote file (None when it cannot be read)."""
+        if "\x00" in path or "\n" in path:
+            return None
+        quoted = shlex.quote(path)
+        # GNU stat 是 -c%s，BSD/macOS 是 -f%z；两边都试一次，反正只有一次往返
+        completed = self.run(f"stat -c%s -- {quoted} 2>/dev/null || stat -f%z -- {quoted} 2>/dev/null",
+                             timeout=20)
+        if completed.returncode != 0:
+            return None
+        try:
+            return int(completed.stdout.decode(errors="replace").strip().split()[0])
+        except (ValueError, IndexError):
+            return None
+
+    def stream_file(self, path: str, max_bytes: int, chunk: int = 65536,
+                    idle_timeout: float = 90.0):
+        """Yield a remote file in chunks instead of buffering the whole thing.
+
+        A home uplink can deliver 25 KB/s while the same link accepts 800 KB/s the
+        other way, so a 20 MB video blows any fixed timeout and the browser sees a
+        dropped download.  Streaming decouples us from the link speed: the file
+        arrives as fast as the line allows, and only *silence* is a failure.
+        """
+        if "\x00" in path or "\n" in path:
+            raise ValueError("invalid path")
+        quoted = shlex.quote(path)
+        command = (f"if [ ! -f {quoted} ]; then echo 'no such file: {path}' >&2; exit 44; fi; "
+                   f"{head_bytes_cmd(max_bytes + 1)} -- {quoted}")
+        process, directory = self.spawn(command)
+        sent = 0
+        try:
+            assert process.stdout is not None
+            while True:
+                ready, _, _ = select.select([process.stdout], [], [], idle_timeout)
+                if not ready:
+                    raise RuntimeError("remote download stalled for %ds" % int(idle_timeout))
+                data = os.read(process.stdout.fileno(), chunk)
+                if not data:
+                    break
+                sent += len(data)
+                if sent > max_bytes:
+                    raise RuntimeError("file is larger than the download limit")
+                yield data
+            code = process.wait(timeout=10)
+            if code != 0:
+                detail = (process.stderr.read() if process.stderr else b"").decode(errors="replace")
+                raise RuntimeError(detail.strip() or "remote file could not be read")
+        finally:
+            if process.poll() is None:
+                process.kill()
+            shutil.rmtree(directory, ignore_errors=True)
+
+    def spawn(self, remote_command: str, *, resolve_tmux: bool = False):
+        """Start one ssh invocation with stdout as a pipe (used by stream_file)."""
+        directory = tempfile.mkdtemp(prefix="tmux-remote-")
+        base = Path(directory)
+        known_hosts = self._known_hosts(base)
+        identity_file, password_file = self._prepare_auth(self.host, base, "")
+        jump_proxy, hop_passwords = self.build_jump_proxy(base)
+        environment = os.environ.copy()
+        if password_file or hop_passwords:
+            askpass = base / "askpass.sh"
+            self._write_askpass(base, password_file, hop_passwords, askpass)
+            environment["SSH_ASKPASS"] = str(askpass)
+            environment["SSH_ASKPASS_REQUIRE"] = "force"
+            environment["DISPLAY"] = ":0"
+        command, extra_environment = self.command(
+            remote_command, known_hosts=str(known_hosts), identity_file=identity_file,
+            tmux_bin=self.tmux_binary() if resolve_tmux else None,
+            host_key_pinned=self.host_key_pinned(), jump_proxy=jump_proxy,
+        )
+        environment.update(extra_environment)
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=environment, start_new_session=True)
+        return process, directory
+
     def zip_files(self, paths: list[str], base: str, max_bytes: int, max_files: int) -> bytes:
         """Pull a ``tar`` stream in one SSH call and re-container it as a zip.
 
@@ -1745,6 +1999,36 @@ class SSHRunner:
         if len(payload) > max_bytes:
             raise RuntimeError("selection is larger than the %d byte zip limit" % max_bytes)
         return file_browser.tar_to_zip(payload, max_bytes=max_bytes, max_files=max_files)
+
+    def upload_chunk(self, part: str, data: bytes, offset: int) -> int:
+        """Append one chunk to a remote ``.part`` file; returns the size afterwards."""
+        if "\x00" in part or "\n" in part:
+            raise ValueError("invalid path")
+        directory = os.path.dirname(part) or "."
+        quoted = shlex.quote(part)
+        if offset:
+            command = (f"sz=$(stat -c%s -- {quoted} 2>/dev/null || stat -f%z -- {quoted} 2>/dev/null || echo 0); "
+                       f"[ \"$sz\" = \"{int(offset)}\" ] || {{ echo \"offset:$sz\" >&2; exit 43; }}; "
+                       f"cat >> {quoted}; "
+                       f"stat -c%s -- {quoted} 2>/dev/null || stat -f%z -- {quoted} 2>/dev/null")
+        else:
+            command = (f"mkdir -p -- {shlex.quote(directory)} && cat > {quoted} && "
+                       f"stat -c%s -- {quoted} 2>/dev/null || stat -f%z -- {quoted} 2>/dev/null")
+        completed = self.run(command, input_bytes=data, timeout=180)
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(errors="replace").strip()
+            if detail.startswith("offset:"):
+                raise UploadOffsetMismatch(detail.split(":", 1)[1].strip())
+            raise RuntimeError(detail or "remote chunk could not be written")
+        try:
+            return int(completed.stdout.decode(errors="replace").strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return offset + len(data)
+
+    def finish_upload(self, part: str, path: str) -> None:
+        completed = self.run(f"mv -f -- {shlex.quote(part)} {shlex.quote(path)}", timeout=60)
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote rename failed")
 
     def upload_file(self, path: str, data: bytes) -> None:
         """Write a remote file from raw bytes, creating the parent directory."""
@@ -1877,16 +2161,48 @@ class SSHRunner:
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote key send failed")
 
-    def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None) -> None:
+    def screen(self, pane_id: str, lines: int = 12, timeout: int = 15) -> str:
+        """Plain text of the pane's last lines, over one ssh round trip."""
+        command = (f"${{TMUX_BIN:-tmux}} capture-pane -p -t {shlex.quote(pane_id)} "
+                   f"-S -{max(1, lines)}")
+        completed = self.run(command, timeout=timeout)
+        if completed.returncode != 0:
+            return ""
+        return completed.stdout.decode(errors="replace")
+
+    def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None,
+             tries: int = 3, submit_delay: float | None = None) -> None:
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
         name = "web-" + secrets.token_hex(6)
-        clear = f"${{TMUX_BIN:-tmux}} send-keys -t {shlex.quote(pane_id)} C-u; sleep 0.05; " if submit else ""
-        submit_cmd = f"; sleep 0.15; ${{TMUX_BIN:-tmux}} send-keys -t {shlex.quote(pane_id)} C-m" if submit else ""
-        command = clear + f"${{TMUX_BIN:-tmux}} load-buffer -b {name} -; ${{TMUX_BIN:-tmux}} paste-buffer -b {name} -d -t {shlex.quote(pane_id)}" + submit_cmd
+        tmux = "${TMUX_BIN:-tmux}"
+        target = shlex.quote(pane_id)
+        clear = f"{tmux} send-keys -t {target} C-u; sleep 0.05; " if submit else ""
+        command = (clear + f"{tmux} load-buffer -b {name} -; "
+                   f"{tmux} paste-buffer -b {name} -d -t {target}")
         completed = self.run(command, input_bytes=text.encode())
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote send failed")
+        if not submit:
+            return
+        # Same story as the local backend: a long paste over ssh can still be
+        # in flight when the first C-m lands, so press again while the screen is
+        # frozen.  An extra Enter on an empty prompt does nothing.
+        delay = submit_delay if submit_delay is not None else 0.18 + min(2.0, len(text) / 2500.0)
+        time.sleep(delay)
+        fingerprint = " ".join((text or "").split())[-40:]
+        for attempt in range(max(1, tries)):
+            pressed = self.run(f"{tmux} send-keys -t {target} C-m", timeout=15)
+            if pressed.returncode != 0:
+                raise RuntimeError(pressed.stderr.decode(errors="replace").strip() or "remote send failed")
+            if attempt + 1 >= tries or not fingerprint:
+                return
+            time.sleep(0.5)
+            # 屏幕还在动不代表提交了：直接看我们那行字还在不在底部输入框里
+            screen = self.run(f"{tmux} capture-pane -p -t {target}", timeout=15)
+            bottom = " ".join(" ".join(screen.stdout.decode(errors="replace").splitlines()[-6:]).split())
+            if fingerprint not in bottom:
+                return
 
 
 class RemoteTerminalSession:

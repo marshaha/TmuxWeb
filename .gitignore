@@ -52,3 +52,7 @@ passwords.json.tmp
 plugins.json
 plugins.json.tmp
 logs/
+
+# 运行期数据：用户上传的附件 / 未完成的分块上传，绝不能进库
+upload_files/
+*.part

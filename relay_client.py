@@ -45,6 +45,28 @@ def token() -> str:
     return value
 
 
+def request_raw(path: str, data: bytes, *, timeout: float = 120.0,
+                method: str = "PUT") -> Any:
+    """Send a body as-is (file upload); JSON helpers cannot express that."""
+    request = urllib.request.Request(base_url() + path, data=data, method=method)
+    request.add_header("Authorization", f"Bearer {token()}")
+    request.add_header("Accept", "application/json")
+    request.add_header("Content-Type", "application/octet-stream")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode(errors="replace") or "{}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        try:
+            detail = json.loads(body)
+            message = detail.get("detail") if isinstance(detail, dict) else body
+        except json.JSONDecodeError:
+            message = body.strip()
+        raise RelayError(f"{message}", status=exc.code)
+    except urllib.error.URLError as exc:
+        raise RelayError(f"cannot reach {base_url()}: {exc.reason}")
+
+
 def request(path: str, payload: dict | None = None, *, timeout: float = 30.0,
             method: str | None = None) -> Any:
     data = json.dumps(payload).encode() if payload is not None else None

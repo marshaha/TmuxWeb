@@ -118,6 +118,22 @@
   .preview{margin:0;color:var(--muted);font-size:12.5px;line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;white-space:pre-wrap;word-break:break-word}
   .preview b{color:var(--ink);font-weight:600}
   .card-body{margin:0;color:var(--muted);font-size:12.5px;white-space:pre-wrap;overflow:hidden;display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;word-break:break-word}
+  .card-body.md{white-space:normal}
+  .card-body.md>*:first-child{margin-top:0}
+  .card-body.md>*:last-child{margin-bottom:0}
+  .card-body.md p{margin:0 0 4px}
+  .card-body.md ul,.card-body.md ol{margin:2px 0 4px;padding-left:16px}
+  .card-body.md li{margin:1px 0}
+  .card-body.md h1,.card-body.md h2,.card-body.md h3,.card-body.md h4{margin:4px 0 2px;font-size:12.5px;font-weight:650;color:var(--ink)}
+  .card-body.md code{background:var(--surface2);padding:0 3px;border-radius:4px;font-size:11.5px}
+  .card-body.md pre{margin:4px 0;padding:6px 8px;border:1px solid var(--line);border-radius:7px;overflow:auto;max-height:72px}
+  .card-body.md pre code{background:transparent;padding:0}
+  .card-body.md blockquote{margin:4px 0;padding:0 0 0 8px;border-left:2px solid var(--line);color:var(--muted)}
+  .card-body.md a{color:var(--accent);text-decoration:none}
+  .card-body.md a:hover{text-decoration:underline}
+  .card-body.md table{border-collapse:collapse;margin:4px 0}
+  .card-body.md th,.card-body.md td{border:1px solid var(--line);padding:2px 6px;white-space:nowrap}
+  .card-body.md strong{color:var(--ink);font-weight:650}
   .card-foot{display:flex;align-items:center;gap:8px;margin-top:auto;padding-top:2px;color:var(--faint);font-size:11px}
   .card-foot .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .card-btn{display:grid;place-items:center;width:26px;height:26px;padding:0;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--faint);cursor:pointer;flex:none}
@@ -296,6 +312,10 @@
   marked.use({renderer:{html(token){return escHtml(token && (token.text != null ? token.text : token.raw));}}});
   // 悬浮/点击预览里渲染 markdown：以前是 textContent，`## 标题`、表格、代码块都原样怼出来
   window.__md = value => marked.parse(String(value == null ? '' : value), {gfm:true, breaks:false, async:false});
+  // 卡片正文也走同一套 markdown（marked + 下面的 .md 样式），只是链接要新窗口打开
+  // 单独一个 <script> 块，必须挂到 window 上，cardHtml 那边才看得到
+  window.mdCard = value => window.__md(value)
+    .replace(/<a\s/g, '<a target="_blank" rel="noopener noreferrer" ');
 </script>
 <script src="/assets/recents.js"></script>
 <script src="/assets/pane-preview.js"></script>
@@ -456,7 +476,7 @@
         <button class="card-btn" data-del="${esc(card.id)}" title="删除卡片" aria-label="删除卡片"><svg class="ico"><use href="#i-trash"/></svg></button>
       </div>
       <div class="card-title">${esc(card.title)}</div>
-      ${card.body?`<p class="card-body">${esc(card.body)}</p>`:''}
+      ${card.body?`<div class="card-body md">${window.mdCard(card.body)}</div>`:''}
       <div class="card-foot"><span class="grow">${esc(card.pane_id||'来自 MCP')}</span></div>
     </article>`;
   }
@@ -546,6 +566,7 @@
     }
     const rename=event.target.closest('[data-rename]');
     if(rename){event.preventDefault();event.stopPropagation();openRename(rename.dataset.rename);return;}
+    if(event.target.closest('.card-body a'))return;   // 卡片正文里的 md 链接：交给浏览器
     const open=event.target.closest('[data-open]');
     if(open){
       // a card previews, it never navigates: the panel holds the ways in

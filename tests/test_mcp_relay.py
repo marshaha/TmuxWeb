@@ -2,6 +2,7 @@ import io
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -28,8 +29,11 @@ class Recorder:
         self.calls = []
         self.responses = responses or {}
 
-    def __call__(self, path, payload=None, *, timeout=30.0):
+    def __call__(self, path, payload=None, *, timeout=30.0, method=None):
         self.calls.append((path, payload, timeout))
+        if method:
+            self.methods = getattr(self, "methods", [])
+            self.methods.append(method)
         for key, value in self.responses.items():
             if key in path:
                 return value
@@ -68,6 +72,96 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(path, "/api/relay/message")
         self.assertEqual(payload, {"target": "abc~%3", "text": "run the tests", "submit": True})
 
+    def test_create_session_passes_the_agent_and_returns_the_pane(self):
+        recorder = Recorder({"/api/hosts": {"hosts": [{"id": "abc123", "name": "oracle"}]},
+                             "/api/sessions": {"host": "abc123",
+                                               "session": {"session": "aiisp", "path": "/srv/aiisp",
+                                                           "created_dir": True, "command": "claude"},
+                                               "panes": [{"id": "abc123~%156", "handle": "#153"}]},
+                             "/api/relay/peers": {"peers": [{"id": "abc123~%156", "number": 153}]}})
+        with patch.object(mcp_relay, "request", recorder):
+            result = mcp_relay.RelayTools().create_session({
+                "name": "aiisp", "host": "oracle", "path": "/srv/aiisp",
+                "agent": "claude", "agent_args": "--model sonnet"})
+        path, payload, _ = [call for call in recorder.calls if call[0] == "/api/sessions"][0]
+        self.assertEqual(path, "/api/sessions")
+        self.assertEqual(payload["host"], "abc123", "主机名要解析成 id")
+        self.assertEqual(payload["agent"], "claude")
+        self.assertEqual(payload["agent_args"], "--model sonnet")
+        self.assertTrue(payload["keep_open"])
+        self.assertEqual(result["session"], "aiisp")
+        self.assertEqual(result["handle"], "#153")
+        self.assertTrue(result["created_dir"])
+
+    def test_create_session_without_agent_stays_a_plain_shell(self):
+        recorder = Recorder({"/api/sessions": {"host": "localhost",
+                                               "session": {"session": "dev", "path": ""}}})
+        with patch.object(mcp_relay, "request", recorder):
+            mcp_relay.RelayTools().create_session({"name": "dev"})
+        payload = [call for call in recorder.calls if call[0] == "/api/sessions"][0][1]
+        self.assertNotIn("agent", payload)
+        self.assertEqual(payload["host"], "localhost")
+
+    def test_kill_session_can_aim_at_one_pane(self):
+        recorder = Recorder({"/api/panes/abc~%253": {"pane": "abc~%3", "session": "work",
+                                                     "session_alive": True}})
+        with patch.object(mcp_relay, "request", recorder):
+            result = mcp_relay.RelayTools().kill_session({"pane": "abc~%3"})
+        self.assertEqual(recorder.calls[0][0], "/api/panes/abc~%253")
+        self.assertEqual(recorder.methods, ["DELETE"])
+        self.assertEqual(result["scope"], "pane")
+        self.assertTrue(result["session_alive"])
+
+    def test_kill_session_resolves_the_host_name(self):
+        recorder = Recorder({"/api/hosts": {"hosts": [{"id": "abc123", "name": "Oracle"}]},
+                             "/api/sessions/aiisp": {"session": "aiisp", "host": "abc123"}})
+        with patch.object(mcp_relay, "request", recorder):
+            result = mcp_relay.RelayTools().kill_session({"session": "aiisp", "host": "oracle"})
+        paths = [call[0] for call in recorder.calls]
+        self.assertIn("/api/sessions/aiisp?host=abc123", paths)
+        self.assertTrue(result["killed"])
+
+    def test_send_file_uploads_into_the_target_upload_folder(self):
+        recorder = Recorder({"/api/relay/peers": {"peers": [
+            {"id": "abc~%3", "handle": "#12", "number": 12, "path": "/srv/work"}]},
+            "/files/upload": {"status": "uploaded", "path": "/srv/work/upload_files/plan.md",
+                              "size": 5},
+            "/api/relay/message": {"pane": "abc~%3"}})
+        raw_calls = []
+
+        def raw(path, data, **kwargs):
+            raw_calls.append((path, data))
+            return {"status": "uploaded", "path": "/srv/work/upload_files/plan.md", "size": len(data)}
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "plan.md"
+            source.write_bytes(b"hello")
+            with patch.object(mcp_relay, "request", recorder), \
+                    patch.object(mcp_relay, "request_raw", raw):
+                result = mcp_relay.RelayTools().send_file({"target": "abc~%3", "path": str(source)})
+
+        path, data = raw_calls[0]
+        self.assertEqual(data, b"hello")
+        self.assertIn("name=plan.md", path)
+        self.assertIn("dir=%2Fsrv%2Fwork%2Fupload_files", path)
+        self.assertEqual(result["path"], "/srv/work/upload_files/plan.md")
+        self.assertTrue(result["notified"])
+        # 目标 agent 得知道文件在哪
+        message = [call for call in recorder.calls if call[0] == "/api/relay/message"][0][1]
+        self.assertIn("/srv/work/upload_files/plan.md", message["text"])
+
+    def test_send_file_rejects_bad_input(self):
+        tools = mcp_relay.RelayTools()
+        with self.assertRaises(ValueError):
+            tools.send_file({"target": "abc~%3"})
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "a.txt"
+            source.write_bytes(b"x")
+            with self.assertRaises(ValueError):
+                tools.send_file({"target": "abc~%3", "path": str(source), "name": "../escape.txt"})
+            with self.assertRaises(ValueError):
+                tools.send_file({"target": "abc~%3", "path": str(Path(directory) / "missing")})
+
     def test_read_agent_uses_capture_or_transcript(self):
         recorder = Recorder({"/capture": {"content": "screen text"},
                              "/transcript": {"provider": "codex", "session_id": "s1",
@@ -105,7 +199,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(init["result"]["serverInfo"]["name"], "tmuxweb-relay")
         listing = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
-        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "read_agent",
+        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "create_session",
+                                       "kill_session", "send_file", "read_agent",
                                        "publish_home_card", "list_home", "remove_home_card",
                                        "list_remote_hosts", "add_remote_host", "remove_remote_host"})
         self.assertEqual(tools["ask_agent"]["inputSchema"]["required"], ["target", "question"])
@@ -182,6 +277,9 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("/Applications/Tailscale.app/Contents/MacOS/Tailscale", helper)
         # 判据是“能双向访问到 8787”，不是某个产品名
         self.assertIn("200|204|301|302|303|307|308|401|403", helper)
+        # 探测必须走直连：有代理的机器上，代理会把其它网段答成 200/502，选错地址
+        self.assertIn("--noproxy '*'", helper)
+        self.assertIn("--noproxy '*'", script)
 
     def test_the_endpoint_helper_probes_before_answering(self):
         """--probe 只输出真能连上的那个；全都连不上时退出码 1。"""

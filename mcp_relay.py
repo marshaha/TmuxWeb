@@ -34,7 +34,7 @@ import sys
 import urllib.parse
 from typing import Any, BinaryIO
 
-from relay_client import RelayError, base_url, request, token
+from relay_client import RelayError, base_url, request, request_raw, token
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "tmuxweb-relay"
@@ -89,6 +89,134 @@ class RelayTools:
         result = request("/api/relay/message", {"target": target, "text": text,
                                                 "submit": bool(arguments.get("submit", True))})
         return {"target": target, "sent": True, "pane": result.get("pane")}
+
+    def _resolve_host(self, value: str) -> str:
+        """Accept a host id, a host name or "localhost" - names are friendlier."""
+        wanted = (value or "").strip()
+        if wanted in ("", "localhost"):
+            return "localhost"
+        try:
+            hosts = request("/api/hosts").get("hosts", [])
+        except RelayError:
+            return wanted
+        for host in hosts:
+            if wanted in (host.get("id"), (host.get("name") or "")):
+                return host.get("id") or wanted
+        for host in hosts:
+            if (host.get("name") or "").lower() == wanted.lower():
+                return host.get("id") or wanted
+        return wanted
+
+    def create_session(self, arguments: dict) -> dict:
+        """Start a tmux session, optionally already running an agent."""
+        name = self._text(arguments, "name", limit=64)
+        host = self._resolve_host(str(arguments.get("host") or "localhost"))
+        payload = {
+            "host": host,
+            "name": name,
+            "path": str(arguments.get("path") or ""),
+            "create_dir": bool(arguments.get("create_dir", True)),
+        }
+        agent = str(arguments.get("agent") or "").strip()
+        if agent:
+            payload["agent"] = agent
+            payload["agent_args"] = str(arguments.get("agent_args") or "")
+            payload["keep_open"] = bool(arguments.get("keep_open", True))
+        result = request("/api/sessions", payload, timeout=120)
+        session = result.get("session") or {}
+        panes = result.get("panes") or []
+        pane_id = panes[0].get("id") if panes else None
+        number = panes[0].get("number") if panes else None
+        if pane_id and not number:
+            # 新会话的编号在 peers 里分配，顺手带回去，方便 agent 之间用 #N 指代
+            try:
+                for peer in request("/api/relay/peers").get("peers", []):
+                    if peer.get("id") == pane_id:
+                        number = peer.get("number")
+                        break
+            except RelayError:
+                number = None
+        return {
+            "host": result.get("host", host),
+            "session": session.get("session", name),
+            "path": session.get("path", payload["path"]),
+            "created_dir": session.get("created_dir", False),
+            "command": session.get("command", ""),
+            "pane": pane_id,
+            "number": number,
+            "handle": f"#{number}" if number else pane_id,
+        }
+
+    def kill_session(self, arguments: dict) -> dict:
+        """Close a pane, or a whole session.
+
+        ``pane`` kills just that pane (the session stays if other panes are left);
+        ``session`` closes everything.  A session with several panes should be
+        trimmed with ``pane`` rather than nuked.
+        """
+        pane = str(arguments.get("pane") or "").strip()
+        if pane:
+            result = request(f"/api/panes/{urllib.parse.quote(pane, safe='')}",
+                             method="DELETE", timeout=60)
+            return {"scope": "pane", "pane": result.get("pane", pane),
+                    "session": result.get("session", ""),
+                    "session_alive": result.get("session_alive", False), "killed": True}
+        name = self._text(arguments, "session", limit=64)
+        host = self._resolve_host(str(arguments.get("host") or "localhost"))
+        result = request(f"/api/sessions/{urllib.parse.quote(name, safe='')}"
+                         f"?host={urllib.parse.quote(host, safe='')}",
+                         method="DELETE", timeout=60)
+        return {"scope": "session", "host": result.get("host", host),
+                "session": result.get("session", name), "killed": True}
+
+    def send_file(self, arguments: dict) -> dict:
+        """Copy a local file into the target pane's ``upload_files/``.
+
+        Cross-host by design: the bytes travel through the console (the only
+        thing both hosts can reach), land next to the target's working directory,
+        and the target is told the absolute path - it never needs a mount or an
+        ssh key of its own.
+        """
+        target = self._target(arguments)
+        source = str(arguments.get("path") or "").strip()
+        if not source:
+            raise ValueError("path is required (a file readable by this agent)")
+        if not os.path.isfile(source):
+            raise ValueError("no such file: %s" % source)
+        name = str(arguments.get("name") or "").strip() or os.path.basename(source)
+        if not name or "/" in name or "\\" in name or name in {".", ".."}:
+            raise ValueError("invalid file name: %s" % name)
+        limit = int(os.environ.get("TMUXWEB_SEND_FILE_MAX") or 64 * 1024 * 1024)
+        size = os.path.getsize(source)
+        if size > limit:
+            raise ValueError("file is %d bytes, over the %d limit" % (size, limit))
+        with open(source, "rb") as handle:
+            data = handle.read()
+        directory = ""
+        try:
+            peers = request("/api/relay/peers").get("peers", [])
+            for peer in peers:
+                if target in (peer.get("id"), peer.get("handle"), str(peer.get("number"))):
+                    base = peer.get("path") or ""
+                    if base:
+                        directory = base.rstrip("/") + "/upload_files"
+                    break
+        except RelayError:
+            directory = ""
+        query = urllib.parse.urlencode({"name": name, **({"dir": directory} if directory else {})})
+        result = request_raw(pane_path(target, f"/files/upload?{query}"), data)
+        note = str(arguments.get("note") or "").strip()
+        message = note or f'user uploaded file "{name}" ({size} bytes)'
+        sent = False
+        if arguments.get("notify", True):
+            try:
+                self.send_agent({"target": target, "text": f"[file] {result.get('path') or name} "
+                                                          f"({size} bytes) — {message}"})
+                sent = True
+            except RelayError:
+                sent = False
+        return {"target": target, "path": result.get("path"), "size": result.get("size", size),
+                "notified": sent}
 
     def read_agent(self, arguments: dict) -> dict:
         target = self._target(arguments)
@@ -180,6 +308,9 @@ class RelayTools:
             "ask_agent": self.ask_agent,
             "send_agent": self.send_agent,
             "read_agent": self.read_agent,
+            "send_file": self.send_file,
+            "create_session": self.create_session,
+            "kill_session": self.kill_session,
             "publish_home_card": self.publish_home_card,
             "list_remote_hosts": self.list_remote_hosts,
             "add_remote_host": self.add_remote_host,
@@ -240,6 +371,67 @@ def tool_schemas() -> list[dict]:
             },
         },
         {
+            "name": "create_session",
+            "description": ("Start a new tmux session on any managed host, optionally already running a "
+                            "coding agent (hermes/claude/codex/kimi/... as installed on that host). "
+                            "A missing working directory is created. Use list_agents to see which "
+                            "agents a host has."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": 64,
+                             "description": "session name ([A-Za-z0-9][A-Za-z0-9_.-]*)"},
+                    "host": {"type": "string", "description": "host id or name, default localhost"},
+                    "path": {"type": "string", "description": "working directory (created when missing)"},
+                    "agent": {"type": "string", "description": "start this agent instead of a shell"},
+                    "agent_args": {"type": "string", "description": "extra arguments for the agent"},
+                    "create_dir": {"type": "boolean", "default": True},
+                    "keep_open": {"type": "boolean", "default": True,
+                                  "description": "keep the pane alive if the agent exits immediately"},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "kill_session",
+            "description": ("Close a tmux pane or a whole session. Pass `pane` to close just that pane "
+                            "(the session survives if it has other panes) - that is the polite option "
+                            "when a session has several windows. Pass `session` to close everything in "
+                            "it. Ask the agent to finish first either way."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pane": {"type": "string", "description": "pane to close, e.g. #125 or host~%12"},
+                    "session": {"type": "string", "maxLength": 64,
+                                "description": "session to close (all of its panes)"},
+                    "host": {"type": "string", "description": "host id or name, used with session"},
+                },
+                "anyOf": [{"required": ["pane"]}, {"required": ["session"]}],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "send_file",
+            "description": ("Copy a file from this machine into another agent's working directory "
+                            "(its upload_files/ folder) and tell that agent the absolute path. "
+                            "Works across hosts: the bytes go through the console, so the two "
+                            "machines need no shared mount and no ssh trust between them."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": target,
+                    "path": {"type": "string", "description": "local file to send (absolute path)"},
+                    "name": {"type": "string", "description": "name at the destination (default: the same basename)"},
+                    "note": {"type": "string", "description": "text to send along with the file"},
+                    "notify": {"type": "boolean", "default": True,
+                               "description": "also type a one-line notice into the target's pane"},
+                },
+                "required": ["target", "path"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "list_remote_hosts",
             "description": ("List the SSH hosts this TmuxWeb server knows: id, name, address, auth type and the jump host it "
                             "dials through. Credentials are never returned."),
@@ -289,7 +481,9 @@ def tool_schemas() -> list[dict]:
                 "properties": {
                     "title": {"type": "string", "minLength": 1, "maxLength": 200},
                     "body": {"type": "string", "maxLength": 20000,
-                             "description": "plain text or markdown; keep it short enough to read on a card"},
+                             "description": ("markdown - rendered on the card (bold, lists, code, links, "
+                                             "tables); the card shows about 6 lines and clicking it opens the "
+                                             "full text, so lead with the conclusion")},
                     "pane": {"type": "string", "description": "optional pane target this card belongs to, e.g. \"%12\""},
                     "kind": {"type": "string", "enum": ["note", "result", "alert", "link"], "default": "note"},
                 },

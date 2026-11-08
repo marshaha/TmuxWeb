@@ -33,6 +33,8 @@
 .assistant-body>.msg-actions{margin-top:12px;padding-top:8px;border-top:1px solid var(--line)}
 /* 触屏没有悬停：复制行直接常显，不然 0.6 的透明度在手机上像"没有了" */
 @media (hover:none){.msg-actions{opacity:1}}
+    /* 1000px 上下侧栏还开着，主区只剩 ~620px：顶栏图标必须收一收，否则右边几个被裁掉 */
+    @media(max-width:1024px){.status{display:none}.fullscreen-btn{width:34px;padding:0;justify-content:center}.fullscreen-btn span{display:none}.main{grid-template-columns:minmax(0,1fr)}.topbar .session{flex:1 1 0;min-width:0}.topbar .session-title,.topbar .session-sub{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .msg-copy,.block-btn{flex:0 0 auto;white-space:nowrap;height:22px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--card-hover);
 color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 .msg-copy:hover,.block-btn:hover{background:var(--card);border-color:var(--line-strong);color:var(--ink)}
@@ -228,6 +230,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 <link rel="stylesheet" href="/assets/pane-preview.css">
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
+<script src="/assets/uploads.js"></script>
 <script src="/assets/composer-files.js"></script>
 <script src="/assets/path-links.js"></script>
 <script src="/assets/downloads.js"></script>
@@ -286,7 +289,36 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   .file-icon{display:grid;place-items:center;width:17px;height:17px}
   .file-icon .ico{width:16px;height:16px;color:var(--muted)}
   .file-icon.dir .ico{color:var(--accent)}
-  .host-icon .ico{width:14px;height:14px;stroke-width:1.9}.host-add{display:grid;place-items:center;width:24px;height:24px;margin-left:8px;padding:0;border:1px solid #d5d3cb;border-radius:8px;background:var(--card);color:var(--muted);cursor:pointer;flex:none;transition:color .12s,border-color .12s,background .12s}.host-add:hover,.host-add:focus-visible{border-color:var(--accent);color:var(--accent);outline:none}.host-add .ico{width:14px;height:14px;stroke-width:2.2}.session-dialog{width:min(420px,calc(100vw - 28px));padding:0;border:1px solid var(--line);border-radius:16px;background:var(--surface);color:var(--ink);box-shadow:0 18px 50px rgba(32,31,28,.18)}.session-dialog::backdrop{background:rgba(32,31,28,.28)}.session-dialog form{display:grid;gap:12px;padding:20px}.session-dialog h2{margin:0;font-size:16px;font-weight:650}.dialog-sub{margin:-6px 0 0;color:var(--muted);font-size:12px}.session-dialog .field{display:grid;gap:5px;color:var(--muted);font-size:11px}.session-dialog .field input{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);font:13px ui-monospace,SFMono-Regular,Menlo,monospace}.session-dialog .field input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(201,100,66,.16)}.dialog-status{min-height:16px;margin:0;color:var(--danger);font-size:12px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px}.dialog-actions button{height:34px;padding:0 14px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);cursor:pointer;font-size:13px}.dialog-actions .primary{background:#292825;border-color:#292825;color:#fff}.dialog-actions button:disabled{opacity:.55;cursor:default}.host-add .ico{stroke:currentColor}
+  .host-icon .ico{width:14px;height:14px;stroke-width:1.9}.host-add{display:grid;place-items:center;width:24px;height:24px;margin-left:8px;padding:0;border:1px solid #d5d3cb;border-radius:8px;background:var(--card);color:var(--muted);cursor:pointer;flex:none;transition:color .12s,border-color .12s,background .12s}.host-add:hover,.host-add:focus-visible{border-color:var(--accent);color:var(--accent);outline:none}.host-add .ico{width:14px;height:14px;stroke-width:2.2}.session-dialog{width:min(420px,calc(100vw - 28px));padding:0;border:1px solid var(--line);border-radius:16px;background:var(--surface);color:var(--ink);box-shadow:0 18px 50px rgba(32,31,28,.18)}.session-dialog::backdrop{background:rgba(32,31,28,.28)}.session-dialog form{display:grid;gap:12px;padding:20px}.session-dialog h2{margin:0;font-size:16px;font-weight:650}.dialog-sub{margin:-6px 0 0;color:var(--muted);font-size:12px}.session-dialog .field{display:grid;gap:5px;color:var(--muted);font-size:11px}.session-dialog .field input,.session-dialog .field select{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);font:13px ui-monospace,SFMono-Regular,Menlo,monospace}.session-dialog .field select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);background-position:calc(100% - 16px) 52%,calc(100% - 11px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:30px}.session-dialog .field input:focus,.session-dialog .field select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(201,100,66,.16)}.dialog-hint{margin:-6px 0 0;color:var(--muted);font-size:11px;line-height:1.45;overflow-wrap:anywhere}.dialog-hint[hidden]{display:none}.toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translate(-50%,8px);z-index:30;max-width:min(420px,calc(100vw - 32px));padding:9px 14px;border-radius:999px;background:#292825;color:#fff;font-size:12.5px;line-height:1.4;text-align:center;box-shadow:0 10px 26px rgba(0,0,0,.22);opacity:0;pointer-events:none;transition:opacity .16s,transform .16s}.toast.show{opacity:1;transform:translate(-50%,0)}.toast[hidden]{display:none}.live-tail{margin:0 auto 14px;width:min(92%,820px);border:1px dashed var(--line-strong);border-radius:14px;background:var(--surface2);color:var(--muted);font-size:12px}
+.live-tail[hidden]{display:none}
+.live-tail .lt-head{display:flex;align-items:center;gap:6px;padding:7px 12px 0;font-size:11px;letter-spacing:.02em}
+.live-tail pre{margin:0;padding:6px 12px 10px;max-height:170px;overflow:auto;font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.model-pick{position:relative;flex:none;min-width:0;max-width:260px;font-size:11px}.model-pick[hidden]{display:none}
+.model-toggle{display:inline-flex;align-items:center;gap:5px;max-width:260px;height:24px;padding:0 7px;border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--muted);font:11px inherit;cursor:pointer}
+.model-toggle:hover,.model-toggle[aria-expanded="true"]{background:var(--card-hover);color:var(--ink)}
+.model-toggle .ico{width:13px;height:13px;flex:none}.model-toggle span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-caret{width:11px!important;height:11px!important;transform:rotate(90deg);opacity:.6}
+.model-toggle[aria-expanded="true"] .model-caret{transform:rotate(-90deg)}
+.model-menu{position:absolute;z-index:30;left:0;bottom:calc(100% + 6px);display:flex;flex-direction:column;width:min(320px,86vw);max-height:52vh;padding:6px;border:1px solid var(--line-strong);border-radius:12px;background:var(--card);box-shadow:var(--shadow);color:var(--ink)}
+.model-menu[hidden]{display:none}
+.model-filter{flex:none;height:28px;margin:0 0 6px;padding:0 9px;border:1px solid var(--line);border-radius:8px;background:var(--surface2);color:var(--ink);font:12px inherit;outline:none}
+.model-filter:focus{border-color:var(--accent)}
+.model-groups{display:flex;flex-direction:column;gap:2px;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.model-group{display:flex;flex-direction:column}
+.model-group-head{display:flex;flex:none;align-items:center;gap:6px;width:100%;height:26px;padding:0 6px;border:0;border-radius:7px;background:transparent;color:var(--muted);font:600 11px/1 inherit;cursor:pointer;text-align:left}
+.model-group-head:hover{background:var(--card-hover);color:var(--ink)}
+.model-group-head .count{margin-left:auto;font-weight:400;opacity:.65}
+.model-group-head .model-caret{width:11px;height:11px;transform:rotate(0)}
+.model-group.open .model-group-head .model-caret{transform:rotate(90deg)}
+.model-group-items{display:none;flex-direction:column;max-height:32vh;overflow-y:auto;overscroll-behavior:contain;padding:1px 0 3px}
+.model-group.open .model-group-items{display:flex}
+/* flex:none 是必须的：分组列表是限高的 flex 列，默认 flex-shrink:1 会把行压扁，字就叠在一起 */
+.model-item{display:block;flex:none;width:100%;padding:5px 8px 5px 20px;border:0;border-radius:6px;background:transparent;color:var(--ink);font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-item:hover{background:var(--card-hover)}
+.model-item.is-current{color:var(--accent);font-weight:600}
+.model-item.is-current::after{content:"当前";margin-left:6px;font:10px inherit;opacity:.7}
+.model-empty{padding:6px 8px;color:var(--muted);font-size:11px}
+@media(max-width:760px){.model-menu{max-height:58vh}.model-item{padding:8px 10px 8px 20px;font-size:13px}.model-group-head{height:32px;font-size:12px}.model-filter{height:34px;font-size:15px}}.model-pick select:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}.send-state{margin-left:auto}.dialog-status{min-height:16px;margin:0;color:var(--danger);font-size:12px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px}.dialog-actions button{height:34px;padding:0 14px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);cursor:pointer;font-size:13px}.dialog-actions .primary{background:#292825;border-color:#292825;color:#fff}.dialog-actions .danger{background:var(--danger);border-color:var(--danger);color:#fff}.dialog-actions button:disabled{opacity:.55;cursor:default}.host-add .ico{stroke:currentColor}
   .send .ico{width:17px;height:17px;stroke-width:2.1}
 </style>
 <div class="app">
@@ -298,8 +330,9 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     <div class="side-resizer" id="side-resizer" title="拖动调整侧边栏宽度（双击恢复默认）"></div>
   </aside>
   <main class="main" id="main">
-    <header class="topbar"><div style="display:flex;align-items:center;min-width:0"><button class="icon-btn sidebar-open" id="menu" title="展开侧边栏" aria-label="展开侧边栏"><svg class="ico"><use href="#i-menu"/></svg></button><div class="session"><div class="session-title"><span class="session-num" id="selected-number" hidden></span><span id="selected-title">选择一个会话</span></div><div class="session-sub" id="selected-sub">从左侧选择 tmux pane</div></div></div><div class="top-actions"><div class="status"><span class="status-dot" id="status-dot"></span><span class="status-text" id="status-text">未连接</span></div><button class="share-btn icon-only" id="live-toggle" title="暂停实时刷新" aria-label="暂停实时刷新" disabled><svg class="ico"><use href="#i-pause"/></svg></button><div class="mode-switch" role="group" aria-label="视图切换"><button class="mode-btn active" id="chat-mode" title="聊天视图" aria-label="聊天视图" aria-pressed="true"><svg class="ico"><use href="#i-chat"/></svg></button><button class="mode-btn" id="terminal-mode-button" title="终端视图" aria-label="终端视图" aria-pressed="false"><svg class="ico"><use href="#i-terminal"/></svg></button></div><button class="share-btn icon-only" id="grid-add" disabled title="加到多窗口" aria-label="加到多窗口"><svg class="ico"><use href="#i-grid"/></svg></button><button class="share-btn icon-only" id="fav-toggle" disabled title="收藏到主页" aria-label="收藏到主页" aria-pressed="false"><svg class="ico"><use href="#i-star"/></svg></button><button class="share-btn icon-only" id="share-button" disabled title="分享" aria-label="分享"><svg class="ico"><use href="#i-external"/></svg></button><button class="fullscreen-btn" id="fullscreen" title="全屏显示当前窗口"><svg class="ico"><use href="#i-fullscreen"/></svg><span>对话全屏</span></button></div></header>
+    <header class="topbar"><div style="display:flex;align-items:center;min-width:0"><button class="icon-btn sidebar-open" id="menu" title="展开侧边栏" aria-label="展开侧边栏"><svg class="ico"><use href="#i-menu"/></svg></button><div class="session"><div class="session-title"><span class="session-num" id="selected-number" hidden></span><span id="selected-title">选择一个会话</span></div><div class="session-sub" id="selected-sub">从左侧选择 tmux pane</div></div></div><div class="top-actions"><div class="status"><span class="status-dot" id="status-dot"></span><span class="status-text" id="status-text">未连接</span></div><button class="share-btn icon-only" id="live-toggle" title="暂停实时刷新" aria-label="暂停实时刷新" disabled><svg class="ico"><use href="#i-pause"/></svg></button><div class="mode-switch" role="group" aria-label="视图切换"><button class="mode-btn active" id="chat-mode" title="聊天视图" aria-label="聊天视图" aria-pressed="true"><svg class="ico"><use href="#i-chat"/></svg></button><button class="mode-btn" id="terminal-mode-button" title="终端视图" aria-label="终端视图" aria-pressed="false"><svg class="ico"><use href="#i-terminal"/></svg></button></div><button class="share-btn icon-only" id="grid-add" disabled title="加到多窗口" aria-label="加到多窗口"><svg class="ico"><use href="#i-grid"/></svg></button><button class="share-btn icon-only" id="fav-toggle" disabled title="收藏到主页" aria-label="收藏到主页" aria-pressed="false"><svg class="ico"><use href="#i-star"/></svg></button><button class="share-btn icon-only" id="pane-close" disabled title="关闭这个窗格" aria-label="关闭这个窗格"><svg class="ico"><use href="#i-trash"/></svg></button><button class="share-btn icon-only" id="share-button" disabled title="分享" aria-label="分享"><svg class="ico"><use href="#i-external"/></svg></button><button class="fullscreen-btn" id="fullscreen" title="全屏显示当前窗口"><svg class="ico"><use href="#i-fullscreen"/></svg><span>对话全屏</span></button></div></header>
     <div class="error-banner" id="error"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
     <section class="conversation"><div class="scroll" id="scroll"><div class="empty" id="empty"><div><strong>选择一个 tmux 会话</strong>实时查看内容，并在下方继续输入</div></div><div class="earlier-bar" id="earlier-bar" hidden><button class="earlier-btn" id="load-earlier" type="button">加载更早的消息</button></div><div class="transcript" id="transcript"></div><div class="message-shell" id="message-shell" hidden><div class="agent-label"><span class="agent-mark" id="agent-mark">T</span><span id="agent-name">tmux</span></div><div class="terminal-frame"><pre class="capture-output" id="terminal"></pre></div></div></div><div class="agent-progress" id="agent-progress"><span class="pending-wave" id="agent-progress-wave"><i></i><i></i><i></i></span><span id="agent-progress-label">idle</span><span class="elapsed" id="agent-progress-elapsed"></span></div><button class="jump" id="jump">回到最新 ↓</button>
 <div class="terminal-mode" id="terminal-mode"><div class="terminal-host" id="terminal-host"></div><button class="terminal-jump" id="terminal-jump" type="button" hidden>回到底部</button><div class="terminal-keys" id="terminal-keys"><input id="terminal-input" class="terminal-kb-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" tabindex="-1" aria-hidden="true"><div class="terminal-key-row"><div class="terminal-key-scroll"><button class="terminal-key" data-key="Escape">esc</button><button class="terminal-key" data-key="Tab">tab</button><button class="terminal-key" data-mod="ctrl">ctrl</button><button class="terminal-key" data-mod="alt">alt</button><button class="terminal-key" data-ctrl-key="c">^C</button><button class="terminal-key" data-key="ArrowLeft">←</button><button class="terminal-key" data-key="ArrowUp">↑</button><button class="terminal-key" data-key="ArrowDown">↓</button><button class="terminal-key" data-key="ArrowRight">→</button><button class="terminal-key icon-key" id="terminal-paste" type="button" title="粘贴" aria-label="粘贴"><svg class="ico"><use href="#i-paste"/></svg></button><button class="terminal-key wide" data-key="BackTab">shift tab</button></div><div class="terminal-key-pinned"><button class="terminal-key icon-key" id="terminal-more" type="button" title="更多按键" aria-label="更多按键" aria-pressed="false"><svg class="ico"><use href="#i-grid"/></svg></button><button class="terminal-key icon-key" id="terminal-kb" type="button" title="显示或隐藏键盘" aria-label="显示或隐藏键盘" aria-pressed="false"><svg class="ico"><use href="#i-keyboard"/></svg></button></div></div><div class="terminal-type" id="terminal-type"></div><div class="terminal-ext" id="terminal-ext"><button class="terminal-key" data-key="Escape">esc</button><button class="terminal-key" data-key="Tab">tab</button><button class="terminal-key" data-mod="ctrl">ctrl</button><button class="terminal-key" data-mod="alt">alt</button><button class="terminal-key" data-ctrl-key="c">^C</button><button class="terminal-key" data-ctrl-key="d">^D</button><button class="terminal-key" data-ctrl-key="z">^Z</button><button class="terminal-key" data-ctrl-key="l">^L</button><button class="terminal-key" data-ctrl-key="r">^R</button><button class="terminal-key" data-ctrl-key="u">^U</button><button class="terminal-key" data-ctrl-key="k">^K</button><button class="terminal-key" data-ctrl-key="w">^W</button><button class="terminal-key" data-text="|">|</button><button class="terminal-key" data-text="~">~</button><button class="terminal-key" data-text="-">-</button><button class="terminal-key" data-text="=">=</button><button class="terminal-key" data-text=":">:</button><button class="terminal-key" data-text=";">;</button><button class="terminal-key" data-text="!">!</button><button class="terminal-key" data-text="$">$</button><button class="terminal-key" data-text="%">%</button><button class="terminal-key" data-text="^">^</button><button class="terminal-key" data-text="&lt;">&lt;</button><button class="terminal-key" data-text="&gt;">&gt;</button><button class="terminal-key" data-text="(">(</button><button class="terminal-key" data-text=")">)</button><button class="terminal-key" data-text="{">{</button><button class="terminal-key" data-text="}">}</button><button class="terminal-key" data-text="[">[</button><button class="terminal-key" data-text="]">]</button><button class="terminal-key" data-text="/">/</button><button class="terminal-key" data-text="?">?</button><button class="terminal-key" data-key="Home">home</button><button class="terminal-key" data-key="End">end</button><button class="terminal-key" data-key="PageUp">pgUp</button><button class="terminal-key" data-key="PageDown">pgDn</button><button class="terminal-key" data-key="ArrowLeft">←</button><button class="terminal-key" data-key="ArrowUp">↑</button><button class="terminal-key" data-key="ArrowDown">↓</button><button class="terminal-key" data-key="ArrowRight">→</button><button class="terminal-key" data-paste="1">paste</button><button class="terminal-key" data-key="Delete">del</button><button class="terminal-key" data-text="@">@</button><button class="terminal-key" data-text="&amp;">&amp;</button></div></div></div></section>
     <dialog class="session-dialog" id="session-dialog" aria-labelledby="session-dialog-title">
@@ -310,8 +343,17 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
         <input id="session-name" required maxlength="64" spellcheck="false" autocomplete="off"
                pattern="[A-Za-z0-9][A-Za-z0-9_.-]{0,63}" placeholder="my-agent">
       </label>
-      <label class="field">工作目录（可选，留空用默认）
+      <label class="field">工作目录（可选，留空用默认；不存在会自动创建）
         <input id="session-path" maxlength="4096" spellcheck="false" autocomplete="off" placeholder="/home/you/project">
+      </label>
+      <label class="field">启动 agent（可选，默认只开 shell）
+        <select id="session-agent">
+          <option value="">无（普通 shell）</option>
+        </select>
+      </label>
+      <p class="dialog-hint" id="session-agent-hint" hidden></p>
+      <label class="field" id="session-args-field" hidden>agent 参数（可选）
+        <input id="session-args" maxlength="512" spellcheck="false" autocomplete="off" placeholder="--model sonnet …">
       </label>
       <p class="dialog-status" id="session-status"></p>
       <div class="dialog-actions">
@@ -320,7 +362,19 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
       </div>
     </form>
   </dialog>
-  <section class="composer"><input id="upload-input" type="file" multiple hidden><div class="composer-inner"><div class="composer-card"><div class="cf-bar"><button class="cf-attach" id="attach" type="button" title="添加附件（存到 pane 目录下的 upload_files）" aria-label="添加附件" disabled><svg class="ico"><use href="#i-paperclip"/></svg><span>附件</span></button><span class="cf-hint">存到当前目录的 upload_files</span></div><div class="cf-strip" id="uploads" hidden></div><textarea id="input" disabled placeholder="选择会话后，在这里输入消息…"></textarea><button class="send" id="send" disabled title="发送" aria-label="发送"><svg class="ico"><use href="#i-arrow-up"/></svg></button></div><div class="composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><span class="send-state" id="send-state"></span><label class="submit-option"><input type="checkbox" id="submit-enter" checked> 同时按 Enter 提交</label></div></div></section>
+  <dialog class="session-dialog" id="pane-close-dialog" aria-labelledby="pane-close-title">
+    <form id="pane-close-form">
+      <h2 id="pane-close-title">关闭这个窗格？</h2>
+      <p class="dialog-sub" id="pane-close-sub"></p>
+      <p class="dialog-hint">窗格里的进程会被结束；同一会话的其它窗格不受影响。</p>
+      <p class="dialog-status" id="pane-close-status"></p>
+      <div class="dialog-actions">
+        <button type="button" id="pane-close-cancel">取消</button>
+        <button type="button" class="danger" id="pane-close-confirm">关闭窗格</button>
+      </div>
+    </form>
+  </dialog>
+  <section class="composer"><input id="upload-input" type="file" multiple hidden><div class="composer-inner"><div class="composer-card"><div class="cf-bar"><button class="cf-attach" id="attach" type="button" title="添加附件（存到 pane 目录下的 upload_files）" aria-label="添加附件" disabled><svg class="ico"><use href="#i-paperclip"/></svg><span>附件</span></button><div class="model-pick" id="model-pick-wrap" hidden><button type="button" class="model-toggle" id="model-toggle" aria-haspopup="true" aria-expanded="false" title="切换这个 agent 使用的模型"><svg class="ico"><use href="#i-gear"/></svg><span id="model-current">模型</span><svg class="ico model-caret"><use href="#i-chevron"/></svg></button><div class="model-menu" id="model-menu" hidden><input class="model-filter" id="model-filter" type="search" placeholder="筛选模型…" autocomplete="off" spellcheck="false"><div class="model-groups" id="model-groups"></div></div></div><span class="cf-hint">存到当前目录的 upload_files</span></div><div class="cf-strip" id="uploads" hidden></div><textarea id="input" disabled placeholder="选择会话后，在这里输入消息…"></textarea><button class="send" id="send" disabled title="发送" aria-label="发送"><svg class="ico"><use href="#i-arrow-up"/></svg></button></div><div class="composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><span class="send-state" id="send-state"></span><label class="submit-option"><input type="checkbox" id="submit-enter" checked> 同时按 Enter 提交</label></div></div></section>
   </main>
   <div class="drawer-backdrop" id="drawer-backdrop"></div>
 </div>
@@ -412,6 +466,9 @@ import {marked} from '/assets/marked.esm.js';
     [140,400,800].forEach(delay=>setTimeout(()=>{syncVisualViewport();fitCapture();scheduleTerminalFit();},delay));}
   function keyboardWanted(){const a=document.activeElement;return !!(a&&(a.id==='terminal-input'||a.closest?.('.composer')));}
   function setComposing(active){if(!isMobile())return;document.querySelector('.app').classList.toggle('mobile-composing',active);settleViewport();if(active)setTimeout(()=>{input.scrollIntoView({block:'nearest'});input.setSelectionRange(input.value.length,input.value.length);},60);}
+  function toast(message,ms=2600){const el=$('toast');if(!el)return;el.textContent=message;el.hidden=false;
+    requestAnimationFrame(()=>el.classList.add('show'));clearTimeout(toast.timer);
+    toast.timer=setTimeout(()=>{el.classList.remove('show');setTimeout(()=>{el.hidden=true;},200);},ms);}
   async function api(url,opts={}){const r=await fetch(url,opts);if(r.status===401){location='/login';throw new Error('登录已失效');}if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||`HTTP ${r.status}`);}return r.json();}
   async function refreshHost(hostId,button){
     if(!hostId)return;
@@ -433,7 +490,7 @@ import {marked} from '/assets/marked.esm.js';
       state.wantedPane=wanted||null;state.wantedMode=wantedMode||null;
       if(wanted&&state.panes.some(p=>p.id===wanted)){selectPane(wanted);if(wantedMode==='terminal')setMode('terminal');history.replaceState(null,'','/');}else if(last&&!state.selected&&state.panes.some(p=>p.id===last))selectPane(last);}}catch(e){showError(e.message);}}
   function applyWantedPane(){const target=state.wantedPane;if(!target)return;if(state.panes.some(p=>p.id===target)){state.wantedPane=null;selectPane(target);if(state.wantedMode==='terminal')setMode('terminal');state.wantedMode=null;history.replaceState(null,'','/');}}
-function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)return;const gridButton=$('grid-add');if(gridButton)gridButton.disabled=!state.selected;const on=!!state.selected&&state.favorites.has(state.selected);btn.disabled=!state.selected;btn.classList.toggle('on',on);btn.setAttribute('aria-pressed',on?'true':'false');btn.title=on?'取消收藏':'收藏到主页';btn.setAttribute('aria-label',btn.title);const use=btn.querySelector('use');if(use)use.setAttribute('href',on?'#i-star-fill':'#i-star');}
+function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)return;const gridButton=$('grid-add');if(gridButton)gridButton.disabled=!state.selected;const on=!!state.selected&&state.favorites.has(state.selected);btn.disabled=!state.selected;const closeButton=$('pane-close');if(closeButton)closeButton.disabled=!state.selected;btn.classList.toggle('on',on);btn.setAttribute('aria-pressed',on?'true':'false');btn.title=on?'取消收藏':'收藏到主页';btn.setAttribute('aria-label',btn.title);const use=btn.querySelector('use');if(use)use.setAttribute('href',on?'#i-star-fill':'#i-star');}
   function syncStars(){syncFavButton();document.querySelectorAll('[data-star]').forEach(node=>{const on=state.favorites.has(node.dataset.star);node.classList.toggle('on',on);node.title=on?'取消收藏':'收藏到主页';const use=node.querySelector('use');if(use)use.setAttribute('href',on?'#i-star-fill':'#i-star');});}
   async function loadFavorites(){try{const d=await api('/api/home/favorites');state.favorites=new Set(d.favorites||[]);syncStars();if(window.TmuxRecents)TmuxRecents.setFavorites([...state.favorites]);}catch{}}
   async function toggleFavorite(id){const on=state.favorites.has(id);try{if(on){await api(`/api/home/favorites/${encodeURIComponent(id)}`,{method:'DELETE'});state.favorites.delete(id);}else{await api('/api/home/favorites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane:id})});state.favorites.add(id);}syncStars();if(window.TmuxRecents)TmuxRecents.setFavorites([...state.favorites]);}catch(e){showError(e.message);}}
@@ -470,7 +527,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     const ask=TmuxDownload.maybe(href,{name,meta:path});
     setFileStatus(`下载 ${name}`);return ask;}
   async function downloadArchive(paths,label){if(!paths.length||!state.selected)return;const button=$('file-zip');if(button)button.disabled=true;setFileStatus(`打包 ${label}…`);try{const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/zip`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base:state.filesPath||'',paths:paths})});if(!response.ok){let detail=`HTTP ${response.status}`;try{detail=(await response.json()).detail||detail;}catch{}throw new Error(detail);}const blob=await response.blob();const stem=((state.filesPath||'files').split('/').filter(Boolean).pop())||'files';const url=URL.createObjectURL(blob);TmuxDownload.maybe(url,{name:`${stem}.zip`,meta:formatSize(blob.size)});setTimeout(()=>URL.revokeObjectURL(url),60000);setFileStatus(`已打包 ${label} · ${formatSize(blob.size)}`);}catch(e){setFileStatus(`打包失败：${e.message}`);}finally{if(button)button.disabled=false;syncFileSelection();}}
-  async function uploadFiles(files,directory){if(!files.length||!state.selected)return;for(const file of files){setFileStatus(`上传 ${file.name}…`);try{const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/upload?dir=${encodeURIComponent(directory)}&name=${encodeURIComponent(file.name)}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:file});if(!response.ok){let detail=`HTTP ${response.status}`;try{const parsed=await response.json();detail=parsed.detail||detail;}catch{}throw new Error(detail);}}catch(e){setFileStatus(`${file.name}: ${e.message}`);return;}}setFileStatus(`已上传 ${files.length} 个文件`);openFiles(directory);}
+  async function uploadFiles(files,directory){if(!files.length||!state.selected)return;const pane=state.selected;for(const file of files){setFileStatus(`上传 ${file.name}…`);try{if(!window.TmuxUpload)throw new Error('上传模块未加载');await TmuxUpload.upload({pane,dir:directory,name:file.name,file,onProgress:(done,total)=>setFileStatus(`上传 ${file.name} ${Math.round(done/total*100)}%`)});}catch(e){setFileStatus(`${file.name}: ${e.message}`);return;}}setFileStatus(`已上传 ${files.length} 个文件`);openFiles(directory);}
   // ---- 文件面板：重命名 / 删除 ----
   function fileBase(path){return String(path||'').split('/').filter(Boolean).pop()||String(path||'');}
   function fileEntry(path){const entries=(state.filesData&&state.filesData.entries)||[];return entries.find(entry=>entry.path===path)||null;}
@@ -736,23 +793,164 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     // keep the frozen screen: the new attach repaints into it, so there is no black gap while connecting
     if(state.mode==='terminal')connectTerminal(state.selected,true);
     else connectTranscript(state.selected,true);}
-  function closeConnections(keepTerminal){state.termPending='';state.viewportFitTimers.forEach(clearTimeout);state.viewportFitTimers=[];if(state.ws){state.ws.close();state.ws=null;}if(state.termWs){state.termWs.close();state.termWs=null;}if(state.transcriptTimer){clearTimeout(state.transcriptTimer);state.transcriptTimer=null;}if(state.resizeObserver){state.resizeObserver.disconnect();state.resizeObserver=null;}if(!keepTerminal&&state.xterm){state.xterm.dispose();state.xterm=null;state.fit=null;$('terminal-host').innerHTML='';}}
+  function closeConnections(keepTerminal){stopLiveTail();state.termPending='';state.viewportFitTimers.forEach(clearTimeout);state.viewportFitTimers=[];if(state.ws){state.ws.close();state.ws=null;}if(state.termWs){state.termWs.close();state.termWs=null;}if(state.transcriptTimer){clearTimeout(state.transcriptTimer);state.transcriptTimer=null;}if(state.resizeObserver){state.resizeObserver.disconnect();state.resizeObserver=null;}if(!keepTerminal&&state.xterm){state.xterm.dispose();state.xterm=null;state.fit=null;$('terminal-host').innerHTML='';}}
+  async function loadSessionAgents(hostId){const select=$('session-agent');
+    select.innerHTML='<option value="">无（普通 shell）</option>';$('session-args-field').hidden=true;$('session-args').value='';
+    try{const data=await api(`/api/hosts/${encodeURIComponent(hostId)}/agents`);
+      for(const agent of data.agents||[]){const option=document.createElement('option');option.value=agent.name;
+        option.textContent=agent.label||agent.name;option.dataset.path=agent.path||'';select.appendChild(option);}
+      syncAgentHint();
+      select.dataset.count=String((data.agents||[]).length);
+      if(!(data.agents||[]).length){const option=document.createElement('option');option.value='';option.disabled=true;
+        option.textContent='这台主机没检测到 agent';select.appendChild(option);}
+    }catch(error){select.dataset.count='0';}}
+  function syncAgentHint(){const select=$('session-agent');const option=select.options[select.selectedIndex];
+    const path=(option&&option.dataset.path)||'';const hint=$('session-agent-hint');
+    hint.textContent=path?`将运行：${option.textContent} · ${path}`:'';hint.hidden=!path;}
   function openSessionDialog(hostId,path){const host=state.hosts.find(item=>item.id===hostId);
     $('session-host-label').textContent=`主机：${host?host.name:hostId}`;$('session-name').value='';$('session-path').value=path||'';
-    $('session-status').textContent='';$('session-create').disabled=false;
+    $('session-status').textContent='';$('session-create').disabled=false;loadSessionAgents(hostId);
     if(typeof $('session-dialog').showModal==='function')$('session-dialog').showModal();else $('session-dialog').setAttribute('open','');
     $('session-name').focus();}
   async function submitSessionForm(){const hostId=state.sessionHost||'localhost';const name=$('session-name').value.trim();
     if(!name){$('session-status').textContent='请填写会话名称';return;}
     $('session-create').disabled=true;$('session-status').textContent='正在创建会话…';
     try{const result=await api('/api/sessions',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({host:hostId,name,path:$('session-path').value.trim()})});
+      body:JSON.stringify({host:hostId,name,path:$('session-path').value.trim(),
+        agent:$('session-agent').value||'',agent_args:$('session-args').value.trim()})});
       state.treeOpen.add(hostId);if(result.session&&result.session.session)state.treeOpen.add(`${hostId}/${result.session.session}`);
       $('session-dialog').close();await loadPanes();
       const fresh=(result.panes&&result.panes[0])||null;if(fresh)selectPane(fresh.id);
-      $('status-text').textContent=`已创建会话 ${result.session.session}`;
+      const bits=[`已创建会话 ${result.session.session}`];
+      if(result.session.created_dir)bits.push('已新建目录');
+      if(result.session.command)bits.push(result.session.command);
+      $('status-text').textContent=bits.join(' · ');
     }catch(error){$('session-status').textContent=`创建失败：${error.message}`;}
     finally{$('session-create').disabled=false;}}
+  function openPaneCloseDialog(){const id=state.selected;if(!id)return;
+    const pane=state.panes.find(item=>item.id===id)||{};
+    $('pane-close-sub').textContent=[pane.number?`#${pane.number}`:'',pane.target||id,
+      pane.command?`· ${pane.command}`:''].filter(Boolean).join(' ');
+    $('pane-close-status').textContent='';$('pane-close-confirm').disabled=false;
+    if(typeof $('pane-close-dialog').showModal==='function')$('pane-close-dialog').showModal();
+    else $('pane-close-dialog').setAttribute('open','');
+    $('pane-close-cancel').focus();}
+  // 模型选择：按 provider 分组、可折叠（Hermes 一个 config 里常有好几组）
+  let modelState={groups:[],current:'',currentProvider:'',pickerOnly:false,open:new Set()};
+  function modelLabel(){const name=modelState.current||'选择模型';
+    return modelState.currentProvider?`${modelState.currentProvider} · ${name}`:name;}
+  function renderModelMenu(){
+    $('model-current').textContent=modelLabel();
+    const host=$('model-groups');host.innerHTML='';
+    if(modelState.pickerOnly){
+      const button=document.createElement('button');
+      button.type='button';button.className='model-item';
+      button.textContent=(modelState.current?`${modelState.current} · `:'')+'打开 agent 的模型菜单';
+      button.onclick=()=>switchModel('','');
+      host.appendChild(button);return;}
+    if(!modelState.groups.length){
+      const empty=document.createElement('div');empty.className='model-empty';
+      empty.textContent='这个 provider 没有返回模型列表';host.appendChild(empty);}
+    for(const group of modelState.groups){
+      const wrap=document.createElement('div');
+      wrap.className='model-group'+(modelState.open.has(group.provider)?' open':'');
+      wrap.dataset.provider=group.provider;
+      const head=document.createElement('button');
+      head.type='button';head.className='model-group-head';
+      head.innerHTML=`<svg class="ico model-caret"><use href="#i-chevron"/></svg><span>${esc(group.provider)}</span><span class="count">${group.models.length}</span>`;
+      // 重绘会把被点的节点从文档里摘掉，若不拦住冒泡，外面那层"点别处就关"会当成点了外面
+      head.onclick=event=>{event.stopPropagation();
+        if(modelState.open.has(group.provider))modelState.open.delete(group.provider);
+        else modelState.open.add(group.provider);renderModelMenu();};
+      wrap.appendChild(head);
+      const items=document.createElement('div');items.className='model-group-items';
+      for(const model of group.models){
+        const item=document.createElement('button');
+        item.type='button';item.className='model-item'+(model===modelState.current&&group.provider===modelState.currentProvider?' is-current':'');
+        item.dataset.model=model;item.dataset.provider=group.provider;item.textContent=model;
+        item.onclick=event=>{event.stopPropagation();switchModel(model,group.provider);};
+        items.appendChild(item);}
+      wrap.appendChild(items);host.appendChild(wrap);}
+    const custom=document.createElement('button');
+    custom.type='button';custom.className='model-item';custom.style.paddingLeft='8px';
+    custom.textContent='自定义模型 id…';custom.onclick=()=>{
+      const value=(prompt('模型 id（会发给 agent 的 /model 命令）')||'').trim();
+      if(value)switchModel(value,modelState.currentProvider||'');};
+    host.appendChild(custom);
+  }
+  function filterModels(query){const q=(query||'').trim().toLowerCase();
+    for(const group of $('model-groups').querySelectorAll('.model-group')){
+      let shown=0;
+      for(const item of group.querySelectorAll('.model-item')){
+        const hit=!q||item.textContent.toLowerCase().includes(q);
+        item.style.display=hit?'':'none';if(hit)shown++;}
+      group.style.display=shown?'':'none';
+      if(q)group.classList.toggle('open',shown>0);}}
+  function openModelMenu(open){
+    const menu=$('model-menu'),toggle=$('model-toggle');
+    menu.hidden=!open;toggle.setAttribute('aria-expanded',open?'true':'false');
+    if(open){$('model-filter').value='';filterModels('');
+      // 窄屏时菜单按左边对齐会顶出右边界：开完再按实际宽度夹回视口内
+      // left 是相对 .model-pick 的，按"超出视口多少"往回挪就行
+      menu.style.left='';menu.style.right='';
+      const rect=menu.getBoundingClientRect();
+      const overrun=rect.right-(window.innerWidth-8);
+      if(overrun>0)menu.style.left=`${-Math.round(overrun)}px`;
+      const shiftLeft=rect.left-Math.max(0,overrun);
+      if(shiftLeft<8)menu.style.left=`${Math.round(8-shiftLeft+parseFloat(menu.style.left||'0'))}px`;
+      $('model-filter').focus({preventScroll:true});}
+  }
+  function modelCacheKey(id){return 'tmux-models:'+id;}
+  function applyModels(data){const current=(data.current||'').trim();
+    modelState={groups:[],current,currentProvider:(data.current_provider||data.provider_label||'').trim(),
+      pickerOnly:!!data.picker_only,open:new Set()};
+    if(modelState.currentProvider)modelState.open.add(modelState.currentProvider);
+    const groups=(data.groups||[]).filter(group=>(group.models||[]).length);
+    modelState.groups=groups.length?groups:
+      (data.presets||[]).length?[{provider:modelState.currentProvider||'模型',models:data.presets}]:[];
+    renderModelMenu();}
+  async function loadPaneModels(id){const wrap=$('model-pick-wrap');
+    wrap.hidden=true;openModelMenu(false);modelState={groups:[],current:'',currentProvider:'',pickerOnly:false,open:new Set()};
+    if(!id)return;
+    // 远端列模型要跑几次 /v1/models，先把上次的结果画出来，别让菜单空等
+    try{const cached=JSON.parse(localStorage.getItem(modelCacheKey(id))||'null');
+      if(cached){applyModels(cached);wrap.hidden=false;}}catch(error){}
+    const token=(state.modelsToken=(state.modelsToken||0)+1);
+    try{const data=await api(`/api/panes/${encodeURIComponent(id)}/models`);if(token!==state.modelsToken)return;
+      applyModels(data);wrap.hidden=false;
+      try{localStorage.setItem(modelCacheKey(id),JSON.stringify(data));}catch(error){}
+    }catch(error){wrap.hidden=true;
+      // pane 列表和进程探测有先后：刚建好的 agent pane 第一次可能还没认出来，稍后再问一次
+      if(state.modelsToken===token)setTimeout(()=>{if(state.selected===id&&state.modelsToken===token)loadPaneModels(id);},3000);}}
+  async function switchModel(model,provider){const id=state.selected;if(!id)return;
+    openModelMenu(false);
+    const body=model?{model,provider:provider||''}:{};
+    try{const result=await api(`/api/panes/${encodeURIComponent(id)}/model`,{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(model){modelState.current=model;modelState.currentProvider=provider||modelState.currentProvider;renderModelMenu();}
+      toast(result.command==='/model'?'已在 agent 里打开模型菜单，用方向键选':`已发送：${result.command}`,2400);
+    }catch(error){showError(`切换模型失败：${error.message}`);}}
+  async function closeSelectedPane(){const id=state.selected;if(!id)return;
+    const button=$('pane-close-confirm');button.disabled=true;$('pane-close-status').textContent='正在关闭…';
+    try{const result=await api(`/api/panes/${encodeURIComponent(id)}`,{method:'DELETE'});
+      $('pane-close-dialog').close();closeConnections();state.selected=null;localStorage.setItem('tmux-last-pane','');
+      $('message-shell').hidden=true;$('empty').style.display='grid';$('input').disabled=true;$('send').disabled=true;
+      $('selected-number').hidden=true;
+      if(!result.session_alive){$('selected-title').textContent='选择一个会话';$('selected-sub').textContent='窗格已关闭，会话也随之结束';}
+      state.wantedPane=null;
+      await loadPanes();
+      // 刚关掉的那个 pane 不能被“自动恢复”选中：同一个会话还有别的 pane 就落到它上面
+      const stale=!state.selected||state.selected===id||!state.panes.some(p=>p.id===state.selected);
+      if(stale){const sibling=state.panes.find(p=>p.session===result.session&&p.id!==id);
+        if(sibling)selectPane(sibling.id);
+        else{state.selected=null;closeConnections();
+          $('selected-title').textContent='选择一个会话';$('selected-number').hidden=true;
+          $('selected-sub').textContent=result.session_alive?'窗格已关闭':'窗格已关闭，会话也随之结束';
+          $('message-shell').hidden=true;$('empty').style.display='grid';
+          $('input').disabled=true;$('send').disabled=true;syncFavButton();}}
+      toast(`已关闭 ${result.pane}${result.session_alive?'，会话仍在':'，会话也随之结束'}`);
+    }catch(error){$('pane-close-status').textContent=`关闭失败：${error.message}`;}
+    finally{button.disabled=false;}}
   $('transcript').addEventListener('click',event=>{
     const resend=event.target.closest('[data-resend]');
     if(resend){event.preventDefault();resendPending(resend.dataset.resend);return;}
@@ -1002,6 +1200,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     if(state.mode==='terminal'){connectTerminal(id);}
     else if(paintCachedTranscript(id)){refreshTranscript(id);}  // instant paint, then revalidate
     else {connectTranscript(id,true);}
+    loadPaneModels(id);
     if(state.mode==='chat'&&canAutoFocusComposer())input.focus();
     const memory=filesMemoryOn();
     const remembered=memory?readFilesView(id):null;
@@ -1156,18 +1355,53 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   function setOptimisticStatus(localId,status){const pending=state.pendingMessages.get(localId);if(!pending)return;pending.status=status;renderTranscript();requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
   async function refreshTranscript(id,{force=false,refresh=false}={}){if(state.selected!==id||state.mode!=='chat')return;
     const follow=atBottom(),first=state.transcriptMtime===null;
-    try{const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit}${refresh?'&refresh=1':''}`);if(state.selected!==id||state.mode!=='chat')return;
+    try{const sig=state.transcriptSig?`&sig=${encodeURIComponent(state.transcriptSig)}`:'';
+      const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit}${refresh?'&refresh=1':''}${sig}`);if(state.selected!==id||state.mode!=='chat')return;
       showError('');$('status-dot').className='status-dot live';
+      if(d.unchanged){state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;syncProgress();
+        const idleFor=state.lastTranscriptChange?Date.now()-state.lastTranscriptChange:1e9;
+        syncLiveTail(id);scheduleTranscriptPoll(id,state.waiting?2000:(idleFor<30000?1500:idleFor<300000?3000:5000));
+        return;}
       const signature=transcriptSignature(d),changed=force||signature!==state.transcriptSig;
       state.hasMore=!!d.has_more;syncEarlierBar();
       state.transcriptProvider=d.provider||'';state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;syncProgress();
       rememberTranscript(id,d);
-      if(changed){state.transcriptSig=signature;state.transcriptMtime=d.mtime;renderTranscript(d.messages);syncProgress();
+      if(changed){state.lastTranscriptChange=Date.now();state.transcriptSig=signature;state.transcriptMtime=d.mtime;renderTranscript(d.messages);syncProgress();
         if(follow||first)requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
       else {syncProgress();}
     }catch(e){if(state.selected===id&&state.mode==='chat')showError(e.message);}
-    finally{scheduleTranscriptPoll(id);}}
-  function scheduleTranscriptPoll(id,delay=1000){
+    finally{
+      // 有任务在跑就快点看结果（1s），空闲时慢慢退到 3s：少发请求，也不会觉得卡
+      const idleFor=state.lastTranscriptChange?Date.now()-state.lastTranscriptChange:1e9;
+      // 跑任务时靠 1.5s 的 tail 给实时感，transcript 2s 看一次结果就够了；
+      // 空闲越久越省：30s 内 1.5s，之后 3s，5 分钟后 5s。
+      const delay=state.waiting?2000:(idleFor<30000?1500:idleFor<300000?3000:5000);
+      syncLiveTail(id);
+      scheduleTranscriptPoll(id,delay);}}
+  let tailTimer=null, tailDigest='';
+  function liveTailBox(){let box=$('live-tail');
+    if(!box){box=document.createElement('div');box.id='live-tail';box.className='live-tail';box.hidden=true;
+      box.innerHTML='<div class="lt-head"><span class="pending-wave"><i></i><i></i><i></i></span><span>agent 工作中 · 下面是实时输出</span></div><pre></pre>';
+      const host=$('transcript');if(host&&host.parentNode)host.parentNode.insertBefore(box,host.nextSibling);}
+    return box;}
+  function stopLiveTail(){clearTimeout(tailTimer);tailTimer=null;tailDigest='';
+    const box=$('live-tail');if(box){box.hidden=true;const pre=box.querySelector('pre');if(pre)pre.textContent='';}}
+  function syncLiveTail(id){
+    clearTimeout(tailTimer);tailTimer=null;
+    if(!state.waiting||state.selected!==id||state.mode!=='chat'){stopLiveTail();return;}
+    const tick=async()=>{
+      if(state.selected!==id||state.mode!=='chat'||!state.waiting){stopLiveTail();return;}
+      try{const d=await api(`/api/panes/${encodeURIComponent(id)}/tail?lines=12`);
+        if(state.selected!==id)return;
+        if(d.digest&&d.digest!==tailDigest){tailDigest=d.digest;const box=liveTailBox();box.hidden=false;
+          const pre=box.querySelector('pre');if(pre)pre.textContent=d.text;
+          if(state.stick)scroll.scrollTop=scroll.scrollHeight;}
+      }catch(error){}
+      if(state.waiting)tailTimer=setTimeout(tick,1500);
+    };
+    tick();
+  }
+  function scheduleTranscriptPoll(id,delay){
     if(!id||state.selected!==id||state.mode!=='chat')return;
     if(!$('transcript').classList.contains('active'))return;
     if(document.hidden)return;                       // resumed by visibilitychange
@@ -1677,17 +1911,20 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     const typed=input.value;
     const text=prompt?(typed.trim()?`${prompt}\n\n${typed}`:prompt):typed;
     const pane=state.selected;
-    if(!pane||!text.trim()||attachmentsPending())return;const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});setOptimisticStatus(localId,'sent');setSendState('已发送 ✓','ok');showError('');clearAttachments();if(!isMobile())input.focus();state.stick=true;}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败','bad');}finally{send.disabled=!state.selected;}}
+    if(!pane||!text.trim()||attachmentsPending())return;const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});setOptimisticStatus(localId,'sent');setSendState('已发送 ✓','ok');showError('');clearAttachments();if(!isMobile())input.focus();state.stick=true;}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');
+    // 别把用户刚打的字弄丢：放回输入框，改完/网络好了直接再发
+    if(!input.value.trim()){input.value=text;input.style.height='auto';if(!isMobile())input.focus();}
+  }finally{send.disabled=!state.selected;}}
   async function createShare(e){e.preventDefault();const result=$('share-result');result.textContent='创建中…';try{const d=await api('/api/shares',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane_id:state.selected,slug:$('share-slug').value.trim(),password:$('share-password').value,expires_in:Number($('share-expiry').value),allow_input:$('share-allow-input').checked})});const url=new URL(d.url,location.origin).href;try{await navigator.clipboard.writeText(url);result.textContent=`已创建并复制：${url}`;}catch{result.textContent=`已创建：${url}`;}}catch(error){result.textContent=error.message;}}
   list.addEventListener('click',e=>{const add=e.target.closest('[data-new-session]');if(!add)return;
     e.preventDefault();e.stopPropagation();state.sessionHost=add.dataset.newSession;
     openSessionDialog(add.dataset.newSession,add.dataset.sessionPath||'');},true);
   // 「最近」块里的星和树上的星是同一份收藏：谁改了都要通知另一边
   window.addEventListener('tmuxweb:favorites',()=>{loadFavorites();});
-  list.addEventListener('toggle',e=>{const d=e.target.closest('details[data-tree]');if(!d)return;d.open?state.treeOpen.add(d.dataset.tree):state.treeOpen.delete(d.dataset.tree);saveTree();},true);list.onclick=e=>{const star=e.target.closest('[data-star]');if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}const refresh=e.target.closest('[data-refresh-host]');if(refresh){e.preventDefault();e.stopPropagation();refreshHost(refresh.dataset.refreshHost,refresh);return;}const b=e.target.closest('[data-pane]');if(b){selectPane(b.dataset.pane);if(isMobile())closeSidebar();}};function saveTree(){try{localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));}catch{}}function treeKeys(){const keys=[];for(const host of state.hosts||[]){keys.push(host.id);for(const p of host.panes||[]){keys.push(`${host.id}/${p.session}`);keys.push(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}return keys;}$('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();renderList();};$('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();renderList();};$('grid-add').onclick=()=>{if(!state.selected){showError('先选择一个 pane');return;}location='/grid?add='+encodeURIComponent(state.selected);};$('session-form').onsubmit=e=>{e.preventDefault();submitSessionForm();};$('session-cancel').onclick=()=>$('session-dialog').close();
+  list.addEventListener('toggle',e=>{const d=e.target.closest('details[data-tree]');if(!d)return;d.open?state.treeOpen.add(d.dataset.tree):state.treeOpen.delete(d.dataset.tree);saveTree();},true);list.onclick=e=>{const star=e.target.closest('[data-star]');if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}const refresh=e.target.closest('[data-refresh-host]');if(refresh){e.preventDefault();e.stopPropagation();refreshHost(refresh.dataset.refreshHost,refresh);return;}const b=e.target.closest('[data-pane]');if(b){selectPane(b.dataset.pane);if(isMobile())closeSidebar();}};function saveTree(){try{localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));}catch{}}function treeKeys(){const keys=[];for(const host of state.hosts||[]){keys.push(host.id);for(const p of host.panes||[]){keys.push(`${host.id}/${p.session}`);keys.push(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}return keys;}$('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();renderList();};$('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();renderList();};$('grid-add').onclick=()=>{if(!state.selected){showError('先选择一个 pane');return;}location='/grid?add='+encodeURIComponent(state.selected);};$('session-form').onsubmit=e=>{e.preventDefault();submitSessionForm();};$('session-cancel').onclick=()=>$('session-dialog').close();$('session-agent').onchange=()=>{const on=!!$('session-agent').value;$('session-args-field').hidden=!on;syncAgentHint();if(on)$('session-args').focus();};
   mountComposerFiles();
   $('live-toggle').onclick=()=>{state.livePaused?resumeLive():pauseLive();};$('fav-toggle').onclick=()=>{if(state.selected)toggleFavorite(state.selected);};
-  $('refresh').onclick=()=>{if(state.selected&&state.mode==='chat')refreshTranscript(state.selected,{force:true,refresh:true});loadPanes(true);};$('menu').onclick=openSidebar;$('sidebar-close').onclick=closeSidebar;$('drawer-backdrop').onclick=closeSidebar;$('chat-mode').onclick=()=>setMode('chat');$('terminal-mode-button').onclick=()=>setMode('terminal');$('fullscreen').onclick=toggleFullscreen;$('share-button').onclick=()=>{$('share-result').textContent='';$('share-slug').value=`share-${Date.now().toString(36)}`;$('share-dialog').showModal();};$('share-cancel').onclick=()=>$('share-dialog').close();$('share-form').onsubmit=createShare;document.addEventListener('fullscreenchange',syncFullscreen);document.addEventListener('visibilitychange',()=>{clearTimeout(state.hiddenTimer);if(document.hidden&&state.mode==='terminal')state.hiddenTimer=setTimeout(()=>{if(document.hidden&&state.mode==='terminal')setMode('chat');},15000);});window.addEventListener('beforeunload',closeConnections);document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('sidebar').classList.contains('open'))closeSidebar();else if($('main').classList.contains('fullscreen-fallback'))toggleFullscreen();}});send.onclick=()=>{if(state.mode==='chat'&&state.selected&&agentWorking()&&!input.value.trim()){stopAgent();return;}sendInput();};input.addEventListener('focus',()=>setComposing(true));input.addEventListener('blur',()=>setTimeout(()=>setComposing(keyboardWanted()),120));input.oninput=()=>{syncSendButton();input.style.height='auto';input.style.height=Math.min(input.scrollHeight,82)+'px';if(state.selected)state.drafts.set(state.selected,input.value);};input.onkeydown=e=>{if(e.key==='Escape'&&state.mode==='chat'&&state.selected&&agentWorking()){e.preventDefault();stopAgent();return;}
+  $('model-toggle').onclick=()=>openModelMenu($('model-menu').hidden);$('model-filter').oninput=event=>filterModels(event.target.value);document.addEventListener('click',event=>{if($('model-menu').hidden)return;const wrap=$('model-pick-wrap');if(!wrap.contains(event.target))openModelMenu(false);});document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('model-menu').hidden)openModelMenu(false);});$('pane-close').onclick=()=>openPaneCloseDialog();$('pane-close-cancel').onclick=()=>$('pane-close-dialog').close();$('pane-close-confirm').onclick=()=>closeSelectedPane();$('refresh').onclick=()=>{if(state.selected&&state.mode==='chat')refreshTranscript(state.selected,{force:true,refresh:true});loadPanes(true);};$('menu').onclick=openSidebar;$('sidebar-close').onclick=closeSidebar;$('drawer-backdrop').onclick=closeSidebar;$('chat-mode').onclick=()=>setMode('chat');$('terminal-mode-button').onclick=()=>setMode('terminal');$('fullscreen').onclick=toggleFullscreen;$('share-button').onclick=()=>{$('share-result').textContent='';$('share-slug').value=`share-${Date.now().toString(36)}`;$('share-dialog').showModal();};$('share-cancel').onclick=()=>$('share-dialog').close();$('share-form').onsubmit=createShare;document.addEventListener('fullscreenchange',syncFullscreen);document.addEventListener('visibilitychange',()=>{clearTimeout(state.hiddenTimer);if(document.hidden&&state.mode==='terminal')state.hiddenTimer=setTimeout(()=>{if(document.hidden&&state.mode==='terminal')setMode('chat');},15000);});window.addEventListener('beforeunload',closeConnections);document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('sidebar').classList.contains('open'))closeSidebar();else if($('main').classList.contains('fullscreen-fallback'))toggleFullscreen();}});send.onclick=()=>{if(state.mode==='chat'&&state.selected&&agentWorking()&&!input.value.trim()){stopAgent();return;}sendInput();};input.addEventListener('focus',()=>setComposing(true));input.addEventListener('blur',()=>setTimeout(()=>setComposing(keyboardWanted()),120));input.oninput=()=>{syncSendButton();input.style.height='auto';input.style.height=Math.min(input.scrollHeight,82)+'px';if(state.selected)state.drafts.set(state.selected,input.value);};input.onkeydown=e=>{if(e.key==='Escape'&&state.mode==='chat'&&state.selected&&agentWorking()){e.preventDefault();stopAgent();return;}
     if(e.key!=='Enter'||e.shiftKey||e.isComposing||isMobile())return;e.preventDefault();sendInput();};scroll.addEventListener('wheel',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.addEventListener('touchmove',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.onscroll=()=>{state.stick=atBottom();
     if(scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier)loadEarlier();$('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
 // 会跨页面加载记住的偏好。以前这里会读 localStorage，于是你上次开着文件面板，之后每次

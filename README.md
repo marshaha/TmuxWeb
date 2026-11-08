@@ -518,6 +518,37 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 
 `auth_type=agent` 用本机 ssh-agent 密钥，agent 无需传任何密码；`verify=false` 时即使暂时连不上也会保存，等下次连通再固定指纹。
 
+
+## 新建会话：目录自动创建 + 直接拉起 agent
+
+侧边栏每个主机后面的 `+` 打开「新建 tmux 会话」，三个字段都可留空：
+
+- **工作目录**：目录不存在就自动 `mkdir -p`（远端同样是远端自己建），建不出来才报错并把目录名带回来。
+  不想要这个行为时传 `"create_dir": false`，此时恢复成「目录不存在就 422」。
+- **启动 agent（可选）**：下拉里只列**这台主机真的装了的** agent，不选就是普通 shell。
+  扫描走一条 POSIX `sh` 探针（`command -v` + `~/.local/bin`、`~/.kimi-code/bin`、`/opt/homebrew/bin`
+  等常见安装目录），不需要远端有 `python3`，也不跑 `--version`（macOS 没有 `timeout`，跑一次就慢一截）。
+- **agent 参数（可选）**：按 shell 词法切分后原样跟在该 agent 后面，例如 `--model o3`、
+  `--dangerously-skip-permissions`。引号没闭合会直接 422，不会被悄悄吞掉。
+- **用探测到的绝对路径启动**：tmux pane 的 PATH 和 ssh 探测时看到的不一定一样
+  （oracle 上 `claude` 装在 `~/.local/bin`，非交互 shell 里 `command not found`，exit 127）。
+  所以命令行里写的是 `/home/ubuntu/.local/bin/claude`，不是裸 `claude`。
+- **agent 退出不带走会话**：默认 `keep_open=true`，agent 一退出就先打印
+  `[<路径> 已退出，code N] 会话保留…` 再 `exec $SHELL`，省得“创建成功然后会话凭空消失”。
+  想要“agent 退出即结束会话”就传 `"keep_open": false`。
+
+接口：
+
+    GET  /api/hosts/{host}/agents           # {"agents":[{"name","label","path"}], ...}，缓存 5 分钟
+    GET  /api/hosts/{host}/agents?refresh=1 # 强制重新探测（每台一次 ssh 往返）
+    POST /api/sessions {"host","name","path","agent","agent_args","create_dir"}
+
+    返回 {"session":{"session","path","created_dir","command"}, "panes":[...]}
+
+支持的 agent 目录在 `agent_catalog.py`（hermes / claude / codex / kimi / opencode / gemini）；
+加新的只要往 `AGENTS` 里加一行，UI 和接口自动带上。探测结果按主机缓存，别的地方要「这台机器能跑什么」
+直接读缓存，不要再 ssh。
+
 ## 主页：收藏、看板与搜索
 
 （主页右上角有「主机 / 分享 / 刷新」，回到控制台的入口在左侧会话树顶部。）控制台左侧每个 pane 右侧有一个五角星：空心 = 未收藏，实心 = 已收藏（点一下切换）。收藏的会话会出现在 `/home` 主页。
@@ -525,7 +556,9 @@ curl -X POST https://your-host/api/remote-hosts -H "Authorization: Bearer $TOKEN
 主页（`/home`）左侧保留与控制台一致的**可折叠会话树**（主机 → session → window → pane，带 busy/idle 状态点与收藏星标；宽屏时可折叠、折叠状态记在 `localStorage`，窄屏时变成抽屉 + 遮罩）。右侧是看板：
 
 - **收藏卡片**：卡片名可改（铅笔图标 → 输入新名字，或「恢复默认」）；默认名是 **session · window · 主机**（tmux 的 pane title 常常只是主机名，所以不再直接用它）；卡片右上角有**完整预览**按钮：电脑上从右侧滑出抽屉，里面是完整的对话页（markdown/代码/表格、可继续发送、可停止、每 2 秒刷新），手机等窄屏则直接跳到 `/preview?pane=…`，返回手势/按钮回到主页；**鼠标悬停卡片会浮出最后一条 agent 回复的完整内容**（浮层可直接用鼠标滚轮滚动）（若最新一条是用户消息，则自动往上找最近的一条 AI 回复，最多 6000 字）；另有状态徽标（busy / idle / 离线；busy 且在等回复时显示「思考中…」并跳动）、provider、标题、路径、**最近一条对话预览**、pane 引用；点卡片直接跳回控制台并选中该 pane（`/?pane=<pane>`）
-- **看板卡片**：agent 通过 MCP 工具 `publish_home_card` 推上来的结论/告警/链接，可在主页删除
+- **看板卡片**：agent 通过 MCP 工具 `publish_home_card` 推上来的结论/告警/链接，可在主页删除；
+  正文按 **markdown** 渲染（粗体/列表/代码/链接/表格，复用 marked 与 `.md` 样式），卡片里约 6 行封顶，
+  点卡片进预览看全文，正文里的链接新窗口打开、不会误触发卡片
 - **「抓屏」和「终端」是两件事**：聊天模式兜底时用 `tmux capture-pane` 取一份**文本快照**（把整屏文字 + ANSI 转成 HTML 塞进页面），它没有终端语义、每帧整屏重建，全屏 TUI 会卡；「终端」模式是真正的 xterm + PTY（增量写 VT 序列，只重绘变化的格子）。所以 agent 会话读不到 transcript 时不再抓屏，而是给一个「用终端打开（xterm）」按钮。
 - **tmux 路径只探测一次**：探测到的绝对路径（例如 macmini 的 `/opt/homebrew/bin/tmux`）会存进主机记录（`remote_hosts.tmux_path`），之后所有命令、以及终端模式的 PTY attach 都直接用它——之前 macmini 切终端会报 `zsh:1:1 command not found: tmux`，就是因为 attach 那条命令没带上解析出的路径。主机管理页会显示这个路径，没有时提示「tmux 路径待首次连通时记录」。
 - **传输窗口自动适应**：不需要配参数——每次「发现会话」的拉取耗时 >8s 就把该主机的 tail 窗口减半（4MB→1MB 下限），耗时 <2.5s 就加倍回 4MB；实测 oracle（弱网）从 14–30s 降到 5–7s，消息条数不变。
@@ -629,14 +662,90 @@ URL:     http://<host>:8787/mcp
 Header:  Authorization: Bearer <TMUX_WEB_API_TOKEN>
 ```
 
-四个工具，覆盖所有受管主机（含 SSH 远端）：
+覆盖所有受管主机（含 SSH 远端）：
 
 | 工具 | 作用 |
 | --- | --- |
 | `list_agents` | 列出所有主机上的 agent pane（target / 主机 / CLI / 空闲或忙碌 / 目录 / 标题） |
 | `ask_agent` | 向某个 pane 提问并等待回答（busy 快速失败、可 `force`、timeout 5–600s） |
-| `send_agent` | 只输入文字，不等回答 |
+| `send_agent` | 只输入文字，不等回答（`submit=false` 就只打字不回车） |
+| `send_file` | 把本机文件送到对方 pane 目录的 `upload_files/`，并把绝对路径告诉它 |
+| `create_session` | 在任意主机开 tmux 会话：`name` + 可选 `host`/`path`/`agent`/`agent_args`，目录不存在会建，返回 `#N` 编号 |
+| `kill_session` | `pane=#125` 只关那个 pane（会话还有别的 pane 就活着）；`session=名字` 才关整个会话 |
 | `read_agent` | 读它的屏幕（默认）或结构化 transcript（`transcript=true`） |
+
+**回车这件事**：`send_agent` / `ask_agent` 先用 `paste-buffer` 写入，再单独发 `C-m`。粘贴大的
+prompt 时 TUI 可能还在处理，第一个回车会被吃掉——表现就是「文字确实进了输入框，但没发出去」。
+现在的做法是**看屏幕**：按下回车后 0.45s 比对一次抓屏，屏幕没动就再按一次（最多 3 次；空输入
+框上多按一次回车是空操作）。等待时间本身也按文本长度缩放（0.12s + 1 字符 / 2500，上限 1.8s），
+远端走 ssh 时再多给一点。
+
+**开会话/关会话**：`create_session` 就是控制台那个「新建会话」，`agent` 选了就直接把 agent 拉起来
+（可带 `agent_args`、`keep_open`），返回里带 `pane` 与新分配的 `#N`，后面 `send_agent`/`read_agent`
+直接用这个 `#N` 就行。`host` 既接受主机 id 也接受主机名（`oracle`、`macmini`）。
+
+网页端也有入口：顶栏垃圾桶图标「关闭这个窗格」，点了先弹二次确认（会显示 `#N` 和 `session:window`），
+确认后调 `DELETE /api/panes/{pane}`，只关这一个；关完如果同会话还有别的 pane 会自动落到它上面，
+最后一个则显示「窗格已关闭，会话也随之结束」。
+
+**聊天为什么不刷新，以及现在怎么解决**：聊天视图读的是 agent 自己的会话记录（hermes 的 `state.db`、
+claude/codex/kimi 的会话文件），而**一条助手消息是这一轮跑完才写进去的**。agent 在中间调了十几个工具、
+跑了几分钟，聊天里自然什么都没有——看着就是"卡住不刷新"。
+
+现在补了两件事：
+
+- **实时尾巴**：只要最后一条是用户消息（这一轮还没结束），聊天底部显示一块淡色的
+  `agent 工作中 · 实时输出`，内容是 pane 最后 12 行，1.5 秒刷一次，**只有 digest 变了才重绘**。
+  这样能看到它正在干什么，而不是干等。
+- **探活不重发**：轮询带上 `sig=`，服务端算出签名一样就回 `{"unchanged": true}`——实测 300 条消息
+  的完整响应 85KB，探活只有 **127B**（省 99.9%）。轮询节奏也分层：跑任务时 2s、空闲 30 秒内 1.5s、
+  之后 3s、5 分钟以上 5s（原来是固定 1s 永不放手）。
+
+**上传附件是分块的**：4MB 一块 `PUT /api/panes/{pane}/files/upload?offset=&total=&token=`，服务端先写
+`.<token>-<名>.part`，最后一块落地才改名成目标文件——别人永远看不到半个文件。好处三条：
+
+- 条带上显示真实百分比（`上传中 42%`），不再是干等；
+- 断线只丢一块，同一块自动重试 3 次（退避 0.5s/1s/1.5s）；彻底失败时附件留在条带上显示
+  `上传失败 · 点这里重试`，已传的块还在服务端，点一下从断点继续（服务端用 `409 + offset` 告诉客户端它手上有多少字节）；
+- 单请求最大 4MB，天然绕开 Cloudflare 代理域名的 100MB 请求体上限，走 `tmux.122990.xyz` 也能传大文件。
+
+文件面板上传走的是同一个 `TmuxUpload`，所以行为一致，只是多一条目录刷新。
+
+**发送失败不会吃掉你打的字**：消息 POST 失败时文字会放回输入框，状态显示「发送失败，点发送重试」，
+修好网络直接再点发送即可。
+
+**切换模型就在对话里**：附件按钮右边有个齿轮下拉，按 provider 分组显示这个 agent 现在用的模型
+（`OpenAI · gpt-6-luna`、`ctyun · gpt-5.5`…），选中后控制台替你把 agent 自己的 `/model <id>`
+敲进去——不是新协议，就是一行文本。
+
+- 当前模型和 provider 都是**读出来的**，不是猜的：claude / codex / kimi 从各自会话文件最后一条
+  记录里取，hermes 读 `state.db` 的 `sessions.model`，provider 取 `config.yaml` 的 `model.provider`
+  （远端由探测脚本随 header 回传 `TMUXWEB_MODEL` / `TMUXWEB_MODEL_PROVIDER`）。
+- **Hermes 的模型清单是真清单，而且按 provider 分组**：`config.yaml` 里每个 provider 都是 OpenAI
+  兼容端点，控制台逐个问 `/v1/models`（本地直连、远端在对方机器上跑同一段脚本），缓存 15 分钟。
+  菜单里每组可折叠，默认只展开当前用的那组（本机 axera 19 个 + ctyun 50 个）；顶部有筛选框。
+- 跨组切换发的是 `/model <id> --provider <name>`（Hermes 自己的语法），同组切换就是 `/model <id>`。
+  拿不到清单时退回「当前 + 自定义」，不会卡住界面。
+- claude / codex 用别名/模型 id 作为预设，其余用「自定义…」直接输入。
+- **Kimi Code 例外**：`/model <任何东西>` 都回 `Unknown model alias`，它只认无参的 `/model` 打开自己的菜单，
+  所以那里显示「打开模型菜单…」，点了只是把 `/model` 敲进去，选择在 agent 里用方向键完成。
+- 接口：`GET /api/panes/{pane}/models`（`provider`/`current`/`presets`/`picker_only`）、
+  `POST /api/panes/{pane}/model`（`{"model": "opus"}`，kimi 传空即可）。
+- 没有模型的证据就留空，不硬编一个默认值——显示空总比显示错的好。
+
+**关的时候先想 pane，不要整会话**：一个会话里常有好几个 agent，`kill_session` 传 `pane`
+（`#125` 或 `host~%12` 都行）只关那一个，返回 `session_alive` 告诉你会话是否还在；传 `session`
+才是整会话连锅端。对应的 HTTP 接口是 `DELETE /api/panes/{pane}` 和 `DELETE /api/sessions/{name}?host=`。
+
+**传文件**跨主机设计：字节经控制台转一次，落到目标 pane 当前目录的 `upload_files/`，然后给那个
+agent 打一行 `[file] <绝对路径> (N bytes)`。两台机器**不需要**共享挂载，也不需要互相信任 ssh。
+
+```json
+{"tool": "send_file", "arguments": {"target": "#125", "path": "/home/me/report.md",
+                                    "note": "先看这份", "notify": true}}
+```
+
+上限默认 64MB（`TMUXWEB_SEND_FILE_MAX`），文件名不允许带路径分隔符，`notify=false` 就只落盘不打扰对方。
 
 安装：
 
@@ -666,6 +775,18 @@ codex mcp add tmuxweb --url http://host:8787/mcp
 printf 'y\ny\n' | hermes mcp add tmuxweb --url http://host:8787/mcp --auth header
 ```
 
+**多台机器/多个 MCP 时先看网关**：这台机器上跑着一个 [MCPHub](https://github.com/samanhappy/mcphub)
+（`~/mcphub`，端口 3300），TmuxWeb 的 relay 作为它的一条上游。各家 agent 只配一次
+`http://<本机>:3300/mcp`，以后新增别的 MCP（fetch、数据库、别的内部服务）在 hub 里加一条即可，
+客户端不用改；只想给某个服务器单独开路由时用 `/mcp/<server>`（工具名保持原样）。
+
+**探测一律测直连**：有 HTTP 代理的机器上，代理会把别的网段答成 200/502，把真正可达的地址
+掩盖掉（实测 ctyun：直连 tailnet `100.123.123.3` 通、直连局域网不通，而代理恰好反过来）。
+所以 `relay-endpoint.sh` / `install_relay_mcp.sh` 的探测都带 `--noproxy '*'`，按 tailnet →
+物理局域网 → 127.0.0.1 的顺序取第一个**直连**能通的。客户端自己带代理（比如 Hermes 的 httpx
+读 `http_proxy`）时，把目标 IP 加进 `NO_PROXY` 即可；改不动客户端环境才退到 `mcp_relay.py`
+这类 stdio 桥。
+
 **地址约定**：用的不是"Tailscale"，而是**两台机器之间有没有一条互通的私有网段**。Tailscale、EasyTier、
 ZeroTier、WireGuard、子网代理、一个物理局域网——对 TmuxWeb 都是同一件事：能不能双向访问到 `8787`。
 所以配置里写的是那个网段里的地址（`http://100.x.y.z:8787`、`http://10.x.y.z:8787` 都行）。
@@ -686,7 +807,7 @@ printf 'MCP_TMUXWEB_API_KEY=%s\n' '<token>' >> ~/.hermes/.env && chmod 600 ~/.he
 # 2) 注册（两个提示都答 y：requires auth / enable all）
 hermes mcp add tmuxweb --url http://100.x.y.z:8787/mcp --auth header
 # 3) 验证
-hermes mcp test tmuxweb        # ✓ Connected · 10 tools
+hermes mcp test tmuxweb        # ✓ Connected · 13 tools
 ```
 
 判断通不通：`curl http://<那个地址>:8787/` 回 303（未登录跳转）就是通，`/mcp` 不带 token 回 401 说明

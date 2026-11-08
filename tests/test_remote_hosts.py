@@ -1,3 +1,4 @@
+import gzip
 import json
 import os
 import subprocess
@@ -30,6 +31,137 @@ def clear_tmux_cache(host):
     key = remote_hosts.tmux_cache_key(host)
     remote_hosts._TMUX_BIN_CACHE.pop(key, None)
     remote_hosts._TMUX_BIN_FAILED.pop(key, None)
+
+
+class StreamFileTests(unittest.TestCase):
+    """慢链路下载：按块回传，只有"长时间没有数据"才算失败。"""
+
+    def make_runner(self):
+        import remote_hosts
+        return remote_hosts.SSHRunner({"id": "h1", "username": "u", "hostname": "100.0.0.1",
+                                       "port": 22, "auth_type": "key"})
+
+    def fake_process(self, payload: bytes, code: int = 0):
+        import os
+        import threading
+        read_fd, write_fd = os.pipe()
+        # 管道只有 64KB 缓冲：大块数据必须边写边读，否则测试自己会死锁
+        def writer():
+            try:
+                with os.fdopen(write_fd, "wb") as handle:
+                    handle.write(payload)
+            except BrokenPipeError:
+                pass
+        threading.Thread(target=writer, daemon=True).start()
+
+        class Process:
+            def __init__(self):
+                self.stdout = os.fdopen(read_fd, "rb")
+                self.stderr = None
+            def wait(self, timeout=None):
+                return code
+            def poll(self):
+                return code
+            def kill(self):
+                pass
+        return Process()
+
+    def test_streams_the_file_in_chunks(self):
+        from unittest import mock
+        runner = self.make_runner()
+        payload = b"a" * 200000
+        with mock.patch.object(runner, "spawn", return_value=(self.fake_process(payload), "/tmp")), \
+                mock.patch("remote_hosts.shutil.rmtree"):
+            chunks = list(runner.stream_file("/x", max_bytes=1_000_000, chunk=65536))
+        self.assertEqual(b"".join(chunks), payload)
+        self.assertGreater(len(chunks), 2)
+
+    def test_refuses_a_file_over_the_limit(self):
+        from unittest import mock
+        runner = self.make_runner()
+        with mock.patch.object(runner, "spawn",
+                               return_value=(self.fake_process(b"z" * 500000), "/tmp")), \
+                mock.patch("remote_hosts.shutil.rmtree"):
+            with self.assertRaises(RuntimeError):
+                list(runner.stream_file("/x", max_bytes=100000))
+
+    def test_reports_a_remote_error(self):
+        from unittest import mock
+        runner = self.make_runner()
+        with mock.patch.object(runner, "spawn",
+                               return_value=(self.fake_process(b"", code=44), "/tmp")), \
+                mock.patch("remote_hosts.shutil.rmtree"):
+            with self.assertRaises(RuntimeError):
+                list(runner.stream_file("/x", max_bytes=1000))
+
+
+class HermesFreshPaneTests(unittest.TestCase):
+    """新建 pane 的会话还是空的，不能因此把别人的旧对话挑过来。"""
+
+    def test_the_sql_no_longer_prefers_sessions_that_have_messages(self):
+        import remote_hosts
+        script = remote_hosts.REMOTE_TRANSCRIPT_SCRIPT
+        self.assertIn("order by abs(coalesce(s.started_at,0) - $started_at) asc limit 1", script)
+        self.assertNotIn("coalesce(m.content,'')<>'')=0", script)
+
+
+class HermesSessionChoiceTests(unittest.TestCase):
+    """同一个 cwd 里并存多个 hermes 会话时，每个 pane 要落到自己的那个。"""
+
+    def setUp(self):
+        self.script = remote_hosts.REMOTE_TRANSCRIPT_SCRIPT
+
+    def test_picks_the_session_started_closest_to_the_pane(self):
+        # 按「最近活跃」挑会让同 cwd 的所有 pane 显示同一个对话（#34/#35/#37 都撞在一起）
+        self.assertIn("abs(coalesce(s.started_at,0) - $started_at)", self.script)
+        self.assertIn("ps -o etime=", self.script)
+
+    def test_session_hint_walks_four_levels_of_the_process_tree(self):
+        self.assertIn("great=$(for child in $grand; do pgrep -P \"$child\"", self.script)
+        self.assertIn("for pid in $root $kids $grand $great", self.script)
+
+    def test_elapsed_time_is_converted_to_an_epoch(self):
+        self.assertIn("NF==4) s=$1*86400+$2*3600+$3*60+$4", self.script)
+        self.assertIn("started_at=$(( $(date +%s) - pane_elapsed ))", self.script)
+
+    def test_falls_back_when_the_cwd_has_no_session(self):
+        # oracle 的 pane 换过目录，cwd 在库里没有会话：不能整条对话空着
+        self.assertIn("select s.id from sessions s order by", self.script)
+        self.assertIn('"$limit" "$started_at" <<\'PYTHON\'', self.script)
+
+
+class RemoteTranscriptEncodingTests(unittest.TestCase):
+    """header 声明了 gzip，写 payload 的分支就必须过 emit。"""
+
+    def setUp(self):
+        self.script = remote_hosts.REMOTE_TRANSCRIPT_SCRIPT
+
+    def test_every_writer_honours_the_declared_encoding(self):
+        # 每一条 header ... 后面要么走 emit，要么自己声明 encoding=none
+        self.assertIn('| emit', self.script)
+        self.assertIn('then gzip -c; else cat; fi', self.script)
+
+    def test_hermes_sqlite_binary_branch_pipes_through_emit(self):
+        """macmini 上 sqlite3 存在；这条分支曾经输出明文却声明 gzip，
+        客户端报 `Not a gzipped file (b'[{')`，#36 就是它。"""
+        self.assertIn('order by id desc limit $limit" 2>/dev/null | emit', self.script)
+
+    def test_hermes_python_fallback_declares_plain_text(self):
+        self.assertIn("TMUXWEB_ENCODING%snone", self.script)
+
+    def test_gzipped_payload_is_decompressed(self):
+        body = b'[{"id":1,"role":"user","content":"hi"}]'
+        payload = gzip.compress(body)
+        stdout = (b'TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_ENCODING<::>gzip\n'
+                  b'TMUXWEB_PAYLOAD\n' + payload)
+        header, text = parse_transcript_response(stdout)
+        self.assertEqual(header["TMUXWEB_PROVIDER"], "hermes")
+        self.assertEqual(text, body.decode())
+
+    def test_plain_payload_is_left_alone(self):
+        stdout = b'TMUXWEB_ENCODING<::>none\nTMUXWEB_PAYLOAD\n[{"id":1}]'
+        _, text = parse_transcript_response(stdout)
+        self.assertEqual(text, '[{"id":1}]')
 
 
 class RemoteHostTests(unittest.TestCase):
@@ -481,7 +613,8 @@ class RemoteHostTests(unittest.TestCase):
 
         def fake_run(command, **kwargs):
             calls.append(command)
-            return Result(discovery if "TMUXWEB_MODE" not in command and "tail -c 262144" in command else follow)
+            # 增量请求按偏移 tail（`tail -c +N`），发现请求是整段脚本
+            return Result(follow if "tail -c +" in command else discovery)
             # discovery script contains the Claude/Codex locator; the follow script stats + tails
 
         runner.run = fake_run

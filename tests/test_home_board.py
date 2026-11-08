@@ -15,6 +15,29 @@ from tests.fake_terminal import FakeTerminalFactory
 PASSWORD = "home-test-password"
 
 
+class HomeCardMarkdownTests(unittest.TestCase):
+    """看板卡片的正文要按 markdown 渲染，复用 marked + .md 样式。"""
+
+    def setUp(self):
+        from pathlib import Path as _Path
+        self.html = _Path(__file__).resolve().parent.parent.joinpath("web/home.html").read_text()
+
+    def test_card_body_is_rendered_through_marked(self):
+        self.assertIn('class="card-body md"', self.html)
+        self.assertIn("window.mdCard", self.html)
+        self.assertIn("window.__md", self.html)
+        self.assertIn("${window.mdCard(card.body)}", self.html)
+
+    def test_card_links_open_in_a_new_tab_and_do_not_open_the_card(self):
+        self.assertIn('target="_blank" rel="noopener noreferrer"', self.html)
+        self.assertIn("closest('.card-body a')", self.html)
+
+    def test_markdown_typography_is_scoped_to_cards(self):
+        for rule in (".card-body.md p{", ".card-body.md ul", ".card-body.md code{",
+                     ".card-body.md a{", ".card-body.md strong{"):
+            self.assertIn(rule, self.html)
+
+
 class HomeBoardTests(unittest.TestCase):
     def setUp(self):
         self.tmux = FakeTmux()

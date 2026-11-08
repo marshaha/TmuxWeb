@@ -31,15 +31,19 @@ from urllib.parse import parse_qs, quote
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, RedirectResponse,
+                               Response, StreamingResponse)
 from pydantic import BaseModel, Field
 import file_browser
 from home_store import HomeStore
 import mcp_relay
 import agent_status
+import agent_catalog
+import agent_models
 import relay
 import transcript_reader
 from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, RemoteHostStore, RemoteTerminalSession, SSHRunner,
+                           UploadOffsetMismatch,
                           host_key_fingerprint, normalize_session_name, pane_ref, scan_host_key, split_pane_ref,
                           validate_private_key_text)
 
@@ -138,26 +142,75 @@ class TmuxBackend:
             raise TmuxError(detail or "tmux command failed")
         return completed.stdout.decode(errors="replace")
 
-    def create_session(self, name: str, path: str = "") -> dict:
+    def create_session(self, name: str, path: str = "", command: list[str] | None = None,
+                       create_dir: bool = True, keep_open: bool = True) -> dict:
         try:
             name = normalize_session_name(name)
         except ValueError as exc:
             raise TmuxError(str(exc)) from exc
         directory = str(path or "").strip()
-        args = ["new-session", "-d", "-s", name]
+        made_directory = False
         if directory:
             resolved = Path(directory).expanduser()
             if not resolved.is_dir():
-                raise TmuxError("no such directory: %s" % directory)
+                if not create_dir:
+                    raise TmuxError("no such directory: %s" % directory)
+                if resolved.exists():
+                    raise TmuxError("not a directory: %s" % directory)
+                # A fresh session usually means a fresh project directory; make
+                # it instead of making the user go and do it by hand.
+                try:
+                    resolved.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise TmuxError("cannot create directory %s: %s" % (directory, exc)) from exc
+                made_directory = True
             directory = str(resolved)
+        args = ["new-session", "-d", "-s", name]
+        if directory:
             args += ["-c", directory]
+        if command:
+            args += [agent_catalog.with_keep_open(command) if keep_open else agent_catalog.render(command)]
         try:
             self._run(*args)
         except TmuxError as exc:
             if "duplicate session" in str(exc):
                 raise TmuxError("session already exists: %s" % name) from exc
             raise
-        return {"session": name, "path": directory}
+        return {"session": name, "path": directory, "created_dir": made_directory,
+                "command": agent_catalog.render(command) if command else ""}
+
+    def kill_pane(self, pane_id: str) -> dict:
+        """Close one pane; the session survives if it has other panes."""
+        pane = self.validate_pane(pane_id)
+        session = pane.get("session") or ""
+        try:
+            self._run("kill-pane", "-t", pane_id)
+        except TmuxError as exc:
+            if "no such pane" in str(exc) or "can't find pane" in str(exc):
+                raise TmuxError("no such pane: %s" % pane_id) from exc
+            raise
+        alive = True
+        if session:
+            try:
+                self._run("has-session", "-t", session)
+            except TmuxError:
+                alive = False
+        return {"pane": pane_id, "session": session, "session_alive": alive}
+
+    def kill_session(self, name: str) -> dict:
+        """Close a session (and every window/pane in it)."""
+        try:
+            name = normalize_session_name(name)
+        except ValueError as exc:
+            raise TmuxError(str(exc)) from exc
+        try:
+            self._run("kill-session", "-t", name)
+        except TmuxError as exc:
+            detail = str(exc)
+            if "can't find session" in detail or "no such session" in detail:
+                raise TmuxError("no such session: %s" % name) from exc
+            raise
+        return {"session": name, "killed": True}
 
     def list_panes(self) -> list[dict]:
         format_string = FIELD_SEPARATOR.join([
@@ -339,6 +392,28 @@ class TmuxBackend:
         except (file_browser.FileBrowserError, OSError, ValueError) as exc:
             raise TmuxError(str(exc)) from exc
 
+    def upload_chunk(self, part: str, data: bytes, offset: int) -> int:
+        """Append one chunk to a ``.part`` file; returns the size afterwards."""
+        resolved = file_browser.resolve_path(part)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        if offset:
+            size = resolved.stat().st_size if resolved.exists() else 0
+            if size != offset:
+                raise UploadOffsetMismatch(size)     # 和远端一样：对不上就报当前位置
+            with resolved.open("ab") as handle:
+                handle.write(data)
+        else:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            with resolved.open("wb") as handle:
+                handle.write(data)
+        return resolved.stat().st_size
+
+    def finish_upload(self, part: str, path: str) -> None:
+        resolved_part = file_browser.resolve_path(part)
+        resolved = file_browser.resolve_path(path)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(resolved_part, resolved)
+
     def upload_file(self, path: str, data: bytes) -> None:
         resolved = file_browser.resolve_path(path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -375,6 +450,59 @@ class TmuxBackend:
             self.validate_pane(pane_id)
         self._run("send-keys", "-t", pane_id, key)
 
+    def screen(self, pane_id: str, lines: int = 12) -> str:
+        """Plain text of the pane's last lines (cheap, no history)."""
+        try:
+            return self._run("capture-pane", "-p", "-t", pane_id, "-S", f"-{max(1, lines)}")
+        except TmuxError:
+            return ""
+
+    @staticmethod
+    def submit_fingerprint(text: str) -> str:
+        """The bit of text we look for in the input box after pressing Enter."""
+        joined = " ".join((text or "").split())
+        return joined[-40:] if joined else ""
+
+    def still_in_prompt(self, pane_id: str, text: str, lines: int = 6) -> bool:
+        """Is the text we just typed still sitting in the prompt box?
+
+        Comparing whole screens is unreliable (TUIs repaint constantly, so "the
+        screen changed" does not mean "it was submitted"); looking for our own
+        text in the bottom rows is the direct question.
+        """
+        fingerprint = self.submit_fingerprint(text)
+        if not fingerprint:
+            return False
+        screen = self._run("capture-pane", "-p", "-t", pane_id) if hasattr(self, "_run") else ""
+        bottom = " ".join(" ".join(screen.splitlines()[-max(2, lines):]).split())
+        return fingerprint in bottom
+
+    def press_enter_until_submitted(self, pane_id: str, text: str, python: bool = False,
+                                    tries: int = 3) -> int:
+        """Press Enter until the text actually leaves the prompt box.
+
+        A paste bigger than the TUI can digest makes the first C-m land while it
+        is still consuming input, and the key is dropped - the "text is in the
+        box but nothing was sent" report.  Waiting longer is a guess; watching our
+        own text in the bottom rows is not.  An extra Enter on an empty prompt is
+        a no-op, so a false positive costs nothing.
+        """
+        delay = 0.12 + (0.25 if python else 0.0) + min(1.8, len(text) / 2500.0)
+        time.sleep(delay)
+        presses = 0
+        for attempt in range(max(1, tries)):
+            self._run("send-keys", "-t", pane_id, "C-m")
+            presses += 1
+            if attempt + 1 >= tries:
+                break
+            time.sleep(0.5)
+            try:
+                if not self.still_in_prompt(pane_id, text):
+                    break
+            except TmuxError:
+                break
+        return presses
+
     def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None) -> None:
         if pane is None:
             pane = self.validate_pane(pane_id)
@@ -386,8 +514,8 @@ class TmuxBackend:
             self._run("load-buffer", "-b", buffer_name, "-", input_bytes=text.encode())
             self._run("paste-buffer", "-b", buffer_name, "-d", "-t", pane_id)
             if submit:
-                time.sleep(0.25 if pane.get("command") == "python3" else 0.12)
-                self._run("send-keys", "-t", pane_id, "C-m")
+                self.press_enter_until_submitted(pane_id, text,
+                                                 python=pane.get("command") == "python3")
         finally:
             subprocess.run(
                 ["tmux", "delete-buffer", "-b", buffer_name],
@@ -466,6 +594,12 @@ class SessionCreateRequest(BaseModel):
     host: str = Field(default="localhost", max_length=64)
     name: str = Field(min_length=1, max_length=64)
     path: str = Field(default="", max_length=4096)
+    # Optional: start the session already running a coding agent.
+    agent: str = Field(default="", max_length=32)
+    agent_args: str = Field(default="", max_length=512)
+    create_dir: bool = True
+    # Keep the pane alive (and say why) when the agent exits immediately.
+    keep_open: bool = True
 
 
 class ZipRequest(BaseModel):
@@ -572,9 +706,17 @@ class RelayAskRequest(BaseModel):
     source: str = Field(default="", max_length=120)
 
 
+class ModelSwitchRequest(BaseModel):
+    # empty is allowed for CLIs whose /model opens its own picker
+    model: str = Field(default="", max_length=80)
+    # which provider the model belongs to (Hermes keeps several in one config)
+    provider: str = Field(default="", max_length=60)
+
+
 class RelayMessageRequest(BaseModel):
     target: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=100_000)
+    submit: bool = True
 
 
 _PS_CACHE: dict[str, object] = {"at": 0.0, "table": {}}
@@ -831,7 +973,8 @@ def create_app(
         return session_token(token_seed(), secret)
     api_token = (os.environ.get("TMUX_WEB_API_TOKEN") or "").strip()
     # File transfers are buffered in memory, so both directions are capped.
-    download_limit = int(os.environ.get("TMUX_WEB_FILE_DOWNLOAD_MAX", str(64 * 1024 * 1024)))
+    # 远端下载现在是流式的，内存不再随文件大小增长：默认放到 512MB，视频之类才下得动
+    download_limit = int(os.environ.get("TMUX_WEB_FILE_DOWNLOAD_MAX", str(512 * 1024 * 1024)))
     zip_limit = int(os.environ.get("TMUX_WEB_ZIP_MAX", str(file_browser.DEFAULT_ZIP_BYTES)))
     zip_max_files = int(os.environ.get("TMUX_WEB_ZIP_MAX_FILES", str(file_browser.DEFAULT_ZIP_FILES)))
     upload_limit = int(os.environ.get("TMUX_WEB_FILE_UPLOAD_MAX", str(256 * 1024 * 1024)))
@@ -985,6 +1128,13 @@ def create_app(
             return tmux.validate_pane(pane_id)
         except TmuxError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    def pane_provider(pane: dict) -> str:
+        """Same resolution the pane listing uses (process tree first, then command)."""
+        return (pane.get("provider")
+                or transcript_reader.provider_for_pane(
+                    pane, local_process_table() if pane.get("host_id") in (None, "localhost") else None)
+                or transcript_reader.provider_for_command(pane.get("command")) or "")
 
     def pane_transport(pane_ref: str):
         pane_ref = resolve_pane_ref(pane_ref)
@@ -1192,7 +1342,18 @@ def create_app(
 
         workers = max(4, min(32, int(os.environ.get("TMUX_WEB_STATE_WORKERS", "24"))))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(describe, jobs))
+            states = list(pool.map(describe, jobs))
+        # 编号在这里统一带上：relay / 主页 / MCP 拿到的 peer 都自带 #N
+        try:
+            numbers = home.ensure_numbers([state["id"] for state in states if state.get("id")])
+        except (sqlite3.Error, ValueError):
+            numbers = {}
+        for state in states:
+            number = numbers.get(state.get("id"))
+            if number:
+                state["number"] = number
+                state["handle"] = f"#{number}"
+        return states
 
     # ``collect_pane_states`` inspects every pane on every host; the console polls
     # it every 9s and the Home board needs it for its counters. Cache it briefly and
@@ -1742,6 +1903,12 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "composer-files.css", media_type="text/css",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/uploads.js")
+    async def uploads_script() -> FileResponse:
+        """分块上传 / 断点续传：聊天附件和文件面板共用一份。"""
+        return FileResponse(WEB_DIR / "assets" / "uploads.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/composer-files.js")
     async def composer_files_script() -> FileResponse:
         """Chat attachments: upload / thumbnail / delete in one place, shared by both composers."""
@@ -2147,9 +2314,40 @@ def create_app(
         raise HTTPException(status_code=405, detail="this MCP endpoint only accepts POST",
                             headers={"Allow": "POST"})
 
+    AGENT_CACHE: dict[str, tuple[float, list]] = {}
+    AGENT_CACHE_TTL = 300.0
+
+    async def agents_for(host_id: str, refresh: bool = False) -> list[dict]:
+        """What a host can start, cached: probing costs one ssh round trip."""
+        key = host_id or "localhost"
+        cached = AGENT_CACHE.get(key)
+        if cached and not refresh and (time.monotonic() - cached[0]) < AGENT_CACHE_TTL:
+            return [dict(item) for item in cached[1]]
+        if key in ("", "localhost"):
+            found = await asyncio.to_thread(agent_catalog.probe_local)
+        else:
+            try:
+                host = remote_hosts.get_host(key, include_credential=True)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="remote host not found") from exc
+            found = await asyncio.to_thread(lambda: runner_for(host).probe_agents())
+        AGENT_CACHE[key] = (time.monotonic(), found)
+        return [dict(item) for item in found]
+
+    @app.get("/api/hosts/{host_id}/agents")
+    async def list_host_agents(request: Request, host_id: str, refresh: bool = False):
+        require_auth(request)
+        agents = await agents_for(host_id, refresh=refresh)
+        return {"host": host_id, "agents": agents}
+
     @app.post("/api/sessions", status_code=201)
     async def create_session(request: Request, payload: SessionCreateRequest):
-        """Create a detached tmux session on the local host or a remote one."""
+        """Create a detached tmux session on the local host or a remote one.
+
+        ``agent`` is optional: when given (and installed on that host) the session
+        starts with the agent instead of a bare shell, with ``agent_args`` passed
+        through as extra argv.
+        """
         require_auth(request)
         if payload.host in ("", "localhost"):
             transport, host_id = tmux, "localhost"
@@ -2159,13 +2357,34 @@ def create_app(
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail="remote host not found") from exc
             transport, host_id = runner_for(host), payload.host
+        command = None
+        if (payload.agent or "").strip():
+            installed = {item["name"]: item for item in await agents_for(host_id)}
+            wanted = (payload.agent or "").strip().lower()
+            if wanted not in installed:
+                raise HTTPException(
+                    status_code=422,
+                    detail="agent not installed on this host: %s" % wanted)
+            try:
+                # 绝对路径：tmux pane 的 PATH 不一定和 ssh 探测时看到的一样
+                command = agent_catalog.command_for(payload.agent, payload.agent_args,
+                                                    binary=installed[wanted].get("path", ""))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
-            created = await asyncio.to_thread(transport.create_session, payload.name, payload.path)
+            created = await asyncio.to_thread(
+                transport.create_session, payload.name, payload.path, command,
+                payload.create_dir, payload.keep_open)
             panes = await asyncio.to_thread(transport.list_panes)
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             message = str(exc)
-            status = 409 if ("already exists" in message or "duplicate" in message) else 422
-            if status == 422 and "no such directory" not in message and "session name" not in message:
+            if "already exists" in message or "duplicate" in message:
+                status = 409
+            elif any(marker in message for marker in
+                     ("no such directory", "cannot create directory", "not a directory",
+                      "session name", "agent")):
+                status = 422
+            else:
                 status = 503
             raise HTTPException(status_code=status, detail=message) from exc
         session = created["session"]
@@ -2178,7 +2397,53 @@ def create_app(
                 metadata["id"] = pane_ref(host_id, metadata.get("pane_id") or metadata["id"])
             metadata.setdefault("host_id", host_id)
             fresh.append(metadata)
+        if fresh:
+            # 新 pane 立刻拿号：侧栏/MCP 都不用等下一次全量刷新
+            numbers = await asyncio.to_thread(home.ensure_numbers, [pane["id"] for pane in fresh])
+            for pane in fresh:
+                number = numbers.get(pane["id"])
+                if number:
+                    pane["number"] = number
+                    pane["handle"] = f"#{number}"
         return {"session": created, "host": host_id, "panes": fresh}
+
+    @app.delete("/api/panes/{pane_id}")
+    async def delete_pane(request: Request, pane_id: str):
+        """Close one pane only - the session stays if it has other panes."""
+        require_auth(request)
+        try:
+            transport, actual = pane_transport(pane_id)
+        except HTTPException:
+            raise
+        try:
+            killed = await asyncio.to_thread(transport.kill_pane, actual)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            message = str(exc)
+            raise HTTPException(status_code=404 if "no such pane" in message else 503,
+                                detail=message) from exc
+        return killed
+
+    @app.delete("/api/sessions/{name}")
+    async def delete_session(request: Request, name: str, host: str = "localhost"):
+        """Close one tmux session (all of its windows and panes)."""
+        require_auth(request)
+        if host in ("", "localhost"):
+            transport, host_id = tmux, "localhost"
+        else:
+            try:
+                record = remote_hosts.get_host(host, include_credential=True)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="remote host not found") from exc
+            transport, host_id = runner_for(record), host
+        try:
+            killed = await asyncio.to_thread(transport.kill_session, name)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            message = str(exc)
+            status = 404 if "no such session" in message else 422
+            if status == 422 and "session name" not in message:
+                status = 503
+            raise HTTPException(status_code=status, detail=message) from exc
+        return {"session": killed.get("session", name), "host": host_id, "killed": True}
 
     @app.post("/api/remote-hosts/scan-key")
     async def scan_remote_key(request: Request):
@@ -2389,7 +2654,15 @@ def create_app(
         return data
 
     @app.get("/api/panes/{pane_id}/transcript")
-    async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0):
+    async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0,
+                         sig: str = ""):
+        """Structured messages; ``sig`` lets an unchanged poll return a stub.
+
+        The console polls this while a turn runs.  Sending 300 messages of JSON
+        every 2s is the single biggest waste in the chat view, so the client
+        echoes the signature it already has and gets ``{"unchanged": true}``
+        (a few dozen bytes) when nothing moved.
+        """
         require_auth(request)
         pane = await asyncio.to_thread(pane_or_404, pane_id)
         try:
@@ -2398,7 +2671,15 @@ def create_app(
                 data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, True, pane=pane)
             else:
                 data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, pane=pane)
-            return with_waiting_hint(data)
+            data = with_waiting_hint(data)
+            messages = data.get("messages") or []
+            signature = "%s|%s|%s" % (data.get("mtime"), len(messages),
+                                     messages[-1].get("id") if messages else "")
+            if sig and sig == signature:
+                return {"unchanged": True, "signature": signature, "waiting": data.get("waiting"),
+                        "waiting_since": data.get("waiting_since"), "has_more": data.get("has_more")}
+            data["signature"] = signature
+            return data
         except HTTPException:
             raise
         except (TmuxError, RuntimeError, ValueError) as exc:
@@ -2414,6 +2695,68 @@ def create_app(
             return {"status": "sent", "pane": pane_id, "submit": payload.submit}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/panes/{pane_id}/models")
+    async def pane_models(request: Request, pane_id: str):
+        """Which model this pane runs now, and what a switch would send."""
+        require_auth(request)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        provider = pane_provider(pane)
+        if not agent_models.supported(provider):
+            raise HTTPException(status_code=422, detail="this pane is not an agent with a model picker")
+        current, current_data = "", {}
+        try:
+            transport, actual = pane_transport(pane_id)
+            current_data = await asyncio.to_thread(transport.transcript, actual, 1, pane) or {}
+            current = current_data.get("model") or ""
+        except (HTTPException, TmuxError, RuntimeError, OSError, ValueError):
+            current = ""
+        configured = (current_data.get("model_provider") or "") if isinstance(current_data, dict) else ""
+        remote = pane.get("host_id") not in (None, "localhost")
+        if not configured and provider == "hermes" and not remote:
+            configured = agent_models.hermes_route()
+        presets = agent_models.preset_for(provider)
+        groups = []
+        if provider == "hermes":
+            # Hermes 的"可选模型"就是各 provider 的 /v1/models；config 里通常不止一组
+            try:
+                runner = None
+                if remote:
+                    runner, _ = pane_transport(pane_id)
+                    if not hasattr(runner, "run"):
+                        runner = None
+                groups = await asyncio.to_thread(agent_models.hermes_groups, None, runner, configured)
+            except (HTTPException, RuntimeError, OSError, ValueError):
+                groups = []
+            if groups:
+                presets = list(groups[0]["models"])
+        return {"pane": pane_id, "provider": provider, "current": current,
+                "provider_label": agent_models.provider_label(provider, configured),
+                "current_provider": configured,
+                "presets": presets,
+                "groups": groups,
+                "picker_only": agent_models.picker_only(provider),
+                "template": agent_models.switch_command(provider, "MODEL").replace("MODEL", "{model}")}
+
+    @app.post("/api/panes/{pane_id}/model")
+    async def switch_pane_model(request: Request, pane_id: str, payload: ModelSwitchRequest):
+        """Type the agent's own ``/model <id>`` into the pane."""
+        require_auth(request)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        provider = pane_provider(pane)
+        try:
+            command = agent_models.switch_command(
+                provider, payload.model,
+                payload.provider if provider == "hermes" else "")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            transport, actual = pane_transport(pane_id)
+            await asyncio.to_thread(transport.send, actual, command, True, pane=pane)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"status": "sent", "pane": pane_id, "provider": provider, "model": payload.model,
+                "command": command}
 
     @app.post("/api/panes/{pane_id}/interrupt")
     async def interrupt_pane(request: Request, pane_id: str):
@@ -2449,6 +2792,24 @@ def create_app(
         pane = await asyncio.to_thread(pane_or_404, pane_ref)
         transport, actual_pane_id = pane_transport(pane_ref)
         return transport, actual_pane_id, pane
+
+    @app.get("/api/panes/{pane_id}/tail")
+    async def pane_tail(request: Request, pane_id: str, lines: int = 10):
+        """最后几行屏幕文字：agent 还在跑的时候，聊天里先看到"它在干什么"。
+
+        比 /transcript 便宜得多（一次 capture），而且只返回纯文本，客户端按 digest
+        判断要不要重绘——空闲时每 1.5 秒一次抓屏，在远端就是一次 ssh 往返。
+        """
+        require_auth(request)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        try:
+            transport, actual = pane_transport(pane_id)
+            raw = await asyncio.to_thread(transport.capture, actual, max(3, min(lines, 40)), pane=pane)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        text = "\n".join(line.rstrip() for line in (raw or "").splitlines() if line.strip())
+        tail = "\n".join(text.splitlines()[-max(3, min(lines, 40)):])
+        return {"digest": hashlib.sha1(tail.encode()).hexdigest(), "text": tail}
 
     @app.get("/api/panes/{pane_id}/files")
     async def list_pane_files(request: Request, pane_id: str, path: str = "", hidden: int = 0,
@@ -2629,22 +2990,43 @@ def create_app(
             raise HTTPException(status_code=422, detail="path is required")
         try:
             transport, _actual, _pane = await file_target(pane_id)
-            payload = await asyncio.to_thread(transport.download_file, path, download_limit)
         except HTTPException:
             raise
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         name = os.path.basename(path.rstrip("/")) or "download"
         media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        return Response(
-            content=payload,
-            media_type=media_type,
-            headers={
-                "Content-Disposition": "attachment; filename*=UTF-8''" + quote(name, safe=""),
-                "Content-Length": str(len(payload)),
-                "Cache-Control": "no-store",
-            },
-        )
+        headers = {
+            "Content-Disposition": "attachment; filename*=UTF-8''" + quote(name, safe=""),
+            "Cache-Control": "no-store",
+        }
+        # 远端主机（尤其家用上行只有几十 KB/s）走流式：固定超时会把"慢"误判成失败
+        stream_file = getattr(transport, "stream_file", None)
+        if stream_file is not None:
+            try:
+                size = await asyncio.to_thread(transport.file_size, path)
+            except (RuntimeError, OSError, ValueError):
+                size = None
+            if size:
+                headers["Content-Length"] = str(size)
+            chunks = stream_file(path, download_limit)
+
+            def relay():
+                try:
+                    for chunk in chunks:
+                        yield chunk
+                finally:
+                    close = getattr(chunks, "close", None)
+                    if close:
+                        close()
+
+            return StreamingResponse(relay(), media_type=media_type, headers=headers)
+        try:
+            payload = await asyncio.to_thread(transport.download_file, path, download_limit)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        headers["Content-Length"] = str(len(payload))
+        return Response(content=payload, media_type=media_type, headers=headers)
 
     @app.post("/api/panes/{pane_id}/files/zip")
     async def zip_pane_files(request: Request, pane_id: str, payload: ZipRequest):
@@ -2674,10 +3056,21 @@ def create_app(
         )
 
     @app.put("/api/panes/{pane_id}/files/upload")
-    async def upload_pane_file(request: Request, pane_id: str, name: str, dir: str = ""):
+    async def upload_pane_file(request: Request, pane_id: str, name: str, dir: str = "",
+                               offset: int = 0, total: int = 0, token: str = ""):
+        """Write a file, optionally one chunk at a time.
+
+        Chunked mode (``total`` > 0) appends into a ``.part`` file and renames it
+        when the last byte lands, so a dropped connection loses one chunk instead
+        of the whole upload - and no request is ever large enough for Cloudflare's
+        100 MB body limit.  ``offset`` may come back as 409 with the size the far
+        side actually has, which is how a resumed upload finds its place.
+        """
         require_auth(request)
         if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
             raise HTTPException(status_code=422, detail="invalid file name")
+        if token and (len(token) > 64 or not all(ch.isalnum() or ch in "-_" for ch in token)):
+            raise HTTPException(status_code=422, detail="invalid upload token")
         try:
             transport, _actual, pane = await file_target(pane_id)
             directory = dir or pane.get("path") or "."
@@ -2686,6 +3079,22 @@ def create_app(
                 raise HTTPException(status_code=413,
                                     detail=f"file exceeds the upload limit of {upload_limit} bytes")
             target = os.path.join(directory, name)
+            if total > 0:
+                if total > upload_limit:
+                    raise HTTPException(status_code=413,
+                                        detail=f"file exceeds the upload limit of {upload_limit} bytes")
+                part = os.path.join(directory, f".{token or 'upload'}-{name}.part")
+                try:
+                    written = await asyncio.to_thread(transport.upload_chunk, part, body, offset)
+                except UploadOffsetMismatch as exc:
+                    # 头部 + body 都给：客户端从哪边读都行
+                    return JSONResponse(status_code=409,
+                                        content={"detail": "upload offset mismatch", "offset": exc.offset},
+                                        headers={"X-Upload-Offset": str(exc.offset)})
+                if written >= total:
+                    await asyncio.to_thread(transport.finish_upload, part, target)
+                    return {"status": "uploaded", "path": target, "size": written}
+                return {"status": "partial", "path": target, "offset": written, "size": total}
             await asyncio.to_thread(transport.upload_file, target, body)
         except HTTPException:
             raise
@@ -3426,17 +3835,28 @@ def create_app(
         digest: str | None = None
         interval = 0.7
         lines = stream_first_lines
+        misses = 0
         try:
             while True:
                 snapshot = getattr(transport, "snapshot_ansi", None)
-                if snapshot is None:
-                    capture_ansi = getattr(transport, "capture_ansi", transport.capture)
-                    content = await asyncio.to_thread(capture_ansi, actual_pane_id, lines, pane=pane)
-                    new_digest = hashlib.sha1(content.encode()).hexdigest()
-                    payload = None if digest == new_digest else content
-                    digest = new_digest
-                else:
-                    digest, payload = await asyncio.to_thread(snapshot, actual_pane_id, lines, digest, pane=pane)
+                try:
+                    if snapshot is None:
+                        capture_ansi = getattr(transport, "capture_ansi", transport.capture)
+                        content = await asyncio.to_thread(capture_ansi, actual_pane_id, lines, pane=pane)
+                        new_digest = hashlib.sha1(content.encode()).hexdigest()
+                        payload = None if digest == new_digest else content
+                        digest = new_digest
+                    else:
+                        digest, payload = await asyncio.to_thread(snapshot, actual_pane_id, lines, digest, pane=pane)
+                    misses = 0
+                except (RuntimeError, OSError, ValueError):
+                    # 慢链路（或正在上传/下载大文件）会让一次抓屏超时；那是"这次没抓到"，
+                    # 不是"这个 pane 没了"。以前这里直接 return，浏览器就断了。
+                    misses += 1
+                    if misses >= 8:
+                        raise
+                    await asyncio.sleep(min(5.0, 0.8 * misses))
+                    continue
                 # the first frame carries some scrollback, the rest is tail-only
                 lines = stream_lines
                 if payload is not None:

@@ -543,6 +543,36 @@ A saved host can be dialled **through another saved host** (`jump_host_id`):
 username, port, auth_type, credential, `jump_host`, verify) and `remove_remote_host`, so an agent can register a box itself —
 `auth_type=agent` needs no secret at all, and `verify=false` stores a host that is not reachable yet.
 
+
+## New session: create the directory, optionally start an agent
+
+The `+` next to a host opens **New tmux session**; every field is optional:
+
+- **Working directory** - created with `mkdir -p` when missing (on the remote host, by the remote
+  host). If it cannot be created the error carries the path. Pass `"create_dir": false` to keep the
+  old behaviour where a missing directory is a 422.
+- **Start agent (optional)** - the dropdown lists only agents actually installed on *that* host;
+  leaving it empty starts a plain shell. Detection is one POSIX `sh` probe (`command -v` plus
+  `~/.local/bin`, `~/.kimi-code/bin`, `/opt/homebrew/bin`, ...), so the far side needs no `python3`
+  and no `--version` calls (macOS has no `timeout` to bound them).
+- **Agent arguments (optional)** - split with shell rules and appended verbatim (`--model o3`,
+  `--dangerously-skip-permissions`). Unbalanced quoting is a 422, never silently dropped.
+- **Started by absolute path** - a tmux pane's PATH is not the PATH ssh saw: on oracle `claude`
+  lives in `~/.local/bin`, so a bare `claude` is `command not found` (exit 127). The session is
+  therefore started with `/home/ubuntu/.local/bin/claude`, not `claude`.
+- **An exiting agent does not take the session with it** - `keep_open=true` by default: the pane
+  prints `[<path> exited, code N] session kept ...` and `exec $SHELL`. Pass `"keep_open": false`
+  to get the old "agent exits, session ends" behaviour.
+
+    GET  /api/hosts/{host}/agents           # {"agents":[{"name","label","path"}], ...}, cached 5 min
+    GET  /api/hosts/{host}/agents?refresh=1 # re-probe (one ssh round trip per host)
+    POST /api/sessions {"host","name","path","agent","agent_args","create_dir"}
+
+    => {"session":{"session","path","created_dir","command"}, "panes":[...]}
+
+The catalogue lives in `agent_catalog.py` (hermes / claude / codex / kimi / opencode / gemini);
+adding one is a single line in `AGENTS`, and both the UI and the API pick it up.
+
 ## Home board: favourites, cards and search
 
 Every pane in the console sidebar has a star on the right: hollow = not saved, filled = saved. Starred panes appear on `/home`.
@@ -560,6 +590,9 @@ previous agent turn; capped at 6000 chars). Plus a status badge (busy / idle / o
   title, path, a **preview of the last message**, and the pane reference. Clicking a card jumps back to the console with that pane
   selected (`/?pane=<pane>`).
 - **Board cards** — notes, results and alerts an agent published through the `publish_home_card` MCP tool; removable in the UI.
+  The body is rendered as **markdown** (bold, lists, code, links, tables - the same
+  `marked` + `.md` pipeline), clamped to ~6 lines on the card; clicking opens the preview for the
+  full text, and links inside the body open in a new tab instead of opening the card.
 - **“Screen capture” is not a terminal** — the chat fallback used `tmux capture-pane`, i.e. a text snapshot rendered into HTML,
   rebuilt from scratch every frame; a full-screen TUI makes that expensive. Terminal mode is a real xterm + PTY (incremental VT
   writes). Agent panes therefore offer a “用终端打开（xterm）” button instead of capturing.
@@ -718,7 +751,93 @@ URL:     http://<host>:8787/mcp
 Header:  Authorization: Bearer <TMUX_WEB_API_TOKEN>
 ```
 
-Tools: `list_agents`, `ask_agent`, `send_agent`, `read_agent` (screen text, or `transcript=true`).
+Tools: `list_agents`, `ask_agent`, `send_agent` (`submit=false` types without pressing Enter),
+`create_session` (any host, optionally with `agent` / `agent_args`, returns the new `#N`),
+`kill_session` (`pane` closes one pane and leaves the session alive; `session` closes everything),
+`send_file`,
+`read_agent` (screen text, or `transcript=true`).
+
+**Enter is checked, not guessed.** Text goes in through `paste-buffer` and `C-m` is sent separately.
+With a large prompt a TUI is still digesting the paste and eats the first Enter - the classic "the
+text is in the box but nothing was submitted". The console now presses Enter, waits 0.45s,
+compares the screen, and presses again while the screen is frozen (up to 3 times; an extra Enter on
+an empty prompt is a no-op). The initial wait scales with the text length (0.12s + 1 char / 2500,
+capped at 1.8s) and gets a little longer over ssh.
+
+**`send_file` moves bytes across hosts** by relaying them through the console into the target pane's
+`upload_files/`, then typing `[file] <absolute path> (N bytes)` into that pane. Neither machine needs
+a shared mount or ssh trust between them.
+
+```json
+{"tool": "send_file", "arguments": {"target": "#125", "path": "/home/me/report.md",
+                                    "note": "read this first", "notify": true}}
+```
+
+The web console has the same thing: the trash icon in the top bar ("Close this pane") asks for
+confirmation first (showing `#N` and `session:window`), then calls `DELETE /api/panes/{pane}`. If the
+session still has other panes the console lands on one of them; the last pane reports
+"pane closed, the session ended with it".
+
+**Why the chat looked frozen, and what fixes it.** The chat view renders the agent's own session
+record (hermes `state.db`, claude/codex/kimi session files), and an assistant message is only written
+when the turn ends. A turn that runs a dozen tools for several minutes therefore shows nothing new —
+the pane is busy, the chat has nothing to render.
+
+Two changes:
+
+- **Live tail**: while the last message is from the user (turn still running) a muted
+  `agent 工作中 · 实时输出` block shows the pane's last 12 lines, refreshed every 1.5s and redrawn only
+  when the digest changes.
+- **Cheap polls**: the poll echoes `sig=`; when the signature is unchanged the server answers
+  `{"unchanged": true}`. Measured: the full 300-message response is 85 KB, the probe is **127 B**
+  (99.9% less). Cadence is layered too: 2s while a turn runs, 1.5s for 30s after a change, then 3s,
+  and 5s after five idle minutes (it used to be a flat 1s forever).
+
+**Attachments upload in chunks.** 4 MB per `PUT /api/panes/{pane}/files/upload?offset=&total=&token=`,
+written into `.<token>-<name>.part` and renamed only when the last byte lands, so a half file is never
+visible. That buys three things:
+
+- a real percentage in the attachment strip (`上传中 42%`) instead of a spinner;
+- a dropped connection costs one chunk, and that chunk is retried three times (0.5s/1s/1.5s backoff).
+  When retries run out the item stays in the strip as `上传失败 · 点这里重试`; the bytes already sent are
+  still in the `.part` file and the server answers `409 + offset` so the retry resumes instead of restarting;
+- every request stays at 4 MB, below Cloudflare's 100 MB proxied-body limit, so big files work through
+  `tmux.122990.xyz` too.
+
+The file panel uses the same `TmuxUpload` helper, so it behaves identically (it just refreshes the
+directory afterwards).
+
+**A failed send no longer eats your text**: the message goes back into the composer with
+"发送失败，点发送重试" and you can press send again.
+
+**Switching models happens in the chat.** The gear dropdown right of the attach button groups models
+by provider (`OpenAI · gpt-6-luna`, `ctyun · gpt-5.5`, …); picking one types that agent's own
+`/model <id>` into the pane — one line of text, no new protocol.
+
+- The current model *and* its provider are read, not assumed: claude / codex / kimi from the last
+  record of their session file, hermes from `sessions.model` in `state.db` plus
+  `model.provider` in `config.yaml` (remotes ship both as `TMUXWEB_MODEL` /
+  `TMUXWEB_MODEL_PROVIDER`).
+- **Hermes gets the real list, grouped by provider**: every provider in `config.yaml` is an
+  OpenAI-compatible endpoint, so the console asks each one's `/v1/models` (locally, or by running the
+  same snippet on the remote host) and caches the result for fifteen minutes. Groups are collapsible,
+  the one in use starts open (19 on the local axera route, 50 on ctyun), and a filter box sits on top.
+- Crossing providers sends `/model <id> --provider <name>` (Hermes' own syntax); same-provider switches
+  stay `/model <id>`. If the listing fails the picker falls back to "current + custom".
+- claude / codex use aliases/model ids as presets; anything else goes through "custom".
+- **Kimi Code is special**: `/model <anything>` answers `Unknown model alias`; only the bare `/model`
+  opens its picker, so there the control reads "open model menu" and the choice is made inside the
+  agent with the arrow keys.
+- API: `GET /api/panes/{pane}/models` (`provider`/`current`/`presets`/`picker_only`) and
+  `POST /api/panes/{pane}/model` (`{"model": "opus"}`, empty for kimi).
+- No evidence of a model means an empty field, never a made-up default.
+
+**Close a pane before closing a session.** A session often hosts several agents: `kill_session` with
+`pane` (a `#125` handle or a `host~%12` id) closes exactly that one and reports `session_alive`;
+`session` is the sledgehammer. HTTP: `DELETE /api/panes/{pane}` and `DELETE /api/sessions/{name}?host=`.
+
+Limit 64MB by default (`TMUXWEB_SEND_FILE_MAX`); the destination name cannot contain path
+separators; `notify=false` writes the file without interrupting the agent.
 
 ```bash
 ./install_relay_mcp.sh --dry-run   # preview, token masked
@@ -726,6 +845,20 @@ Tools: `list_agents`, `ask_agent`, `send_agent`, `read_agent` (screen text, or `
 ./install_relay_mcp.sh --stdio     # legacy: clients spawn `python3 mcp_relay.py`
 ./install_relay_mcp.sh --uninstall
 ```
+
+**Several machines or several MCP servers? Put a gateway in front.** This host runs
+[MCPHub](https://github.com/samanhappy/mcphub) in `~/mcphub` on port 3300 with the TmuxWeb relay as one upstream.
+Each agent configures `http://<host>:3300/mcp` once; adding another MCP server (fetch, a database, an internal
+service) happens in the hub and no client changes — `/mcp/<server>` exposes a single server with unprefixed tool
+names for drop-in use.
+
+**Probe directly, never through a proxy**: on a host with an HTTP proxy configured, the proxy happily
+answers 200/502 for *other* networks and hides the address that is really reachable (measured on ctyun:
+direct to the tailnet `100.123.123.3` works, direct to the LAN does not — and the proxy is exactly the
+opposite). `relay-endpoint.sh` and `install_relay_mcp.sh` therefore probe with `--noproxy '*'` and take the
+first address that answers **directly** (tailnet → physical LAN → `127.0.0.1`). If the *client* carries its
+own proxy settings (Hermes' httpx reads `http_proxy`), add the target IP to `NO_PROXY`; only fall back to a
+stdio bridge when the client environment cannot be changed.
 
 **Address convention**: what matters is not "Tailscale" but whether the two machines share a **private network path**.
 Tailscale, EasyTier, ZeroTier, WireGuard, a subnet router or one physical LAN are the same thing to TmuxWeb: can you
@@ -747,7 +880,7 @@ python3. Seed the token, then register, then test:
 ```bash
 printf 'MCP_TMUXWEB_API_KEY=%s\n' '<token>' >> ~/.hermes/.env && chmod 600 ~/.hermes/.env
 hermes mcp add tmuxweb --url http://100.x.y.z:8787/mcp --auth header   # answer y to both prompts
-hermes mcp test tmuxweb        # -> Connected, 10 tools
+hermes mcp test tmuxweb        # -> Connected, 13 tools
 ```
 
 `curl http://<address>:8787/` returning 303 means the path is open (303 is the login redirect; `/mcp` without a token

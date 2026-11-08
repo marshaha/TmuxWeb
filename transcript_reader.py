@@ -107,7 +107,8 @@ def provider_from_argv(argv):
         if not base or base.startswith("-"):
             continue
         for agent in AGENT_NAMES:
-            if base == agent or base.startswith(agent + "."):
+            # kimi-code / hermes-agent / claude-code：包一层壳也算同一个 agent
+            if base == agent or base.startswith(agent + ".") or base.startswith(agent + "-"):
                 return agent
     return None
 
@@ -180,6 +181,36 @@ def content_text(content, allowed_types):
         if isinstance(text, str) and text:
             parts.append(text)
     return "\n".join(parts).strip()
+
+
+MODEL_RE = None
+
+
+def tail_model(path, tail: int = 262144) -> str:
+    """最后一条记录里的 ``"model": "…"``。
+
+    Every agent records the model it used in its own session file (claude jsonl,
+    codex rollout, kimi wire, hermes state.db); the model picker only needs the
+    newest one, so a tail read is enough and costs nothing next to the transcript.
+    """
+    global MODEL_RE
+    if MODEL_RE is None:
+        import re as _re
+        MODEL_RE = _re.compile(r'"model"\s*:\s*"([^"]{1,80})"')
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as handle:
+            handle.seek(max(0, size - tail))
+            chunk = handle.read().decode("utf-8", "replace")
+        found = MODEL_RE.findall(chunk)
+        if not found:
+            # 尾部可能全是工具输出（没有 "model" 字段），退回读全文；只在一次
+            # 取不到时才付这个代价，且文件通常几十 MB 以内
+            with open(path, "rb") as handle:
+                found = MODEL_RE.findall(handle.read().decode("utf-8", "replace"))
+    except OSError:
+        return ""
+    return found[-1].strip() if found else ""
 
 
 def _mtime(path):
@@ -313,7 +344,9 @@ def parse_claude(lines, limit, session_id="", mtime=0):
 
 def read_claude(home, cwd, title, limit, hint=None, screen=None):
     path = _claude_session_path(home, cwd, title, screen, hint)
-    return parse_claude(reverse_lines(path), limit, path.stem, _mtime(path))
+    data = parse_claude(reverse_lines(path), limit, path.stem, _mtime(path))
+    data["path"] = str(path)
+    return data
 
 
 def _codex_session_path(home, cwd, title, hint=None):
@@ -384,7 +417,9 @@ def parse_codex(lines, limit, session_id="", mtime=0):
 def read_codex(home, cwd, title, limit, hint=None):
     session_id, path = _codex_session_path(home, cwd, title, hint)
     with path.open(errors="replace") as handle:
-        return parse_codex(handle, limit, session_id, _mtime(path))
+        data = parse_codex(handle, limit, session_id, _mtime(path))
+    data["path"] = str(path)
+    return data
 
 
 def _kimi_session_path(home, cwd, title):
@@ -417,44 +452,131 @@ def _kimi_session_path(home, cwd, title):
     return pool[0][0], pool[0][1]
 
 
+def _kimi_time(value):
+    """kimi 写的是毫秒；老版本偶尔是秒或 ISO 串。"""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            value = int(text)
+        else:
+            return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number / 1000 if number > 10**11 else number
+
+
 def parse_kimi(lines, limit, session_id="", mtime=0):
-    """Parse Kimi wire.jsonl. ``lines`` must be newest-first."""
+    """Parse Kimi wire.jsonl. ``lines`` must be newest-first.
+
+    Two layouts exist and both are still in the wild:
+
+    * kimi 1.x — one ``agent.message.appended`` per chat message, with
+      ``message.meta.source`` telling user input (``input``) from model output (``llm``).
+    * kimi 2.x (2.3.3 here) — user turns land as ``context.append_message``; the
+      assistant answer is streamed as ``context.append_loop_event`` events whose
+      ``event.type`` is ``content.part`` and ``event.part.type`` is ``text`` (``think``
+      parts are the model's private reasoning and are dropped).  Parts of one step
+      belong to one answer, so they are joined back together.
+    """
     max_records = limit_cap(limit)
-    records = []
-    seen = set()
+    items: list[dict] = []
+    seen: set[str] = set()
     has_more = False
+    seq = 0
+
+    def add(record):
+        nonlocal seq
+        record["_seq"] = seq
+        seq += 1
+        items.append(record)
+
+    step_parts: dict[str, list[str]] = {}
+    step_time: dict[str, float] = {}
+    step_order: list[str] = []
+
     for line in lines:
         try:
             event = json.loads(line)
         except ValueError:
             continue
-        if event.get("type") != "agent.message.appended":
+        kind = event.get("type")
+        if kind == "agent.message.appended":                       # kimi 1.x
+            envelope = event.get("message") or {}
+            message = envelope.get("message") or {}
+            meta = envelope.get("meta") or {}
+            role = message.get("role")
+            source = meta.get("source")
+            if role == "user" and source != "input":
+                continue
+            if role == "assistant" and source != "llm":
+                continue
+            if role not in ("user", "assistant"):
+                continue
+            text = content_text(message.get("content"), ("text",))
+            if not text:
+                continue
+            message_id = meta.get("userMessageId") or meta.get("messageId")
+            if not message_id:
+                import hashlib
+                message_id = hashlib.sha256(
+                    ("%s:%s:%s" % (event.get("time"), role, text)).encode()).hexdigest()
+            add({"id": str(message_id), "role": role, "text": text,
+                 "timestamp": _kimi_time(event.get("time"))})
+        elif kind == "context.append_message":                     # kimi 2.x user turn
+            message = event.get("message") or {}
+            role = message.get("role")
+            origin = (message.get("origin") or {}).get("kind")
+            if role not in ("user", "assistant"):
+                continue
+            if role == "user" and origin and origin != "user":
+                continue
+            text = content_text(message.get("content"), ("text",))
+            if not text:
+                continue
+            message_id = message.get("id") or message.get("promptId") or ""
+            if not message_id:
+                import hashlib
+                message_id = hashlib.sha256(
+                    ("%s:%s" % (event.get("time"), text)).encode()).hexdigest()
+            add({"id": str(message_id), "role": role, "text": text,
+                 "timestamp": _kimi_time(event.get("time"))})
+        elif kind == "context.append_loop_event":                  # kimi 2.x assistant stream
+            inner = event.get("event") or {}
+            if inner.get("type") != "content.part":
+                continue
+            part = inner.get("part") or {}
+            if part.get("type") != "text":
+                continue
+            text = part.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            step_id = str(inner.get("stepUuid") or "%s:%s" % (inner.get("turnId"), inner.get("step")))
+            if step_id not in step_parts:
+                step_parts[step_id] = []
+                step_order.append(step_id)
+                step_time[step_id] = _kimi_time(event.get("time"))
+            step_parts[step_id].append(text)
+        else:
             continue
-        envelope = event.get("message") or {}
-        message = envelope.get("message") or {}
-        meta = envelope.get("meta") or {}
-        role = message.get("role")
-        source = meta.get("source")
-        if role == "user" and source != "input":
-            continue
-        if role == "assistant" and source != "llm":
-            continue
-        if role not in ("user", "assistant"):
-            continue
-        text = content_text(message.get("content"), ("text",))
+        if len(items) + len(step_parts) >= max_records:
+            break
+
+    for step_id in step_order:
+        text = "\n\n".join(part.strip() for part in reversed(step_parts[step_id]) if part.strip()).strip()
         if not text:
             continue
-        message_id = meta.get("userMessageId") or meta.get("messageId")
-        if not message_id:
-            import hashlib
-            message_id = hashlib.sha256(("%s:%s:%s" % (event.get("time"), role, text)).encode()).hexdigest()
-        if message_id in seen:
+        add({"id": step_id, "role": "assistant", "text": text, "timestamp": step_time.get(step_id, 0.0)})
+
+    items.sort(key=lambda record: (record.get("timestamp") or 0.0, -record["_seq"]), reverse=True)
+    records = []
+    for record in items:
+        if record["id"] in seen:
             continue
-        seen.add(message_id)
-        timestamp = event.get("time")
-        if isinstance(timestamp, (int, float)):
-            timestamp = timestamp / 1000
-        records.append({"id": str(message_id), "role": role, "text": text, "timestamp": timestamp})
+        seen.add(record["id"])
+        record.pop("_seq", None)
+        records.append(record)
         if len(records) >= max_records:
             has_more = True
             break
@@ -466,7 +588,9 @@ def parse_kimi(lines, limit, session_id="", mtime=0):
 def read_kimi(home, cwd, title, limit):
     state, path = _kimi_session_path(home, cwd, title)
     session_id = str(state.get("id") or path.parents[1].name)
-    return parse_kimi(reverse_lines(path), limit, session_id, _mtime(path))
+    data = parse_kimi(reverse_lines(path), limit, session_id, _mtime(path))
+    data["path"] = str(path)
+    return data
 
 
 def _hermes_session(connection, cwd, hint):
@@ -596,7 +720,26 @@ def read_transcript(provider, cwd, title, limit=200, home=None, hint=None, scree
         data = READERS[provider](home, cwd, title, limit)
     if not data.get("messages"):
         raise TranscriptError("this session has no messages yet")
+    if not data.get("model"):
+        primary = data.get("path") or ""
+        if primary:
+            data["model"] = tail_model(primary)
+        elif provider == "hermes":
+            data["model"] = hermes_model(Path(home), data.get("session_id") or "")
     return data
+
+
+def hermes_model(home, session_id) -> str:
+    """Hermes keeps the model on the session row, not in the messages."""
+    if not session_id:
+        return ""
+    db_path = Path(home) / ".hermes" / "state.db"
+    try:
+        with sqlite3.connect("file:%s?mode=ro" % db_path, uri=True, timeout=5) as connection:
+            row = connection.execute("select model from sessions where id = ?", (session_id,)).fetchone()
+    except sqlite3.Error:
+        return ""
+    return (row[0] or "").strip() if row else ""
 
 
 def pane_screen(pane, lines=80):

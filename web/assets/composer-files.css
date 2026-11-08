@@ -30,3 +30,6 @@
 .cf-x .ico{width:11px;height:11px;stroke-width:3}
 @media(pointer:coarse){.cf-x{width:24px;height:24px;top:-9px;right:-9px}}
 @media(max-width:760px){.cf-item.shot{width:52px;height:52px}.cf-name{max-width:120px}.cf-hint{display:none}}
+
+.cf-item.failed{border-color:#c0564d;background:rgba(192,86,77,.08);cursor:pointer}
+.cf-item.failed .cf-size{color:#c0564d}

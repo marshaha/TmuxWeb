@@ -16,6 +16,7 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 
 import tmux_web
+import agent_catalog
 from tmux_web import ANSI_RE, TmuxBackend, TmuxError, create_app, ensure_share_schema
 import relay
 from tests.fake_terminal import FakeTerminalFactory
@@ -43,21 +44,55 @@ class FakeTmux(TmuxBackend):
         self.created = []
         self.auto_reply = None
 
-    def create_session(self, name, path=""):
+    def create_session(self, name, path="", command=None, create_dir=True, keep_open=True):
         try:
             name = normalize_session_name(name)
         except ValueError as exc:
             raise TmuxError(str(exc)) from exc
         if any(pane["session"] == name for pane in self.panes):
             raise TmuxError("session already exists: %s" % name)
+        made_directory = False
         if path and not Path(path).is_dir():
-            raise TmuxError("no such directory: %s" % path)
+            if not create_dir:
+                raise TmuxError("no such directory: %s" % path)
+            try:
+                Path(path).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise TmuxError("cannot create directory %s: %s" % (path, exc)) from exc
+            made_directory = True
         self.created.append((name, path))
+        self.created_commands = getattr(self, "created_commands", [])
+        self.created_commands.append((name, list(command) if command else []))
+        self.created_shell = getattr(self, "created_shell", [])
+        self.created_shell.append(agent_catalog.with_keep_open(command) if (command and keep_open)
+                                  else (agent_catalog.render(command) if command else ""))
         pane = {"id": "%12", "pane_id": "%12", "target": "%s:0.0" % name, "session": name,
                 "window": "0", "window_name": "shell", "index": "0", "command": "zsh",
                 "title": "new session", "path": path or "/work/repo", "active": True}
         self.panes.append(pane)
-        return {"session": name, "path": path}
+        return {"session": name, "path": path, "created_dir": made_directory,
+                "command": agent_catalog.render(command) if command else ""}
+
+    def kill_pane(self, pane_id):
+        pane = next((item for item in self.panes if item["id"] == pane_id), None)
+        if pane is None:
+            raise TmuxError("no such pane: %s" % pane_id)
+        session = pane["session"]
+        self.panes = [item for item in self.panes if item["id"] != pane_id]
+        alive = any(item["session"] == session for item in self.panes)
+        return {"pane": pane_id, "session": session, "session_alive": alive}
+
+    def kill_session(self, name):
+        try:
+            name = normalize_session_name(name)
+        except ValueError as exc:
+            raise TmuxError(str(exc)) from exc
+        if not any(pane["session"] == name for pane in self.panes):
+            raise TmuxError("no such session: %s" % name)
+        self.panes = [pane for pane in self.panes if pane["session"] != name]
+        self.killed = getattr(self, "killed", [])
+        self.killed.append(name)
+        return {"session": name, "killed": True}
 
     def list_panes(self):
         return self.panes
@@ -160,11 +195,26 @@ class FakeSSHRunner:
         self.host = host
         self.created = []
     def check(self): return "TMUX_REMOTE_OK"
-    def create_session(self, name, path=""):
+    def create_session(self, name, path="", command=None, create_dir=True, keep_open=True):
         name = normalize_session_name(name)
         self.created.append((name, path))
         FakeSSHRunner.created = (name, path)
-        return {"session": name, "path": path}
+        FakeSSHRunner.created_command = list(command) if command else []
+        FakeSSHRunner.created_create_dir = create_dir
+        FakeSSHRunner.created_keep_open = keep_open
+        return {"session": name, "path": path, "created_dir": create_dir and bool(path),
+                "command": " ".join(command or [])}
+
+    def kill_pane(self, pane_id):
+        FakeSSHRunner.killed_pane = pane_id
+        return {"pane": pane_id, "session": "remote", "session_alive": True}
+
+    def kill_session(self, name):
+        FakeSSHRunner.killed = name
+        return {"session": name, "killed": True}
+
+    def probe_agents(self, timeout=12):
+        return [dict(item) for item in getattr(self, "agents", [])]
     def list_panes(self, timeout=15):
         extra = [{"id": pane_ref(self.host["id"], "%11"), "pane_id": "%11", "host_id": self.host["id"],
                   "target": "%s:0.0" % name, "session": name, "window": "0", "window_name": "shell",
@@ -200,6 +250,49 @@ class FakeSSHRunner:
                 FakeSSHRunner.screen = "❯ " + match.group(0) + ' "' + FakeSSHRunner.auto_reply + '"\n'
 
 
+class EnterUntilSubmittedTests(unittest.TestCase):
+    """「文字进了 prompt 但没有回车」：屏幕不动就再按一次。"""
+
+    class Backend(tmux_web.TmuxBackend):
+        def __init__(self, screens):
+            self.screens = list(screens)
+            self.sent = []
+        def _run(self, *args, **kwargs):
+            self.sent.append(args)
+            return ""
+        def still_in_prompt(self, pane_id, text, lines=6):
+            # "same" = 那行字还留在输入框里，需要再按一次
+            return self.screens.pop(0) == "same" if self.screens else False
+
+    def presses(self, backend):
+        return [call for call in backend.sent if call[:2] == ("send-keys", "-t") and call[-1] == "C-m"]
+
+    def test_one_enter_when_the_screen_moves(self):
+        backend = self.Backend(["moved"])
+        with patch("tmux_web.time.sleep"):
+            backend.press_enter_until_submitted("%1", "hello")
+        self.assertEqual(len(self.presses(backend)), 1)
+
+    def test_presses_again_while_the_screen_is_frozen(self):
+        backend = self.Backend(["same", "moved"])
+        with patch("tmux_web.time.sleep"):
+            backend.press_enter_until_submitted("%1", "hello")
+        self.assertEqual(len(self.presses(backend)), 2)
+
+    def test_gives_up_after_the_third_press(self):
+        backend = self.Backend(["same"] * 20)
+        with patch("tmux_web.time.sleep"):
+            backend.press_enter_until_submitted("%1", "hello")
+        self.assertEqual(len(self.presses(backend)), 3)
+
+    def test_long_text_waits_longer(self):
+        backend = self.Backend(["moved"])
+        waits = []
+        with patch("tmux_web.time.sleep", side_effect=lambda seconds: waits.append(seconds)):
+            backend.press_enter_until_submitted("%1", "x" * 5000)
+        self.assertGreater(waits[0], 1.0, "长文本先多等一下，别急着按回车")
+
+
 class TmuxWebTests(unittest.TestCase):
     def setUp(self):
         self.tmux = FakeTmux()
@@ -218,6 +311,24 @@ class TmuxWebTests(unittest.TestCase):
     def login(self):
         response = self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
         self.assertEqual(response.status_code, 303)
+
+    def test_a_slow_capture_does_not_drop_the_live_socket(self):
+        """慢链路（上传/下载大文件时）一次抓屏超时不该把聊天断开。"""
+        self.login()
+        calls = {"n": 0}
+        original = self.tmux.capture_ansi
+
+        def flaky(pane_id, history=500, pane=None):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise RuntimeError("remote command timed out after 15s")
+            return original(pane_id, history, pane=pane)
+
+        self.tmux.capture_ansi = flaky
+        with self.client.websocket_connect("/ws/panes/%254") as socket:
+            payload = socket.receive_json()
+        self.assertEqual(payload["type"], "capture")
+        self.assertGreaterEqual(calls["n"], 3)
 
     def test_requires_login_and_rejects_wrong_password(self):
         self.assertEqual(self.client.get("/", follow_redirects=False).status_code, 303)
@@ -582,8 +693,12 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(calls[0][0], ("send-keys", "-t", "%4", "C-u"))
         self.assertEqual(calls[1][0][0], "load-buffer")
         self.assertEqual(calls[2][0][0], "paste-buffer")
-        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.05, 0.12])
-        self.assertEqual(calls[3][0], ("send-keys", "-t", "%4", "C-m"))
+        # 粘贴后先等一拍再回车；屏幕没动会再补一次（这里 screen() 是空的，等于一直没动）
+        self.assertEqual(sleep.call_args_list[0].args[0], 0.05)
+        self.assertGreaterEqual(sleep.call_args_list[1].args[0], 0.12)
+        enters = [call[0] for call in calls if call[0][:2] == ("send-keys", "-t") and call[0][-1] == "C-m"]
+        self.assertGreaterEqual(len(enters), 1)
+        self.assertEqual(enters[0], ("send-keys", "-t", "%4", "C-m"))
 
     def test_reverse_jsonl_reader_returns_tail_without_full_read(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -635,6 +750,54 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual([(item["role"], item["text"]) for item in result["messages"]], [
             ("user", "用户问题"), ("assistant", "可见回答")
         ])
+
+    def test_reads_kimi_2x_wire_where_the_answer_is_streamed_parts(self):
+        """kimi 2.3.3：用户是 context.append_message，回答是 content.part 的流。"""
+        self.tmux.panes[0].update({"command": "kimi", "title": "配置 provider", "path": "/Users/me"})
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            session = home / ".kimi-code" / "sessions" / "wd_me_abc" / "session_2ff99be8"
+            wire = session / "agents" / "main" / "wire.jsonl"
+            wire.parent.mkdir(parents=True)
+            (session / "state.json").write_text(json.dumps({
+                "id": "session_2ff99be8", "cwd": "/Users/me", "title": "配置 provider",
+                "archived": False, "updatedAt": 1794011808758,
+            }))
+            events = [
+                {"type": "turn.prompt", "time": 1788788631968,
+                 "input": [{"type": "text", "text": "配置 hermes provider"}],
+                 "promptId": "msg_1"},
+                {"type": "context.append_message", "time": 1788788631,
+                 "message": {"role": "user", "origin": {"kind": "user"}, "id": "msg_1",
+                             "content": [{"type": "text", "text": "配置 hermes provider"}]}},
+                {"type": "context.append_loop_event", "time": 1788788631976,
+                 "event": {"type": "step.begin", "turnId": "0", "step": 1, "uuid": "step-a"}},
+                {"type": "context.append_loop_event", "time": 1788788632000,
+                 "event": {"type": "content.part", "turnId": "0", "step": 1, "stepUuid": "step-a",
+                           "part": {"type": "think", "think": "私下的推理"}}},
+                {"type": "context.append_loop_event", "time": 1788788632100,
+                 "event": {"type": "content.part", "turnId": "0", "step": 1, "stepUuid": "step-a",
+                           "part": {"type": "text", "text": "我先看一下本地配置。"}}},
+                {"type": "context.append_loop_event", "time": 1788788632200,
+                 "event": {"type": "content.part", "turnId": "0", "step": 1, "stepUuid": "step-a",
+                           "part": {"type": "text", "text": "然后改 provider。"}}},
+                {"type": "tool.call", "time": 1788788632300, "uuid": "tool-1"},
+                {"type": "context.append_message", "time": 1788788700,
+                 "message": {"role": "user", "origin": {"kind": "user"}, "id": "msg_2",
+                             "content": [{"type": "text", "text": "谢谢"}]}},
+            ]
+            wire.write_text("".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events))
+            backend = TmuxBackend()
+            backend.validate_pane = lambda pane_id: self.tmux.panes[0]
+            with patch("tmux_web.Path.home", return_value=home):
+                result = backend.transcript("%4", 20)
+        self.assertEqual(result["provider"], "kimi")
+        messages = [(item["role"], item["text"]) for item in result["messages"]]
+        self.assertEqual(messages, [
+            ("user", "配置 hermes provider"),
+            ("assistant", "我先看一下本地配置。\n\n然后改 provider。"),
+            ("user", "谢谢"),
+        ], "同一 step 的 text 片段要拼成一条，think 不能露出来")
 
     def test_a_transcript_still_reads_when_the_pane_pid_is_unavailable(self):
         """拿不到 pane_pid（没有 tmux server / 调用方自带 pane dict）只是少了 --resume 提示，不能整条 transcript 报错。"""
@@ -1144,6 +1307,11 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn('<symbol id="i-plus"', response.text)
         self.assertIn("async function submitSessionForm(", response.text)
         self.assertIn("api('/api/sessions'", response.text)
+        # 关闭窗格：顶栏入口 + 二次确认 + 打 DELETE
+        self.assertIn('id="pane-close"', response.text)
+        self.assertIn('id="pane-close-dialog"', response.text)
+        self.assertIn("关闭这个窗格？", response.text)
+        self.assertIn("`/api/panes/${encodeURIComponent(id)}`,{method:'DELETE'}", response.text)
         self.assertIn("e.stopPropagation();state.sessionHost=add.dataset.newSession", response.text)
 
         # per-message copy + per-block controls (code / mermaid / table)
@@ -1633,7 +1801,8 @@ class TmuxWebTests(unittest.TestCase):
 
         listing = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()
         self.assertEqual({tool["name"] for tool in listing["result"]["tools"]},
-                         {"list_agents", "ask_agent", "send_agent", "read_agent",
+                         {"list_agents", "ask_agent", "send_agent", "create_session", "kill_session",
+                                        "send_file", "read_agent",
                           "publish_home_card", "list_home", "remove_home_card",
                           "list_remote_hosts", "add_remote_host", "remove_remote_host"})
 
@@ -1666,7 +1835,7 @@ class TmuxWebTests(unittest.TestCase):
             # the rest of the API keeps its token/cookie check
             still_protected = client.get("/api/hosts")
         self.assertEqual(open_mcp.status_code, 200)
-        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 10)
+        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 13)
         self.assertEqual(still_protected.status_code, 401)
 
     def test_mcp_endpoint_requires_the_api_token(self):
@@ -1706,6 +1875,106 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual([pane["id"] for pane in body["panes"]], ["%12"])
         self.assertEqual(self.tmux.created, [("agent-test", directory)])
 
+    def test_creates_a_missing_directory_before_starting_the_session(self):
+        self.login()
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / "proj" / "nested"
+            response = self.client.post("/api/sessions",
+                                        json={"name": "fresh", "path": str(target)})
+            self.assertEqual(response.status_code, 201)
+            self.assertTrue(target.is_dir(), "创建会话时应顺手把目录建出来")
+            self.assertEqual(self.tmux.created, [("fresh", str(target))])
+            self.assertTrue(response.json()["session"]["created_dir"])
+
+    def test_create_dir_false_keeps_the_missing_directory_error(self):
+        self.login()
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / "absent"
+            response = self.client.post("/api/sessions",
+                                        json={"name": "keep", "path": str(target), "create_dir": False})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("no such directory", response.json()["detail"])
+        self.assertFalse(target.exists())
+
+    def test_starts_the_session_with_an_agent_and_its_arguments(self):
+        self.login()
+        installed = [{"name": "codex", "label": "Codex", "path": "/usr/local/bin/codex"}]
+        with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=installed):
+            with tempfile.TemporaryDirectory() as directory:
+                response = self.client.post("/api/sessions", json={
+                    "name": "agent-run", "path": directory,
+                    "agent": "codex", "agent_args": '--model o3 -c "a b"'})
+        self.assertEqual(response.status_code, 201)
+        # 用探测到的绝对路径：tmux pane 的 PATH 和 ssh 探测时不一定一样
+        self.assertEqual(self.tmux.created_commands[0],
+                         ("agent-run", ["/usr/local/bin/codex", "--model", "o3", "-c", "a b"]))
+        self.assertEqual(response.json()["session"]["command"], "/usr/local/bin/codex --model o3 -c 'a b'")
+        # agent 退出后会话不被带走：ctyun 上 claude 不在 PATH，127 直接把会话关了
+        shell = self.tmux.created_shell[0]
+        self.assertIn('exec "${SHELL:-bash}"', shell)
+        self.assertIn("已退出", shell)
+
+    def test_keep_open_can_be_turned_off(self):
+        self.login()
+        installed = [{"name": "codex", "label": "Codex", "path": "/usr/bin/codex"}]
+        with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=installed):
+            response = self.client.post("/api/sessions", json={
+                "name": "no-keep", "agent": "codex", "keep_open": False})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(self.tmux.created_shell[0], "/usr/bin/codex")
+
+    def test_agent_must_be_known_and_installed(self):
+        self.login()
+        self.assertEqual(self.client.post("/api/sessions",
+                                          json={"name": "x1", "agent": "nope"}).status_code, 422)
+        with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=[]):
+            response = self.client.post("/api/sessions", json={"name": "x2", "agent": "claude"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("not installed", response.json()["detail"])
+        # 引号没闭合的 args 不能被偷偷吞掉
+        self.assertEqual(self.client.post("/api/sessions",
+                                          json={"name": "x3", "agent": "claude",
+                                                "agent_args": '--x "unclosed'}).status_code, 422)
+
+    def test_lists_the_agents_a_host_can_run(self):
+        self.login()
+        installed = [{"name": "hermes", "label": "Hermes", "path": "/home/u/.local/bin/hermes"}]
+        with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=installed) as probe:
+            first = self.client.get("/api/hosts/localhost/agents")
+            second = self.client.get("/api/hosts/localhost/agents")
+            self.client.get("/api/hosts/localhost/agents", params={"refresh": 1})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual([item["name"] for item in first.json()["agents"]], ["hermes"])
+        self.assertEqual(second.json()["agents"], first.json()["agents"])
+        self.assertEqual(probe.call_count, 2, "第二次应该走缓存，refresh=1 才重新探测")
+
+    def test_lists_agents_on_a_remote_host_over_ssh(self):
+        host_key = ("10.0.0.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l"
+                    "+Kg3QGMCbo2")
+        fingerprint = host_key_fingerprint(host_key)
+        self.login()
+        host = self.client.post("/api/remote-hosts", json={
+            "name": "agent-box", "hostname": "10.0.0.9", "port": 22, "username": "ubuntu",
+            "auth_type": "agent", "credential": "", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        }).json()
+        FakeSSHRunner.agents = [{"name": "kimi", "label": "Kimi Code", "path": "/home/u/.kimi-code/bin/kimi"}]
+        try:
+            response = self.client.get("/api/hosts/%s/agents" % host["id"])
+        finally:
+            FakeSSHRunner.agents = []
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["name"] for item in response.json()["agents"]], ["kimi"])
+
+        response = self.client.post("/api/sessions", json={
+            "host": host["id"], "name": "remote-agent", "path": "/srv/new dir",
+            "agent": "kimi", "agent_args": "--yolo"})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(FakeSSHRunner.created_command,
+                         ["/home/u/.kimi-code/bin/kimi", "--yolo"])
+        self.assertTrue(FakeSSHRunner.created_create_dir)
+        self.assertTrue(FakeSSHRunner.created_keep_open)
+
     def test_session_creation_validates_name_path_and_duplicates(self):
         self.login()
         self.assertEqual(self.client.post("/api/sessions", json={"name": "bad:name"}).status_code, 422)
@@ -1715,6 +1984,181 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/sessions", json={"name": "codex"}).status_code, 409)
         self.assertEqual(self.client.post("/api/sessions", json={"host": "deadbeefdeadbeef",
                                                                  "name": "ok"}).status_code, 404)
+
+    def test_lists_the_models_a_pane_can_switch_to(self):
+        self.login()
+        self.tmux.panes[0].update({"command": "claude", "provider": "claude"})
+        self.tmux.transcript = lambda pane_id, limit=1, pane=None: {
+            "provider": "claude", "messages": [{"id": "1"}], "model": "claude-opus-5-5"}
+        response = self.client.get("/api/panes/%254/models")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["provider"], "claude")
+        self.assertEqual(body["current"], "claude-opus-5-5")
+        self.assertIn("opus", body["presets"])
+        self.assertEqual(body["provider_label"], "Anthropic")
+        self.assertFalse(body["picker_only"])
+
+    def test_hermes_groups_and_provider_switch(self):
+        self.login()
+        self.tmux.panes[0].update({"command": "hermes", "provider": "hermes"})
+        self.tmux.transcript = lambda pane_id, limit=1, pane=None: {
+            "provider": "hermes", "messages": [{"id": "1"}], "model": "deepseek-flash",
+            "model_provider": "axera"}
+        groups = [{"provider": "axera", "models": ["deepseek-flash", "glm-5.3"]},
+                  {"provider": "ctyun", "models": ["gpt-5.6-sol"]}]
+        with mock.patch.object(tmux_web.agent_models, "hermes_groups", return_value=groups):
+            body = self.client.get("/api/panes/%254/models").json()
+        self.assertEqual([group["provider"] for group in body["groups"]], ["axera", "ctyun"])
+        self.assertEqual(body["current_provider"], "axera")
+        sent = []
+        self.tmux.send = lambda pane_id, text, submit=True, pane=None: sent.append(text)
+        response = self.client.post("/api/panes/%254/model", json={"model": "gpt-5.6-sol", "provider": "ctyun"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["command"], "/model gpt-5.6-sol --provider ctyun")
+        self.assertEqual(sent, ["/model gpt-5.6-sol --provider ctyun"])
+
+    def test_switching_model_types_the_slash_command(self):
+        self.login()
+        self.tmux.panes[0].update({"command": "claude", "provider": "claude"})
+        sent = []
+        self.tmux.send = lambda pane_id, text, submit=True, pane=None: sent.append((pane_id, text, submit))
+        response = self.client.post("/api/panes/%254/model", json={"model": "opus"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["command"], "/model opus")
+        self.assertEqual(sent[0][:3], ("%4", "/model opus", True))
+
+    def test_kimi_only_opens_its_picker(self):
+        self.login()
+        self.tmux.panes[0].update({"command": "kimi-code", "provider": "kimi"})
+        sent = []
+        self.tmux.send = lambda pane_id, text, submit=True, pane=None: sent.append(text)
+        response = self.client.post("/api/panes/%254/model", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["command"], "/model")
+        self.assertEqual(sent, ["/model"])
+
+    def test_an_unchanged_transcript_poll_returns_a_stub(self):
+        """2 秒一次轮询，不能每次都把 300 条消息重发一遍（85KB → 127B）。"""
+        self.login()
+        messages = [{"id": "1", "role": "user", "text": "hi", "timestamp": 1},
+                    {"id": "2", "role": "assistant", "text": "hello", "timestamp": 2}]
+        self.tmux.transcript = lambda pane_id, limit=200, pane=None: {
+            "provider": "hermes", "session_id": "s1", "messages": messages, "mtime": 111}
+        first = self.client.get("/api/panes/%254/transcript?limit=300").json()
+        self.assertEqual(first["signature"], "111|2|2")
+        again = self.client.get(f"/api/panes/%254/transcript?limit=300&sig={first['signature']}").json()
+        self.assertEqual(again["unchanged"], True)
+        self.assertNotIn("messages", again)
+        changed = self.client.get("/api/panes/%254/transcript?limit=300&sig=999|9|z").json()
+        self.assertNotIn("unchanged", changed)
+        self.assertEqual(len(changed["messages"]), 2)
+
+    def test_tail_returns_plain_text_and_a_digest(self):
+        self.login()
+        self.tmux.capture = lambda pane_id, history=500, pane=None: "a\n\n  b  \nc\n"
+        # 最少 3 行：只给 1-2 行时看不出在干什么
+        body = self.client.get("/api/panes/%254/tail?lines=3").json()
+        self.assertEqual(body["text"], "a\n  b\nc")
+        self.assertEqual(len(body["digest"]), 40)
+
+    def test_chunked_upload_appends_then_renames(self):
+        """4MB 一块：中途失败只丢一块，最后一块落盘才改名，别人看不到半个文件。"""
+        import hashlib
+        import tempfile
+
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            chunks = [b"a" * 1000, b"b" * 1000, b"c" * 500]
+            total = sum(len(chunk) for chunk in chunks)
+            offset = 0
+            for index, chunk in enumerate(chunks):
+                response = self.client.put(
+                    f"/api/panes/%254/files/upload?name=big.bin&dir={directory}"
+                    f"&offset={offset}&total={total}&token=abc", content=chunk)
+                self.assertEqual(response.status_code, 200, response.text)
+                body = response.json()
+                offset += len(chunk)
+                if index < len(chunks) - 1:
+                    self.assertEqual(body["status"], "partial")
+                    self.assertEqual(body["offset"], offset)
+                    # 还没写完时目标文件不能出现
+                    self.assertFalse((Path(directory) / "big.bin").exists())
+            self.assertEqual(body["status"], "uploaded")
+            payload = (Path(directory) / "big.bin").read_bytes()
+            self.assertEqual(payload, b"".join(chunks))
+            self.assertEqual(hashlib.sha256(payload).hexdigest(),
+                             hashlib.sha256(b"".join(chunks)).hexdigest())
+            self.assertFalse(list(Path(directory).glob("*.part")))
+
+    def test_chunk_with_a_wrong_offset_reports_where_the_file_is(self):
+        import tempfile
+
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            self.client.put(f"/api/panes/%254/files/upload?name=x.bin&dir={directory}"
+                            f"&offset=0&total=2000&token=t1", content=b"z" * 1000)
+            response = self.client.put(f"/api/panes/%254/files/upload?name=x.bin&dir={directory}"
+                                       f"&offset=1500&total=2000&token=t1", content=b"z" * 500)
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()["offset"], 1000)
+            self.assertEqual(response.headers.get("x-upload-offset"), "1000")
+
+    def test_the_upload_helper_is_served(self):
+        self.login()
+        response = self.client.get("/assets/uploads.js")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("TmuxUpload", response.text)
+
+    def test_a_shell_pane_has_no_model_picker(self):
+        self.login()
+        self.tmux.panes[0].update({"command": "zsh", "provider": None})
+        self.assertEqual(self.client.get("/api/panes/%254/models").status_code, 422)
+        self.assertEqual(self.client.post("/api/panes/%254/model", json={"model": "opus"}).status_code, 422)
+
+    def test_deletes_a_single_pane_and_keeps_the_session(self):
+        self.login()
+        self.tmux.panes.append({**self.tmux.panes[0], "id": "%5", "target": "codex:0.1",
+                                "window": "0", "window_name": "shell", "command": "zsh"})
+        response = self.client.delete("/api/panes/%254")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["pane"], "%4")
+        self.assertEqual(body["session"], "codex")
+        self.assertTrue(body["session_alive"], "同会话还有别的 pane，会话不能一起没")
+        self.assertEqual([pane["id"] for pane in self.tmux.panes], ["%5"])
+
+    def test_deleting_the_last_pane_says_the_session_is_gone(self):
+        self.login()
+        response = self.client.delete("/api/panes/%254")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["session_alive"])
+        self.assertEqual(self.client.delete("/api/panes/%254").status_code, 404)
+
+    def test_deletes_a_local_session(self):
+        self.login()
+        response = self.client.delete("/api/sessions/codex")   # FakeTmux 里唯一的会话
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["killed"], True)
+        self.assertNotIn("codex", {pane["session"] for pane in self.tmux.panes})
+        self.assertEqual(self.client.delete("/api/sessions/codex").status_code, 404)
+
+    def test_deletes_a_remote_session(self):
+        host_key = ("10.0.0.6 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l"
+                    "+Kg3QGMCbo2")
+        fingerprint = host_key_fingerprint(host_key)
+        self.login()
+        host = self.client.post("/api/remote-hosts", json={
+            "name": "kill-box", "hostname": "10.0.0.6", "port": 22, "username": "ubuntu",
+            "auth_type": "agent", "credential": "", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        }).json()
+        response = self.client.delete(f"/api/sessions/old-agent?host={host['id']}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(FakeSSHRunner.killed, "old-agent")
+        self.assertEqual(self.client.delete("/api/sessions/old?host=deadbeefdeadbeef").status_code, 404)
 
     def test_creates_a_session_on_a_remote_host(self):
         host_key = ("10.0.0.5 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l"
