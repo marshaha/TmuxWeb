@@ -396,7 +396,8 @@ class TmuxBackend:
             return None
         return resolved.stat().st_size
 
-    def stream_file(self, path: str, max_bytes: int, chunk: int = 65536):
+    def stream_file(self, path: str, max_bytes: int, chunk: int = 65536,
+                    idle_timeout: float | None = None):
         """Yield a local file in chunks instead of buffering the whole thing.
 
         The remote runner already streams (``c680fdd``); the local one still
@@ -409,6 +410,8 @@ class TmuxBackend:
             raise TmuxError("not a file: %s" % resolved)
         if resolved.stat().st_size > max_bytes:
             raise TmuxError("file is larger than the download limit")
+        # idle_timeout 只对远端有意义（等 ssh 管道），本地读盘不会卡住；
+        # 参数存在是为了让调用方对两种 transport 用同一个签名。
         with resolved.open("rb") as handle:
             while True:
                 data = handle.read(chunk)
@@ -1008,9 +1011,15 @@ def create_app(
     zip_limit = int(os.environ.get("TMUX_WEB_ZIP_MAX", str(file_browser.DEFAULT_ZIP_BYTES)))
     zip_max_files = int(os.environ.get("TMUX_WEB_ZIP_MAX_FILES", str(file_browser.DEFAULT_ZIP_FILES)))
     upload_limit = int(os.environ.get("TMUX_WEB_FILE_UPLOAD_MAX", str(256 * 1024 * 1024)))
-    # 单次（total=0）上传整包读进内存：超过一块的大小就强制走分块协议，否则
-    # 慢链路 + Cloudflare 100s 上限下大文件必定掉线重传。浏览器和 MCP 都已分块。
-    single_shot_upload_max = 4 * 1024 * 1024
+    # 单次（total=0）上传会把整包读进内存，超过这个尺寸就要求走分块协议。
+    # 4MB 太严：远端机器上还没升级的 relay 会直接 413，而 tailnet 上 16MB
+    # 整包只要几秒。16MB 既保住了"慢链路 / Cloudflare 下必须分块"，也不误伤
+    # 老客户端 —— 真正的 CF 保护来自分块本身，不是这个数。
+    # 流式下载里「多久没有任何字节」算失败：90s 太长，HTTP 响应会先干等；
+    # 25s 足够覆盖慢链路抖动，又能让浏览器早点拿到 503 而不是挂住。
+    download_idle = float(os.environ.get("TMUX_WEB_DOWNLOAD_IDLE_SECONDS", "25"))
+    single_shot_upload_max = int(
+        os.environ.get("TMUX_WEB_SINGLE_UPLOAD_MAX", str(16 * 1024 * 1024)))
     # The screen stream is a firehose for log panes (uvicorn, tail -f, make). Cap
     # how much history it transfers and how often, and trim oversized frames.
     stream_lines = int(os.environ.get("TMUX_WEB_STREAM_LINES", "800"))
@@ -3027,7 +3036,7 @@ def create_app(
                 size = None
             if size:
                 headers["Content-Length"] = str(size)
-            chunks = stream_file(path, download_limit)
+            chunks = stream_file(path, download_limit, idle_timeout=download_idle)
 
             def _prime():
                 iterator = iter(chunks)
@@ -3096,7 +3105,7 @@ def create_app(
                 size = None
             if size:
                 headers["Content-Length"] = str(size)
-            chunks = stream_file(path, download_limit)
+            chunks = stream_file(path, download_limit, idle_timeout=download_idle)
 
             def _prime():
                 iterator = iter(chunks)
@@ -4091,7 +4100,7 @@ if __name__ == "__main__":
         # 优雅停机 30s（.env 改动重启时让在途上传/WS 排空，而不是直接掐断变 502），
         # WS 协议层心跳 20s（空闲连接不会被中间代理静默掐掉）。
         timeout_keep_alive=75,
-        timeout_graceful_shutdown=30,
+        timeout_graceful_shutdown=10,
         ws_ping_interval=20,
         ws_ping_timeout=20,
     )

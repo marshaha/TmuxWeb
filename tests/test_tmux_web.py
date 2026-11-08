@@ -2173,9 +2173,9 @@ class TmuxWebTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(response.content).hexdigest(),
                                  hashlib.sha256(data).hexdigest())
 
-    def test_single_shot_upload_over_4mb_is_rejected(self):
-        """total=0 的整包上传超过一块（4MB）就 413：慢链路上整包必撞 CF 上限，
-        必须走分块协议；小文件单次上传不受影响。"""
+    def test_single_shot_upload_over_16mb_is_rejected(self):
+        """total=0 的整包上传超过 16MB 才 413：慢链路上整包必撞 CF 上限，大文件
+        必须走分块；16MB 以内的整包仍然放行，免得还没升级的远端 relay 直接失败。"""
         import tempfile
 
         self.login()
@@ -2183,9 +2183,14 @@ class TmuxWebTests(unittest.TestCase):
             self.tmux.panes[0]["path"] = directory
             response = self.client.put(
                 f"/api/panes/%254/files/upload?dir={directory}&name=big.bin",
-                content=b"z" * (5 * 1024 * 1024))
+                content=b"z" * (17 * 1024 * 1024))
             self.assertEqual(response.status_code, 413)
             self.assertIn("chunked", response.json()["detail"])
+            # 4-16MB 之间：老 relay 的整包上传仍然能用
+            allowed = self.client.put(
+                f"/api/panes/%254/files/upload?dir={directory}&name=relay.bin",
+                content=b"z" * (5 * 1024 * 1024))
+            self.assertEqual(allowed.status_code, 200)
             small = self.client.put(
                 f"/api/panes/%254/files/upload?dir={directory}&name=small.bin",
                 content=b"ok")

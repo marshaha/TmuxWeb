@@ -15,5 +15,5 @@ export TMUX_WEB_PORT="${TMUX_WEB_PORT:-8787}"
 : "${TMUX_WEB_SESSION_SECRET:?Set TMUX_WEB_SESSION_SECRET in .env or the environment}"
 
 exec python3 -m uvicorn tmux_web:create_app --factory --host "$TMUX_WEB_HOST" --port "$TMUX_WEB_PORT" \
-  --timeout-keep-alive 75 --timeout-graceful-shutdown 30 \
+  --timeout-keep-alive 75 --timeout-graceful-shutdown 10 \
   --ws-ping-interval 20 --ws-ping-timeout 20

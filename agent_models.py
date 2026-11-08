@@ -51,6 +51,11 @@ def provider_label(provider: str, configured: str = "") -> str:
     return PROVIDER_LABELS.get((provider or "").lower(), (provider or "").capitalize())
 
 
+# 内网/Tailscale 的模型网关要绕开 http_proxy。这份后缀表在"本机请求"和
+# "在远端机器上跑的那段脚本"里都要用，只写一份，避免两边漂移。
+PRIVATE_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa", ".intranet")
+
+
 def _is_private_host(host: str) -> bool:
     """True when a model endpoint lives on the LAN/tailnet, not the internet.
 
@@ -64,7 +69,7 @@ def _is_private_host(host: str) -> bool:
     host = (host or "").strip().lower().rstrip(".")
     if not host:
         return False
-    if host.endswith((".local", ".internal", ".lan", ".home.arpa", ".intranet")):
+    if host.endswith(PRIVATE_SUFFIXES):
         return True
     try:
         return not ipaddress.ip_address(host).is_global
@@ -291,7 +296,7 @@ import ipaddress, json, os, re, sys, urllib.parse, urllib.request
 def direct_open(url, headers):
     # 内网模型网关直连，不走环境里的 HTTP 代理（代理会把别的网段答成 200/502）。
     host = (urllib.parse.urlparse(url).hostname or "").lower().rstrip(".")
-    private = host.endswith((".local", ".internal", ".lan", ".home.arpa", ".intranet"))
+    private = host.endswith((__PRIVATE_SUFFIXES__))
     if not private:
         try:
             private = not ipaddress.ip_address(host).is_global
@@ -394,6 +399,10 @@ for name in order:
             print("%s<::>%s" % (name, model))
 PYX
 """
+
+# 后缀表只写一份：脚本里的 __PRIVATE_SUFFIXES__ 用同一份常量填进去
+REMOTE_MODELS_SCRIPT = REMOTE_MODELS_SCRIPT.replace(
+    "__PRIVATE_SUFFIXES__", ", ".join(repr(suffix) for suffix in PRIVATE_SUFFIXES))
 
 
 def hermes_groups(home=None, runner=None, route: str = "", ttl: int = MODELS_CACHE_TTL) -> list:
