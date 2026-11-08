@@ -2038,6 +2038,30 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.json()["command"], "/model")
         self.assertEqual(sent, ["/model"])
 
+    def test_an_unchanged_transcript_poll_returns_a_stub(self):
+        """2 秒一次轮询，不能每次都把 300 条消息重发一遍（85KB → 127B）。"""
+        self.login()
+        messages = [{"id": "1", "role": "user", "text": "hi", "timestamp": 1},
+                    {"id": "2", "role": "assistant", "text": "hello", "timestamp": 2}]
+        self.tmux.transcript = lambda pane_id, limit=200, pane=None: {
+            "provider": "hermes", "session_id": "s1", "messages": messages, "mtime": 111}
+        first = self.client.get("/api/panes/%254/transcript?limit=300").json()
+        self.assertEqual(first["signature"], "111|2|2")
+        again = self.client.get(f"/api/panes/%254/transcript?limit=300&sig={first['signature']}").json()
+        self.assertEqual(again["unchanged"], True)
+        self.assertNotIn("messages", again)
+        changed = self.client.get("/api/panes/%254/transcript?limit=300&sig=999|9|z").json()
+        self.assertNotIn("unchanged", changed)
+        self.assertEqual(len(changed["messages"]), 2)
+
+    def test_tail_returns_plain_text_and_a_digest(self):
+        self.login()
+        self.tmux.capture = lambda pane_id, history=500, pane=None: "a\n\n  b  \nc\n"
+        # 最少 3 行：只给 1-2 行时看不出在干什么
+        body = self.client.get("/api/panes/%254/tail?lines=3").json()
+        self.assertEqual(body["text"], "a\n  b\nc")
+        self.assertEqual(len(body["digest"]), 40)
+
     def test_chunked_upload_appends_then_renames(self):
         """4MB 一块：中途失败只丢一块，最后一块落盘才改名，别人看不到半个文件。"""
         import hashlib

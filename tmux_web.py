@@ -2654,7 +2654,15 @@ def create_app(
         return data
 
     @app.get("/api/panes/{pane_id}/transcript")
-    async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0):
+    async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0,
+                         sig: str = ""):
+        """Structured messages; ``sig`` lets an unchanged poll return a stub.
+
+        The console polls this while a turn runs.  Sending 300 messages of JSON
+        every 2s is the single biggest waste in the chat view, so the client
+        echoes the signature it already has and gets ``{"unchanged": true}``
+        (a few dozen bytes) when nothing moved.
+        """
         require_auth(request)
         pane = await asyncio.to_thread(pane_or_404, pane_id)
         try:
@@ -2663,7 +2671,15 @@ def create_app(
                 data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, True, pane=pane)
             else:
                 data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, pane=pane)
-            return with_waiting_hint(data)
+            data = with_waiting_hint(data)
+            messages = data.get("messages") or []
+            signature = "%s|%s|%s" % (data.get("mtime"), len(messages),
+                                     messages[-1].get("id") if messages else "")
+            if sig and sig == signature:
+                return {"unchanged": True, "signature": signature, "waiting": data.get("waiting"),
+                        "waiting_since": data.get("waiting_since"), "has_more": data.get("has_more")}
+            data["signature"] = signature
+            return data
         except HTTPException:
             raise
         except (TmuxError, RuntimeError, ValueError) as exc:
@@ -2776,6 +2792,24 @@ def create_app(
         pane = await asyncio.to_thread(pane_or_404, pane_ref)
         transport, actual_pane_id = pane_transport(pane_ref)
         return transport, actual_pane_id, pane
+
+    @app.get("/api/panes/{pane_id}/tail")
+    async def pane_tail(request: Request, pane_id: str, lines: int = 10):
+        """最后几行屏幕文字：agent 还在跑的时候，聊天里先看到"它在干什么"。
+
+        比 /transcript 便宜得多（一次 capture），而且只返回纯文本，客户端按 digest
+        判断要不要重绘——空闲时每 1.5 秒一次抓屏，在远端就是一次 ssh 往返。
+        """
+        require_auth(request)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        try:
+            transport, actual = pane_transport(pane_id)
+            raw = await asyncio.to_thread(transport.capture, actual, max(3, min(lines, 40)), pane=pane)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        text = "\n".join(line.rstrip() for line in (raw or "").splitlines() if line.strip())
+        tail = "\n".join(text.splitlines()[-max(3, min(lines, 40)):])
+        return {"digest": hashlib.sha1(tail.encode()).hexdigest(), "text": tail}
 
     @app.get("/api/panes/{pane_id}/files")
     async def list_pane_files(request: Request, pane_id: str, path: str = "", hidden: int = 0,

@@ -854,6 +854,21 @@ confirmation first (showing `#N` and `session:window`), then calls `DELETE /api/
 session still has other panes the console lands on one of them; the last pane reports
 "pane closed, the session ended with it".
 
+**Why the chat looked frozen, and what fixes it.** The chat view renders the agent's own session
+record (hermes `state.db`, claude/codex/kimi session files), and an assistant message is only written
+when the turn ends. A turn that runs a dozen tools for several minutes therefore shows nothing new —
+the pane is busy, the chat has nothing to render.
+
+Two changes:
+
+- **Live tail**: while the last message is from the user (turn still running) a muted
+  `agent 工作中 · 实时输出` block shows the pane's last 12 lines, refreshed every 1.5s and redrawn only
+  when the digest changes.
+- **Cheap polls**: the poll echoes `sig=`; when the signature is unchanged the server answers
+  `{"unchanged": true}`. Measured: the full 300-message response is 85 KB, the probe is **127 B**
+  (99.9% less). Cadence is layered too: 2s while a turn runs, 1.5s for 30s after a change, then 3s,
+  and 5s after five idle minutes (it used to be a flat 1s forever).
+
 **Attachments upload in chunks.** 4 MB per `PUT /api/panes/{pane}/files/upload?offset=&total=&token=`,
 written into `.<token>-<name>.part` and renamed only when the last byte lands, so a half file is never
 visible. That buys three things:
