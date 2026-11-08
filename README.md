@@ -61,30 +61,6 @@ TmuxWeb 是一个自托管的 tmux 与 AI CLI 会话管理中心。它把本机�
   `POST /api/panes/<pane>/files/rename` 与 `/files/delete`，护栏拒绝操作 `/`、家目录和顶层目录。
 - **受控 MCP 邮箱**：可选的 Claude Code、Codex、Hermes 文本消息中继，不开放任意 shell/文件能力。
 
-
-## 网页与 App 的同步闸门
-
-Web 控制台和 Flutter 客户端（`client/`）共用同一套 HTTP 接口，功能一旦只做一边就会悄悄分叉。
-`scripts/parity.py` 把这件事变成硬约束：它对比**服务端路由**、**Dart 实际调用的路由**、
-**`web/assets/*.js` 共享模块**和**页面**，任何一边多出来的东西都必须在 `parity.json` 里表态：
-
-- `ported_*`：Dart 那一侧的实现在哪（值必须是一个真实存在的文件，删了就红）；
-- `web_only_*`：只属于网页，附理由；
-- `pending_*`：已知欠账，报告里点名，不阻塞。
-
-```bash
-python3 scripts/parity.py           # 报告；有未表态的漂移就 exit 1
-python3 scripts/parity.py --update  # 从代码刷新清单，保留已写的理由
-```
-
-`tests/test_parity.py` 把它接进服务端测试，`.github/workflows/tests.yml` 还有一个独立
-`parity` job —— 所以「服务端加了一个接口但没决定 App 怎么办」会直接让 CI 变红，不需要装 Flutter。
-新增网页功能时的流程：先跑一次脚本 → 要么同一次改动里把 Dart 补上（`ported_*`），要么写成
-`pending_*` 并说明原因。
-
-当前欠账（`parity.json` 里可查）：`recents.js`（App 还没有独立「最近」区块）与
-`composer-files.js`（App 聊天还不能带附件，上传 API 已在 client 里）。
-
 ## 守护与故障排查
 
 `tmux kill-session`、`exec` 断链、进程被杀都会让"会话整个消失"——因为 tmux 在窗格进程退出时就关掉会话，
@@ -307,7 +283,6 @@ busy/idle/offline 变；点一下就切过去，切过去的会话会自动顶�
 声明只约束这三类对外能力，不是内核沙箱——不受信的插件请整机容器化运行。
 写法和 API 见 [`plugins/README.md`](plugins/README.md)。
 
-
 ## 架构与边界
 
 - 聊天模式不创建长期 `tmux attach`，避免多个客户端参与 tmux 尺寸协商。
@@ -381,7 +356,6 @@ HTTP 接口（`Authorization: Bearer $TMUX_WEB_API_TOKEN`）：
 
 中继协议：TmuxWeb 在问题里嵌入一次性标记，要求目标 agent 在回答最后一行输出
 `TMUXWEB_REPLY_<token>: "<JSON 字符串>"`，然后按 0.8 秒轮询远端/本地 capture 直到命中或超时（504 会带 pane 尾部内容，便于判断）。目标 pane 正忙时默认拒绝（409），需要 `force=true` 显式覆盖。
-
 
 ## 环境要求
 
@@ -642,20 +616,6 @@ publish_home_card(title="eth 任务已收敛", body="ITER5 结论已写入 notes
 ```
 
 数据存在 `TMUX_WEB_HOME_DB`（默认 `home.db`），收藏与卡片都只写这一张表，不依赖 tmux。
-
-## 移动客户端（Flutter 原生）
-
-`client/` 是 **原生** Flutter 客户端（Android / iOS），不走 WebView，直接调用 HTTP API；网页版继续独立迭代。
-
-- 登录：服务器地址 + 密码（换 `tmux_web_session` cookie），或 `TMUX_WEB_API_TOKEN`；地址记住、密码不落盘
-- 侧边栏树：主机 → session → window → pane 四级展开（展开状态会记住），pane 前有 idle/busy 圆点（来自 `/api/panes/status`）；**每台主机行右侧有独立的刷新按钮**（`/api/hosts?refresh=1&host=<id>`，只重新列这一台，实测 macmini 0.14s / oracle 0.37s，不会像整表刷新那样挨个探测所有主机），控制台和主页的树里都有
-- 服务器管理：列表 / 新增 / 编辑 / 删除远程主机，可扫描并固定 SSH 指纹，带「显示凭据」与「不校验连接直接保存」
-- 对话：结构化 transcript（Claude/Codex/Hermes/Kimi），每条消息复制、代码/mermaid/表格块级源码切换与复制
-- 发送：Enter 发送、Shift+Enter 换行；agent 在跑且输入框为空时发送键变红色停止键（Hermes 发 Ctrl+Q，Claude/Codex/Kimi 发 Esc）
-- 终端：调 `/ws/terminal/{pane}` 的真实 PTY（xterm 渲染），本地与 SSH pane 都可用，断线自动重连
-- 文件面板：浏览 pane 目录、点文件预览（markdown/图片/文本）、下载到设备（存到应用文档目录）、上传、打包当前目录 zip
-- 会话缓存：每个 pane 的 transcript、滚动位置、草稿都留在内存（最多 8 个），切回去立刻出画面再后台刷新
-- 分享：输入分享路径（可带密码）以只读/可对话方式查看
 
 ## 分享会话
 
