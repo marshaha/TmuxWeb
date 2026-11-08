@@ -2038,6 +2038,56 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.json()["command"], "/model")
         self.assertEqual(sent, ["/model"])
 
+    def test_chunked_upload_appends_then_renames(self):
+        """4MB 一块：中途失败只丢一块，最后一块落盘才改名，别人看不到半个文件。"""
+        import hashlib
+        import tempfile
+
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            chunks = [b"a" * 1000, b"b" * 1000, b"c" * 500]
+            total = sum(len(chunk) for chunk in chunks)
+            offset = 0
+            for index, chunk in enumerate(chunks):
+                response = self.client.put(
+                    f"/api/panes/%254/files/upload?name=big.bin&dir={directory}"
+                    f"&offset={offset}&total={total}&token=abc", content=chunk)
+                self.assertEqual(response.status_code, 200, response.text)
+                body = response.json()
+                offset += len(chunk)
+                if index < len(chunks) - 1:
+                    self.assertEqual(body["status"], "partial")
+                    self.assertEqual(body["offset"], offset)
+                    # 还没写完时目标文件不能出现
+                    self.assertFalse((Path(directory) / "big.bin").exists())
+            self.assertEqual(body["status"], "uploaded")
+            payload = (Path(directory) / "big.bin").read_bytes()
+            self.assertEqual(payload, b"".join(chunks))
+            self.assertEqual(hashlib.sha256(payload).hexdigest(),
+                             hashlib.sha256(b"".join(chunks)).hexdigest())
+            self.assertFalse(list(Path(directory).glob("*.part")))
+
+    def test_chunk_with_a_wrong_offset_reports_where_the_file_is(self):
+        import tempfile
+
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            self.client.put(f"/api/panes/%254/files/upload?name=x.bin&dir={directory}"
+                            f"&offset=0&total=2000&token=t1", content=b"z" * 1000)
+            response = self.client.put(f"/api/panes/%254/files/upload?name=x.bin&dir={directory}"
+                                       f"&offset=1500&total=2000&token=t1", content=b"z" * 500)
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()["offset"], 1000)
+            self.assertEqual(response.headers.get("x-upload-offset"), "1000")
+
+    def test_the_upload_helper_is_served(self):
+        self.login()
+        response = self.client.get("/assets/uploads.js")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("TmuxUpload", response.text)
+
     def test_a_shell_pane_has_no_model_picker(self):
         self.login()
         self.tmux.panes[0].update({"command": "zsh", "provider": None})

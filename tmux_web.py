@@ -43,6 +43,7 @@ import agent_models
 import relay
 import transcript_reader
 from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, RemoteHostStore, RemoteTerminalSession, SSHRunner,
+                           UploadOffsetMismatch,
                           host_key_fingerprint, normalize_session_name, pane_ref, scan_host_key, split_pane_ref,
                           validate_private_key_text)
 
@@ -390,6 +391,28 @@ class TmuxBackend:
             return file_browser.zip_paths(paths, base, max_bytes=max_bytes, max_files=max_files)
         except (file_browser.FileBrowserError, OSError, ValueError) as exc:
             raise TmuxError(str(exc)) from exc
+
+    def upload_chunk(self, part: str, data: bytes, offset: int) -> int:
+        """Append one chunk to a ``.part`` file; returns the size afterwards."""
+        resolved = file_browser.resolve_path(part)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        if offset:
+            size = resolved.stat().st_size if resolved.exists() else 0
+            if size != offset:
+                raise UploadOffsetMismatch(size)     # 和远端一样：对不上就报当前位置
+            with resolved.open("ab") as handle:
+                handle.write(data)
+        else:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            with resolved.open("wb") as handle:
+                handle.write(data)
+        return resolved.stat().st_size
+
+    def finish_upload(self, part: str, path: str) -> None:
+        resolved_part = file_browser.resolve_path(part)
+        resolved = file_browser.resolve_path(path)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(resolved_part, resolved)
 
     def upload_file(self, path: str, data: bytes) -> None:
         resolved = file_browser.resolve_path(path)
@@ -1880,6 +1903,12 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "composer-files.css", media_type="text/css",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/uploads.js")
+    async def uploads_script() -> FileResponse:
+        """分块上传 / 断点续传：聊天附件和文件面板共用一份。"""
+        return FileResponse(WEB_DIR / "assets" / "uploads.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/composer-files.js")
     async def composer_files_script() -> FileResponse:
         """Chat attachments: upload / thumbnail / delete in one place, shared by both composers."""
@@ -2993,10 +3022,21 @@ def create_app(
         )
 
     @app.put("/api/panes/{pane_id}/files/upload")
-    async def upload_pane_file(request: Request, pane_id: str, name: str, dir: str = ""):
+    async def upload_pane_file(request: Request, pane_id: str, name: str, dir: str = "",
+                               offset: int = 0, total: int = 0, token: str = ""):
+        """Write a file, optionally one chunk at a time.
+
+        Chunked mode (``total`` > 0) appends into a ``.part`` file and renames it
+        when the last byte lands, so a dropped connection loses one chunk instead
+        of the whole upload - and no request is ever large enough for Cloudflare's
+        100 MB body limit.  ``offset`` may come back as 409 with the size the far
+        side actually has, which is how a resumed upload finds its place.
+        """
         require_auth(request)
         if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
             raise HTTPException(status_code=422, detail="invalid file name")
+        if token and (len(token) > 64 or not all(ch.isalnum() or ch in "-_" for ch in token)):
+            raise HTTPException(status_code=422, detail="invalid upload token")
         try:
             transport, _actual, pane = await file_target(pane_id)
             directory = dir or pane.get("path") or "."
@@ -3005,6 +3045,22 @@ def create_app(
                 raise HTTPException(status_code=413,
                                     detail=f"file exceeds the upload limit of {upload_limit} bytes")
             target = os.path.join(directory, name)
+            if total > 0:
+                if total > upload_limit:
+                    raise HTTPException(status_code=413,
+                                        detail=f"file exceeds the upload limit of {upload_limit} bytes")
+                part = os.path.join(directory, f".{token or 'upload'}-{name}.part")
+                try:
+                    written = await asyncio.to_thread(transport.upload_chunk, part, body, offset)
+                except UploadOffsetMismatch as exc:
+                    # 头部 + body 都给：客户端从哪边读都行
+                    return JSONResponse(status_code=409,
+                                        content={"detail": "upload offset mismatch", "offset": exc.offset},
+                                        headers={"X-Upload-Offset": str(exc.offset)})
+                if written >= total:
+                    await asyncio.to_thread(transport.finish_upload, part, target)
+                    return {"status": "uploaded", "path": target, "size": written}
+                return {"status": "partial", "path": target, "offset": written, "size": total}
             await asyncio.to_thread(transport.upload_file, target, body)
         except HTTPException:
             raise

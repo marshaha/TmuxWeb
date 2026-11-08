@@ -230,6 +230,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 <link rel="stylesheet" href="/assets/pane-preview.css">
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
+<script src="/assets/uploads.js"></script>
 <script src="/assets/composer-files.js"></script>
 <script src="/assets/path-links.js"></script>
 <script src="/assets/downloads.js"></script>
@@ -522,7 +523,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     const ask=TmuxDownload.maybe(href,{name,meta:path});
     setFileStatus(`下载 ${name}`);return ask;}
   async function downloadArchive(paths,label){if(!paths.length||!state.selected)return;const button=$('file-zip');if(button)button.disabled=true;setFileStatus(`打包 ${label}…`);try{const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/zip`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base:state.filesPath||'',paths:paths})});if(!response.ok){let detail=`HTTP ${response.status}`;try{detail=(await response.json()).detail||detail;}catch{}throw new Error(detail);}const blob=await response.blob();const stem=((state.filesPath||'files').split('/').filter(Boolean).pop())||'files';const url=URL.createObjectURL(blob);TmuxDownload.maybe(url,{name:`${stem}.zip`,meta:formatSize(blob.size)});setTimeout(()=>URL.revokeObjectURL(url),60000);setFileStatus(`已打包 ${label} · ${formatSize(blob.size)}`);}catch(e){setFileStatus(`打包失败：${e.message}`);}finally{if(button)button.disabled=false;syncFileSelection();}}
-  async function uploadFiles(files,directory){if(!files.length||!state.selected)return;for(const file of files){setFileStatus(`上传 ${file.name}…`);try{const response=await fetch(`/api/panes/${encodeURIComponent(state.selected)}/files/upload?dir=${encodeURIComponent(directory)}&name=${encodeURIComponent(file.name)}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:file});if(!response.ok){let detail=`HTTP ${response.status}`;try{const parsed=await response.json();detail=parsed.detail||detail;}catch{}throw new Error(detail);}}catch(e){setFileStatus(`${file.name}: ${e.message}`);return;}}setFileStatus(`已上传 ${files.length} 个文件`);openFiles(directory);}
+  async function uploadFiles(files,directory){if(!files.length||!state.selected)return;const pane=state.selected;for(const file of files){setFileStatus(`上传 ${file.name}…`);try{if(!window.TmuxUpload)throw new Error('上传模块未加载');await TmuxUpload.upload({pane,dir:directory,name:file.name,file,onProgress:(done,total)=>setFileStatus(`上传 ${file.name} ${Math.round(done/total*100)}%`)});}catch(e){setFileStatus(`${file.name}: ${e.message}`);return;}}setFileStatus(`已上传 ${files.length} 个文件`);openFiles(directory);}
   // ---- 文件面板：重命名 / 删除 ----
   function fileBase(path){return String(path||'').split('/').filter(Boolean).pop()||String(path||'');}
   function fileEntry(path){const entries=(state.filesData&&state.filesData.entries)||[];return entries.find(entry=>entry.path===path)||null;}
@@ -1871,7 +1872,10 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     const typed=input.value;
     const text=prompt?(typed.trim()?`${prompt}\n\n${typed}`:prompt):typed;
     const pane=state.selected;
-    if(!pane||!text.trim()||attachmentsPending())return;const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});setOptimisticStatus(localId,'sent');setSendState('已发送 ✓','ok');showError('');clearAttachments();if(!isMobile())input.focus();state.stick=true;}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败','bad');}finally{send.disabled=!state.selected;}}
+    if(!pane||!text.trim()||attachmentsPending())return;const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});setOptimisticStatus(localId,'sent');setSendState('已发送 ✓','ok');showError('');clearAttachments();if(!isMobile())input.focus();state.stick=true;}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');
+    // 别把用户刚打的字弄丢：放回输入框，改完/网络好了直接再发
+    if(!input.value.trim()){input.value=text;input.style.height='auto';if(!isMobile())input.focus();}
+  }finally{send.disabled=!state.selected;}}
   async function createShare(e){e.preventDefault();const result=$('share-result');result.textContent='创建中…';try{const d=await api('/api/shares',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane_id:state.selected,slug:$('share-slug').value.trim(),password:$('share-password').value,expires_in:Number($('share-expiry').value),allow_input:$('share-allow-input').checked})});const url=new URL(d.url,location.origin).href;try{await navigator.clipboard.writeText(url);result.textContent=`已创建并复制：${url}`;}catch{result.textContent=`已创建：${url}`;}}catch(error){result.textContent=error.message;}}
   list.addEventListener('click',e=>{const add=e.target.closest('[data-new-session]');if(!add)return;
     e.preventDefault();e.stopPropagation();state.sessionHost=add.dataset.newSession;

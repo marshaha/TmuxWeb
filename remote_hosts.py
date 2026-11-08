@@ -898,6 +898,17 @@ def _format_jump_spec(parsed: dict) -> str:
     return f"{parsed['username']}@{parsed['hostname']}:{parsed['port']}"
 
 
+class UploadOffsetMismatch(RuntimeError):
+    """The ``.part`` file on the far side is not where the client thinks it is."""
+
+    def __init__(self, offset: str):
+        super().__init__("upload offset mismatch")
+        try:
+            self.offset = int(str(offset).strip() or 0)
+        except ValueError:
+            self.offset = 0
+
+
 class RemoteHostStore:
     def __init__(self, db_path: str | Path, key_path: str | Path):
         self.db_path = Path(db_path) if db_path != ":memory:" else db_path
@@ -1988,6 +1999,36 @@ class SSHRunner:
         if len(payload) > max_bytes:
             raise RuntimeError("selection is larger than the %d byte zip limit" % max_bytes)
         return file_browser.tar_to_zip(payload, max_bytes=max_bytes, max_files=max_files)
+
+    def upload_chunk(self, part: str, data: bytes, offset: int) -> int:
+        """Append one chunk to a remote ``.part`` file; returns the size afterwards."""
+        if "\x00" in part or "\n" in part:
+            raise ValueError("invalid path")
+        directory = os.path.dirname(part) or "."
+        quoted = shlex.quote(part)
+        if offset:
+            command = (f"sz=$(stat -c%s -- {quoted} 2>/dev/null || stat -f%z -- {quoted} 2>/dev/null || echo 0); "
+                       f"[ \"$sz\" = \"{int(offset)}\" ] || {{ echo \"offset:$sz\" >&2; exit 43; }}; "
+                       f"cat >> {quoted}; "
+                       f"stat -c%s -- {quoted} 2>/dev/null || stat -f%z -- {quoted} 2>/dev/null")
+        else:
+            command = (f"mkdir -p -- {shlex.quote(directory)} && cat > {quoted} && "
+                       f"stat -c%s -- {quoted} 2>/dev/null || stat -f%z -- {quoted} 2>/dev/null")
+        completed = self.run(command, input_bytes=data, timeout=180)
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(errors="replace").strip()
+            if detail.startswith("offset:"):
+                raise UploadOffsetMismatch(detail.split(":", 1)[1].strip())
+            raise RuntimeError(detail or "remote chunk could not be written")
+        try:
+            return int(completed.stdout.decode(errors="replace").strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return offset + len(data)
+
+    def finish_upload(self, part: str, path: str) -> None:
+        completed = self.run(f"mv -f -- {shlex.quote(part)} {shlex.quote(path)}", timeout=60)
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote rename failed")
 
     def upload_file(self, path: str, data: bytes) -> None:
         """Write a remote file from raw bytes, creating the parent directory."""

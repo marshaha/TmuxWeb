@@ -74,7 +74,8 @@
   },
   "web_only_assets": {
     "downloads.js": "App 用系统保存对话框（save_file_io/web）直接落盘，不需要网页那层下载确认卡片",
-    "path-links.js": "App 的路径导航走文件面板，聊天文本里不做路径链接后处理"
+    "path-links.js": "App 的路径导航走文件面板，聊天文本里不做路径链接后处理",
+    "uploads.js": "网页/多窗口共用的分块上传（进度条 + 断点续传 + 按块重试）；Flutter 客户端自 2026-11 起暂停维护，恢复时在移动端上传器里补同样的语义"
   },
   "web_only_pages": {
     "share.html": "访客分享页是给浏览器看的公开 HTML，App 里对应的是分享管理屏幕"

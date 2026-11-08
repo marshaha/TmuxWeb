@@ -62,9 +62,15 @@
         const remove = `<button class="cf-x" type="button" data-cf-drop="${index}" title="移除" aria-label="移除">`
           + `<svg class="ico"><use href="#i-close"/></svg></button>`;
         if (item.pending) {
+          const pct = Math.round((item.progress || 0) * 100);
           return `<div class="cf-item busy"><svg class="ico"><use href="#i-paperclip"/></svg>`
             + `<span class="cf-meta"><span class="cf-name">${esc(item.name)}</span>`
-            + `<span class="cf-size">上传中…</span></span>${remove}</div>`;
+            + `<span class="cf-size">上传中 ${pct}%</span></span>${remove}</div>`;
+        }
+        if (item.failed) {
+          return `<div class="cf-item failed" data-cf-retry="${index}"><svg class="ico"><use href="#i-refresh"/></svg>`
+            + `<span class="cf-meta"><span class="cf-name">${esc(item.name)}</span>`
+            + `<span class="cf-size">上传失败 · 点这里重试</span></span>${remove}</div>`;
         }
         if (item.isImage) {
           return `<div class="cf-item shot" title="${esc(item.name)}">`
@@ -100,26 +106,38 @@
         const name = uniqueName(file.name || 'file');
         const item = {name, size: file.size, isImage: isImage(file), pending: true,
           objectUrl: isImage(file) ? URL.createObjectURL(file) : null};
+        item.file = file;
         items.push(item);
         render();
-        try {
-          const response = await fetch(endpoint(name, 'upload'), {method: 'PUT', body: file});
-          if (!response.ok) {
-            let detail = '';
-            try { detail = (await response.json()).detail || ''; } catch (_error) { /* plain body */ }
-            throw new Error(detail || `HTTP ${response.status}`);
-          }
-          item.pending = false;
-          item.url = endpoint(name, 'download');
-          item.onDisk = true;
-        } catch (error) {
-          const at = items.indexOf(item);
-          if (at >= 0) items.splice(at, 1);
-          if (item.objectUrl) URL.revokeObjectURL(item.objectUrl);
-          if (options.onError) options.onError(`附件上传失败：${error.message}`);
-        }
-        render();
+        await push(item);
       }
+    }
+
+    async function push(item) {
+      item.pending = true;
+      item.failed = false;
+      item.progress = 0;
+      render();
+      try {
+        if (!window.TmuxUpload) throw new Error('上传模块未加载');
+        await window.TmuxUpload.upload({
+          pane: paneId(), dir: directory(), name: item.name, file: item.file,
+          onProgress: (done, total) => {
+            item.progress = total ? done / total : 0;
+            item.sent = done;
+            render();
+          },
+        });
+        item.pending = false;
+        item.url = endpoint(item.name, 'download');
+        item.onDisk = true;
+      } catch (error) {
+        // 失败不再静默删掉：留一条"点这里重试"，已经上传的块在服务端 .part 里
+        item.pending = false;
+        item.failed = true;
+        if (options.onError) options.onError(`附件上传失败：${error.message}`);
+      }
+      render();
     }
 
     async function remove(index) {
@@ -163,10 +181,18 @@
     }
     if (strip) {
       strip.addEventListener('click', event => {
-        const hit = event.target.closest('[data-cf-drop]');
-        if (!hit) return;
-        event.preventDefault();
-        remove(Number(hit.dataset.cfDrop));
+        const drop = event.target.closest('[data-cf-drop]');
+        if (drop) {
+          event.preventDefault();
+          remove(Number(drop.dataset.cfDrop));
+          return;
+        }
+        const retry = event.target.closest('[data-cf-retry]');
+        if (retry) {
+          event.preventDefault();
+          const item = items[Number(retry.dataset.cfRetry)];
+          if (item && item.failed) push(item);
+        }
       });
     }
     const drop = options.drop;

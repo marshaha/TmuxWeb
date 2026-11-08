@@ -854,6 +854,23 @@ confirmation first (showing `#N` and `session:window`), then calls `DELETE /api/
 session still has other panes the console lands on one of them; the last pane reports
 "pane closed, the session ended with it".
 
+**Attachments upload in chunks.** 4 MB per `PUT /api/panes/{pane}/files/upload?offset=&total=&token=`,
+written into `.<token>-<name>.part` and renamed only when the last byte lands, so a half file is never
+visible. That buys three things:
+
+- a real percentage in the attachment strip (`上传中 42%`) instead of a spinner;
+- a dropped connection costs one chunk, and that chunk is retried three times (0.5s/1s/1.5s backoff).
+  When retries run out the item stays in the strip as `上传失败 · 点这里重试`; the bytes already sent are
+  still in the `.part` file and the server answers `409 + offset` so the retry resumes instead of restarting;
+- every request stays at 4 MB, below Cloudflare's 100 MB proxied-body limit, so big files work through
+  `tmux.122990.xyz` too.
+
+The file panel uses the same `TmuxUpload` helper, so it behaves identically (it just refreshes the
+directory afterwards).
+
+**A failed send no longer eats your text**: the message goes back into the composer with
+"发送失败，点发送重试" and you can press send again.
+
 **Switching models happens in the chat.** The gear dropdown right of the attach button groups models
 by provider (`OpenAI · gpt-6-luna`, `ctyun · gpt-5.5`, …); picking one types that agent's own
 `/model <id>` into the pane — one line of text, no new protocol.
