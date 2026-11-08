@@ -46,7 +46,13 @@
     return `up${(hash >>> 0).toString(36)}`;
   }
 
-  function endpoint(pane, name, dir, offset, total, tag) {
+  function endpoint(pane, name, dir, offset, total, tag, route) {
+    if (route && route.ticket) {
+      // 直连源站：鉴权靠票据，路径固定 /t/upload
+      const query = new URLSearchParams({t: route.ticket, name, dir,
+        offset: String(offset), total: String(total), token: tag});
+      return `${route.prefix}/t/upload?${query.toString()}`;
+    }
     const query = new URLSearchParams({name, dir, offset: String(offset), total: String(total), token: tag});
     return `/api/panes/${encodeURIComponent(pane)}/files/upload?${query.toString()}`;
   }
@@ -63,12 +69,18 @@
     // 40KB/s 下要 ~94 秒，加 SSH 建连就超 100s，第一块就被 CF 切断。
     let chunkSize = Math.min(CHUNK_FIRST, Math.max(CHUNK_MIN, Math.ceil(total / 8) || CHUNK_MIN));
     const notify = () => { if (onProgress) onProgress(offset, total); };
+    // 在内网/tailnet 里就直连（更快、没有 CF 的 100MB/100s）；探测不到就保持公网
+    let route = null;
+    if (window.TmuxTransfer && window.TmuxTransfer.uploadRoute) {
+      try { route = await window.TmuxTransfer.uploadRoute({pane, dir, name, size: total}); }
+      catch (_error) { route = null; }
+    }
     notify();
     while (offset < total) {
       const end = Math.min(offset + chunkSize, total);
       const blob = file.slice(offset, end);
       const started = performance.now();
-      const response = await sendChunk(endpoint(pane, name, dir, offset, total, tag), blob, sent => {
+      const response = await sendChunk(endpoint(pane, name, dir, offset, total, tag, route), blob, sent => {
         if (onProgress) onProgress(offset + Math.min(sent, blob.size), total);
       });
       if (response.networkError) {

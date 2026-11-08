@@ -24,3 +24,14 @@ jobs:
       - run: python -m pip install -r requirements.txt httpx
       - run: python -m py_compile *.py tests/*.py
       - run: python -m unittest discover -s tests -v
+
+  client-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: 直连传输的前端胶水（探测 / 改写 / 回落）
+        run: node --test tests/transfer_client.test.mjs
+

@@ -19,7 +19,7 @@
 
   function isMobile() { return MOBILE; }
 
-  function go(href) {
+  function fire(href) {
     const link = document.createElement('a');
     link.href = href;
     link.rel = 'noopener';
@@ -27,6 +27,16 @@
     document.body.appendChild(link);
     link.click();
     link.remove();
+  }
+
+  function go(href) {
+    // 页面在 Cloudflare 域名上，但用户可能就在同一局域网/tailnet 里：能直连就把
+    // 字节改发到直连源站（票据鉴权），连不通就原样下 —— 用户看不到差别。
+    if (window.TmuxTransfer && window.TmuxTransfer.downloadHref) {
+      window.TmuxTransfer.downloadHref(href).then(fire).catch(() => fire(href));
+      return;
+    }
+    fire(href);
   }
 
   function close(result) {

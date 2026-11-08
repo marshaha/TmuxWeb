@@ -980,6 +980,28 @@ sudo tailscale set --operator=$USER        # once
 Set `TMUX_WEB_PUBLIC_URL` (e.g. `https://chat.example.com`) in `.env` and the settings panel will say which entry the
 current page is using and put the private addresses first.
 
+#### One address is all anyone remembers - the bytes pick their own route
+
+Asking people to remember a second hostname does not work (cookies are host-only, so a different host means logging in
+again). The page therefore always loads from the public origin; only the **file bytes** may take the direct one:
+
+1. the page probes the available https direct origins (`/t/ping`, 1.5 s timeout) and remembers a hit for 24 hours;
+2. before a transfer it asks the console for a ticket: `POST /api/transfer/ticket` (logged in), bound to pane, path,
+   direction and a size ceiling, valid for 10 minutes;
+3. bytes move over `PUT /t/upload?t=…` and `GET /t/download?t=…` - those routes accept a ticket instead of a cookie;
+4. no origin, no ticket, or a dropped direct connection falls back to the public path silently.
+
+Only `/t/*` accepts tickets; every other endpoint still needs a login even on the direct origin. Uses are counted
+(8 for a download, one per chunk for an upload), so a leaked link can move that one file and then expires.
+
+```bash
+TMUX_WEB_TRANSFER_ORIGINS=https://transfer.example.com   # optional extra relay, comma separated, https only
+TMUX_WEB_TRANSFER_SECRET=…                              # optional; derived from TMUX_WEB_SESSION_SECRET otherwise
+```
+
+An https page cannot fetch from or download over `http://` (mixed content), so a direct origin has to be https: either
+`tailscale serve` or a real certificate for the LAN address.
+
 ## Data and privacy
 
 The following must never be committed:

@@ -43,6 +43,7 @@ import agent_catalog
 import agent_models
 import relay
 import transcript_reader
+import transfer_tickets
 from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, RemoteHostStore, RemoteTerminalSession, SSHRunner,
                            UploadOffsetMismatch,
                           host_key_fingerprint, normalize_session_name, pane_ref, scan_host_key, split_pane_ref,
@@ -589,6 +590,16 @@ class KeyRequest(BaseModel):
     key: str = Field(min_length=1, max_length=16)
 
 
+class TransferTicketRequest(BaseModel):
+    """请求一张直连传输票据（走直连源站时替代 cookie 鉴权）。"""
+
+    pane: str
+    path: str
+    direction: str = "down"        # down | up
+    size: int = 0                  # 上传时给总字节数，票据据此限制
+    name: str = ""
+
+
 class FileRenameRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
     name: str = Field(min_length=1, max_length=255)
@@ -984,6 +995,10 @@ def create_app(
     if not configured_password:
         raise RuntimeError("TMUX_WEB_PASSWORD must be set")
     secret = session_secret or os.environ.get("TMUX_WEB_SESSION_SECRET") or secrets.token_hex(32)
+    # 直连传输票据：默认由会话密钥派生，所以不配也能用；独立配置便于轮换
+    transfer_secret = (os.environ.get("TMUX_WEB_TRANSFER_SECRET")
+                       or hashlib.sha256(("transfer:" + secret).encode()).hexdigest()).encode()
+    transfer_ledger = transfer_tickets.Ledger()
     # The password can be changed from the console's settings panel; the store keeps a hash and,
     # once it exists, session tokens derive from that hash instead of the environment value.
     # A caller that passes `password` explicitly (the tests do) means "use exactly this": such an app must
@@ -1079,6 +1094,32 @@ def create_app(
                        "anyone who can reach this port can drive agent panes")
 
     app = FastAPI(title="Tmux Web Console", docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.middleware("http")
+    async def transfer_cors(request: Request, call_next):
+        """票据路由 (/t/*) 的 CORS。
+
+        页面在 Cloudflare 域名上，字节发到直连源站，属于跨源；而直连源站拿不到
+        控制台的 cookie（不同 host），鉴权全靠票据，所以这里不需要 credentials，
+        只要放行方法/头，并让前端能读到 X-Upload-Offset 这类响应头。
+        """
+        if not request.url.path.startswith("/t/"):
+            return await call_next(request)
+        origin = request.headers.get("origin", "")
+        headers = {
+            "Access-Control-Allow-Origin": origin or "*",
+            "Access-Control-Allow-Methods": "GET, PUT, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, X-Requested-With",
+            "Access-Control-Expose-Headers": "X-Upload-Offset, Content-Length, Content-Disposition",
+            "Access-Control-Max-Age": "600",
+            "Vary": "Origin",
+        }
+        if request.method == "OPTIONS":
+            return Response(status_code=204, headers=headers)
+        response = await call_next(request)
+        for key, value in headers.items():
+            response.headers[key] = value
+        return response
 
     allowed_hosts = {item.strip().lower() for item in
                      os.environ.get("TMUX_WEB_ALLOWED_HOSTS", "").split(",") if item.strip()}
@@ -1679,6 +1720,15 @@ def create_app(
         public = (os.environ.get("TMUX_WEB_PUBLIC_URL") or "").strip()
         if public:
             add(public.rstrip("/"), "public", "公网（Cloudflare）")
+        # 额外中转（aliyun 反代之类）用逗号隔开配进来，前端会自动去探测
+        extra = (os.environ.get("TMUX_WEB_TRANSFER_ORIGINS") or "").strip()
+        for item in extra.split(","):
+            url = item.strip().rstrip("/")
+            if url:
+                add(url, "transfer", f"中转 · {urllib.parse.urlparse(url).netloc}")
+        # 只有 https 的源站能当传输目标：https 页面对 http 的 fetch/下载会被浏览器拦掉
+        for item in found:
+            item["transfer"] = item["url"].startswith("https://") and item["kind"] != "public"
         return found
 
     @app.get("/api/system/addresses")
@@ -2071,6 +2121,12 @@ def create_app(
     async def downloads_script() -> FileResponse:
         """TmuxDownload.maybe(href, {name, meta}) — ask on touch devices, download directly on desktop."""
         return FileResponse(WEB_DIR / "assets" / "downloads.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/transfer.js")
+    async def transfer_script() -> FileResponse:
+        """直连传输：探测内网/Tailscale 源站、拿票据、把字节搬过去（拿不到就回落 CF）。"""
+        return FileResponse(WEB_DIR / "assets" / "transfer.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/plugins-ui.js")
@@ -3171,9 +3227,8 @@ def create_app(
         headers["Content-Length"] = str(len(payload))
         return Response(content=payload, media_type=media_type, headers=headers)
 
-    @app.get("/api/panes/{pane_id}/files/download")
-    async def download_pane_file(request: Request, pane_id: str, path: str):
-        require_auth(request)
+    async def download_response(pane_id: str, path: str):
+        """下载一个 pane 文件；普通路由和票据路由 (/t/download) 共用。"""
         if not path:
             raise HTTPException(status_code=422, detail="path is required")
         try:
@@ -3232,6 +3287,13 @@ def create_app(
         headers["Content-Length"] = str(len(payload))
         return Response(content=payload, media_type=media_type, headers=headers)
 
+    @app.get("/api/panes/{pane_id}/files/download")
+    async def download_pane_file(request: Request, pane_id: str, path: str):
+        require_auth(request)
+        if not path:
+            raise HTTPException(status_code=422, detail="path is required")
+        return await download_response(pane_id, path)
+
     @app.post("/api/panes/{pane_id}/files/zip")
     async def zip_pane_files(request: Request, pane_id: str, payload: ZipRequest):
         require_auth(request)
@@ -3259,9 +3321,9 @@ def create_app(
             },
         )
 
-    @app.put("/api/panes/{pane_id}/files/upload")
-    async def upload_pane_file(request: Request, pane_id: str, name: str, dir: str = "",
-                               offset: int = 0, total: int = 0, token: str = ""):
+    async def upload_response(pane_id: str, name: str, dir: str, offset: int, total: int,
+                            token: str, body: bytes):
+        """写一个 pane 文件（可分块）；普通路由和票据路由 (/t/upload) 共用。"""
         """Write a file, optionally one chunk at a time.
 
         Chunked mode (``total`` > 0) appends into a ``.part`` file and renames it
@@ -3270,7 +3332,6 @@ def create_app(
         100 MB body limit.  ``offset`` may come back as 409 with the size the far
         side actually has, which is how a resumed upload finds its place.
         """
-        require_auth(request)
         if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
             raise HTTPException(status_code=422, detail="invalid file name")
         if token and (len(token) > 64 or not all(ch.isalnum() or ch in "-_" for ch in token)):
@@ -3278,7 +3339,6 @@ def create_app(
         try:
             transport, _actual, pane = await file_target(pane_id)
             directory = dir or pane.get("path") or "."
-            body = await request.body()
             if len(body) > upload_limit:
                 raise HTTPException(status_code=413,
                                     detail=f"file exceeds the upload limit of {upload_limit} bytes")
@@ -3308,6 +3368,73 @@ def create_app(
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"status": "uploaded", "path": target, "size": len(body)}
+
+    @app.put("/api/panes/{pane_id}/files/upload")
+    async def upload_pane_file(request: Request, pane_id: str, name: str, dir: str = "",
+                               offset: int = 0, total: int = 0, token: str = ""):
+        require_auth(request)
+        return await upload_response(pane_id, name, dir, offset, total, token, await request.body())
+
+    # ---- 直连传输（票据代替 cookie）-----------------------------------------
+    #
+    # 用户永远只记得住公网那一个域名，所以页面照旧从 Cloudflare 加载；只有文件
+    # 字节在"用户在局域网/tailnet 里"时改走直连源站。直连源站是另一个 host，
+    # 读不到会话 cookie，于是用一枚短命票据作为凭据 —— 票据绑定 pane/路径/方向/
+    # 大小上限，10 分钟过期，用量也记账。
+
+    def ticket_or_403(token: str, direction: str) -> dict:
+        try:
+            payload = transfer_tickets.peek(transfer_secret, token)
+            if payload.get("d") != direction:
+                raise transfer_tickets.TicketError("ticket is for another direction")
+            transfer_ledger.spent(payload)
+        except transfer_tickets.TicketError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return payload
+
+    @app.get("/t/ping")
+    async def transfer_ping():
+        """探测用：只回答"这里是不是 TmuxWeb"，不带任何用户信息、不需要鉴权。"""
+        return Response(content='{"tmuxweb":true}', media_type="application/json",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/transfer/ticket")
+    async def mint_transfer_ticket(request: Request, payload: TransferTicketRequest):
+        """给直连源站签一张传输票据；只有已登录的控制台会话能签。"""
+        require_auth(request)
+        direction = (payload.direction or "down").strip().lower()
+        if direction not in {"down", "up"}:
+            raise HTTPException(status_code=422, detail="direction must be up or down")
+        if not payload.pane or not payload.path:
+            raise HTTPException(status_code=422, detail="pane and path are required")
+        if direction == "up" and payload.size <= 0:
+            raise HTTPException(status_code=422, detail="size is required for an upload")
+        if payload.size > upload_limit:
+            raise HTTPException(status_code=413,
+                                detail=f"file exceeds the upload limit of {upload_limit} bytes")
+        chunks = max(1, -(-int(payload.size) // (4 * 1024 * 1024))) if direction == "up" else 0
+        ticket = transfer_tickets.mint(
+            transfer_secret, pane=payload.pane, path=payload.path, direction=direction,
+            max_bytes=int(payload.size), name=payload.name,
+            uses=chunks * 2 + 4 if direction == "up" else 0,
+        )
+        return ticket
+
+    @app.get("/t/download")
+    async def transfer_download(t: str = ""):
+        payload = ticket_or_403(t, "down")
+        return await download_response(payload["p"], payload["f"])
+
+    @app.put("/t/upload")
+    async def transfer_upload(request: Request, t: str = "", name: str = "", dir: str = "",
+                              offset: int = 0, total: int = 0, token: str = ""):
+        payload = ticket_or_403(t, "up")
+        if name and name != payload.get("n"):
+            raise HTTPException(status_code=403, detail="ticket is for another file")
+        if total and payload.get("m") and int(total) > int(payload["m"]):
+            raise HTTPException(status_code=403, detail="ticket is for a smaller file")
+        return await upload_response(payload["p"], payload.get("n") or name, dir, offset, total,
+                                     token, await request.body())
 
     @app.delete("/api/panes/{pane_id}/files/upload")
     async def delete_pane_upload(request: Request, pane_id: str, name: str, dir: str = ""):

@@ -907,8 +907,31 @@ sudo tailscale set --operator=$USER        # 只需一次
 3. 局域网内直接 `http://<本机IP>:8787` 即可（明文 http，只在可信内网用）。
 
 `.env` 里的 `TMUX_WEB_PUBLIC_URL` 写公网入口（例如 `https://chat.example.com`），设置面板就能判断并提示
-"当前页面走 Cloudflare"，同时把内网地址排在前面。这台机器上实测同一条 20MB 文件：经 CF 下载受链路抖动影响，
-直连稳定在局域网带宽上限。
+"当前页面走 Cloudflare"，同时把内网地址排在前面。
+
+#### 用户还是只记一个地址：传输自己挑路
+
+让人记第二个域名是不现实的（cookie 是 host-only，换了域名还得重新登录），所以页面永远从公网域名加载，
+**只有文件字节**会改走直连源站：
+
+1. 页面探测一遍可用的 https 直连源站（`/t/ping`，1.5 秒超时），通了就记住 24 小时；
+2. 上传/下载前向控制台要一张票据：`POST /api/transfer/ticket`（需要登录），
+   票据绑定 pane、路径、方向、大小上限，10 分钟过期；
+3. 字节走 `PUT /t/upload?t=…`、`GET /t/download?t=…` —— 这两条路由只认票据，不认 cookie；
+4. 探测不到、票据拿不到、直连断了：一律静默回落公网路径，用户看到的还是同一个下载按钮。
+
+票据路由只挂 `/t/*`，其余接口在直连源站上一样要登录；用量也记账（下载 8 次、上传按块数），
+所以链接即使泄露也只能动那一个文件，而且很快失效。
+
+```bash
+# 可选：额外的传输中转（aliyun 反代之类），逗号分隔；只有 https 会被采用
+TMUX_WEB_TRANSFER_ORIGINS=https://transfer.example.com
+# 可选：票据签名密钥，默认由 TMUX_WEB_SESSION_SECRET 派生
+TMUX_WEB_TRANSFER_SECRET=…
+```
+
+注意 https 页面没法向 `http://` 的源站发 fetch 或下载（混合内容会被浏览器直接拦掉），
+所以直连源站必须是 https —— 要么 `tailscale serve`，要么给内网地址签一张真证书。
 
 ## 数据与隐私
 

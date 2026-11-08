@@ -2398,6 +2398,81 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(paths, ("/srv/work/one.txt",))
         self.assertEqual(base, "/srv/work")
 
+    def test_a_ticket_moves_bytes_without_the_session_cookie(self):
+        """直连源站拿不到 cookie：票据本身就是凭据，别的路由不认它。"""
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory, "notes.md")
+            target.write_text("hello 世界")
+            self.tmux.panes[0]["path"] = directory
+            grant = self.client.post("/api/transfer/ticket",
+                                     json={"pane": "%4", "path": str(target),
+                                           "direction": "down"}).json()
+            self.assertTrue(grant.get("token"))
+            stranger = TestClient(self.client.app)          # 一个 cookie 都没有
+            response = stranger.get(f"/t/download?t={grant['token']}")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.content.decode(), "hello 世界")
+            # 票据只在 /t/* 有效：带上它去普通路由一样要登录
+            self.assertEqual(stranger.get(f"/api/panes/%254/files/download?path={target}").status_code, 401)
+
+    def test_a_ticket_upload_writes_the_file(self):
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            grant = self.client.post("/api/transfer/ticket",
+                                     json={"pane": "%4", "path": "/x.bin", "direction": "up",
+                                           "size": 5, "name": "x.bin"}).json()
+            stranger = TestClient(self.client.app)
+            response = stranger.put(
+                f"/t/upload?t={grant['token']}&name=x.bin&dir={directory}&offset=0&total=5&token=abc",
+                content=b"hello")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(Path(directory, "x.bin").read_text(), "hello")
+
+    def test_a_download_ticket_cannot_be_used_to_upload(self):
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            grant = self.client.post("/api/transfer/ticket",
+                                     json={"pane": "%4", "path": "/x.bin", "direction": "down"}).json()
+            response = self.client.put(
+                f"/t/upload?t={grant['token']}&name=x.bin&dir={directory}&total=5", content=b"hello")
+            self.assertEqual(response.status_code, 403)
+
+    def test_the_ticket_endpoint_needs_a_login(self):
+        response = self.client.post("/api/transfer/ticket",
+                                    json={"pane": "%4", "path": "/x", "direction": "down"},
+                                    follow_redirects=False)
+        self.assertIn(response.status_code, (303, 401, 403))
+
+    def test_an_upload_ticket_needs_a_size(self):
+        self.login()
+        response = self.client.post("/api/transfer/ticket",
+                                    json={"pane": "%4", "path": "/x.bin", "direction": "up"})
+        self.assertEqual(response.status_code, 422)
+
+    def test_the_ping_answers_cross_origin_without_a_login(self):
+        stranger = TestClient(self.client.app)
+        response = stranger.get("/t/ping", headers={"Origin": "https://chat.example.com"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"tmuxweb": True})
+        self.assertEqual(response.headers["access-control-allow-origin"], "https://chat.example.com")
+        preflight = stranger.options("/t/upload", headers={"Origin": "https://chat.example.com"})
+        self.assertEqual(preflight.status_code, 204)
+        self.assertIn("PUT", preflight.headers["access-control-allow-methods"])
+
+    def test_direct_addresses_are_only_transfer_candidates_over_https(self):
+        self.login()
+        patcher, _ = self._patch_addresses(serve="https://robo.neko-chroma.ts.net (tailnet only)\n")
+        with patcher:
+            payload = self.client.get("/api/system/addresses").json()
+        by_url = {item["url"]: item for item in payload["addresses"]}
+        # MagicDNS 名字来自 tailscale status --json 的 Self.DNSName
+        self.assertTrue(by_url["https://robo.neko-chroma.ts.net"]["transfer"])
+        self.assertFalse(by_url["http://100.123.123.3:8787"]["transfer"])
+        self.assertFalse(by_url["http://10.168.236.31:8787"]["transfer"])
+
     def test_downloads_a_file_as_an_attachment(self):
         self.login()
         with tempfile.TemporaryDirectory() as directory:
