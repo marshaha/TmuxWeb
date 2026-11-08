@@ -25,7 +25,9 @@ while true; do
   pid=$$
   echo "[$started] starting uvicorn (supervisor $pid) on port ${TMUX_WEB_PORT:-8787}" >>"$LOGDIR/service.log"
   ./.venv/bin/python -m uvicorn tmux_web:create_app --factory \
-    --host 0.0.0.0 --port "${TMUX_WEB_PORT:-8787}" >>"$LOGDIR/service.log" 2>&1 &
+    --host 0.0.0.0 --port "${TMUX_WEB_PORT:-8787}" \
+    --timeout-keep-alive 75 --timeout-graceful-shutdown 30 \
+    --ws-ping-interval 20 --ws-ping-timeout 20 >>"$LOGDIR/service.log" 2>&1 &
   child=$!
   # The password (and the other settings) are read from .env only at startup, so editing .env while the
   # service runs used to leave the old value in memory — the new password simply would not log in.

@@ -181,6 +181,40 @@ class HermesModelListTests(unittest.TestCase):
             self.assertEqual(agent_models.fetch_models("https://x/v1", "k"), ["m1", "m2"])
         self.assertEqual(captured["ua"], "TmuxWeb/1.0")
 
+    def test_private_hosts_are_direct(self):
+        # 内网 / tailnet / 回环地址不该走 HTTP 代理：代理会把别的网段答成
+        # 200/502，模型列表就被骗成空的或者错的（aff8e08 同款问题）。
+        for host in ("192.168.1.10", "10.0.0.8", "172.16.0.5", "100.64.0.5",
+                     "127.0.0.1", "models.local", "gw.internal"):
+            self.assertTrue(agent_models._is_private_host(host), host)
+        for host in ("8.8.8.8", "api.example.com", "models.example.com", ""):
+            self.assertFalse(agent_models._is_private_host(host), host)
+
+    def test_fetch_models_bypasses_the_proxy_for_private_hosts(self):
+        import io
+        from unittest import mock
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        class FakeOpener:
+            def open(self, request, timeout=None):
+                self.request = request
+                return Response(b'{"data": [{"id": "m1"}]}')
+
+        opener = FakeOpener()
+        import urllib.request as urlrequest
+        with mock.patch.object(urlrequest, "build_opener", return_value=opener), \
+                mock.patch.object(urlrequest, "urlopen",
+                                  side_effect=AssertionError("proxy path used")):
+            self.assertEqual(agent_models.fetch_models("http://192.168.1.10:8080/v1", "k"),
+                             ["m1"])
+        self.assertEqual(opener.request.get_header("User-agent"), "TmuxWeb/1.0")
+
 
 class RemoteModelListTests(unittest.TestCase):
     def test_route_is_passed_on_the_same_line_as_python(self):
@@ -204,6 +238,55 @@ class RemoteModelListTests(unittest.TestCase):
         self.assertEqual(models, ["m1", "m2"])
         self.assertTrue(runner.commands[0].startswith("TMUXWEB_ROUTE='axera' python3 -"),
                         runner.commands[0][:60])
+
+    def test_remote_script_lists_models_from_a_loopback_gateway(self):
+        """远端脚本本身能跑通：内网网关（127.0.0.1）直连取 /models，不走代理。
+
+        脚本是嵌在常量里的 heredoc：抽出 python 部分，配一个假 ~/.hermes/
+        config.yaml，起一个本地 HTTP 服务当网关，真实跑一遍。
+        """
+        import http.server
+        import json
+        import os
+        import socketserver
+        import subprocess
+        import tempfile
+        import threading
+        from pathlib import Path
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"data": [{"id": "m1"}, {"id": "m2"}]}).encode())
+
+            def log_message(self, *args):
+                pass
+
+        with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
+            port = server.server_address[1]
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with tempfile.TemporaryDirectory() as home:
+                    hermes = Path(home) / ".hermes"
+                    hermes.mkdir()
+                    (hermes / "config.yaml").write_text(
+                        "model:\n  provider: \"axera\"\nproviders:\n  axera:\n"
+                        f"    base_url: \"http://127.0.0.1:{port}/v1\"\n")
+                    lines = agent_models.REMOTE_MODELS_SCRIPT.strip().splitlines()
+                    self.assertTrue(lines[0].startswith("python3 - <<"))
+                    self.assertEqual(lines[-1], "PYX")
+                    script = "\n".join(lines[1:-1])
+                    env = dict(os.environ, HOME=home)
+                    completed = subprocess.run(["python3", "-c", script],
+                                               capture_output=True, text=True, env=env, timeout=30)
+            finally:
+                server.shutdown()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip().splitlines(),
+                         ["axera<::>m1", "axera<::>m2"])
 
 
 if __name__ == "__main__":

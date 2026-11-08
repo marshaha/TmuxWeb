@@ -100,6 +100,24 @@ def payload_window(host: dict) -> int:
     return _PAYLOAD_WINDOW.get(str(host.get("id") or host.get("hostname") or ""), PAYLOAD_WINDOW_DEFAULT)
 
 
+def note_transcript_timeout(host: dict) -> None:
+    """A timed-out pull halves the window and backs the cache TTL off.
+
+    ``note_pull_duration`` only runs after a *successful* pull, so a host
+    that always times out used to keep its 4MB window forever and retry the
+    same 4MB pull every poll. A timeout proves the link cannot deliver the
+    current window in time, so shrink it now and stop polling every 2s.
+    """
+    key = str(host.get("id") or host.get("hostname") or "")
+    current = _PAYLOAD_WINDOW.get(key, PAYLOAD_WINDOW_DEFAULT)
+    wanted = max(PAYLOAD_WINDOW_MIN, current // 2)
+    if wanted != current:
+        _PAYLOAD_WINDOW[key] = wanted
+        LOGGER.warning("transcript window for %s: %d KB -> %d KB (pull timed out)",
+                       host.get("name") or key, current // 1024, wanted // 1024)
+    _TRANSCRIPT_TTL[key] = max(_TRANSCRIPT_TTL.get(key, TRANSCRIPT_CACHE_TTL), 10.0)
+
+
 def note_pull_duration(host: dict, elapsed: float) -> None:
     """Shrink the window on a slow host, grow it back on a fast one."""
     key = str(host.get("id") or host.get("hostname") or "")
@@ -777,6 +795,21 @@ def ssh_mux_enabled() -> bool:
     return os.environ.get("TMUX_WEB_SSH_MUX", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
+def control_persist_seconds() -> int:
+    """How long a multiplexed SSH connection survives idle.
+
+    60s was too short for a UI that polls every 10-20s: the socket died
+    between polls, so every request paid a fresh TCP + key exchange and a
+    jittery home uplink turned that into 8s of ConnectTimeout before the
+    request even started. 600s keeps the connection across polls; a stale
+    socket still falls back to a direct connection (see multiplex_failure).
+    """
+    try:
+        return max(60, int(os.environ.get("TMUX_WEB_SSH_CONTROL_PERSIST", "600")))
+    except ValueError:
+        return 600
+
+
 def ssh_mux_dir() -> Path:
     """Private directory holding SSH ControlMaster sockets.
 
@@ -1294,7 +1327,7 @@ class SSHRunner:
         if use_mux:
             command += [
                 "-o", "ControlMaster=auto", "-o", f"ControlPath={ssh_mux_path(self.host)}",
-                "-o", "ControlPersist=60",
+                "-o", "ControlPersist=%d" % control_persist_seconds(),
             ]
         if identity_file:
             command += ["-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey",
@@ -1488,8 +1521,8 @@ class SSHRunner:
         except Exception:  # noqa: BLE001 - pinning must never break the request
             LOGGER.warning("could not remember the host key for %s", self.host.get("name"), exc_info=True)
 
-    def check(self) -> str:
-        completed = self.run("printf TMUX_REMOTE_OK", timeout=12)
+    def check(self, timeout: int = 12) -> str:
+        completed = self.run("printf TMUX_REMOTE_OK", timeout=timeout)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "SSH connection failed")
         return completed.stdout.decode(errors="replace")
@@ -1690,7 +1723,13 @@ class SSHRunner:
         payload = b""
         poll_started = time.monotonic()
         if state and state.get("primary"):
-            header, payload, state = self._follow_transcript(host_id, pane_id, state)
+            try:
+                header, payload, state = self._follow_transcript(host_id, pane_id, state)
+            except RuntimeError:
+                # 增量跟读超时（通常是链路卡住）：记一次慢，让窗口缩小、缓存
+                # TTL 拉长，再回落到全量发现，而不是直接把 409 抛给前端。
+                note_transcript_timeout(self.host)
+                header, payload = {}, b""
         if not header:
             command = (f"sh -c {shlex.quote(REMOTE_TRANSCRIPT_SCRIPT)} "
                        f"sh {shlex.quote(pane_id)} {limit}")
@@ -1698,6 +1737,9 @@ class SSHRunner:
             try:
                 completed = self.run(command, timeout=self.transcript_timeout)
             except RuntimeError as exc:
+                # 超时也要记一次慢：之前只在成功拉取后调 note_pull_duration，
+                # 所以反复超时的主机永远保持 4MB 窗口，每次重试都重新拉 4MB。
+                note_transcript_timeout(self.host)
                 # a degraded link shows up as a stalled ssh, not as a bad transcript
                 raise RuntimeError(
                     f"读取远端 transcript 超时（{self.transcript_timeout}s），可能是到这台主机的网络较慢"

@@ -51,6 +51,42 @@ def provider_label(provider: str, configured: str = "") -> str:
     return PROVIDER_LABELS.get((provider or "").lower(), (provider or "").capitalize())
 
 
+def _is_private_host(host: str) -> bool:
+    """True when a model endpoint lives on the LAN/tailnet, not the internet.
+
+    ``aff8e08`` fixed the relay probe scripts with ``--noproxy '*'`` because
+    an HTTP proxy answers other subnets with 200/502 and the probe then picks
+    the wrong address. The same proxy sits in front of every urllib call in
+    this file, so a private model gateway gets the same treatment.
+    """
+    import ipaddress
+
+    host = (host or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    if host.endswith((".local", ".internal", ".lan", ".home.arpa", ".intranet")):
+        return True
+    try:
+        return not ipaddress.ip_address(host).is_global
+    except ValueError:
+        return False
+
+
+def _opener_for(url: str):
+    """An opener that bypasses the HTTP proxy for private hosts, else None.
+
+    None means "use the default opener" (proxy settings from the environment,
+    as before) - public model endpoints keep going through the proxy.
+    """
+    import urllib.parse
+    import urllib.request
+
+    host = urllib.parse.urlparse(url).hostname or ""
+    if _is_private_host(host):
+        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return None
+
+
 def providers() -> tuple[str, ...]:
     return tuple(PRESETS)
 
@@ -191,9 +227,14 @@ def fetch_models(base_url: str, key: str, timeout: float = 8.0) -> list:
     if key:
         headers["Authorization"] = "Bearer " + key
     request = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
+    opener = _opener_for(base_url)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.load(response)
+        if opener is not None:
+            with opener.open(request, timeout=timeout) as response:
+                payload = json.load(response)
+        else:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.load(response)
     except Exception:  # noqa: BLE001 - a dead provider must not break the picker
         return []
     items = payload.get("data") if isinstance(payload, dict) else None
@@ -245,7 +286,22 @@ def hermes_models(home=None, runner=None, route: str = "", ttl: int = MODELS_CAC
 
 REMOTE_MODELS_SCRIPT = r"""
 python3 - <<'PYX'
-import json, os, re, sys, urllib.request
+import ipaddress, json, os, re, sys, urllib.parse, urllib.request
+
+def direct_open(url, headers):
+    # 内网模型网关直连，不走环境里的 HTTP 代理（代理会把别的网段答成 200/502）。
+    host = (urllib.parse.urlparse(url).hostname or "").lower().rstrip(".")
+    private = host.endswith((".local", ".internal", ".lan", ".home.arpa", ".intranet"))
+    if not private:
+        try:
+            private = not ipaddress.ip_address(host).is_global
+        except ValueError:
+            private = False
+    request = urllib.request.Request(url, headers=headers)
+    if private:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        return opener.open(request, timeout=8)
+    return urllib.request.urlopen(request, timeout=8)
 
 def block(text, key):
     out, inside = [], False
@@ -327,8 +383,7 @@ for name in order:
     if key:
         headers["Authorization"] = "Bearer " + key
     try:
-        with urllib.request.urlopen(urllib.request.Request(base_url.rstrip("/") + "/models",
-                                                           headers=headers), timeout=8) as response:
+        with direct_open(base_url.rstrip("/") + "/models", headers) as response:
             payload = json.load(response)
     except Exception:
         continue

@@ -386,6 +386,36 @@ class TmuxBackend:
         with resolved.open("rb") as handle:
             return handle.read(max_bytes + 1)
 
+    def file_size(self, path: str) -> int | None:
+        """Size of a local file, or None when it is missing/unreadable."""
+        try:
+            resolved = file_browser.resolve_path(path)
+        except (OSError, ValueError):
+            return None
+        if not resolved.is_file():
+            return None
+        return resolved.stat().st_size
+
+    def stream_file(self, path: str, max_bytes: int, chunk: int = 65536):
+        """Yield a local file in chunks instead of buffering the whole thing.
+
+        The remote runner already streams (``c680fdd``); the local one still
+        read the full file, so a 500MB download over a slow Cloudflare link
+        held the whole file in the single worker's memory for minutes and
+        could not start sending until the last byte was read.
+        """
+        resolved = file_browser.resolve_path(path)
+        if not resolved.is_file():
+            raise TmuxError("not a file: %s" % resolved)
+        if resolved.stat().st_size > max_bytes:
+            raise TmuxError("file is larger than the download limit")
+        with resolved.open("rb") as handle:
+            while True:
+                data = handle.read(chunk)
+                if not data:
+                    break
+                yield data
+
     def zip_files(self, paths: list[str], base: str, max_bytes: int, max_files: int) -> bytes:
         try:
             return file_browser.zip_paths(paths, base, max_bytes=max_bytes, max_files=max_files)
@@ -978,6 +1008,9 @@ def create_app(
     zip_limit = int(os.environ.get("TMUX_WEB_ZIP_MAX", str(file_browser.DEFAULT_ZIP_BYTES)))
     zip_max_files = int(os.environ.get("TMUX_WEB_ZIP_MAX_FILES", str(file_browser.DEFAULT_ZIP_FILES)))
     upload_limit = int(os.environ.get("TMUX_WEB_FILE_UPLOAD_MAX", str(256 * 1024 * 1024)))
+    # 单次（total=0）上传整包读进内存：超过一块的大小就强制走分块协议，否则
+    # 慢链路 + Cloudflare 100s 上限下大文件必定掉线重传。浏览器和 MCP 都已分块。
+    single_shot_upload_max = 4 * 1024 * 1024
     # The screen stream is a firehose for log panes (uvicorn, tail -f, make). Cap
     # how much history it transfers and how often, and trim oversized frames.
     stream_lines = int(os.environ.get("TMUX_WEB_STREAM_LINES", "800"))
@@ -2533,8 +2566,14 @@ def create_app(
         }
         try:
             runner = make_remote_runner(temporary_host)
-            banner = await asyncio.to_thread(runner.check)
-            panes = await asyncio.to_thread(runner.list_panes)
+            # check + list_panes 曾经各按自己的超时串行等：两台跳板机都慢时一次
+            # 验证能拖 27s 以上，Cloudflare 100s 上限内再叠加别的慢步骤就 502。
+            # 给整次验证一个总预算，剩多少时间 list_panes 就用多少，绝不超支。
+            budget = float(os.environ.get("TMUX_WEB_HOST_TEST_BUDGET", "25"))
+            started = time.monotonic()
+            banner = await asyncio.to_thread(runner.check, timeout=max(1, min(12, int(budget))))
+            remaining = budget - (time.monotonic() - started)
+            panes = await asyncio.to_thread(runner.list_panes, timeout=max(1, int(remaining)))
         except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
             raise HTTPException(status_code=424, detail=str(exc)) from exc
         return {"ssh_ok": "TMUX_REMOTE_OK" in banner, "tmux_ok": True,
@@ -2959,20 +2998,15 @@ def create_app(
             raise HTTPException(status_code=422, detail="path is required")
         try:
             transport, _actual, _pane = await file_target(pane_id)
-            payload = await asyncio.to_thread(transport.download_file, path, download_limit)
         except HTTPException:
             raise
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
-            message = str(exc)
-            if "not a file" in message or "no such file" in message.lower():
-                raise HTTPException(status_code=404, detail=message) from exc
-            raise HTTPException(status_code=503, detail=message) from exc
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         name = os.path.basename(path.rstrip("/")) or "file"
         media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         inline_types = ("text/", "image/", "application/pdf", "application/json")
         inline = media_type.startswith(inline_types)
         headers = {
-            "Content-Length": str(len(payload)),
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
@@ -2981,6 +3015,59 @@ def create_app(
             headers["Content-Disposition"] = "inline; filename*=UTF-8''" + quote(name, safe="")
         else:
             headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(name, safe="")
+        # 和 /files/download 一样走流式：本地和远端都不再整包读进内存，慢链路
+        # 上浏览器可以边下边看，而不是等整个文件读完才开始。先在线程里预取
+        # 一块：文件不存在之类的错误要在返回响应前抛出来（404/503），而不是
+        # 在流式回传中途变成一次无从映射的 500。
+        stream_file = getattr(transport, "stream_file", None)
+        if stream_file is not None:
+            try:
+                size = await asyncio.to_thread(transport.file_size, path)
+            except (RuntimeError, OSError, ValueError):
+                size = None
+            if size:
+                headers["Content-Length"] = str(size)
+            chunks = stream_file(path, download_limit)
+
+            def _prime():
+                iterator = iter(chunks)
+                try:
+                    return iterator, next(iterator)
+                except StopIteration:
+                    return iterator, None
+
+            try:
+                stream, head = await asyncio.to_thread(_prime)
+            except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+                close = getattr(chunks, "close", None)
+                if close:
+                    close()
+                message = str(exc)
+                if "not a file" in message or "no such file" in message.lower():
+                    raise HTTPException(status_code=404, detail=message) from exc
+                raise HTTPException(status_code=503, detail=message) from exc
+
+            def relay():
+                try:
+                    if head is not None:
+                        yield head
+                    yield from stream
+                finally:
+                    close = getattr(chunks, "close", None)
+                    if close:
+                        close()
+
+            return StreamingResponse(relay(), media_type=media_type, headers=headers)
+        try:
+            payload = await asyncio.to_thread(transport.download_file, path, download_limit)
+        except HTTPException:
+            raise
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            message = str(exc)
+            if "not a file" in message or "no such file" in message.lower():
+                raise HTTPException(status_code=404, detail=message) from exc
+            raise HTTPException(status_code=503, detail=message) from exc
+        headers["Content-Length"] = str(len(payload))
         return Response(content=payload, media_type=media_type, headers=headers)
 
     @app.get("/api/panes/{pane_id}/files/download")
@@ -3011,10 +3098,26 @@ def create_app(
                 headers["Content-Length"] = str(size)
             chunks = stream_file(path, download_limit)
 
+            def _prime():
+                iterator = iter(chunks)
+                try:
+                    return iterator, next(iterator)
+                except StopIteration:
+                    return iterator, None
+
+            try:
+                stream, head = await asyncio.to_thread(_prime)
+            except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+                close = getattr(chunks, "close", None)
+                if close:
+                    close()
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
             def relay():
                 try:
-                    for chunk in chunks:
-                        yield chunk
+                    if head is not None:
+                        yield head
+                    yield from stream
                 finally:
                     close = getattr(chunks, "close", None)
                     if close:
@@ -3078,6 +3181,9 @@ def create_app(
             if len(body) > upload_limit:
                 raise HTTPException(status_code=413,
                                     detail=f"file exceeds the upload limit of {upload_limit} bytes")
+            if total == 0 and len(body) > single_shot_upload_max:
+                raise HTTPException(status_code=413,
+                                    detail="use chunked upload (total/offset/token) for files over 4 MB")
             target = os.path.join(directory, name)
             if total > 0:
                 if total > upload_limit:
@@ -3981,4 +4087,11 @@ if __name__ == "__main__":
         port=int(os.environ.get("TMUX_WEB_PORT", "8787")),
         factory=True,
         reload=False,
+        # 经过 Cloudflare：keep-alive 75s（在 CF 100s 空闲超时之内，不断建连），
+        # 优雅停机 30s（.env 改动重启时让在途上传/WS 排空，而不是直接掐断变 502），
+        # WS 协议层心跳 20s（空闲连接不会被中间代理静默掐掉）。
+        timeout_keep_alive=75,
+        timeout_graceful_shutdown=30,
+        ws_ping_interval=20,
+        ws_ping_timeout=20,
     )

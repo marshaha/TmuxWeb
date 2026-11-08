@@ -194,7 +194,9 @@ class FakeSSHRunner:
     def __init__(self, host):
         self.host = host
         self.created = []
-    def check(self): return "TMUX_REMOTE_OK"
+    def check(self, timeout=12):
+        FakeSSHRunner.last_check_timeout = timeout
+        return "TMUX_REMOTE_OK"
     def create_session(self, name, path="", command=None, create_dir=True, keep_open=True):
         name = normalize_session_name(name)
         self.created.append((name, path))
@@ -216,6 +218,7 @@ class FakeSSHRunner:
     def probe_agents(self, timeout=12):
         return [dict(item) for item in getattr(self, "agents", [])]
     def list_panes(self, timeout=15):
+        FakeSSHRunner.last_list_timeout = timeout
         extra = [{"id": pane_ref(self.host["id"], "%11"), "pane_id": "%11", "host_id": self.host["id"],
                   "target": "%s:0.0" % name, "session": name, "window": "0", "window_name": "shell",
                   "index": "0", "command": "zsh", "title": "new", "path": path or "/srv/work",
@@ -668,6 +671,27 @@ class TmuxWebTests(unittest.TestCase):
         self.assertTrue(response.json()["ssh_ok"])
         self.assertEqual(response.json()["pane_count"], 1)
         self.assertEqual(self.remote_store.list_hosts(), [])
+
+    def test_remote_host_test_stays_inside_a_total_budget(self):
+        """check + list_panes 曾经各按自己的超时串行等：总预算 25s（默认）内必须
+        做完；预算改小后两步的超时都跟着收紧，而不是各等各的。"""
+        self.login()
+        host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        fingerprint = host_key_fingerprint(host_key)
+        payload = {
+            "name": "test-only", "hostname": "10.0.0.8", "port": 22, "username": "ubuntu",
+            "auth_type": "password", "credential": "secret", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        }
+        response = self.client.post("/api/remote-hosts/test", json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(FakeSSHRunner.last_check_timeout, 12)
+        self.assertLessEqual(FakeSSHRunner.last_list_timeout, 25)
+        with patch.dict("os.environ", {"TMUX_WEB_HOST_TEST_BUDGET": "10"}):
+            response = self.client.post("/api/remote-hosts/test", json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(FakeSSHRunner.last_check_timeout, 10)
+        self.assertLessEqual(FakeSSHRunner.last_list_timeout, 10)
 
     def test_captures_selected_pane(self):
         self.login()
@@ -1979,8 +2003,14 @@ class TmuxWebTests(unittest.TestCase):
         self.login()
         self.assertEqual(self.client.post("/api/sessions", json={"name": "bad:name"}).status_code, 422)
         self.assertEqual(self.client.post("/api/sessions", json={"name": "x y"}).status_code, 422)
-        self.assertEqual(self.client.post("/api/sessions",
-                                          json={"name": "ok", "path": "/nope/missing"}).status_code, 422)
+        # 缺失的目录现在会自动创建（c211fad），不再 422
+        with tempfile.TemporaryDirectory() as directory:
+            missing = os.path.join(directory, "fresh", "project")
+            created = self.client.post("/api/sessions",
+                                       json={"name": "ok", "path": missing})
+            self.assertEqual(created.status_code, 201, created.text)
+            self.assertTrue(created.json()["session"]["created_dir"])
+            self.assertTrue(os.path.isdir(missing))
         self.assertEqual(self.client.post("/api/sessions", json={"name": "codex"}).status_code, 409)
         self.assertEqual(self.client.post("/api/sessions", json={"host": "deadbeefdeadbeef",
                                                                  "name": "ok"}).status_code, 404)
@@ -2111,6 +2141,55 @@ class TmuxWebTests(unittest.TestCase):
         response = self.client.get("/assets/uploads.js")
         self.assertEqual(response.status_code, 200)
         self.assertIn("TmuxUpload", response.text)
+        # 首块 1MB 起步（30MB 文件按 total/8 是 3.75MB，40KB/s 下 ~94s 就撞
+        # Cloudflare 100s 上限），且每块有 90s 显式超时，不等 CF 切断。
+        self.assertIn("CHUNK_FIRST", response.text)
+        self.assertIn("xhr.timeout", response.text)
+
+    def test_raw_and_download_stream_large_local_files(self):
+        """5MB 本地文件经 /raw 和 /download 流式回传：内容完整，带长度头，
+        且服务端不再整包读进内存（本地以前是 read 全量）。"""
+        import hashlib
+        import tempfile
+
+        self.login()
+        data = bytes(range(256)) * (5 * 1024 * 1024 // 256)
+        total = len(data)
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            offset = 0
+            while offset < total:
+                chunk = data[offset:offset + 1024 * 1024]
+                response = self.client.put(
+                    f"/api/panes/%254/files/upload?name=big.bin&dir={directory}"
+                    f"&offset={offset}&total={total}&token=abc", content=chunk)
+                self.assertEqual(response.status_code, 200, response.text)
+                offset += len(chunk)
+            for url in (f"/api/panes/%254/files/raw?path={directory}/big.bin",
+                        f"/api/panes/%254/files/download?path={directory}/big.bin"):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200, url)
+                self.assertEqual(response.headers.get("content-length"), str(total))
+                self.assertEqual(hashlib.sha256(response.content).hexdigest(),
+                                 hashlib.sha256(data).hexdigest())
+
+    def test_single_shot_upload_over_4mb_is_rejected(self):
+        """total=0 的整包上传超过一块（4MB）就 413：慢链路上整包必撞 CF 上限，
+        必须走分块协议；小文件单次上传不受影响。"""
+        import tempfile
+
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            response = self.client.put(
+                f"/api/panes/%254/files/upload?dir={directory}&name=big.bin",
+                content=b"z" * (5 * 1024 * 1024))
+            self.assertEqual(response.status_code, 413)
+            self.assertIn("chunked", response.json()["detail"])
+            small = self.client.put(
+                f"/api/panes/%254/files/upload?dir={directory}&name=small.bin",
+                content=b"ok")
+            self.assertEqual(small.status_code, 200)
 
     def test_a_shell_pane_has_no_model_picker(self):
         self.login()
