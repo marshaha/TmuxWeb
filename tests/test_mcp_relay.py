@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
@@ -149,6 +150,78 @@ class ToolTests(unittest.TestCase):
         # 目标 agent 得知道文件在哪
         message = [call for call in recorder.calls if call[0] == "/api/relay/message"][0][1]
         self.assertIn("/srv/work/upload_files/plan.md", message["text"])
+
+    def test_send_file_chunks_a_large_file_and_resumes_on_409(self):
+        """2.5MB 文件按 1MB 切块；第二块丢了（409 + 服务端已有字节数）就从对面
+        的位置接着传，而不是从头再来；整份文件从不一次性读进内存。"""
+        recorder = Recorder({"/api/relay/peers": {"peers": [
+            {"id": "abc~%3", "handle": "#12", "number": 12, "path": "/srv/work"}]},
+            "/api/relay/message": {"pane": "abc~%3"}})
+        calls = []
+        plan = [
+            {"status": "partial", "offset": 1024 * 1024, "size": 2621440},
+            RelayError("upload offset mismatch", status=409, offset=1024 * 1024),
+            {"status": "partial", "offset": 2 * 1024 * 1024, "size": 2621440},
+            {"status": "uploaded", "path": "/srv/work/upload_files/big.bin",
+             "size": 2621440},
+        ]
+
+        def raw(path, data, **kwargs):
+            calls.append((path, data, kwargs.get("timeout")))
+            step = plan[len(calls) - 1]
+            if isinstance(step, Exception):
+                raise step
+            return step
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "big.bin"
+            source.write_bytes(b"x" * 2621440)
+            with patch.object(mcp_relay, "request", recorder), \
+                    patch.object(mcp_relay, "request_raw", raw):
+                result = mcp_relay.RelayTools().send_file({"target": "abc~%3", "path": str(source)})
+        self.assertEqual([len(data) for _path, data, _t in calls],
+                         [1024 * 1024, 1024 * 1024, 1024 * 1024, 512 * 1024])
+        offsets = [urllib.parse.parse_qs(urllib.parse.urlparse(path).query)["offset"][0]
+                   for path, _data, _t in calls]
+        self.assertEqual(offsets, ["0", "1048576", "1048576", "2097152"])
+        tokens = {urllib.parse.parse_qs(urllib.parse.urlparse(path).query)["token"][0]
+                  for path, _data, _t in calls}
+        self.assertEqual(len(tokens), 1)   # 同一份文件重试用同一个 .part
+        self.assertTrue(all(timeout == 90.0 for _path, _data, timeout in calls))
+        self.assertEqual(result["path"], "/srv/work/upload_files/big.bin")
+        self.assertTrue(result["notified"])
+
+    def test_send_file_halves_the_chunk_after_a_stalled_chunk(self):
+        """一块在 90s 内没发完：块减半再试，而不是整个文件重来。"""
+        recorder = Recorder({"/api/relay/peers": {"peers": [
+            {"id": "abc~%3", "handle": "#12", "number": 12, "path": "/srv/work"}]},
+            "/api/relay/message": {"pane": "abc~%3"}})
+        calls = []
+        plan = [
+            TimeoutError("timed out"),
+            {"status": "partial", "offset": 512 * 1024, "size": 1572864},
+            {"status": "partial", "offset": 1024 * 1024, "size": 1572864},
+            {"status": "uploaded", "path": "/srv/work/upload_files/mid.bin",
+             "size": 1572864},
+        ]
+
+        def raw(path, data, **kwargs):
+            calls.append((path, data))
+            step = plan[len(calls) - 1]
+            if isinstance(step, Exception):
+                raise step
+            return step
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "mid.bin"
+            source.write_bytes(b"y" * 1572864)
+            with patch.object(mcp_relay, "request", recorder), \
+                    patch.object(mcp_relay, "request_raw", raw), \
+                    patch.object(mcp_relay.time, "sleep"):
+                result = mcp_relay.RelayTools().send_file({"target": "abc~%3", "path": str(source)})
+        self.assertEqual([len(data) for _path, data in calls],
+                         [1024 * 1024, 512 * 1024, 512 * 1024, 512 * 1024])
+        self.assertEqual(result["size"], 1572864)
 
     def test_send_file_rejects_bad_input(self):
         tools = mcp_relay.RelayTools()

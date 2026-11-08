@@ -475,7 +475,7 @@ class RemoteHostTests(unittest.TestCase):
         command, _ = runner.command("tmux list-panes")
         joined = " ".join(command)
         self.assertIn("ControlMaster=auto", joined)
-        self.assertIn("ControlPersist=60", joined)
+        self.assertIn("ControlPersist=600", joined)
         self.assertIn("ControlPath=", joined)
         self.assertIn("LC_ALL=", command[-1])
         direct, _ = runner.command("tmux list-panes", multiplex=False)
@@ -1105,6 +1105,28 @@ class RemoteHostTests(unittest.TestCase):
             runner.transcript("%10", 20)
         self.assertIn("网络", str(caught.exception))
         self.assertLessEqual(runner.transcript_timeout, 600)
+
+    def test_a_stalled_transcript_shrinks_the_window(self):
+        """反复超时的主机不能永远保持 4MB 窗口：超时也要记一次慢，窗口减半、
+        缓存 TTL 拉长，下次重试拉得更少、问得更稀；再超时继续减半直到 1MB 下限。"""
+        host = dict(FAKE_SSH_HOST)
+        clear_tmux_cache(host)
+        remote_hosts._PAYLOAD_WINDOW.pop("probe", None)
+        remote_hosts._TRANSCRIPT_TTL.pop("probe", None)
+        runner = SSHRunner(host)
+
+        def stall(*args, **kwargs):
+            raise RuntimeError("remote command timed out after 30s")
+
+        runner.run = stall
+        with self.assertRaises(RuntimeError):
+            runner.transcript("%10", 20)
+        self.assertEqual(remote_hosts.payload_window(host),
+                         remote_hosts.PAYLOAD_WINDOW_DEFAULT // 2)
+        self.assertEqual(remote_hosts.transcript_ttl("probe"), 10.0)
+        with self.assertRaises(RuntimeError):
+            runner.transcript("%10", 20)
+        self.assertEqual(remote_hosts.payload_window(host), remote_hosts.PAYLOAD_WINDOW_MIN)
 
     def test_the_transcript_timeout_is_configurable(self):
         host = dict(FAKE_SSH_HOST)

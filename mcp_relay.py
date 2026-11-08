@@ -28,13 +28,24 @@ Check an install without an agent in the loop:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
+import time
 import urllib.parse
 from typing import Any, BinaryIO
 
 from relay_client import RelayError, base_url, request, request_raw, token
+
+# MCP 文件传输走浏览器同款分块协议（见 web/assets/uploads.js）：一块 1MB，
+# 每块 90s 超时（Cloudflare 单请求 100s 上限之内）、失败退避重试、409 按服务
+# 端已有的字节数对齐续传。之前是整文件一次 PUT：慢链路上 120s 先断，断了从
+# 头再传，64MB 文件在 40KB/s 下理论上永远传不完。
+SEND_CHUNK = 1024 * 1024
+SEND_CHUNK_MIN = 256 * 1024
+SEND_CHUNK_TIMEOUT = 90.0
+SEND_CHUNK_RETRIES = 3
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "tmuxweb-relay"
@@ -176,6 +187,11 @@ class RelayTools:
         thing both hosts can reach), land next to the target's working directory,
         and the target is told the absolute path - it never needs a mount or an
         ssh key of its own.
+
+        Chunked like the browser uploader: the file is streamed off disk 1MB
+        at a time (never read whole into memory), each chunk is a PUT with
+        ``total``/``offset``/``token``, and a dropped chunk is retried or
+        resumed from the offset the server reports with 409.
         """
         target = self._target(arguments)
         source = str(arguments.get("path") or "").strip()
@@ -187,11 +203,10 @@ class RelayTools:
         if not name or "/" in name or "\\" in name or name in {".", ".."}:
             raise ValueError("invalid file name: %s" % name)
         limit = int(os.environ.get("TMUXWEB_SEND_FILE_MAX") or 64 * 1024 * 1024)
-        size = os.path.getsize(source)
+        stat = os.stat(source)
+        size = stat.st_size
         if size > limit:
             raise ValueError("file is %d bytes, over the %d limit" % (size, limit))
-        with open(source, "rb") as handle:
-            data = handle.read()
         directory = ""
         try:
             peers = request("/api/relay/peers").get("peers", [])
@@ -203,8 +218,16 @@ class RelayTools:
                     break
         except RelayError:
             directory = ""
-        query = urllib.parse.urlencode({"name": name, **({"dir": directory} if directory else {})})
-        result = request_raw(pane_path(target, f"/files/upload?{query}"), data)
+        # token 只认字母数字/-/_：取文件身份的哈希，同一份文件重试能找回同一个
+        # .part 续传，换了内容（mtime 变了）就不会错续到旧文件上。
+        tag = "mc" + hashlib.sha1(
+            ("%s:%d:%d" % (name, size, stat.st_mtime_ns)).encode()).hexdigest()[:16]
+        if size == 0:
+            query = urllib.parse.urlencode({"name": name, **({"dir": directory} if directory else {})})
+            result = request_raw(pane_path(target, f"/files/upload?{query}"), b"",
+                                 timeout=SEND_CHUNK_TIMEOUT)
+        else:
+            result = self._send_file_chunked(target, name, directory, source, size, tag)
         note = str(arguments.get("note") or "").strip()
         message = note or f'user uploaded file "{name}" ({size} bytes)'
         sent = False
@@ -217,6 +240,58 @@ class RelayTools:
                 sent = False
         return {"target": target, "path": result.get("path"), "size": result.get("size", size),
                 "notified": sent}
+
+    def _send_file_chunked(self, target: str, name: str, directory: str,
+                           source: str, size: int, tag: str) -> dict:
+        """PUT the file 1MB at a time; returns the server's final response."""
+        offset = 0
+        chunk_size = SEND_CHUNK
+        attempts = 0
+        result: dict = {}
+        with open(source, "rb") as handle:
+            while offset < size:
+                handle.seek(offset)
+                data = handle.read(chunk_size)
+                if not data:
+                    raise RelayError("file shrank while uploading: %s" % source)
+                query = urllib.parse.urlencode({
+                    "name": name, **({"dir": directory} if directory else {}),
+                    "offset": str(offset), "total": str(size), "token": tag,
+                })
+                try:
+                    result = request_raw(pane_path(target, f"/files/upload?{query}"), data,
+                                         timeout=SEND_CHUNK_TIMEOUT)
+                except RelayError as exc:
+                    if exc.status == 409 and exc.offset is not None:
+                        # 对面已经有的字节和我们的预期不一致：从它那里接着传
+                        offset = int(exc.offset)
+                        attempts = 0
+                        continue
+                    if exc.status == 0:
+                        # 连不上 console（URLError）：同一块退避重试，不从头再来
+                        attempts += 1
+                        if attempts > SEND_CHUNK_RETRIES:
+                            raise
+                        chunk_size = max(SEND_CHUNK_MIN, chunk_size // 2)
+                        time.sleep(0.5 * attempts)
+                        continue
+                    raise
+                except (TimeoutError, OSError) as exc:
+                    # 慢链路上一块没能在 90s 内发完：块减半再试，而不是整个文件重来
+                    attempts += 1
+                    if attempts > SEND_CHUNK_RETRIES:
+                        raise RelayError("upload stalled: %s" % exc) from exc
+                    chunk_size = max(SEND_CHUNK_MIN, chunk_size // 2)
+                    time.sleep(0.5 * attempts)
+                    continue
+                attempts = 0
+                if isinstance(result, dict) and result.get("status") == "uploaded":
+                    offset = size
+                elif isinstance(result, dict) and result.get("offset") is not None:
+                    offset = int(result["offset"])
+                else:
+                    offset += len(data)
+        return result
 
     def read_agent(self, arguments: dict) -> dict:
         target = self._target(arguments)

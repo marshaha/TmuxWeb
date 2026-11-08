@@ -12,6 +12,8 @@
 (function () {
   const CHUNK_MAX = 4 * 1024 * 1024;
   const CHUNK_MIN = 256 * 1024;
+  const CHUNK_FIRST = 1024 * 1024;
+  const CHUNK_TIMEOUT_MS = 90000;   // Cloudflare 单请求 100s 上限之内先超时重试，别等 CF 切断
   const CHUNK = CHUNK_MAX;          // 兼容旧调用方
   const RETRIES = 3;
 
@@ -24,6 +26,7 @@
       const xhr = new XMLHttpRequest();
       xhr.open('PUT', url, true);
       xhr.responseType = 'text';
+      xhr.timeout = CHUNK_TIMEOUT_MS;
       if (xhr.upload && onSent) {
         xhr.upload.onprogress = event => { if (event.loaded) onSent(event.loaded); };
       }
@@ -55,8 +58,10 @@
     let offset = 0;
     let attempts = 0;
     // 慢链路上 4MB 一块要传好几分钟，一旦断掉那一块白传；从 1MB 起步，
-    // 快的链路再放大，慢的链路缩小 —— 进度也因此更细。
-    let chunkSize = Math.min(CHUNK_MAX, Math.max(CHUNK_MIN, Math.ceil(total / 8) || CHUNK_MIN));
+    // 快的链路再放大，慢的链路缩小 —— 进度也因此更细。起步块必须小到在
+    // Cloudflare 100s 上限内传得完：30MB 文件按 total/8 起步是 3.75MB，
+    // 40KB/s 下要 ~94 秒，加 SSH 建连就超 100s，第一块就被 CF 切断。
+    let chunkSize = Math.min(CHUNK_FIRST, Math.max(CHUNK_MIN, Math.ceil(total / 8) || CHUNK_MIN));
     const notify = () => { if (onProgress) onProgress(offset, total); };
     notify();
     while (offset < total) {

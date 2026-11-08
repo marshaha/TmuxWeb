@@ -26,12 +26,19 @@ from typing import Any
 
 
 class RelayError(RuntimeError):
-    """A failed call, carrying the HTTP status and any pane tail the server sent."""
+    """A failed call, carrying the HTTP status and any pane tail the server sent.
 
-    def __init__(self, message: str, status: int = 0, tail: str = ""):
+    ``offset`` is the server's byte position when an upload is rejected with
+    409 (the far side already has that many bytes); a chunked uploader resumes
+    from it instead of starting over.
+    """
+
+    def __init__(self, message: str, status: int = 0, tail: str = "",
+                 offset: int | None = None):
         super().__init__(message)
         self.status = status
         self.tail = tail
+        self.offset = offset
 
 
 def base_url() -> str:
@@ -57,12 +64,15 @@ def request_raw(path: str, data: bytes, *, timeout: float = 120.0,
             return json.loads(response.read().decode(errors="replace") or "{}")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")
+        offset = None
         try:
             detail = json.loads(body)
             message = detail.get("detail") if isinstance(detail, dict) else body
-        except json.JSONDecodeError:
+            if isinstance(detail, dict) and detail.get("offset") is not None:
+                offset = int(detail["offset"])
+        except (json.JSONDecodeError, TypeError, ValueError):
             message = body.strip()
-        raise RelayError(f"{message}", status=exc.code)
+        raise RelayError(f"{message}", status=exc.code, offset=offset)
     except urllib.error.URLError as exc:
         raise RelayError(f"cannot reach {base_url()}: {exc.reason}")
 
