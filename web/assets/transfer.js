@@ -62,7 +62,11 @@
       const response = await fetch('/api/system/addresses', {credentials: 'same-origin'});
       if (!response.ok) return [];
       const data = await response.json();
-      return (data.addresses || []).filter(item => item.transfer).map(item => item.url);
+      // 页面本身就在这个源站上（用户直接用 tailnet 名字打开的）→ 不需要改道，
+      // 同源传输本来就是直连，别白白多签一张票据
+      return (data.addresses || [])
+        .filter(item => item.transfer && item.url !== location.origin)
+        .map(item => item.url);
     } catch (_error) {
       return [];
     }

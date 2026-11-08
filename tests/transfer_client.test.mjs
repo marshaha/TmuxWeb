@@ -18,7 +18,8 @@ const source = readFileSync(join(here, '..', 'web', 'assets', 'transfer.js'), 'u
 function load(options = {}) {
   const store = new Map();
   const calls = [];
-  const window = {location: {href: 'https://chat.example.com/?pane=%2528'}};
+  const href = options.pageOrigin || 'https://chat.example.com';
+  const window = {location: {href: href + '/?pane=%2528', origin: href}};
   const context = {
     window,
     location: window.location,
@@ -123,6 +124,23 @@ test('上传：探测通过后给 uploads.js 一个带票据的前缀', async ()
   });
   const route = await transfer.uploadRoute({pane: '%2524', dir: '/tmp', name: 'x.bin', size: 4096});
   assert.deepEqual(route, {prefix: 'https://robo.example.ts.net', ticket: 'up.tok'});
+});
+
+test('页面本来就在直连源站上时不再改道', async () => {
+  // 用户直接用 tailnet 名字打开：同源传输本来就是直连，不该再多签票据
+  const {transfer, calls} = load({
+    pageOrigin: 'https://robo.example.ts.net',
+    fetch: async url => {
+      if (url.endsWith('/api/system/addresses')) {
+        return json({addresses: [{url: 'https://robo.example.ts.net', kind: 'tailnet', transfer: true}]});
+      }
+      throw new Error('unexpected ' + url);
+    },
+  });
+  assert.equal(await transfer.pick(), null);
+  assert.equal(calls.filter(call => call.url.endsWith('/t/ping')).length, 0);
+  const original = '/api/panes/%2524/files/download?path=/srv/a.bin';
+  assert.equal(await transfer.downloadHref(original), original);
 });
 
 test('forget() 清掉记住的源站', async () => {
