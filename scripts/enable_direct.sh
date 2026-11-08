@@ -36,16 +36,42 @@ echo
 
 case "${1:-status}" in
   serve)
-    if ! tailscale serve status >/dev/null 2>&1; then
-      echo "先给当前用户 operator 权限（只需一次）："
-      echo "  sudo tailscale set --operator=$USER"
-      echo "然后在 tailnet 管理台开 HTTPS 证书（DNS 页面 → Enable HTTPS）。"
-      exit 1
+    # 注意：不能用 $(...) 捕获输出 —— 那种形式下 tailscale serve 会一直不返回（实测卡死）。
+    # 重定向到临时文件、再 cat 出来，是唯一稳定的写法。
+    LOG=$(mktemp)
+    # tailscale serve 在 tailnet 没开 Serve 时会把提示打印完就不退出（实测一直挂着），
+    # 所以这里自己加超时，把已经打印出来的提示照原样交给用户。
+    timeout 20 tailscale serve --bg "$PORT" </dev/null >"$LOG" 2>&1
+    STATUS=$?
+    cat "$LOG"
+    OUTPUT=$(cat "$LOG")
+    rm -f "$LOG"
+    if echo "$OUTPUT" | grep -q "Serve is not enabled"; then
+      echo
+      echo "tailnet 还没开 Serve。用上面那个链接开一次（管理员账号，点一下就行），"
+      echo "然后重新跑：./scripts/enable_direct.sh serve"
+      exit 2
     fi
-    tailscale serve --bg "$PORT"
+    if [ $STATUS -eq 124 ] && [ -s /dev/null ]; then
+      echo
+      echo "tailscale serve 没有返回（tailnet 可能还没开 Serve；或者本用户没有 operator 权限）。"
+      echo "管理员开关：https://login.tailscale.com/admin/settings/features → Serve"
+      exit 2
+    fi
+    if [ $STATUS -ne 0 ]; then
+      case "$OUTPUT" in
+        *permission*|*operator*|*denied*)
+          echo
+          echo "没有权限改 serve 配置。先给当前用户 operator（只需一次，要密码）："
+          echo "  sudo tailscale set --operator=$USER"
+          ;;
+      esac
+      exit $STATUS
+    fi
     echo
     echo "好了，用 https://$DNS_NAME 访问（只在 tailnet 内可达，真证书，无混合内容问题）。"
     echo "控制台的 设置 › 直连地址 里会自动多出这一条。"
+    echo "如果要跨网段公开给外网，再配 TMUX_WEB_TRANSFER_ORIGINS。"
     ;;
   off)
     tailscale serve reset
