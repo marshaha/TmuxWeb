@@ -62,10 +62,14 @@
         const remove = `<button class="cf-x" type="button" data-cf-drop="${index}" title="移除" aria-label="移除">`
           + `<svg class="ico"><use href="#i-close"/></svg></button>`;
         if (item.pending) {
-          const pct = Math.round((item.progress || 0) * 100);
+          const ratio = Math.max(0, Math.min(1, item.progress || 0));
+          // 大文件在几十 KB/s 的链路上，一分钟也可能不到 1%：整数会一直显示 0%，
+          // 所以小于 10% 时保留一位小数，并把已传字节一起写出来。
+          const pct = ratio >= 0.1 ? String(Math.round(ratio * 100)) : (ratio * 100).toFixed(1);
+          const sent = item.sent ? humanSize(item.sent) : '';
           return `<div class="cf-item busy"><svg class="ico"><use href="#i-paperclip"/></svg>`
             + `<span class="cf-meta"><span class="cf-name">${esc(item.name)}</span>`
-            + `<span class="cf-size">上传中 ${pct}%</span></span>${remove}</div>`;
+            + `<span class="cf-size">上传中 ${pct}%${sent ? ` · ${sent} / ${humanSize(item.size)}` : ''}</span></span>${remove}</div>`;
         }
         if (item.failed) {
           return `<div class="cf-item failed" data-cf-retry="${index}"><svg class="ico"><use href="#i-refresh"/></svg>`
@@ -125,6 +129,7 @@
           onProgress: (done, total) => {
             item.progress = total ? done / total : 0;
             item.sent = done;
+            item.size = total;
             render();
           },
         });
