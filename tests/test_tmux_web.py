@@ -2398,6 +2398,31 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(paths, ("/srv/work/one.txt",))
         self.assertEqual(base, "/srv/work")
 
+    def test_the_video_helper_is_served_and_wired_into_the_chat(self):
+        """聊天里的视频卡片：脚本要服务得到，页面要引到，样式要在。"""
+        script = self.client.get("/assets/video-cards.js")
+        self.assertEqual(script.status_code, 200)
+        self.assertIn("TmuxVideo", script.text)
+        self.assertIn("preload = 'metadata'", script.text)
+        page = self.client.get("/", follow_redirects=False)
+        # 没登录会被重定向，所以直接读文件里的接线
+        html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
+        self.assertIn("/assets/video-cards.js", html)
+        self.assertIn(".video-card", html)
+        self.assertIn("enhanceVideos(root)", html)
+
+    def test_a_local_video_is_served_inline_so_a_player_can_use_it(self):
+        """<video> 只能就地播；如果 raw 给 attachment，Safari 会直接下载。"""
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory, "clip.mp4")
+            target.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64)
+            self.tmux.panes[0]["path"] = directory
+            response = self.client.get(f"/api/panes/%254/files/raw?path={target}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "video/mp4")
+        self.assertIn("inline", response.headers["content-disposition"])
+
     def test_a_ticket_moves_bytes_without_the_session_cookie(self):
         """直连源站拿不到 cookie：票据本身就是凭据，别的路由不认它。"""
         self.login()

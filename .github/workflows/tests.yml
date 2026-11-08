@@ -32,6 +32,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: 直连传输的前端胶水（探测 / 改写 / 回落）
-        run: node --test tests/transfer_client.test.mjs
+      - name: 前端胶水（直连传输、视频卡片）
+        run: node --test tests/transfer_client.test.mjs tests/video_cards.test.mjs
 

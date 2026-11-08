@@ -317,6 +317,17 @@ busy/idle/offline 变；点一下就切过去，切过去的会话会自动顶�
 - 本地 pane 直接读文件系统；SSH 远端完全用 POSIX 工具：目录清单靠远端 `find`（GNU 有 `-printf` 就用，否则回退 GNU/BSD `stat`），下载 `head -c`，上传 `cat >`。**远端不需要 python3、不需要装任何东西**，等同 scp 的依赖水平。
 - 上传先写临时文件再原子替换，避免半截文件覆盖原文件；单文件上限由环境变量控制（默认下载 64MB、上传 256MB）。
 
+### 聊天里直接看视频
+
+消息里出现视频链接（`.mp4` / `.webm` / `.mov` / `.m4v` / `.ogv` / `.ogg` / `.mkv`，大小写不限，
+带查询串也认），或者指向本地视频文件的路径（`/path/to/clip.mp4`，会被改写成 `/files/raw`），
+就地渲染一个播放器：
+
+- `preload="metadata"` —— 不点播放只取时长和第一帧，不会把整段视频拖下来（手机流量友好）；
+- 播放器下方保留原文件名链接，方便右键另存或换窗口打开；
+- 本地视频走 `/api/panes/{pane}/files/raw`，`video/*` 现在按 `inline` 返回，否则 iOS Safari 会直接下载；
+- 只认 `http(s)` / `blob`，`javascript:`、`data:` 这类链接不会变成播放器。
+
 HTTP 接口（需登录 Cookie 或 `TMUX_WEB_API_TOKEN`）：
 
 | 方法 | 路径 | 说明 |

@@ -2123,6 +2123,12 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "downloads.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/video-cards.js")
+    async def video_cards_script() -> FileResponse:
+        """聊天里把视频链接变成就播放器（preload=metadata，不点不下载）。"""
+        return FileResponse(WEB_DIR / "assets" / "video-cards.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/transfer.js")
     async def transfer_script() -> FileResponse:
         """直连传输：探测内网/Tailscale 源站、拿票据、把字节搬过去（拿不到就回落 CF）。"""
@@ -3161,7 +3167,7 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         name = os.path.basename(path.rstrip("/")) or "file"
         media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        inline_types = ("text/", "image/", "application/pdf", "application/json")
+        inline_types = ("text/", "image/", "video/", "audio/", "application/pdf", "application/json")
         inline = media_type.startswith(inline_types)
         headers = {
             "Cache-Control": "no-store",
