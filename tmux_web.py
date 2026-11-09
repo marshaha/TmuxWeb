@@ -3305,7 +3305,7 @@ def create_app(
         return answer
 
     @app.get("/api/panes/{pane_id}/uploads/{name}")
-    async def pane_upload_file(request: Request, pane_id: str, name: str):
+    async def pane_upload_file(request: Request, pane_id: str, name: str, thumb: int = 0):
         """Serve a file that was uploaded through the composer.
 
         Chat bubbles only carry the file name (``user uploaded file “a.png”``), and
@@ -3321,12 +3321,21 @@ def create_app(
         except HTTPException:
             raise
         base = (pane.get("path") or "").rstrip("/")
-        candidates = [os.path.join(base, "upload_files", name)] if base else []
+        shots = os.path.join(base, "upload_files") if base else ""
+        candidates = []
+        if thumb:
+            # 气泡里的预览只要一张 320px 的小图：原图动辄几 MB、解码几十 MB，
+            # 十几张就能把浏览器拖垮。composer 上传时顺手存了一份 sidecar。
+            stem = os.path.splitext(name)[0]
+            if shots:
+                candidates.append(os.path.join(shots, ".thumbs", stem + ".jpg"))
+        if shots:
+            candidates.append(os.path.join(shots, name))
         if base:
             candidates.append(os.path.join(base, name))
         for candidate in candidates:
             if os.path.isfile(candidate):
-                media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                media_type = mimetypes.guess_type(candidate)[0] or "application/octet-stream"
                 return FileResponse(candidate, media_type=media_type, headers={
                     "Cache-Control": "private, max-age=86400",
                     "X-Content-Type-Options": "nosniff",

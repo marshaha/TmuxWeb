@@ -2566,6 +2566,36 @@ class TmuxWebTests(unittest.TestCase):
             hidden = self.client.get("/api/panes/%254/uploads/.env")
             self.assertEqual(hidden.status_code, 404)
 
+    def test_a_sidecar_thumbnail_is_preferred_for_bubble_previews(self):
+        """气泡里的图要 320px 小图：原图按原尺寸解码，十几张就能拖死浏览器。"""
+        import tempfile
+        self.login()
+        with tempfile.TemporaryDirectory() as folder:
+            shots = os.path.join(folder, "upload_files")
+            os.makedirs(os.path.join(shots, ".thumbs"))
+            with open(os.path.join(shots, "big.png"), "wb") as handle:
+                handle.write(b"\x89PNG\r\n\x1a\n" + b"0" * 4096)
+            with open(os.path.join(shots, ".thumbs", "big.jpg"), "wb") as handle:
+                handle.write(b"\xff\xd8\xff\xe0thumb")
+            self.tmux.panes[0]["path"] = folder
+
+            preview = self.client.get("/api/panes/%254/uploads/big.png?thumb=1")
+            self.assertEqual(preview.status_code, 200)
+            self.assertEqual(preview.content, b"\xff\xd8\xff\xe0thumb")
+            self.assertEqual(preview.headers["content-type"], "image/jpeg")
+
+            full = self.client.get("/api/panes/%254/uploads/big.png")
+            self.assertEqual(full.content[:4], b"\x89PNG", "点开还是原图")
+
+            # 没有 sidecar 就回落到原图，不能 404
+            fallback = self.client.get("/api/panes/%254/uploads/big.png?thumb=1") if False else None
+            with open(os.path.join(shots, "plain.png"), "wb") as handle:
+                handle.write(b"\x89PNGplain")
+            again = self.client.get("/api/panes/%254/uploads/plain.png?thumb=1")
+            self.assertEqual(again.status_code, 200)
+            self.assertEqual(again.content, b"\x89PNGplain")
+            self.assertIsNone(fallback)
+
     def test_uploads_endpoint_needs_a_login(self):
         response = self.client.get("/api/panes/%254/uploads/a.png", follow_redirects=False)
         self.assertIn(response.status_code, (401, 403, 303))

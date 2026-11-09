@@ -25,8 +25,10 @@
   function item(pane, name) {
     const url = rawUrl(pane, name);
     if (IMAGE_RE.test(name)) {
+      // 气泡里只用 320px 的缩略图（?thumb=1，服务端没有 sidecar 就回落到原图）；
+      // 点开才是完整文件。原图直接进 <img> 会按原尺寸解码，十几张就能卡死浏览器。
       return `<a class="upload-thumb" data-upload="1" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(name)}">`
-        + `<img data-upload="1" src="${esc(url)}" alt="${esc(name)}" loading="lazy" decoding="async"`
+        + `<img data-upload="1" src="${esc(url)}?thumb=1" alt="${esc(name)}" loading="lazy" decoding="async"`
         + ` onerror="this.closest('.upload-thumb').classList.add('broken')"></a>`;
     }
     return `<a class="upload-file" data-upload="1" href="${esc(url)}" target="_blank" rel="noopener">`

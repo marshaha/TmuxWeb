@@ -22,7 +22,10 @@ test('一张图片变成缩略图，并指向 pane 的 uploads 地址', () => {
   const cards = load();
   const html = cards.bubbleHtml('user uploaded file “pasted-20261109-182641.png”', 'local~%28');
   assert.match(html, /class="upload-grid"/);
-  assert.match(html, /<img[^>]*src="\/api\/panes\/local~%2528\/uploads\/pasted-20261109-182641\.png"/);
+  assert.match(html, /<img[^>]*src="\/api\/panes\/local~%2528\/uploads\/pasted-20261109-182641\.png\?thumb=1"/,
+    '气泡里要 320px 小图，原图只在点开时用');
+  assert.match(html, /href="\/api\/panes\/local~%2528\/uploads\/pasted-20261109-182641\.png"/,
+    '点开还是原图');
   assert.match(html, /data-upload="1"/, '标记出来，免得被"本地文件"改写规则当成路径');
   assert.doesNotMatch(html, /user uploaded file/);
 });

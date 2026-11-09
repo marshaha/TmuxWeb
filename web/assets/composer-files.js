@@ -45,7 +45,7 @@
       context.drawImage(bitmap, 0, 0, width, height);
       if (bitmap.close) bitmap.close();
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.82));
-      return blob ? URL.createObjectURL(blob) : null;
+      return blob ? {url: URL.createObjectURL(blob), blob} : null;
     } catch (error) {
       return null;      // 认不出的格式（heic 之类）就退回用原图地址
     }
@@ -143,9 +143,10 @@
       render();      // 先把占位放上去（多张图时不用等任何一张）
       // 缩略图并行生成：几张截图几乎同时出现
       accepted.filter(item => item.isImage).forEach(item => {
-        thumbnail(item.file).then(url => {
-          item.thumb = url;
-          item.thumbFailed = !url;
+        thumbnail(item.file).then(result => {
+          item.thumb = result ? result.url : null;
+          item.thumbBlob = result ? result.blob : null;
+          item.thumbFailed = !result;
           render();
         });
       });
@@ -171,6 +172,7 @@
         item.pending = false;
         item.url = endpoint(item.name, 'download');
         item.onDisk = true;
+        pushThumb(item);
       } catch (error) {
         // 失败不再静默删掉：留一条"点这里重试"，已经上传的块在服务端 .part 里
         item.pending = false;
@@ -178,6 +180,19 @@
         if (options.onError) options.onError(`附件上传失败：${error.message}`);
       }
       render();
+    }
+
+    // 聊天气泡只用这张 320px 的：原图解码太贵，十几张截图就能把浏览器拖死。
+    // 失败无所谓，服务端拿不到 sidecar 就回落到原图。
+    async function pushThumb(item) {
+      if (!item.thumbBlob || !window.TmuxUpload || !paneId()) return;
+      try {
+        await window.TmuxUpload.upload({
+          pane: paneId(), dir: directory() + '/.thumbs',
+          name: item.name.replace(/\.[^.]+$/, '') + '.jpg',
+          file: new File([item.thumbBlob], 'thumb.jpg', {type: 'image/jpeg'}),
+        });
+      } catch (error) { /* 只是优化，失败不影响发送 */ }
     }
 
     async function remove(index) {
