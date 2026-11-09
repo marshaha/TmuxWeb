@@ -200,6 +200,55 @@
         }
       });
     }
+    // ---- 粘贴板图片：Ctrl/Cmd+V 直接变成附件 -------------------------------
+    // 截图工具（微信、macOS 截图、手机长按复制）给的是一张没有文件名的 image/png，
+    // 直接塞进同一条 add() 里它就走上传、进度、缩略图那套，不用再点「附件」。
+    const GENERIC_PASTE_NAME = /^(image|blob|clipboard|untitled)\.[a-z0-9]{2,5}$|^blob$/i;
+    const PASTE_EXT = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif',
+                       'image/webp': 'webp', 'image/bmp': 'bmp', 'image/svg+xml': 'svg'};
+    function pastedName(type) {
+      const ext = PASTE_EXT[type] || 'png';
+      const now = new Date();
+      const pad = value => String(value).padStart(2, '0');
+      const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+        + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      return `pasted-${stamp}.${ext}`;
+    }
+    function clipboardImages(event) {
+      const data = event.clipboardData;
+      if (!data) return [];
+      const found = [];
+      const items = data.items || [];
+      for (const entry of items) {
+        if (entry.kind !== 'file') continue;
+        const type = entry.type || '';
+        if (!/^image\//.test(type)) continue;
+        const blob = entry.getAsFile();
+        if (!blob) continue;
+        // 剪贴板里的图片通常叫 image.png / blob，直接用会互相盖掉；只有真名字才保留
+        const name = blob.name && !GENERIC_PASTE_NAME.test(blob.name) && /\.[a-z0-9]{2,5}$/i.test(blob.name)
+          ? blob.name : pastedName(type);
+        found.push(new File([blob], name, {type: blob.type || type}));
+      }
+      if (!found.length && data.files) {
+        for (const file of data.files) {
+          if (/^image\//.test(file.type || '')) {
+            found.push(file.name ? file : new File([file], pastedName(file.type), {type: file.type}));
+          }
+        }
+      }
+      return found;
+    }
+    const pasteTarget = options.drop || document.body;
+    if (pasteTarget) {
+      pasteTarget.addEventListener('paste', event => {
+        const images = clipboardImages(event);
+        if (!images.length) return;      // 纯文字粘贴：交给浏览器默认行为
+        event.preventDefault();
+        add(images);
+      });
+    }
+
     const drop = options.drop;
     if (drop) {
       drop.addEventListener('dragover', event => {
@@ -221,5 +270,17 @@
       pending: () => items.some(item => item.pending)};
   }
 
-  window.TmuxFiles = {mount};
+  // 命名规则单独露出来，测试才能盯住"剪贴板里的 image.png 不能直接落盘成 image.png"
+  window.TmuxFiles = {mount, pastedNameFor: (type, originalName) => {
+    const generic = /^(image|blob|clipboard|untitled)\.[a-z0-9]{2,5}$|^blob$/i;
+    if (originalName && !generic.test(originalName) && /\.[a-z0-9]{2,5}$/i.test(originalName)) {
+      return originalName;
+    }
+    const ext = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
+                 'image/bmp': 'bmp', 'image/svg+xml': 'svg'}[type] || 'png';
+    const now = new Date();
+    const pad = value => String(value).padStart(2, '0');
+    return `pasted-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+      + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.${ext}`;
+  }};
 })();

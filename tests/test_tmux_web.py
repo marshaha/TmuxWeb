@@ -2579,6 +2579,30 @@ class TmuxWebTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(sent_keys, ["Escape"])
 
+    def test_pasted_images_go_through_the_attachment_pipeline(self):
+        """Ctrl/Cmd+V 的图片要走和点「附件」同一条路：上传 + 缩略图。"""
+        script = self.client.get("/assets/composer-files.js")
+        self.assertEqual(script.status_code, 200)
+        self.assertIn("'paste'", script.text)
+        self.assertIn("clipboardData", script.text)
+        self.assertIn("pastedNameFor", script.text)
+        self.assertIn("pasted-", script.text)
+
+    def test_a_numbered_list_in_the_chat_is_not_a_menu(self):
+        """聊天正文里的 1. 2. 3. 曾被当成菜单，点一下往 pane 里敲了个数字。"""
+        import agent_prompts as prompts
+        screen = (
+            " 回一句是哪个（或直接说要什么）就行。\n"
+            "──────────────────────────────\n"
+            "─ 12.3s · 2:45 PM\n"
+            "──────────────────────────────\n"
+            "❯ 1. 是你之前的弹窗选择 我点击了 就发送了1，但是弹窗一直还在。\n"
+            "2.  请你把粘贴板的图片直接转附件上传\n"
+            "──────────────────────────────\n"
+            "☤ deepseek-flash · 408K/1M · [████░░░░░░] 41%\n"
+        )
+        self.assertIsNone(prompts.parse_screen(screen))
+
     def test_the_cjk_markdown_fix_is_served_and_wired_into_both_pages(self):
         """**任务：**它 这种写法默认不会渲染成粗体，修正要在聊天和看板都挂上。"""
         script = self.client.get("/assets/markdown-cjk.js")

@@ -132,6 +132,18 @@ PRESS_ENTER = """
  Press Enter to continue
 """
 
+# 聊天记录里用户自己打的一串编号 —— 真踩过：被当成菜单，点一下往 pane 里敲了个 "1"
+NUMBERED_CHAT_TEXT = """
+ 回一句是哪个（或直接说要什么）就行。
+────────────────────────────────────────
+─ 12.3s · 2:45 PM
+────────────────────────────────────────
+❯ 1. 是你之前的弹窗选择 我点击了 就发送了1，但是弹窗居然一直还在。
+2.  请你把粘贴板的图片直接转附件上传
+────────────────────────────────────────
+☤ deepseek-flash · 408K/1M · [████░░░░░░] 41%
+"""
+
 # hermes / 普通 shell：底部那个 ❯ 是输入提示符，不是菜单
 PLAIN_PROMPT = """
  ❯ 帮我看一下 tmux_web.py 的下载逻辑
@@ -236,6 +248,12 @@ class OtherAgentsTests(unittest.TestCase):
         self.assertEqual(found["hint"], "Enter to confirm · Esc to cancel")
         self.assertFalse(found["numbers"])
         self.assertEqual(prompts.choice_keys(found, 1)[-2:], ["Down", "Enter"])
+
+
+class NotAMenuTests(unittest.TestCase):
+    def test_a_numbered_list_typed_in_chat_is_not_a_menu(self):
+        """没有提示行的编号列表是正文，不是等待中的选择。"""
+        self.assertIsNone(prompts.parse_screen(NUMBERED_CHAT_TEXT))
 
 
 class NumberedTests(unittest.TestCase):

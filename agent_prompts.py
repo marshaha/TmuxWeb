@@ -127,17 +127,20 @@ def _collect_rows(lines: list[str], anchor: int) -> list[dict]:
         })
     # 只有整段都带序号才允许发数字（claude 的 ❯ 1. Yes 就是这种）
     numbered_all = bool(options) and all(option["number"] for option in options)
-    first_line = min(row["line"] for row in rows)
     return [{"options": options, "numbers": numbered_all, "numbers_seq": numbers,
-             "first_line": first_line}]
+             "first_line": min(row["line"] for row in rows),
+             "last_line": max(row["line"] for row in rows)}]
 
 
-def _hint_index(lines: list[str], first_line: int) -> int | None:
-    """提示行（↑↓ navigate / Esc cancel / type to search）在选项块附近的位置。"""
-    # 提示行可能在选项块上方不少（kimi 的信任对话框：标题+提示贴顶部，选项在底部），
-    # 但取"离选项块最近"的那条：kimi 的选择器里标题行自己也含 "type to search"，
-    # 选错就会把标题认成上面那行无关的告警文字
-    low, high = max(0, first_line - 14), min(len(lines), first_line + 16)
+def _hint_index(lines: list[str], first_line: int, last_line: int | None = None,
+                above: int = 6, below: int = 6) -> int | None:
+    """提示行（↑↓ navigate / Esc cancel / type to search）在选项块附近的位置。
+
+    没有提示行的"列表"就不是菜单 —— 聊天记录里用户自己打的 `1. 2. 3.` 曾经被当成
+    菜单，点一下就往 pane 里敲了一个 "1"。所以这个窗口必须贴着选项块。
+    """
+    tail = first_line if last_line is None else max(first_line, last_line)
+    low, high = max(0, first_line - above), min(len(lines), tail + below)
     hits = [position for position in range(low, high)
             if HINT_RE.search(_clean(lines[position]).strip())]
     if not hits:
@@ -295,9 +298,11 @@ def parse_screen(text: str) -> dict[str, Any] | None:
             expected += 1
             position += 1
         if len(block) >= 2:
-            hint_at = _hint_index(lines, offset)
-            title = _title_above(lines, min(hint_at, offset) if hint_at is not None else offset)
-            hint = _clean(lines[hint_at]).strip()[:160] if hint_at is not None else ""
+            hint_at = _hint_index(lines, offset, offset + len(block) - 1)
+            if hint_at is None:
+                continue          # 没有提示行：多半是聊天记录里的编号列表，不是菜单
+            title = _title_above(lines, min(hint_at, offset))
+            hint = _clean(lines[hint_at]).strip()[:160]
             return _finish("menu", title, hint, block, lines, numbers=True, source="numbered")
 
     # A：光标列表
@@ -310,7 +315,8 @@ def parse_screen(text: str) -> dict[str, Any] | None:
         if len(options) < 2:
             continue
         top = collected["first_line"]
-        hint_at = _hint_index(lines, top)
+        # kimi 的信任对话框把提示贴在标题下面、选项放在屏幕底部，所以往上要看得远一些
+        hint_at = _hint_index(lines, top, collected["last_line"], above=12)
         # 没有提示行的"列表"多半是 shell 提示符/聊天正文，宁可不出卡片
         if hint_at is None:
             continue
