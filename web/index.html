@@ -398,6 +398,8 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   .prompt-options{display:flex;flex-direction:column;gap:6px;margin-top:8px;min-height:0;flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain}
   .prompt-option{display:flex;flex:none;align-items:center;gap:8px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);color:var(--ink);font:600 12.5px/1.35 inherit;text-align:left;cursor:pointer}
   .prompt-option:hover{border-color:var(--accent)}
+  /* 点下去先亮起来（乐观），服务器确认后再由轮询盖成真值 */
+  .prompt-option.picked{border-color:var(--accent);background:rgba(201,100,66,.14)}
   .prompt-option.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
   .prompt-label{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
   .prompt-meta{flex:none;max-width:46%;color:var(--muted);font-weight:400;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

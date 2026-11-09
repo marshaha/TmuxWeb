@@ -24,6 +24,11 @@
   let prompt = null;
   let cursor = 0;
   let hiddenByUser = false;      // 用户点了 ✕：这一轮别再弹
+  // 乐观交互：点下去先在卡片上生效，再等服务器/pane 的真实状态来对齐。
+  // 否则每次点击都要等一个往返 + 一次轮询，远端面板上就是"卡一下"。
+  let optimistic = null;         // {toggle, value, at} 或 {index, at}
+  let lastScreen = [];
+  const OPTIMISTIC_TTL = 3000;
 
   const $ = id => document.getElementById(CARD + '-' + id);
 
@@ -119,6 +124,7 @@
     });
     toggles.hidden = !(data.toggles && data.toggles.length);
 
+    lastScreen = screen || [];
     const raw = $('raw');
     if (raw) raw.textContent = (screen || []).join('\n');
     const details = $('raw-wrap');
@@ -127,6 +133,43 @@
     node.hidden = false;
     hiddenByUser = false;
     paintCursor();
+  }
+
+  function paintOptimistic() {
+    if (!optimistic || !prompt) return;
+    if (optimistic.toggle != null) {
+      const rows = document.querySelectorAll('#' + CARD + '-toggles .prompt-toggle');
+      const group = rows[optimistic.toggle];
+      if (group) {
+        [...group.querySelectorAll('.prompt-toggle-btn')].forEach((button, index) => {
+          const on = index === optimistic.value;
+          button.classList.toggle('on', on);
+          button.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+      }
+    }
+    if (optimistic.index != null) {
+      const rows = document.querySelectorAll('#' + CARD + '-options .prompt-option');
+      rows.forEach((row, index) => row.classList.toggle('picked', index === optimistic.index));
+    }
+  }
+
+  function settleOptimistic(found) {
+    if (!optimistic) return;
+    const agrees = found && (
+      (optimistic.toggle != null && (found.toggles || [])
+        .some(item => item.index === optimistic.toggle && item.active === optimistic.value))
+      || (optimistic.index != null && found.selected === optimistic.index));
+    if (agrees) {
+      optimistic = null;
+      setState('');                    // 屏幕已经对上了，别把"等刷新…"留在那儿
+      return;
+    }
+    if (Date.now() - optimistic.at < OPTIMISTIC_TTL) return;   // 还在路上
+    // 过了窗口还没对齐：把卡片退回服务器的真实状态，并说清楚
+    optimistic = null;
+    render(found || prompt, lastScreen);
+    setState('屏幕没有变化，再点一次或切到终端', true);
   }
 
   async function post(url, body) {
@@ -139,7 +182,7 @@
   }
 
   async function followUp() {
-    for (const delay of [200, 400, 800, 1500]) {
+    for (const delay of [120, 300, 700, 1400]) {
       await new Promise(resolve => setTimeout(resolve, delay));
       const before = prompt && prompt.title;
       await poll();
@@ -161,12 +204,20 @@
   async function chooseByIndex(index) {
     const pane = paneNow();
     if (!pane || busy) return;
+    optimistic = {index, at: Date.now()};
+    cursor = index;
+    paintCursor();
+    paintOptimistic();
+    setState('已发送：' + optionLabel(index) + '（等屏幕刷新…）', false);
     busy = true;
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {index});
-      if (!result.ok) { setState(result.data.detail || `HTTP ${result.status}`, true); return; }
-      if (result.data.sent) setState('已发送：' + optionLabel(index), false);
-      setState('已发送：' + optionLabel(index) + '（等屏幕刷新…）', false);
+      if (!result.ok) {
+        optimistic = null;
+        render(prompt, lastScreen);
+        setState(result.data.detail || `HTTP ${result.status}`, true);
+        return;
+      }
       busy = false;                     // 先放开锁：followUp 里的 poll 靠它判断
       await followUp();
     } catch (error) {
@@ -179,12 +230,31 @@
   async function chooseToggle(toggleIndex, value) {
     const pane = paneNow();
     if (!pane || busy) return;
+    if (prompt && prompt.toggles && prompt.toggles[toggleIndex]
+        && prompt.toggles[toggleIndex].active === value) {
+      setState('已经是这个值了');
+      return;
+    }
+    // 先让卡片跟着手走（下一帧生效），请求在后台跑
+    optimistic = {toggle: toggleIndex, value, at: Date.now()};
+    paintOptimistic();
+    setState('已发送（等屏幕刷新…）', false);
     busy = true;
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`,
         {toggle: toggleIndex, value});
-      if (!result.ok) { setState(result.data.detail || `HTTP ${result.status}`, true); return; }
-      if (result.data.unchanged) { setState('已经是这个值了'); return; }
+      if (!result.ok) {
+        optimistic = null;
+        render(prompt, lastScreen);
+        setState(result.data.detail || `HTTP ${result.status}`, true);
+        return;
+      }
+      if (result.data.unchanged) {
+        optimistic = null;
+        render(prompt, lastScreen);
+        setState('已经是这个值了');
+        return;
+      }
       setState('已发送（等屏幕刷新…）', false);
       busy = false;                     // 先放开锁：followUp 里的 poll 靠它判断
       await followUp();
@@ -233,6 +303,7 @@
       // 同一个菜单就别重绘（会打断用户正在按的方向键）。
       // 开关的"当前值"也要算进比较：只比标题/选项数/光标的话，←→ 切完之后卡片上的
       // 高亮永远停在旧值，人以为键盘没生效。
+      settleOptimistic(data.prompt);
       const toggleKey = (found) => JSON.stringify((found && found.toggles || [])
         .map(item => [item.label, item.active]));
       if (prompt && prompt.title === data.prompt.title

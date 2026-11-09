@@ -2544,6 +2544,19 @@ class TmuxWebTests(unittest.TestCase):
         after = self.client.get("/api/panes/%254/prompt").json()["prompt"]
         self.assertEqual(after["toggles"][0]["active"], 2)
 
+    def test_a_click_paints_before_the_round_trip(self):
+        """点下去先在卡片上生效（乐观），再等 pane 的真实状态对齐。"""
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "web" / "assets" / "prompt-card.js").read_text()
+        self.assertIn("let optimistic = null", script)
+        self.assertIn("optimistic = {toggle: toggleIndex, value, at: Date.now()}", script)
+        self.assertIn("paintOptimistic()", script)
+        self.assertIn("settleOptimistic(", script)
+        # 过了窗口还没对上就退回真值，并且说清楚
+        self.assertIn("屏幕没有变化，再点一次或切到终端", script)
+        page = (root / "web" / "index.html").read_text()
+        self.assertIn(".prompt-option.picked", page)
+
     def test_the_card_answers_the_arrow_keys_the_switch_advertises(self):
         """分段开关写着 left/right to switch：卡片必须真的处理 ←→，否则键盘按下去没反应。"""
         script = (Path(__file__).resolve().parents[1] / "web" / "assets" / "prompt-card.js").read_text()
