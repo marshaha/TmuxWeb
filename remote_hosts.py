@@ -2306,11 +2306,44 @@ class RemoteTerminalSession:
         environment.update(extra)
         environment["TERM"] = "xterm-256color"
         self.master_fd, slave_fd = os.openpty()
-        self.process = subprocess.Popen(command, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-                                        env=environment, close_fds=True, start_new_session=True)
-        os.close(slave_fd)
+        self.process = None
         self._closed = False
-        self._set_size(cols, rows)
+        try:
+            self.process = subprocess.Popen(command, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                                            env=environment, close_fds=True, start_new_session=True)
+            os.close(slave_fd)
+            slave_fd = None
+            self._set_size(cols, rows)
+        except Exception:
+            # see TerminalSession: a failed attach must not keep the pty, and
+            # the tempdir holds key material, so drop that too
+            self._close_failed_openpty(slave_fd)
+            raise
+
+    def _close_failed_openpty(self, slave_fd):
+        """Best-effort cleanup after __init__ failed part-way through."""
+        process = getattr(self, "process", None)
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+        if slave_fd is not None:
+            try:
+                os.close(slave_fd)
+            except OSError:
+                pass
+        try:
+            os.close(self.master_fd)
+        except OSError:
+            pass
+        try:
+            self.tempdir.cleanup()
+        except Exception:
+            pass
+        self._closed = True
 
     def _set_size(self, cols: int, rows: int):
         cols, rows = max(20, min(int(cols), 500)), max(5, min(int(rows), 300))

@@ -1283,6 +1283,38 @@ class TmuxWebTests(unittest.TestCase):
         rows, cols = struct.unpack("HHHH", fcntl.ioctl(master, termios.TIOCGWINSZ, b"\0" * 8))[:2]
         self.assertEqual((rows, cols), (40, 120))
 
+    def test_a_failed_attach_closes_both_pty_fds(self):
+        """Popen raising (EMFILE under fd pressure) must not leak the fresh pty pair."""
+        import tmux_web
+        from unittest import mock
+
+        opened = []
+        real_openpty = os.openpty
+
+        def record_openpty():
+            pair = real_openpty()
+            opened.append(pair)
+            return pair
+
+        with mock.patch.object(tmux_web.TerminalSession, "_tmux_value", return_value=""), \
+                mock.patch("os.openpty", side_effect=record_openpty), \
+                mock.patch("subprocess.Popen", side_effect=OSError(24, "Too many open files")):
+            with self.assertRaises(OSError):
+                tmux_web.TerminalSession("%9", 80, 24)
+        self.assertEqual(len(opened), 1)
+        master, slave = opened[0]
+        try:
+            with self.assertRaises(OSError):
+                os.fstat(master)
+            with self.assertRaises(OSError):
+                os.fstat(slave)
+        finally:
+            for fd in (master, slave):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
     def test_terminal_websocket_is_bidirectional_and_resizable(self):
         self.login()
         with self.client.websocket_connect("/ws/terminal/%254?cols=100&rows=30") as websocket:
