@@ -22,6 +22,10 @@ CURSOR_MARKS = ("❯", "➤", "→", "»", "›", "▸", "▶")
 BULLET_MARKS = ("●", "○", "•")
 
 NUMBERED_RE = re.compile(r"^\s{0,8}(\d{1,2})[.)]\s+(\S.*)$")
+# 菜单项都很短，而且不会以句号/叹号结尾；这条主要用来挡住"聊天正文里的一段编号"
+OPTION_MAX = 160   # codex 的更新项里带一条完整命令，比一般菜单项长得多
+TOGGLE_SEGMENT_MAX = 14
+SENTENCE_END = ("。", "．", ".", "！", "!", "？")
 CURSOR_RE = re.compile(r"^\s{0,8}([❯➤→»›▸▶]|>\s)\s*(\S.*)$")
 BULLET_RE = re.compile(r"^\s{0,8}([●○•])\s+(\S.*)$")
 RULE_RE = re.compile(r"^[\s─━═┄┈╭╮╰╯│┃|+*-]{3,}$")
@@ -67,6 +71,14 @@ def _indent(line: str) -> int:
 
 
 SHELL_RE = re.compile(r"(\S+@\S+:|\$\s+\S|#\s+\S)")
+
+
+def _option_is_plausible(label: str) -> bool:
+    """菜单项长得像菜单项吗：短、不以句号结尾。"""
+    text = label.strip()
+    if not text or len(text) > OPTION_MAX:
+        return False
+    return not text.endswith(SENTENCE_END)
 
 
 def _looks_like_row(line: str) -> bool:
@@ -233,7 +245,11 @@ def _toggle_rows(lines: list[str]) -> list[dict]:
                 break
             else:
                 options.append(segment.strip())
-        if active < 0 or len(options) < 2:
+        if active < 0 or len(options) < 2 or len(options) > 5:
+            continue
+        if not all(len(option) <= TOGGLE_SEGMENT_MAX for option in options):
+            continue
+        if any(token in line for token in ("，", "。", "：")) and len(options) > 4:
             continue
         label, hint = "", ""
         for probe in range(offset - 1, max(-1, offset - 4), -1):
@@ -312,8 +328,8 @@ def parse_screen(text: str) -> dict[str, Any] | None:
                           "number": match.group(1)})
             expected += 1
             position += 1
-        if len(block) >= 2:
-            hint_at = _hint_index(lines, offset, offset + len(block) - 1)
+        if len(block) >= 2 and all(_option_is_plausible(item["label"]) for item in block):
+            hint_at = _hint_index(lines, offset, offset + len(block) - 1, above=2, below=3)
             if hint_at is None:
                 continue          # 没有提示行：多半是聊天记录里的编号列表，不是菜单
             title = _title_above(lines, min(hint_at, offset))
@@ -327,7 +343,7 @@ def parse_screen(text: str) -> dict[str, Any] | None:
             continue
         collected = _collect_rows(lines, offset)[0]
         options = collected["options"]
-        if len(options) < 2:
+        if len(options) < 2 or not all(_option_is_plausible(item["label"]) for item in options):
             continue
         top = collected["first_line"]
         # kimi 的信任对话框把提示贴在标题下面、选项放在屏幕底部，所以往上要看得远一些

@@ -144,6 +144,17 @@ NUMBERED_CHAT_TEXT = """
 ☤ deepseek-flash · 408K/1M · [████░░░░░░] 41%
 """
 
+# 助手自己在聊天里贴了一段带编号的说明 + 引用了"←→ to switch"这种提示词
+# 真踩过：整段被当成菜单，卡片里列出的全是聊天正文
+CHAT_PROSE_QUOTING_HINTS = """
+  不过你这次测试确实暴露了两个真 bug，已经修了：
+  1. 开关重复出现三次：抓屏带 scrollback，解析器当成三个开关。现在按选项去重。
+  2. 开关的名字被吃掉：提示可能是单独一行（←→ to switch），我之前整行跳过了。
+  3. 顺手改了交互：点完之后先显示「已发送：xxx」再换下一个问题。
+
+  第 3 步  分段开关     形态  [ Off ]  Normal  Deep
+"""
+
 # hermes / 普通 shell：底部那个 ❯ 是输入提示符，不是菜单
 PLAIN_PROMPT = """
  ❯ 帮我看一下 tmux_web.py 的下载逻辑
@@ -251,6 +262,17 @@ class OtherAgentsTests(unittest.TestCase):
 
 
 class NotAMenuTests(unittest.TestCase):
+    def test_prose_that_mentions_hint_words_is_not_a_menu(self):
+        """聊天里引用「←→ to switch」不能让它变成菜单，句子也不是菜单项。"""
+        self.assertIsNone(prompts.parse_screen(CHAT_PROSE_QUOTING_HINTS))
+
+    def test_options_ending_in_a_full_stop_are_not_menu_items(self):
+        screen = ("  请问要怎么做\n"
+                  "  Enter select · Esc cancel\n"
+                  "  1. 先看一下这里的日志，然后再决定要不要重跑一遍。\n"
+                  "  2. 直接把配置改掉，风险自负，出了问题再说。\n")
+        self.assertIsNone(prompts.parse_screen(screen))
+
     def test_a_numbered_list_typed_in_chat_is_not_a_menu(self):
         """没有提示行的编号列表是正文，不是等待中的选择。"""
         self.assertIsNone(prompts.parse_screen(NUMBERED_CHAT_TEXT))
