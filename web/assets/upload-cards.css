@@ -1,0 +1,18 @@
+/* Uploaded files rendered inside a chat bubble (see assets/upload-cards.js). */
+.upload-grid{display:flex;flex-wrap:wrap;gap:8px;margin:2px 0}
+.upload-thumb{position:relative;display:block;width:132px;height:132px;border-radius:10px;
+  overflow:hidden;border:1px solid var(--line);background:var(--surface2)}
+.upload-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.upload-thumb.broken{display:flex;align-items:center;justify-content:center;width:132px;height:40px;
+  border-style:dashed;color:var(--faint);font-size:11px}
+.upload-thumb.broken img{display:none}
+.upload-thumb.broken::after{content:"图片已不在这里"}
+.upload-file{display:inline-flex;align-items:center;gap:6px;max-width:230px;padding:5px 10px;
+  border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--ink);
+  text-decoration:none;font-size:12px}
+.upload-file span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upload-file .ico{width:13px;height:13px;flex:none;color:var(--muted)}
+@media(max-width:760px){
+  .upload-thumb,.upload-thumb img{width:104px;height:104px}
+  .upload-thumb.broken{height:34px}
+}

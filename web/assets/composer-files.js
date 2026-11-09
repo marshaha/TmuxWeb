@@ -28,6 +28,29 @@
     return `${(n / 1024 / 1024).toFixed(1)} MB`;
   }
 
+  // 缩略图在本地生成：直接解码原图就是原尺寸，一张 5MB 的截图在手机上会占掉几十 MB，
+  // 而且解码那一下界面会顿。createImageBitmap 解码、canvas 缩到 320px，再转成
+  // 小的 jpeg blob —— 一个文件几毫秒，几个文件并行跑完立刻能显示。
+  const THUMB_EDGE = 320;
+  async function thumbnail(file) {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, THUMB_EDGE / Math.max(bitmap.width, bitmap.height));
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d');
+      context.drawImage(bitmap, 0, 0, width, height);
+      if (bitmap.close) bitmap.close();
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.82));
+      return blob ? URL.createObjectURL(blob) : null;
+    } catch (error) {
+      return null;      // 认不出的格式（heic 之类）就退回用原图地址
+    }
+  }
+
   function mount(options) {
     const strip = options.strip;
     const button = options.button;
@@ -77,8 +100,11 @@
             + `<span class="cf-size">上传失败 · 点这里重试</span></span>${remove}</div>`;
         }
         if (item.isImage) {
-          return `<div class="cf-item shot" title="${esc(item.name)}">`
-            + `<img src="${esc(item.url)}" alt="${esc(item.name)}">${remove}</div>`;
+          const source = item.thumb || item.url;
+          const picture = source
+            ? `<img src="${esc(source)}" alt="${esc(item.name)}">`
+            : `<span class="cf-shot-wait"></span>`;      // 缩略图还没生成好
+          return `<div class="cf-item shot" title="${esc(item.name)}">${picture}${remove}</div>`;
         }
         return `<div class="cf-item"><svg class="ico"><use href="#i-file"/></svg>`
           + `<span class="cf-meta"><span class="cf-name">${esc(item.name)}</span>`
@@ -105,16 +131,25 @@
       if (!list.length) return;
       if (!paneId()) { if (options.onError) options.onError('先选择一个会话再上传附件'); return; }
       if (!directory()) { if (options.onError) options.onError('这个会话没有可用目录，无法上传附件'); return; }
+      const accepted = [];
       for (const file of list) {
         if (file.size > LIMIT) { if (options.onError) options.onError(`${file.name} 超过 ${humanSize(LIMIT)}`); continue; }
         const name = uniqueName(file.name || 'file');
         const item = {name, size: file.size, isImage: isImage(file), pending: true,
-          objectUrl: isImage(file) ? URL.createObjectURL(file) : null};
-        item.file = file;
+          thumb: null, thumbFailed: false, file};
         items.push(item);
-        render();
-        await push(item);
+        accepted.push(item);
       }
+      render();      // 先把占位放上去（多张图时不用等任何一张）
+      // 缩略图并行生成：几张截图几乎同时出现
+      accepted.filter(item => item.isImage).forEach(item => {
+        thumbnail(item.file).then(url => {
+          item.thumb = url;
+          item.thumbFailed = !url;
+          render();
+        });
+      });
+      for (const item of accepted) await push(item);
     }
 
     async function push(item) {
@@ -150,14 +185,14 @@
       if (!item) return;
       items.splice(index, 1);
       render();
-      if (item.objectUrl) URL.revokeObjectURL(item.objectUrl);
+      if (item.thumb) URL.revokeObjectURL(item.thumb);
       if (item.onDisk && paneId()) {
         fetch(endpoint(item.name, 'upload'), {method: 'DELETE'}).catch(() => {});
       }
     }
 
     function clear() {
-      for (const item of items) if (item.objectUrl) URL.revokeObjectURL(item.objectUrl);
+      for (const item of items) if (item.thumb) URL.revokeObjectURL(item.thumb);
       items.length = 0;
       render();
     }

@@ -2544,6 +2544,32 @@ class TmuxWebTests(unittest.TestCase):
         after = self.client.get("/api/panes/%254/prompt").json()["prompt"]
         self.assertEqual(after["toggles"][0]["active"], 2)
 
+    def test_an_uploaded_file_can_be_fetched_by_name(self):
+        """聊天气泡只留了文件名：按名字到 <pane cwd>/upload_files 里找回来。"""
+        import tempfile
+        self.login()
+        with tempfile.TemporaryDirectory() as folder:
+            shots = os.path.join(folder, "upload_files")
+            os.makedirs(shots)
+            with open(os.path.join(shots, "pasted-1.png"), "wb") as handle:
+                handle.write(b"\x89PNG\r\n\x1a\n")
+            self.tmux.panes[0]["path"] = folder
+            response = self.client.get("/api/panes/%254/uploads/pasted-1.png")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.content, b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(response.headers["content-type"], "image/png")
+            self.assertIn("max-age=86400", response.headers["cache-control"])
+
+            missing = self.client.get("/api/panes/%254/uploads/nope.png")
+            self.assertEqual(missing.status_code, 404)
+
+            hidden = self.client.get("/api/panes/%254/uploads/.env")
+            self.assertEqual(hidden.status_code, 404)
+
+    def test_uploads_endpoint_needs_a_login(self):
+        response = self.client.get("/api/panes/%254/uploads/a.png", follow_redirects=False)
+        self.assertIn(response.status_code, (401, 403, 303))
+
     def test_a_switch_only_screen_answers_422_not_a_server_error(self):
         """只有开关、没有选项时点「选第 0 项」不该冒成 503 的 'no options'。"""
         self.login()

@@ -2158,6 +2158,18 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "markdown-cjk.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/upload-cards.css")
+    async def upload_cards_style() -> FileResponse:
+        """聊天气泡里附件的预览样式。"""
+        return FileResponse(WEB_DIR / "assets" / "upload-cards.css", media_type="text/css",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/upload-cards.js")
+    async def upload_cards_script() -> FileResponse:
+        """把 `user uploaded file “a.png”` 换成图片预览/文件片。"""
+        return FileResponse(WEB_DIR / "assets" / "upload-cards.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/video-cards.css")
     async def video_cards_style() -> FileResponse:
         """视频卡片样式：聊天页和看板共用一份。"""
@@ -3291,6 +3303,35 @@ def create_app(
                   "via": "direct" if index == 0 else "base"}
         remember_stat(cache_key, answer)
         return answer
+
+    @app.get("/api/panes/{pane_id}/uploads/{name}")
+    async def pane_upload_file(request: Request, pane_id: str, name: str):
+        """Serve a file that was uploaded through the composer.
+
+        Chat bubbles only carry the file name (``user uploaded file “a.png”``), and
+        the path at send time is not known any more, so look in the places an
+        upload can land: ``<pane cwd>/upload_files/<name>`` first, then the cwd
+        itself. Names are single segments, so ``..`` cannot escape.
+        """
+        require_auth(request)
+        if not name or "/" in name or "\\" in name or name.startswith("."):
+            raise HTTPException(status_code=404, detail="not found")
+        try:
+            pane = await asyncio.to_thread(pane_or_404, pane_id)
+        except HTTPException:
+            raise
+        base = (pane.get("path") or "").rstrip("/")
+        candidates = [os.path.join(base, "upload_files", name)] if base else []
+        if base:
+            candidates.append(os.path.join(base, name))
+        for candidate in candidates:
+            if os.path.isfile(candidate):
+                media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                return FileResponse(candidate, media_type=media_type, headers={
+                    "Cache-Control": "private, max-age=86400",
+                    "X-Content-Type-Options": "nosniff",
+                })
+        raise HTTPException(status_code=404, detail="not found")
 
     @app.get("/api/panes/{pane_id}/files/raw")
     async def raw_pane_file(request: Request, pane_id: str, path: str):

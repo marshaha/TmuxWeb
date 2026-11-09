@@ -33,3 +33,9 @@
 
 .cf-item.failed{border-color:#c0564d;background:rgba(192,86,77,.08);cursor:pointer}
 .cf-item.failed .cf-size{color:#c0564d}
+
+/* 缩略图还在本地生成时的占位：不要空白跳一下 */
+.cf-item.shot .cf-shot-wait{display:block;width:100%;height:100%;
+  background:linear-gradient(100deg,var(--surface2) 30%,var(--card-hover) 50%,var(--surface2) 70%);
+  background-size:220% 100%;animation:cf-shimmer 1.1s linear infinite}
+@keyframes cf-shimmer{from{background-position:120% 0}to{background-position:-20% 0}}
