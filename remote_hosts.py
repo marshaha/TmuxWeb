@@ -1632,12 +1632,14 @@ class SSHRunner:
             pane["provider"] = transcript_reader.provider_for_pane(pane, table)
         return panes
 
-    def capture_ansi(self, pane_id: str, history: int = 5000, pane: dict | None = None) -> str:
+    def capture_ansi(self, pane_id: str, history: int = 5000, pane: dict | None = None,
+                     visible_only: bool = False) -> str:
         # pane is accepted for interface symmetry with the local backend and
         # ignored: remote transports never validate, the id check below is free
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
-        command = f"${{TMUX_BIN:-tmux}} capture-pane -p -J -e -t {shlex.quote(pane_id)} -S -{max(20, min(history, 5000))}"
+        scroll = "" if visible_only else f" -S -{max(20, min(history, 5000))}"
+        command = f"${{TMUX_BIN:-tmux}} capture-pane -p -J -e -t {shlex.quote(pane_id)}{scroll}"
         completed = self.run(command, timeout=self.capture_timeout or 15)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote capture failed")
@@ -2132,8 +2134,9 @@ class SSHRunner:
             raise RuntimeError(detail or "remote delete failed")
         return path
 
-    def capture(self, pane_id: str, history: int = 5000, pane: dict | None = None) -> str:
-        return ANSI_RE.sub("", self.capture_ansi(pane_id, history))
+    def capture(self, pane_id: str, history: int = 5000, pane: dict | None = None,
+                visible_only: bool = False) -> str:
+        return ANSI_RE.sub("", self.capture_ansi(pane_id, history, visible_only=visible_only))
 
     def capture_many(self, pane_ids, history: int = 40, panes: dict | None = None) -> dict:
         """Capture several panes in one ssh call: pane text keyed by pane id.

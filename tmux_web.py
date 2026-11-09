@@ -281,13 +281,18 @@ class TmuxBackend:
                 continue
         return result
 
-    def capture(self, pane_id: str, history: int = 500, pane: dict | None = None) -> str:
+    def capture(self, pane_id: str, history: int = 500, pane: dict | None = None,
+                visible_only: bool = False) -> str:
         # routes that already validated (pane_or_404) pass the pane through so
         # one request pays for one list, not two; direct callers validate here
         if pane is None:
             self.validate_pane(pane_id)
         history = max(20, min(history, 5000))
-        content = self._run("capture-pane", "-p", "-J", "-t", pane_id, "-S", f"-{history}")
+        if visible_only:
+            # 只抓可见屏：等待输入的菜单一定在屏幕上，历史里的旧帧只会误导解析
+            content = self._run("capture-pane", "-p", "-J", "-t", pane_id)
+        else:
+            content = self._run("capture-pane", "-p", "-J", "-t", pane_id, "-S", f"-{history}")
         return ANSI_RE.sub("", content)
 
     def capture_ansi(self, pane_id: str, history: int = 500, pane: dict | None = None) -> str:
@@ -3024,12 +3029,34 @@ def create_app(
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    # 上一次解析出来的提示（GET /prompt 会填）：点按钮时直接用，省一次抓屏。
+    # 远端 pane 一次抓屏就是一个 SSH 往返，省掉它点击才不卡。
+    prompt_cache: dict[str, tuple[float, dict]] = {}
+    prompt_cache_lock = asyncio.Lock()
+
+    async def remember_prompt(pane_id: str, found: dict | None) -> None:
+        async with prompt_cache_lock:
+            if found:
+                prompt_cache[pane_id] = (time.monotonic(), found)
+            else:
+                prompt_cache.pop(pane_id, None)
+
+    async def cached_prompt(pane_id: str, max_age: float = 15.0) -> dict | None:
+        async with prompt_cache_lock:
+            entry = prompt_cache.get(pane_id)
+            if entry and time.monotonic() - entry[0] <= max_age:
+                return entry[1]
+            return None
+
     async def read_prompt(pane_id: str) -> tuple[dict | None, str]:
         """抓一次屏幕并解析出等待中的菜单；认不出就是 (None, screen)。"""
         pane = await asyncio.to_thread(pane_or_404, pane_id)
         transport, actual = pane_transport(pane_id)
-        text = await asyncio.to_thread(transport.capture, actual, 80, pane=pane)
-        return agent_prompts.parse_screen(text), text
+        text = await asyncio.to_thread(transport.capture, actual, 80, pane=pane,
+                                       visible_only=True)
+        found = agent_prompts.parse_screen(text)
+        await remember_prompt(pane_id, found)
+        return found, text
 
     def keys_are_safe(keys: list[str]) -> bool:
         for key in keys:
@@ -3065,7 +3092,9 @@ def create_app(
         """
         require_auth(request)
         try:
-            found, _text = await read_prompt(pane_id)
+            found = await cached_prompt(pane_id)
+            if not found:
+                found, _text = await read_prompt(pane_id)
             if not found:
                 raise HTTPException(status_code=409, detail="屏幕上没有等待中的选择")
             if payload.index is not None and not found.get("options"):
@@ -3092,20 +3121,11 @@ def create_app(
                 for key in keys:
                     await asyncio.to_thread(transport.send_key, actual, key, pane=pane)
                     await asyncio.sleep(0.06)
-            # 复核：菜单消失、标题换了、光标动了都算送进去了。远端一次 ssh 往返
-            # 就要一两秒，所以窗口比本地宽（五次、每次 0.25s 起步）。
-            for _ in range(5):
-                await asyncio.sleep(0.25)
-                after_text = await asyncio.to_thread(transport.capture, actual, 80, pane=pane)
-                after = agent_prompts.parse_screen(after_text)
-                if after is None:
-                    return {"ok": True, "prompt": None}
-                if (after.get("title") != found.get("title")
-                        or after.get("selected") != found.get("selected")
-                        or after.get("toggles") != found.get("toggles")):
-                    return {"ok": True, "prompt": after}
-            return {"ok": False, "prompt": found,
-                    "detail": "屏幕没有变化，可能没送到；再点一次或切到终端"}
+            # 发完立刻返回：复核交给前端（它本来就在轮询 /prompt）。
+            # 以前在这里串行抓屏 5 次，远端每抓一次就是一个 SSH 往返，点击要卡好几秒。
+            async with prompt_cache_lock:
+                prompt_cache.pop(pane_id, None)      # 缓存作废，下一次轮询拿新状态
+            return {"ok": True, "sent": keys, "pending": True, "prompt": found}
         except HTTPException:
             raise
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:

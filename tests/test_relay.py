@@ -13,7 +13,7 @@ class FakeTransport:
         self.sent = []
         self.captures = 0
 
-    def capture(self, pane_id, history=500, pane=None):
+    def capture(self, pane_id, history=500, pane=None, visible_only=False):
         self.captures += 1
         if self.replies:
             self.screen = self.replies.pop(0)

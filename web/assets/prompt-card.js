@@ -138,6 +138,21 @@
     return {ok: response.ok, status: response.status, data};
   }
 
+  async function followUp() {
+    for (const delay of [200, 400, 800, 1500]) {
+      await new Promise(resolve => setTimeout(resolve, delay));
+      const before = prompt && prompt.title;
+      await poll();
+      if (!prompt) {                      // 菜单没了：回执照旧留着，1.2 秒后收起
+        const box = card();
+        if (box) box.hidden = false;
+        setTimeout(() => { if (!prompt) hide(); }, 1200);
+        return;
+      }
+      if (!before || prompt.title !== before) return;   // 换题了，交给卡片自己显示
+    }
+  }
+
   function optionLabel(index) {
     if (!prompt || !prompt.options || !prompt.options[index]) return String(index + 1);
     return prompt.options[index].label || String(index + 1);
@@ -150,18 +165,10 @@
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {index});
       if (!result.ok) { setState(result.data.detail || `HTTP ${result.status}`, true); return; }
-      setState('已发送：' + optionLabel(index), false);
-      if (result.data.prompt) {
-        const next = result.data.prompt;
-        render(next, (next.raw || '').split('\n'));
-        setState('已发送：' + optionLabel(index) + ' · 下一个问题在等你', false);
-      } else {
-        // 菜单没了：卡片留着显示回执，1.2 秒后自己收起
-        const box = card();
-        if (box) box.hidden = false;
-        prompt = null;
-        setTimeout(hide, 1200);
-      }
+      if (result.data.sent) setState('已发送：' + optionLabel(index), false);
+      setState('已发送：' + optionLabel(index) + '（等屏幕刷新…）', false);
+      busy = false;                     // 先放开锁：followUp 里的 poll 靠它判断
+      await followUp();
     } catch (error) {
       setState('没送到，再试一次：' + error.message, true);
     } finally {
@@ -178,8 +185,9 @@
         {toggle: toggleIndex, value});
       if (!result.ok) { setState(result.data.detail || `HTTP ${result.status}`, true); return; }
       if (result.data.unchanged) { setState('已经是这个值了'); return; }
-      if (result.data.prompt) render(result.data.prompt, (result.data.prompt.raw || '').split('\n'));
-      else hide();
+      setState('已发送（等屏幕刷新…）', false);
+      busy = false;                     // 先放开锁：followUp 里的 poll 靠它判断
+      await followUp();
     } catch (error) {
       setState('没送到，再试一次：' + error.message, true);
     } finally {
@@ -194,8 +202,9 @@
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {key});
       if (!result.ok) { setState(result.data.detail || `HTTP ${result.status}`, true); return; }
-      if (result.data.prompt) render(result.data.prompt, (result.data.prompt.raw || '').split('\n'));
-      else hide();
+      setState('已发送', false);
+      busy = false;                     // 先放开锁：followUp 里的 poll 靠它判断
+      await followUp();
     } catch (error) {
       setState('没送到，再试一次：' + error.message, true);
     } finally {

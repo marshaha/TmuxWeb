@@ -98,8 +98,15 @@ def _looks_like_row(line: str) -> bool:
 
 def _collect_rows(lines: list[str], anchor: int) -> list[dict]:
     """从光标行向上/向下收同一列的连续选项行（遇到空行、分隔线、提示行就停）。"""
-    label_column = _indent(lines[anchor]) + (len(_marker(lines[anchor])[0]) + 1
-                                            if _marker(lines[anchor])[0] else 0)
+    # 标签实际起始列：光标标记后面可能不止一个空格（`❯    选项 A`），
+    # 按"标记长度 + 1"算会把后续几行判成不同列，整块只剩第一项
+    anchor_text = _clean(lines[anchor])
+    anchor_marker, anchor_rest = _marker(anchor_text)
+    if anchor_marker and anchor_rest:
+        # _clean 只去尾部空白，行首空格还在，find 的结果本身就是绝对列
+        label_column = anchor_text.find(anchor_rest)
+    else:
+        label_column = _indent(lines[anchor])
     rows: list[dict] = [dict(line=anchor, cursor=_marker(lines[anchor])[0] in CURSOR_MARKS)]
 
     def walk(step: int) -> None:

@@ -113,7 +113,7 @@ class FakeTmux(TmuxBackend):
         for key in keys:
             self.send_key(pane_id, key, pane=pane)
 
-    def capture(self, pane_id, history=500, pane=None):
+    def capture(self, pane_id, history=500, pane=None, visible_only=False):
         self.validate_pane(pane_id)
         return self.output
 
@@ -245,7 +245,7 @@ class FakeSSHRunner:
                  "index": "0", "command": "claude", "title": "Remote Claude", "path": "/srv/work",
                  "active": True, "width": 100, "height": 30}]
     def capture_ansi(self, pane_id, history=5000, pane=None): return FakeSSHRunner.screen
-    def capture(self, pane_id, history=5000, pane=None):
+    def capture(self, pane_id, history=5000, pane=None, visible_only=False):
         return ANSI_RE.sub("", FakeSSHRunner.screen)
     def snapshot_ansi(self, pane_id, history=5000, known_digest=None, pane=None):
         content = self.capture_ansi(pane_id, history)
@@ -2486,10 +2486,12 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         result = response.json()
         self.assertTrue(result["ok"], result)
+        self.assertTrue(result["pending"], "发完立刻返回，屏幕由前端轮询")
         self.assertEqual(sent_keys[-1], "Enter")
         self.assertEqual(sent_keys.count("Down"), 2, "第三项要往下走两步")
         self.assertGreaterEqual(sent_keys.count("Up"), 3, "先顶到第一项")
-        self.assertIsNone(result["prompt"])
+        # 复核交给下一次 /prompt（屏幕已经变了）
+        self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
 
     def test_a_numbered_menu_can_be_chosen_by_digit(self):
         self.login()
@@ -2509,6 +2511,7 @@ class TmuxWebTests(unittest.TestCase):
         result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "2"}).json()
         self.assertTrue(result["ok"], result)
         self.assertEqual(sent_keys, ["2", "Enter"])
+        self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
 
     def test_a_switch_can_be_flipped_from_the_card(self):
         """kimi 的 Thinking 开关：点 Max 就发一次 →，然后复核屏幕真的变了。"""
@@ -2538,7 +2541,8 @@ class TmuxWebTests(unittest.TestCase):
                                   json={"toggle": 0, "value": 2}).json()
         self.assertTrue(result["ok"], result)
         self.assertEqual(sent_keys, ["Right"])
-        self.assertEqual(result["prompt"]["toggles"][0]["active"], 2)
+        after = self.client.get("/api/panes/%254/prompt").json()["prompt"]
+        self.assertEqual(after["toggles"][0]["active"], 2)
 
     def test_a_switch_only_screen_answers_422_not_a_server_error(self):
         """只有开关、没有选项时点「选第 0 项」不该冒成 503 的 'no options'。"""
@@ -2572,6 +2576,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(sent_keys, ["Enter"])
         self.assertTrue(original)
+        self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
 
     def test_clicking_the_value_it_already_has_sends_nothing(self):
         self.login()
@@ -2611,6 +2616,7 @@ class TmuxWebTests(unittest.TestCase):
         result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "esc"}).json()
         self.assertTrue(result["ok"], result)
         self.assertEqual(sent_keys, ["Escape"])
+        self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
 
     def test_pasted_images_go_through_the_attachment_pipeline(self):
         """Ctrl/Cmd+V 的图片要走和点「附件」同一条路：上传 + 缩略图。"""
