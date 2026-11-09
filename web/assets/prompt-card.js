@@ -138,6 +138,11 @@
     return {ok: response.ok, status: response.status, data};
   }
 
+  function optionLabel(index) {
+    if (!prompt || !prompt.options || !prompt.options[index]) return String(index + 1);
+    return prompt.options[index].label || String(index + 1);
+  }
+
   async function chooseByIndex(index) {
     const pane = paneNow();
     if (!pane || busy) return;
@@ -145,10 +150,17 @@
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {index});
       if (!result.ok) { setState(result.data.detail || `HTTP ${result.status}`, true); return; }
+      setState('已发送：' + optionLabel(index), false);
       if (result.data.prompt) {
-        render(result.data.prompt, (result.data.prompt.raw || '').split('\n'));
+        const next = result.data.prompt;
+        render(next, (next.raw || '').split('\n'));
+        setState('已发送：' + optionLabel(index) + ' · 下一个问题在等你', false);
       } else {
-        hide();
+        // 菜单没了：卡片留着显示回执，1.2 秒后自己收起
+        const box = card();
+        if (box) box.hidden = false;
+        prompt = null;
+        setTimeout(hide, 1200);
       }
     } catch (error) {
       setState('没送到，再试一次：' + error.message, true);
@@ -165,6 +177,7 @@
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`,
         {toggle: toggleIndex, value});
       if (!result.ok) { setState(result.data.detail || `HTTP ${result.status}`, true); return; }
+      if (result.data.unchanged) { setState('已经是这个值了'); return; }
       if (result.data.prompt) render(result.data.prompt, (result.data.prompt.raw || '').split('\n'));
       else hide();
     } catch (error) {

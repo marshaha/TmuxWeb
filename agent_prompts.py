@@ -213,6 +213,7 @@ def _toggle_rows(lines: list[str]) -> list[dict]:
         [ On ]    Off
     """
     found: list[dict] = []
+    seen: set[tuple] = set()
     for offset, raw in enumerate(lines):
         line = _clean(raw)
         brackets = BRACKET_RE.findall(line)
@@ -241,11 +242,25 @@ def _toggle_rows(lines: list[str]) -> list[dict]:
                 continue
             if BRACKET_RE.search(text) or FOOTER_RE.search(text):
                 continue
+            # `Thinking  (←→ to switch)` 这种：括号前是名字、括号里是提示；
+            # 整行就是提示（`↑↓ navigate · Enter select`）的不算名字
+            head = re.split(r"[（(]", text)[0].strip()
             hint_match = re.search(r"([↑↓←→/ ]{1,6}\s*to (?:switch|toggle)[^)]*)", text)
-            label = re.split(r"\s{2,}", text)[0].strip()
+            if HINT_RE.search(head) and not hint_match:
+                continue
+            label = re.split(r"\s{2,}", head)[0].strip()
             hint = hint_match.group(1).strip() if hint_match else ""
             break
-        found.append({"index": len(found), "label": label[:40], "hint": hint[:40],
+        if not hint:
+            # 提示也可能单独占一行（"←→ to switch · Enter confirm"），开关行附近找一下
+            for probe in range(max(0, offset - 4), min(len(lines), offset + 4)):
+                text = _clean(lines[probe]).strip()
+                found_hint = re.search(r"((?:[←→↑↓/ ]|left|right|arrow){1,20}to (?:switch|toggle)[^)]*)",
+                                       text, re.I)
+                if found_hint:
+                    hint = found_hint.group(1).strip()
+                    break
+        found.append({"index": len(found), "label": label[:40], "hint": hint[:60],
                       "options": [option[:24] for option in options], "active": active})
     return found
 
