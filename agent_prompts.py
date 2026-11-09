@@ -225,7 +225,9 @@ def _toggle_rows(lines: list[str]) -> list[dict]:
         [ On ]    Off
     """
     found: list[dict] = []
-    seen: set[tuple] = set()
+    # 同一个开关会随重绘在历史里出现多次，每次的当前值还可能不同 ——
+    # 按"分段内容"去重并保留最后（最新）那一次，否则卡片里会出现好几个同名开关
+    seen: dict[tuple, dict] = {}
     for offset, raw in enumerate(lines):
         line = _clean(raw)
         brackets = BRACKET_RE.findall(line)
@@ -276,8 +278,17 @@ def _toggle_rows(lines: list[str]) -> list[dict]:
                 if found_hint:
                     hint = found_hint.group(1).strip()
                     break
-        found.append({"index": len(found), "label": label[:40], "hint": hint[:60],
-                      "options": [option[:24] for option in options], "active": active})
+        entry = {"index": len(found), "label": label[:40], "hint": hint[:60],
+                 "options": [option[:24] for option in options], "active": active}
+        signature = tuple(entry["options"])
+        if signature in seen:
+            known = seen[signature]
+            known["active"] = active                       # 最新的值才算数
+            known["label"] = known["label"] or entry["label"]
+            known["hint"] = known["hint"] or entry["hint"]
+            continue
+        seen[signature] = entry
+        found.append(entry)
     return found
 
 

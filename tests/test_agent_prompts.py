@@ -219,6 +219,22 @@ class ToggleTests(unittest.TestCase):
         self.assertEqual(found["toggles"][0]["active"], 0)
         self.assertEqual(found["toggles"][0]["label"], "Verbosity")
 
+    def test_a_switch_redrawn_several_times_is_one_switch_with_the_latest_value(self):
+        """TUI 每次按键都重绘，历史里留好几份；卡片里不能出现多个同名开关。"""
+        screen = ""
+        for index, active in enumerate(("Off", "Normal", "Deep")):
+            segments = "    ".join(
+                f"[ {name} ]" if name == active else f"  {name}  "
+                for name in ("Off", "Normal", "Deep")
+            )
+            screen += (f"  第 3 步 / 3：分段开关\n"
+                       f"  ←→ to switch · Enter confirm · Esc cancel\n"
+                       f"  形态\n    {segments}\n")
+        found = prompts.parse_screen(screen)
+        self.assertIsNotNone(found)
+        self.assertEqual(len(found["toggles"]), 1)
+        self.assertEqual(found["toggles"][0]["active"], 2, "要取最新那次重绘的值")
+
     def test_switching_uses_arrow_keys_relative_to_the_current_value(self):
         found = prompts.parse_screen(PICKER_WITH_THINKING)
         self.assertEqual(prompts.toggle_keys(found, 0, 2), ["Right"])       # High → Max
