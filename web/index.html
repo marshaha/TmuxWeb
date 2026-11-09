@@ -223,25 +223,22 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
       .fd-input{height:40px;font-size:16px}.fd-actions .dl-btn{height:40px;font-size:14px}
       .file-dialog{padding:16px;align-items:flex-end}.fd-card{max-width:none;border-radius:16px 16px 14px 14px}}
 </style>
-<link rel="stylesheet" href="/assets/recents.css">
-<link rel="stylesheet" href="/assets/path-links.css">
-<link rel="stylesheet" href="/assets/composer-files.css">
-<link rel="stylesheet" href="/assets/downloads.css">
-<link rel="stylesheet" href="/assets/video-cards.css">
-<link rel="stylesheet" href="/assets/upload-cards.css">
-<link rel="stylesheet" href="/assets/pane-preview.css">
-<link rel="stylesheet" href="/assets/theme.css">
-<script src="/assets/theme.js"></script>
-<script src="/assets/uploads.js"></script>
-<script src="/assets/composer-files.js"></script>
-<script src="/assets/path-links.js"></script>
-<script src="/assets/prompt-card.js"></script>
-<script src="/assets/markdown-cjk.js"></script>
-<script src="/assets/video-cards.js"></script>
-<script src="/assets/upload-cards.js"></script>
-<script src="/assets/transfer.js"></script>
-<script src="/assets/downloads.js"></script>
-<script src="/assets/pane-preview.js"></script>
+<link rel="stylesheet" href="/assets/recents.css?v=1">
+<link rel="stylesheet" href="/assets/path-links.css?v=1">
+<link rel="stylesheet" href="/assets/composer-files.css?v=1">
+<link rel="stylesheet" href="/assets/downloads.css?v=1">
+<link rel="stylesheet" href="/assets/video-cards.css?v=1">
+<link rel="stylesheet" href="/assets/upload-cards.css?v=1">
+<link rel="stylesheet" href="/assets/pane-preview.css?v=1">
+<link rel="stylesheet" href="/assets/theme.css?v=1">
+<!-- ASSET_VERSION=1: every /assets/*.js|css below carries ?v=1, and the server
+     answers versioned URLs with `Cache-Control: public, max-age=31536000,
+     immutable`. Bump the version whenever any of these files changes, or
+     browsers and the Cloudflare edge keep serving the old bytes. The console
+     bundle carries its own content hash instead (?v=<sha1>). theme.js stays
+     synchronous on purpose: it paints the theme before first paint. -->
+<script src="/assets/theme.js?v=1"></script>
+<script defer src="/assets/console.bundle.js?v=__CONSOLE_BUNDLE_HASH__"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -442,11 +439,9 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 <dialog class="share-dialog" id="share-dialog"><form class="share-form" id="share-form"><h2>分享会话</h2><p>访客只能查看这一个会话，不能访问其他 pane 或终端。</p><div class="share-grid"><label class="share-field full">分享路径<input id="share-slug" required pattern="[a-z0-9][a-z0-9-]{2,47}" placeholder="share001"></label><label class="share-field">有效期<select id="share-expiry"><option value="3600">1 小时</option><option value="86400" selected>1 天</option><option value="604800">7 天</option><option value="2592000">30 天</option></select></label><label class="share-field">访问密码（可选）<input id="share-password" type="password" autocomplete="new-password"></label>
 <label class="share-field full share-toggle"><input id="share-allow-input" type="checkbox" checked> 允许访客继续对话（不勾选 = 只读）</label></div><div class="share-result" id="share-result"></div><div class="share-actions"><button type="button" id="share-cancel">取消</button><button class="primary" type="submit">创建并复制链接</button></div></form></dialog>
 
-<script src="/assets/xterm/xterm.js?v=2"></script>
-<script src="/assets/xterm/addon-fit.js?v=2"></script>
 <script type="module">
-import {AnsiUp} from '/assets/ansi_up.js';
-import {marked} from '/assets/marked.esm.js';
+import {AnsiUp} from '/assets/ansi_up.js?v=1';
+import {marked} from '/assets/marked.esm.js?v=1';
 (() => {
   const ansi=new AnsiUp();
   const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},kbShift:false,kbSymbols:false,viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,restored:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0};
@@ -1432,14 +1427,21 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   function addOptimisticMessage(text){const localId=`pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,baselineIds=new Set(state.transcriptMessages.map(message=>String(message.id)));state.pendingMessages.set(localId,{pane:state.selected,text,submit:$('submit-enter').checked,status:'sending',baselineIds,createdAt:Date.now()});
     state.waiting=true;state.waitingSince=Date.now()/1000;syncProgress();renderTranscript();requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;state.stick=true;});return localId;}
   function setOptimisticStatus(localId,status){const pending=state.pendingMessages.get(localId);if(!pending)return;pending.status=status;renderTranscript();requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
+  // 轮询间隔：跑任务时靠 1.5s 的 tail 给实时感，transcript 2s 看一次结果就够了；
+  // 空闲越久越省：30s 内 1.5s，之后 3s，5 分钟后 5s，10 分钟后 10s。
+  // 高延迟链路上每次轮询都是一次往返，空闲时拉长间隔是最便宜的省法。
+  function transcriptPollDelay(){
+    if(state.waiting)return 2000;
+    const idleFor=state.lastTranscriptChange?Date.now()-state.lastTranscriptChange:1e9;
+    return idleFor<30000?1500:idleFor<300000?3000:idleFor<600000?5000:10000;
+  }
   async function refreshTranscript(id,{force=false,refresh=false}={}){if(state.selected!==id||state.mode!=='chat')return;
     const follow=atBottom(),first=state.transcriptMtime===null;
     try{const sig=state.transcriptSig?`&sig=${encodeURIComponent(state.transcriptSig)}`:'';
       const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit}${refresh?'&refresh=1':''}${sig}`);if(state.selected!==id||state.mode!=='chat')return;
       showError('');$('status-dot').className='status-dot live';
       if(d.unchanged){state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;syncProgress();
-        const idleFor=state.lastTranscriptChange?Date.now()-state.lastTranscriptChange:1e9;
-        syncLiveTail(id);scheduleTranscriptPoll(id,state.waiting?2000:(idleFor<30000?1500:idleFor<300000?3000:5000));
+        syncLiveTail(id);scheduleTranscriptPoll(id,transcriptPollDelay());
         return;}
       const signature=transcriptSignature(d),changed=force||signature!==state.transcriptSig;
       state.hasMore=!!d.has_more;syncEarlierBar();
@@ -1450,13 +1452,8 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
       else {syncProgress();}
     }catch(e){if(state.selected===id&&state.mode==='chat')showError(e.message);}
     finally{
-      // 有任务在跑就快点看结果（1s），空闲时慢慢退到 3s：少发请求，也不会觉得卡
-      const idleFor=state.lastTranscriptChange?Date.now()-state.lastTranscriptChange:1e9;
-      // 跑任务时靠 1.5s 的 tail 给实时感，transcript 2s 看一次结果就够了；
-      // 空闲越久越省：30s 内 1.5s，之后 3s，5 分钟后 5s。
-      const delay=state.waiting?2000:(idleFor<30000?1500:idleFor<300000?3000:5000);
       syncLiveTail(id);
-      scheduleTranscriptPoll(id,delay);}}
+      scheduleTranscriptPoll(id,transcriptPollDelay());}}
   let tailTimer=null, tailDigest='';
   function liveTailBox(){let box=$('live-tail');
     if(!box){box=document.createElement('div');box.id='live-tail';box.className='live-tail';box.hidden=true;
@@ -1470,6 +1467,8 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(!state.waiting||state.selected!==id||state.mode!=='chat'){stopLiveTail();return;}
     const tick=async()=>{
       if(state.selected!==id||state.mode!=='chat'||!state.waiting){stopLiveTail();return;}
+      // 藏起来的标签页不刷 tail：30 秒后自己再看一眼，切回来时由 visibilitychange 立即恢复
+      if(document.hidden){tailTimer=setTimeout(tick,30000);return;}
       try{const d=await api(`/api/panes/${encodeURIComponent(id)}/tail?lines=12`);
         if(state.selected!==id)return;
         if(d.digest&&d.digest!==tailDigest){tailDigest=d.digest;const box=liveTailBox();box.hidden=false;
@@ -1484,9 +1483,15 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(!id||state.selected!==id||state.mode!=='chat')return;
     if(!$('transcript').classList.contains('active'))return;
     if(document.hidden)return;                       // resumed by visibilitychange
+    clearTimeout(state.transcriptTimer);              // 手动刷新和定时刷新只留一个循环
     state.transcriptTimer=setTimeout(()=>refreshTranscript(id),delay);
   }
   document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden&&state.selected&&state.mode==='chat'&&$('transcript').classList.contains('active')){
+      refreshTranscript(state.selected);
+    }
+  });
+  window.addEventListener('focus',()=>{
     if(!document.hidden&&state.selected&&state.mode==='chat'&&$('transcript').classList.contains('active')){
       refreshTranscript(state.selected);
     }
@@ -2150,8 +2155,5 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
   <button type="button" data-fm="rename">重命名</button>
   <button type="button" data-fm="delete" class="danger">删除</button>
 </div>
-<script src="/assets/plugins-ui.js"></script>
-<script src="/assets/recents.js"></script>
-<script src="/assets/settings.js"></script>
 </body>
 </html>

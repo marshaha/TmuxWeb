@@ -160,9 +160,10 @@ class HomeBoardTests(unittest.TestCase):
 
     def test_the_console_sidebar_lists_recent_chats_under_the_tree(self):
         page = self.client.get("/").text
-        # 标记和逻辑都在共用模块里（三个页面同一份），控制台只负责挂载
-        self.assertIn("/assets/recents.js", page)
-        self.assertIn("/assets/recents.css", page)
+        # 标记和逻辑都在共用模块里（三个页面同一份），控制台只负责挂载；
+        # recents.js 现在随 console bundle 一起下，不再单独挂一个 script 标签
+        self.assertIn("/assets/console.bundle.js?v=", page)
+        self.assertIn("/assets/recents.css?v=1", page)
         self.assertIn("TmuxRecents.mount(", page)
         self.assertIn("hideWhenFiles: true", page)
         self.assertNotIn('id="recent-block"', page)      # 页面里不再抄一份标记
@@ -185,9 +186,14 @@ class HomeBoardTests(unittest.TestCase):
         """控制台 / 主页 / 多窗口 用同一份最近块，页面只决定点一行做什么。"""
         for path in ("/", "/home", "/grid"):
             page = self.client.get(path).text
-            self.assertIn("/assets/recents.js", page, path)
             self.assertIn("/assets/recents.css", page, path)
             self.assertNotIn('id="recent-block"', page, path)   # 谁都不许再抄一份
+        for path in ("/home", "/grid"):
+            self.assertIn("/assets/recents.js", self.client.get(path).text, path)
+        # the console loads it through the bundle now
+        console = self.client.get("/").text
+        self.assertIn("/assets/console.bundle.js?v=", console)
+        self.assertIn("TmuxRecents", self.client.get("/assets/console.bundle.js").text)
         shell = self.client.get("/assets/shell.js").text
         self.assertIn("TmuxRecents.mount(", shell)
         self.assertIn("TmuxRecents.touch(pane)", shell)          # 点一行先记一次访问
