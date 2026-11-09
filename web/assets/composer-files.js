@@ -212,6 +212,25 @@
       render();
     }
 
+    // 发送时立刻把条带收起来：等 POST 回来再清，用户按完 Enter 那一秒里图片还杵在那儿。
+    // 不 revoke 缩略图的 blob（发送失败要原样放回去），成功后再 discard 释放。
+    function take() {
+      const taken = items.slice();
+      items.length = 0;
+      render();
+      return taken;
+    }
+
+    function restore(taken) {
+      if (!taken || !taken.length) return;
+      for (const item of taken) if (!items.includes(item)) items.push(item);
+      render();
+    }
+
+    function discard(taken) {
+      for (const item of taken || []) if (item.thumb) URL.revokeObjectURL(item.thumb);
+    }
+
     function prompt() {
       const names = items.filter(item => !item.pending).map(item => item.name);
       return names.length ? `user uploaded file “${names.join(' & ')}”` : '';
@@ -315,7 +334,7 @@
 
     syncButton();
     render();
-    return {add, remove, clear, prompt, render, syncButton,
+    return {add, remove, clear, take, restore, discard, prompt, render, syncButton,
       count: () => items.length,
       pending: () => items.some(item => item.pending)};
   }

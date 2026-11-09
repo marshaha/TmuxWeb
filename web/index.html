@@ -467,6 +467,9 @@ import {marked} from '/assets/marked.esm.js';
   function attachmentsPrompt(){return composerFiles?composerFiles.prompt():'';}
   function attachmentsPending(){return composerFiles?composerFiles.pending():false;}
   function clearAttachments(){if(composerFiles)composerFiles.clear();}
+  function takeAttachments(){return composerFiles?composerFiles.take():[];}
+  function restoreAttachments(list){if(composerFiles)composerFiles.restore(list);}
+  function discardAttachments(list){if(composerFiles)composerFiles.discard(list);}
   function syncAttachments(){if(composerFiles)composerFiles.syncButton();}
   function showError(msg){const el=$('error');el.textContent=msg;el.style.display=msg?'block':'none';}
   function isMobile(){return matchMedia('(max-width:760px)').matches;}
@@ -1983,9 +1986,14 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     const typed=input.value;
     const text=prompt?(typed.trim()?`${prompt}\n\n${typed}`:prompt):typed;
     const pane=state.selected;
-    if(!pane||!text.trim()||attachmentsPending())return;const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});setOptimisticStatus(localId,'sent');setSendState('已发送 ✓','ok');showError('');clearAttachments();if(!isMobile())input.focus();state.stick=true;}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');
+    if(!pane||!text.trim()||attachmentsPending())return;
+    // 条带在按 Enter 这一刻就收起来（以前等 POST 回来才清，那一秒图片还留着）
+    const attachments=prompt?takeAttachments():[];
+    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});setOptimisticStatus(localId,'sent');setSendState('已发送 ✓','ok');showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');if(attachments.length)restoreAttachments(attachments);
     // 别把用户刚打的字弄丢：放回输入框，改完/网络好了直接再发
-    if(!input.value.trim()){input.value=text;input.style.height='auto';if(!isMobile())input.focus();}
+    // 别把用户刚打的字弄丢，也别把那行附件前缀留在输入框里：附件已经放回条带，
+    // 再发一次会重新拼前缀，留着就变成两行 "user uploaded file …"
+    if(!input.value.trim()){input.value=typed;input.style.height='auto';if(!isMobile())input.focus();}
   }finally{send.disabled=!state.selected;}}
   async function createShare(e){e.preventDefault();const result=$('share-result');result.textContent='创建中…';try{const d=await api('/api/shares',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane_id:state.selected,slug:$('share-slug').value.trim(),password:$('share-password').value,expires_in:Number($('share-expiry').value),allow_input:$('share-allow-input').checked})});const url=new URL(d.url,location.origin).href;try{await navigator.clipboard.writeText(url);result.textContent=`已创建并复制：${url}`;}catch{result.textContent=`已创建：${url}`;}}catch(error){result.textContent=error.message;}}
   list.addEventListener('click',e=>{const add=e.target.closest('[data-new-session]');if(!add)return;

@@ -2544,6 +2544,25 @@ class TmuxWebTests(unittest.TestCase):
         after = self.client.get("/api/panes/%254/prompt").json()["prompt"]
         self.assertEqual(after["toggles"][0]["active"], 2)
 
+    def test_sending_hides_the_attachment_strip_right_away(self):
+        """按 Enter 那一刻条带就该收起来，而不是等 POST 回来（那一秒图片还杵着）。"""
+        self.login()
+        page = self.client.get("/").text
+        send = page[page.index("async function sendInput("):]
+        send = send[:send.index("async function createShare(")]
+        self.assertIn("prompt?takeAttachments():[]", send, "先收条带")
+        self.assertLess(send.index("prompt?takeAttachments():[]"),
+                        send.index("/input"), "要在发请求之前收")
+        self.assertNotIn("clearAttachments()", send, "不能再等成功后清")
+        self.assertIn("restoreAttachments(attachments)", send, "失败要放回去")
+        self.assertIn("input.value=typed", send, "回填不含附件前缀，否则会拼两遍")
+
+    def test_composer_files_can_take_and_restore_the_strip(self):
+        script = (Path(__file__).resolve().parents[1] / "web" / "assets" / "composer-files.js").read_text()
+        for name in ("function take()", "function restore(taken)", "function discard(taken)"):
+            self.assertIn(name, script)
+        self.assertIn("take, restore, discard", script)
+
     def test_an_uploaded_file_can_be_fetched_by_name(self):
         """聊天气泡只留了文件名：按名字到 <pane cwd>/upload_files 里找回来。"""
         import tempfile
