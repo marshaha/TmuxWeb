@@ -1907,8 +1907,8 @@ class TmuxWebTests(unittest.TestCase):
 
         listing = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()
         self.assertEqual({tool["name"] for tool in listing["result"]["tools"]},
-                         {"list_agents", "ask_agent", "send_agent", "create_session", "kill_session",
-                                        "send_file", "read_agent",
+                         {"list_agents", "ask_agent", "send_agent", "run_command",
+                          "create_session", "kill_session", "send_file", "read_agent",
                           "publish_home_card", "list_home", "remove_home_card",
                           "list_remote_hosts", "add_remote_host", "remove_remote_host"})
 
@@ -1941,7 +1941,7 @@ class TmuxWebTests(unittest.TestCase):
             # the rest of the API keeps its token/cookie check
             still_protected = client.get("/api/hosts")
         self.assertEqual(open_mcp.status_code, 200)
-        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 13)
+        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 14)
         self.assertEqual(still_protected.status_code, 401)
 
     def test_mcp_endpoint_requires_the_api_token(self):
@@ -2645,6 +2645,74 @@ class TmuxWebTests(unittest.TestCase):
         for name in ("function take()", "function restore(taken)", "function discard(taken)"):
             self.assertIn(name, script)
         self.assertIn("take, restore, discard", script)
+
+    def test_exec_runs_a_command_and_returns_its_output(self):
+        """给远程调试的 agent：一次调用拿到 stdout/stderr/退出码。"""
+        self.login()
+        ok = self.client.post("/api/exec", json={"command": "echo hello; echo oops >&2",
+                                                 "cwd": "/tmp"})
+        self.assertEqual(ok.status_code, 200)
+        body = ok.json()
+        self.assertEqual(body["exit"], 0)
+        self.assertIn("hello", body["stdout"])
+        self.assertIn("oops", body["stderr"])
+        self.assertFalse(body["truncated"])
+
+        bad = self.client.post("/api/exec", json={"command": "exit 3"}).json()
+        self.assertEqual(bad["exit"], 3, "退出码要原样带回来")
+
+    def test_exec_honours_the_output_cap(self):
+        self.login()
+        body = self.client.post("/api/exec", json={"command": "printf 'x%.0s' $(seq 1 5000)",
+                                                   "max_output": 1000}).json()
+        self.assertTrue(body["truncated"])
+        self.assertEqual(len(body["stdout"]), 1000)
+
+    def test_exec_times_out_instead_of_hanging(self):
+        self.login()
+        body = self.client.post("/api/exec", json={"command": "sleep 5", "timeout": 1}).json()
+        self.assertEqual(body["exit"], 124)
+        self.assertIn("timeout", body["stderr"])
+
+    def test_exec_works_with_the_api_token(self):
+        """muse 这种远程 agent 用的是 token，不是登录 cookie。"""
+        token = "unit-test-api-token"
+        import os
+        os.environ["TMUX_WEB_API_TOKEN"] = token
+        try:
+            client = TestClient(create_app(
+                FakeTmux(), password="unit-test-admin-password", session_secret="test-secret",
+                terminal_factory=FakeTerminalFactory(), share_db=":memory:",
+                remote_store=FakeRemoteStore(), remote_runner_factory=FakeSSHRunner))
+            anonymous = client.post("/api/exec", json={"command": "echo hi"})
+            self.assertEqual(anonymous.status_code, 401)
+            allowed = client.post("/api/exec", json={"command": "echo hi"},
+                                  headers={"Authorization": f"Bearer {token}"})
+            self.assertEqual(allowed.status_code, 200)
+            self.assertIn("hi", allowed.json()["stdout"])
+        finally:
+            os.environ.pop("TMUX_WEB_API_TOKEN", None)
+
+    def test_mcp_run_command_matches_the_rest_endpoint(self):
+        """agent 走 MCP 也要能一次拿到输出，而不是只走 REST。"""
+        self.login()
+        listing = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()
+        names = {tool["name"] for tool in listing["result"]["tools"]}
+        self.assertIn("run_command", names)
+
+        call = self.client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "run_command",
+                       "arguments": {"command": "echo mcp-ok; exit 0", "timeout": 10}}}).json()
+        payload = json.loads(call["result"]["content"][0]["text"])
+        self.assertEqual(payload["exit"], 0)
+        self.assertIn("mcp-ok", payload["stdout"])
+        self.assertFalse(call["result"].get("isError"))
+
+    def test_exec_rejects_unknown_hosts(self):
+        self.login()
+        response = self.client.post("/api/exec", json={"command": "echo hi", "host": "nope-1234"})
+        self.assertEqual(response.status_code, 404)
 
     def test_an_uploaded_file_can_be_fetched_by_name(self):
         """聊天气泡只留了文件名：按名字到 <pane cwd>/upload_files 里找回来。"""

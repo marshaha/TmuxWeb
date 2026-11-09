@@ -12,6 +12,7 @@ import os
 import fcntl
 import re
 import secrets
+import shlex
 import urllib.parse
 import signal
 import struct
@@ -631,6 +632,15 @@ class FileRenameRequest(BaseModel):
 class FileDeleteRequest(BaseModel):
     paths: list[str] = Field(min_length=1, max_length=200)
     recursive: bool = False
+
+
+class ExecRequest(BaseModel):
+    """一口气跑完一条命令并拿到输出 —— 给远程调试的 agent 用（比抢一个交互 shell 快得多）。"""
+    command: str = Field(min_length=1, max_length=20000)
+    host: str = ""                       # 空 / local 表示本机，否则是 remote_hosts 里的 id 或名字
+    cwd: str = ""
+    timeout: int = Field(default=60, ge=1, le=600)
+    max_output: int = Field(default=200_000, ge=1000, le=2_000_000)
 
 
 class ShareCreateRequest(BaseModel):
@@ -1877,6 +1887,65 @@ def create_app(
             return login_redirect(request)
         return FileResponse(WEB_DIR / "hosts.html", headers={"Cache-Control": "no-store"})
 
+    async def run_exec(host_ref: str, command: str, workdir: str, timeout: int,
+                       max_output: int) -> dict:
+        """跑一条命令并带回收敛后的结果；路由和 MCP 的 run_command 共用。"""
+        started = time.monotonic()
+
+        def clip(blob: bytes) -> tuple[str, bool]:
+            cut = blob[:max_output]
+            return cut.decode("utf-8", "replace"), len(blob) > len(cut)
+
+        if host_ref in ("", "local", "localhost", "self"):
+            directory = workdir or str(BASE_DIR)
+
+            def local_run():
+                return subprocess.run(["bash", "-lc", command], cwd=directory,
+                                      capture_output=True, timeout=timeout)
+
+            try:
+                completed = await asyncio.to_thread(local_run)
+            except subprocess.TimeoutExpired:
+                return {"host": "local", "cwd": directory, "exit": 124, "stdout": "",
+                        "stderr": f"timeout after {timeout}s", "truncated": False,
+                        "duration": round(time.monotonic() - started, 3)}
+            except (OSError, ValueError) as exc:
+                raise McpToolError(str(exc)) from exc
+            host_label = "local"
+        else:
+            host = next((item for item in remote_hosts.list_hosts()
+                         if host_ref in (item.get("id"), item.get("name"))), None)
+            if host is None:
+                raise McpToolError(f"没有这个主机：{host_ref}")
+            runner = runner_for(host)
+            wired = (f"cd {shlex.quote(workdir)} && " if workdir else "") + command
+            try:
+                completed = await asyncio.to_thread(runner.run, wired, timeout=timeout + 5)
+            except (subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
+                return {"host": host.get("name") or host.get("id"), "cwd": workdir, "exit": 124,
+                        "stdout": "", "stderr": str(exc), "truncated": False,
+                        "duration": round(time.monotonic() - started, 3)}
+            host_label = host.get("name") or host.get("id")
+
+        stdout, cut_out = clip(completed.stdout or b"")
+        stderr, cut_err = clip(completed.stderr or b"")
+        return {"host": host_label, "cwd": workdir, "exit": completed.returncode,
+                "stdout": stdout, "stderr": stderr, "truncated": cut_out or cut_err,
+                "duration": round(time.monotonic() - started, 3)}
+
+    @app.post("/api/exec")
+    async def exec_remote_command(request: Request, payload: ExecRequest):
+        """跑一条命令、立刻拿到 stdout/stderr/退出码（给远程调试的 agent 用）。"""
+        require_auth(request)
+        if (os.environ.get("TMUX_WEB_EXEC") or "on").strip().lower() in {"0", "off", "false", "no"}:
+            raise HTTPException(status_code=403, detail="exec 已被 TMUX_WEB_EXEC=off 关闭")
+        try:
+            return await run_exec((payload.host or "").strip(), payload.command,
+                                  (payload.cwd or "").strip(), payload.timeout, payload.max_output)
+        except McpToolError as exc:
+            status = 404 if "没有这个主机" in str(exc) else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+
     @app.post("/api/shares", status_code=201)
     async def create_share(request: Request, payload: ShareCreateRequest):
         require_auth(request)
@@ -2372,6 +2441,18 @@ def create_app(
                 raise McpToolError(str(exc)) from exc
             else:
                 return result if isinstance(result, dict) else {"result": result}
+        if name == "run_command":
+            command = str(arguments.get("command") or "").strip()
+            if not command:
+                raise McpToolError("command must not be empty")
+            if len(command) > 20000:
+                raise McpToolError("command is longer than 20000 characters")
+            if (os.environ.get("TMUX_WEB_EXEC") or "on").strip().lower() in {"0", "off", "false", "no"}:
+                raise McpToolError("exec 已被 TMUX_WEB_EXEC=off 关闭")
+            timeout = max(1, min(int(arguments.get("timeout") or 60), 600))
+            return await run_exec(str(arguments.get("host") or "").strip(), command,
+                                  str(arguments.get("cwd") or "").strip(), timeout,
+                                  max(1000, min(int(arguments.get("max_output") or 200000), 2000000)))
         if name == "list_remote_hosts":
             hosts = await asyncio.to_thread(remote_hosts.list_hosts)
             return {"hosts": [

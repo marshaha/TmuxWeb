@@ -272,8 +272,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(init["result"]["serverInfo"]["name"], "tmuxweb-relay")
         listing = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
-        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "create_session",
-                                       "kill_session", "send_file", "read_agent",
+        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "run_command",
+                                       "create_session", "kill_session", "send_file", "read_agent",
                                        "publish_home_card", "list_home", "remove_home_card",
                                        "list_remote_hosts", "add_remote_host", "remove_remote_host"})
         self.assertEqual(tools["ask_agent"]["inputSchema"]["required"], ["target", "question"])

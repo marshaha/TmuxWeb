@@ -118,6 +118,27 @@ class RelayTools:
                 return host.get("id") or wanted
         return wanted
 
+    def run_command(self, arguments: dict) -> dict:
+        """跑一条命令、拿 stdout/stderr/退出码 —— 远程调试的主流工具。
+
+        比"抢一个 shell pane、敲命令、读屏、再猜输出"快一个数量级：一次调用一个结果。
+        本机和远端都行（远端走已配置的 SSH/跳板机）。
+        """
+        command = self._text(arguments, "command", limit=20000)
+        timeout = int(arguments.get("timeout") or 60)
+        payload = {
+            "command": command,
+            "cwd": str(arguments.get("cwd") or ""),
+            "timeout": max(1, min(timeout, 600)),
+            "max_output": max(1000, min(int(arguments.get("max_output") or 200000), 2000000)),
+        }
+        host = str(arguments.get("host") or "").strip()
+        if host and host != "localhost":
+            resolved = self._resolve_host(host)
+            if resolved != "localhost":
+                payload["host"] = resolved
+        return request("/api/exec", payload, timeout=payload["timeout"] + 30)
+
     def create_session(self, arguments: dict) -> dict:
         """Start a tmux session, optionally already running an agent."""
         name = self._text(arguments, "name", limit=64)
@@ -384,6 +405,7 @@ class RelayTools:
             "send_agent": self.send_agent,
             "read_agent": self.read_agent,
             "send_file": self.send_file,
+            "run_command": self.run_command,
             "create_session": self.create_session,
             "kill_session": self.kill_session,
             "publish_home_card": self.publish_home_card,
@@ -442,6 +464,28 @@ def tool_schemas() -> list[dict]:
                     "submit": {"type": "boolean", "default": True},
                 },
                 "required": ["target", "text"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "run_command",
+            "description": ("Run a shell command and get stdout/stderr/exit code in one call - local or on any "
+                            "managed host (SSH/jump chain included). This is how to debug efficiently: run the "
+                            "tests, git, restart a service, tail a log, without taking over an interactive pane. "
+                            "Exit 124 means the timeout hit; `truncated` means output was cut at max_output."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "minLength": 1, "maxLength": 20000,
+                                "description": "shell command, run through `bash -lc`"},
+                    "host": {"type": "string",
+                             "description": "host id or name from list_remote_hosts; omit for this machine"},
+                    "cwd": {"type": "string", "description": "working directory (default: the server's root)"},
+                    "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "default": 60},
+                    "max_output": {"type": "integer", "minimum": 1000, "maximum": 2000000,
+                                   "default": 200000},
+                },
+                "required": ["command"],
                 "additionalProperties": False,
             },
         },

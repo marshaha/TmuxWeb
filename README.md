@@ -335,6 +335,8 @@ harness 在等你做选择时会占住整个屏幕：kimi 的 `/model` 选择器
 实现上只有一个新接口和两条规矩：
 
 ```bash
+POST /api/exec                         # {"command":"...","timeout":60} → stdout/stderr/exit
+                                       # 远程调试整套（exec / 文件 / pane / MCP）见 docs/remote-debug.md
 GET  /api/panes/{pane}/prompt          # 解析屏幕，认不出返回 {"prompt": null}
 POST /api/panes/{pane}/prompt/choose   # {"index": 2} 或 {"key": "esc"}
 ```

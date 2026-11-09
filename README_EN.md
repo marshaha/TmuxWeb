@@ -203,6 +203,7 @@ command, a diff, chat prose) is occasionally mistaken for a menu. Turn it on in 
 Two rules make it safe:
 
 ```bash
+POST /api/exec                         # {"command":"...","timeout":60} → stdout/stderr/exit
 GET  /api/panes/{pane}/prompt          # parsed prompt, or {"prompt": null}
 POST /api/panes/{pane}/prompt/choose   # {"index": 2} or {"key": "esc"}
 ```
