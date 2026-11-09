@@ -416,6 +416,8 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   .prompt-state.bad{color:var(--danger)}
   .prompt-btn{flex:none;height:24px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--muted);font:600 11px/1 inherit;cursor:pointer}
   .prompt-btn:hover{border-color:var(--accent);color:var(--accent)}
+  /* 手机上没有回车键：需要 Enter 才能确认的界面给一颗明确的按钮 */
+  .prompt-btn-go{border-color:var(--accent);color:var(--accent);font-weight:700}
   .prompt-raw{margin-top:6px;color:var(--muted);font-size:11px}
   .prompt-raw summary{cursor:pointer}
   .prompt-raw pre{margin:6px 0 0;padding:8px;border-radius:8px;background:var(--surface2);color:var(--ink);font:10.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:auto;max-height:22vh}
@@ -430,7 +432,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   <p class="prompt-hint" id="prompt-card-hint" hidden></p>
   <div class="prompt-options" id="prompt-card-options" role="listbox"></div>
   <div class="prompt-toggles" id="prompt-card-toggles" hidden></div>
-  <div class="prompt-foot"><span class="prompt-state" id="prompt-card-state"></span><button class="prompt-btn" id="prompt-card-esc" type="button">Esc 取消</button></div>
+  <div class="prompt-foot"><span class="prompt-state" id="prompt-card-state"></span><button class="prompt-btn prompt-btn-go" id="prompt-card-enter" type="button" hidden>确认 Enter</button><button class="prompt-btn" id="prompt-card-esc" type="button">Esc 取消</button></div>
   <details class="prompt-raw" id="prompt-card-raw-wrap" hidden><summary>屏幕原文</summary><pre id="prompt-card-raw"></pre></details>
 </div>
 <input id="upload-input" type="file" multiple hidden><div class="composer-inner"><div class="composer-card"><div class="cf-bar"><button class="cf-attach" id="attach" type="button" title="添加附件（存到 pane 目录下的 upload_files）" aria-label="添加附件" disabled><svg class="ico"><use href="#i-paperclip"/></svg><span>附件</span></button><div class="model-pick" id="model-pick-wrap" hidden><button type="button" class="model-toggle" id="model-toggle" aria-haspopup="true" aria-expanded="false" title="切换这个 agent 使用的模型"><svg class="ico"><use href="#i-gear"/></svg><span id="model-current">模型</span><svg class="ico model-caret"><use href="#i-chevron"/></svg></button><div class="model-menu" id="model-menu" hidden><input class="model-filter" id="model-filter" type="search" placeholder="筛选模型…" autocomplete="off" spellcheck="false"><div class="model-groups" id="model-groups"></div></div></div><span class="cf-hint">存到当前目录的 upload_files</span></div><div class="cf-strip" id="uploads" hidden></div><textarea id="input" disabled placeholder="选择会话后，在这里输入消息…"></textarea><button class="send" id="send" disabled title="发送" aria-label="发送"><svg class="ico"><use href="#i-arrow-up"/></svg></button></div><div class="composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><span class="send-state" id="send-state"></span><label class="submit-option"><input type="checkbox" id="submit-enter" checked> 同时按 Enter 提交</label></div></div></section>

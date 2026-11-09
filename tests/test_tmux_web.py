@@ -2544,6 +2544,16 @@ class TmuxWebTests(unittest.TestCase):
         after = self.client.get("/api/panes/%254/prompt").json()["prompt"]
         self.assertEqual(after["toggles"][0]["active"], 2)
 
+    def test_mobile_gets_a_button_for_enter(self):
+        """手机上没法敲回车：需要 Enter 确认的界面要有一颗明确的按钮。"""
+        root = Path(__file__).resolve().parents[1]
+        page = (root / "web" / "index.html").read_text()
+        self.assertIn('id="prompt-card-enter"', page)
+        self.assertIn(".prompt-btn-go", page)
+        script = (root / "web" / "assets" / "prompt-card.js").read_text()
+        self.assertIn("enterButton.onclick = () => chooseByKey('enter')", script)
+        self.assertIn("data.kind === 'toggle'", script, "开关类界面总要确认按钮")
+
     def test_a_click_paints_before_the_round_trip(self):
         """点下去先在卡片上生效（乐观），再等 pane 的真实状态对齐。"""
         root = Path(__file__).resolve().parents[1]

@@ -125,6 +125,16 @@
     toggles.hidden = !(data.toggles && data.toggles.length);
 
     lastScreen = screen || [];
+    // 手机上没有回车键。开关类界面（kimi 的 Thinking：←→ 选、Enter 确认）和提示里
+    // 明写 confirm/继续/continue 的，给一颗「确认 Enter」按钮，点它等于敲回车。
+    const enterButton = $('enter');
+    if (enterButton) {
+      const hint = String(data.hint || '');
+      const needsEnter = data.kind === 'toggle'
+        || /press enter/i.test(hint)
+        || (/confirm|continue|确认|继续/i.test(hint) && !(data.options || []).length);
+      enterButton.hidden = !needsEnter;
+    }
     const raw = $('raw');
     if (raw) raw.textContent = (screen || []).join('\n');
     const details = $('raw-wrap');
@@ -361,6 +371,8 @@
     if (close) close.onclick = () => { hiddenByUser = true; const box = card(); if (box) box.hidden = true; };
     const escButton = $('esc');
     if (escButton) escButton.onclick = () => chooseByKey('esc');
+    const enterButton = $('enter');
+    if (enterButton) enterButton.onclick = () => chooseByKey('enter');
     bindKeyboard();
     if (timer) clearInterval(timer);
     timer = setInterval(poll, POLL_MS);
