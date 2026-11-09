@@ -230,10 +230,15 @@
       const data = await response.json();
       if (!data.prompt) { if (prompt) hide(); return; }
       if (hiddenByUser) return;
-      // 同一个菜单就别重绘（会打断用户正在按的方向键）
+      // 同一个菜单就别重绘（会打断用户正在按的方向键）。
+      // 开关的"当前值"也要算进比较：只比标题/选项数/光标的话，←→ 切完之后卡片上的
+      // 高亮永远停在旧值，人以为键盘没生效。
+      const toggleKey = (found) => JSON.stringify((found && found.toggles || [])
+        .map(item => [item.label, item.active]));
       if (prompt && prompt.title === data.prompt.title
           && prompt.options.length === data.prompt.options.length
-          && prompt.selected === data.prompt.selected) return;
+          && prompt.selected === data.prompt.selected
+          && toggleKey(prompt) === toggleKey(data.prompt)) return;
       render(data.prompt, data.screen);
     } catch (_error) {
       // 网络抖动：保持现状，下一轮再说
@@ -247,12 +252,23 @@
     if (!node) return;
     node.addEventListener('keydown', event => {
       if (!prompt) return;
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      const arrows = ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'];
+      const hasOptions = !!(prompt.options && prompt.options.length);
+      const toggles = prompt.toggles || [];
+      if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && toggles.length && !hasOptions) {
+        // 分段开关：卡片上写着 left/right to switch，按了就该动 —— 以前只处理上下键，
+        // 于是键盘按下去毫无反应，只有鼠标点分段才好使。
+        event.preventDefault();
+        const toggle = toggles[0];
+        const next = toggle.active + (event.key === 'ArrowRight' ? 1 : -1);
+        if (next >= 0 && next < toggle.options.length) chooseToggle(toggle.index, next);
+      } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && hasOptions) {
         event.preventDefault();
         const step = event.key === 'ArrowDown' ? 1 : -1;
         cursor = (cursor + step + prompt.options.length) % prompt.options.length;
         paintCursor();
-        document.querySelectorAll('#' + CARD + '-options .prompt-option')[cursor].focus();
+        const target = document.querySelectorAll('#' + CARD + '-options .prompt-option')[cursor];
+        if (target) target.focus();
       } else if (event.key === 'Enter') {
         event.preventDefault();
         // 只有一个开关（没有列表项）时，Enter 就是"确认当前值"，别去选第 0 项

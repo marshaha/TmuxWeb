@@ -2544,6 +2544,22 @@ class TmuxWebTests(unittest.TestCase):
         after = self.client.get("/api/panes/%254/prompt").json()["prompt"]
         self.assertEqual(after["toggles"][0]["active"], 2)
 
+    def test_the_card_answers_the_arrow_keys_the_switch_advertises(self):
+        """分段开关写着 left/right to switch：卡片必须真的处理 ←→，否则键盘按下去没反应。"""
+        script = (Path(__file__).resolve().parents[1] / "web" / "assets" / "prompt-card.js").read_text()
+        self.assertIn("event.key === 'ArrowLeft'", script)
+        self.assertIn("event.key === 'ArrowRight'", script)
+        self.assertIn("chooseToggle(toggle.index, next)", script)
+        # ↑↓ 只在有列表项时才动光标：只有一个开关时 options 是空的，取模会得到 NaN
+        self.assertIn("(event.key === 'ArrowDown' || event.key === 'ArrowUp') && hasOptions", script)
+        self.assertIn("if (target) target.focus()", script)
+
+    def test_the_card_repaints_when_the_switch_value_changes(self):
+        """只比标题/选项数/光标的话，←→ 切完高亮停在旧值，看起来像没生效。"""
+        script = (Path(__file__).resolve().parents[1] / "web" / "assets" / "prompt-card.js").read_text()
+        self.assertIn("const toggleKey =", script)
+        self.assertIn("toggleKey(prompt) === toggleKey(data.prompt)", script)
+
     def test_sending_hides_the_attachment_strip_right_away(self):
         """按 Enter 那一刻条带就该收起来，而不是等 POST 回来（那一秒图片还杵着）。"""
         self.login()
