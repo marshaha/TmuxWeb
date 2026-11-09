@@ -3068,6 +3068,9 @@ def create_app(
             found, _text = await read_prompt(pane_id)
             if not found:
                 raise HTTPException(status_code=409, detail="屏幕上没有等待中的选择")
+            if payload.index is not None and not found.get("options"):
+                raise HTTPException(status_code=422,
+                                    detail="这个界面只有一个开关，请直接点分段或按 Enter")
             if payload.toggle is not None and payload.value is not None:
                 keys = agent_prompts.toggle_keys(found, payload.toggle, payload.value)
                 if not keys:

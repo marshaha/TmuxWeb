@@ -48,7 +48,7 @@
 
   function paintCursor() {
     const list = $('options');
-    if (!list) return;
+    if (!list || !prompt || !prompt.options || !prompt.options.length) return;
     [...list.children].forEach((node, index) => {
       node.classList.toggle('on', index === cursor);
       node.setAttribute('aria-selected', index === cursor ? 'true' : 'false');
@@ -246,7 +246,9 @@
         document.querySelectorAll('#' + CARD + '-options .prompt-option')[cursor].focus();
       } else if (event.key === 'Enter') {
         event.preventDefault();
-        chooseByIndex(cursor);
+        // 只有一个开关（没有列表项）时，Enter 就是"确认当前值"，别去选第 0 项
+        if (!prompt.options || !prompt.options.length) chooseByKey('enter');
+        else chooseByIndex(cursor);
       } else if (event.key === 'Escape') {
         event.preventDefault();
         chooseByKey('esc');

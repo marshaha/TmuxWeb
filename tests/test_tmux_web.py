@@ -2540,6 +2540,39 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(sent_keys, ["Right"])
         self.assertEqual(result["prompt"]["toggles"][0]["active"], 2)
 
+    def test_a_switch_only_screen_answers_422_not_a_server_error(self):
+        """只有开关、没有选项时点「选第 0 项」不该冒成 503 的 'no options'。"""
+        self.login()
+        self.tmux.output = ("  形态\n"
+                            "  ←→ to switch · Enter confirm · Esc cancel\n"
+                            "   Thinking\n"
+                            "      Low    [ High ]    Max\n")
+        sent_keys = []
+        self.tmux.send_key = lambda pane_id, key, pane=None: sent_keys.append(key)
+        response = self.client.post("/api/panes/%254/prompt/choose", json={"index": 0})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("开关", response.json()["detail"])
+        self.assertEqual(sent_keys, [], "出错时一个键都不该发")
+
+    def test_enter_on_a_switch_only_screen_confirms_it(self):
+        self.login()
+        self.tmux.output = ("  ←→ to switch · Enter confirm · Esc cancel\n"
+                            "   Thinking\n"
+                            "      Low    [ High ]    Max\n")
+        sent_keys = []
+        original = self.tmux.output
+
+        def recording(pane_id, key, pane=None):
+            sent_keys.append(key)
+            if key == "Enter":
+                self.tmux.output = "  完成\n"
+
+        self.tmux.send_key = recording
+        result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "enter"}).json()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(sent_keys, ["Enter"])
+        self.assertTrue(original)
+
     def test_clicking_the_value_it_already_has_sends_nothing(self):
         self.login()
         self.tmux.output = ("  Select a model  (type to search)\n"
