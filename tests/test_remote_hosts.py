@@ -989,6 +989,37 @@ class RemoteHostTests(unittest.TestCase):
         self.assertIn('set-option -w -t "$S" window-size', remote)
         self.assertEqual(session.pane_id, "%13")
 
+    def test_a_failed_remote_attach_closes_both_pty_fds(self):
+        """Popen raising (EMFILE) must not leak the fresh pty pair on remote attaches."""
+        host = dict(FAKE_SSH_HOST)
+        opened = []
+        real_openpty = os.openpty
+
+        def record_openpty():
+            pair = real_openpty()
+            opened.append(pair)
+            return pair
+
+        with mock.patch("subprocess.Popen", side_effect=OSError(24, "Too many open files")), \
+                mock.patch("os.openpty", side_effect=record_openpty), \
+                mock.patch.object(remote_hosts.SSHRunner, "tmux_binary", return_value="/usr/bin/tmux"), \
+                mock.patch.object(remote_hosts.RemoteTerminalSession, "_set_size"):
+            with self.assertRaises(OSError):
+                remote_hosts.RemoteTerminalSession(host, "%80", 80, 24)
+        self.assertEqual(len(opened), 1)
+        master, slave = opened[0]
+        try:
+            with self.assertRaises(OSError):
+                os.fstat(master)
+            with self.assertRaises(OSError):
+                os.fstat(slave)
+        finally:
+            for fd in (master, slave):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
     def test_status_many_asks_every_pane_in_one_ssh(self):
         """A 35-pane host must not cost 35 round trips just to learn busy/idle."""
         host = dict(FAKE_SSH_HOST)

@@ -860,18 +860,48 @@ class TerminalSession:
         self.master_fd, slave_fd = os.openpty()
         environment = os.environ.copy()
         environment["TERM"] = "xterm-256color"
-        self.process = subprocess.Popen(
-            ["tmux", "attach-session", "-t", pane_id],
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            start_new_session=True,
-            env=environment,
-            close_fds=True,
-        )
-        os.close(slave_fd)
+        self.process = None
         self._closed = False
-        self._set_size(cols, rows)
+        try:
+            self.process = subprocess.Popen(
+                ["tmux", "attach-session", "-t", pane_id],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                start_new_session=True,
+                env=environment,
+                close_fds=True,
+            )
+            os.close(slave_fd)
+            slave_fd = None
+            self._set_size(cols, rows)
+        except Exception:
+            # A failed attach must not keep the pty: under fd pressure the
+            # constructor itself is what raises (EMFILE from Popen), and the
+            # two fresh descriptors would otherwise leak one pair per retry.
+            self._close_failed_openpty(slave_fd)
+            raise
+
+    def _close_failed_openpty(self, slave_fd):
+        """Best-effort cleanup after __init__ failed part-way through."""
+        process = getattr(self, "process", None)
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+        if slave_fd is not None:
+            try:
+                os.close(slave_fd)
+            except OSError:
+                pass
+        try:
+            os.close(self.master_fd)
+        except OSError:
+            pass
+        self._closed = True
 
     @staticmethod
     def _tmux_value(*args: str) -> str:
