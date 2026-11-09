@@ -235,6 +235,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 <script src="/assets/composer-files.js"></script>
 <script src="/assets/path-links.js"></script>
 <script src="/assets/prompt-card.js"></script>
+<script src="/assets/markdown-cjk.js"></script>
 <script src="/assets/video-cards.js"></script>
 <script src="/assets/transfer.js"></script>
 <script src="/assets/downloads.js"></script>
@@ -1279,7 +1280,11 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   // code block ("-->" became "--&gt;"), which also broke mermaid sources.
   const mdEscape=value=>String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   marked.use({renderer:{html(token){return mdEscape(token&&(token.text!=null?token.text:token.raw));}}});
-  function markdown(value){return marked.parse(String(value==null?'':value),{gfm:true,breaks:false,async:false});}
+  function markdown(value){const raw=String(value==null?'':value);
+    // 中文加粗的 CommonMark 围栏问题：**任务：**它 → 不渲染，见 assets/markdown-cjk.js
+    const fixed=window.TmuxMarkdownCjk?window.TmuxMarkdownCjk.fix(raw):raw;
+    const html=marked.parse(fixed,{gfm:true,breaks:false,async:false});
+    return window.TmuxMarkdownCjk?window.TmuxMarkdownCjk.strip(html):html;}
   // Compare messages the way a human would: the agent may re-wrap, trim or add blank lines
   function messageTextKey(text){return String(text==null?'':text).replace(/\r\n/g,'\n').replace(/[ \t]+/g,' ').replace(/\s+/g,' ').trim();}
   function reconcilePending(messages){

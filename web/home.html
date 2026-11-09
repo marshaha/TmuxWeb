@@ -312,7 +312,12 @@
   // markdown 里的原始 HTML 一律转义（和 /preview 同一套策略）
   marked.use({renderer:{html(token){return escHtml(token && (token.text != null ? token.text : token.raw));}}});
   // 悬浮/点击预览里渲染 markdown：以前是 textContent，`## 标题`、表格、代码块都原样怼出来
-  window.__md = value => marked.parse(String(value == null ? '' : value), {gfm:true, breaks:false, async:false});
+  window.__md = value => {
+    const raw = String(value == null ? '' : value);
+    const fixed = window.TmuxMarkdownCjk ? window.TmuxMarkdownCjk.fix(raw) : raw;
+    const html = marked.parse(fixed, {gfm:true, breaks:false, async:false});
+    return window.TmuxMarkdownCjk ? window.TmuxMarkdownCjk.strip(html) : html;
+  };
   // 卡片正文也走同一套 markdown（marked + 下面的 .md 样式），只是链接要新窗口打开
   // 单独一个 <script> 块，必须挂到 window 上，cardHtml 那边才看得到
   window.mdCard = value => window.__md(value)
@@ -746,6 +751,7 @@
 
 </script>
 <script>if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));</script>
+<script src="/assets/markdown-cjk.js"></script>
 <script src="/assets/video-cards.js"></script>
 <script src="/assets/plugins-ui.js"></script>
 </body>

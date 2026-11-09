@@ -2147,6 +2147,12 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "prompt-card.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/markdown-cjk.js")
+    async def markdown_cjk_script() -> FileResponse:
+        """中文加粗的围栏修正：**任务：**它 这种写法默认不会渲染成粗体。"""
+        return FileResponse(WEB_DIR / "assets" / "markdown-cjk.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/video-cards.css")
     async def video_cards_style() -> FileResponse:
         """视频卡片样式：聊天页和看板共用一份。"""

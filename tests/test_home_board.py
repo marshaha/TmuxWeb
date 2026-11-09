@@ -406,7 +406,9 @@ class HomeBoardTests(unittest.TestCase):
         """home 的悬浮/点击预览以前是 textContent，`## 标题`、表格、代码块全原样怼出来。"""
         page = self.client.get("/home").text
         self.assertIn("import {marked} from '/assets/marked.esm.js'", page)
-        self.assertIn("window.__md = value => marked.parse(", page)
+        self.assertIn("window.__md = value => {", page)
+        self.assertIn("marked.parse(fixed", page)
+        self.assertIn("TmuxMarkdownCjk.fix(", page)
         # 原始 HTML 要转义（和 /preview 同一套策略）
         self.assertIn("marked.use({renderer:{html(token){return escHtml(", page)
         # 面板由共享模块建，渲染器由页面注入（首页用同一个 marked）

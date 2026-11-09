@@ -229,6 +229,14 @@ each and takes seconds.
 Tab bars, progress bars and free-text input are deliberately left to the terminal - guessing those means answering a
 question on the user's behalf.
 
+### Chinese bold hits a CommonMark quirk
+
+`**任务：**它停了` does **not** render as bold: CommonMark wants a closing `**` to be right-flanking, and here it is
+preceded by a punctuation mark (`：`) and followed directly by a letter (`它`), so both conditions fail and the pair
+stays literal. "bold label：then text" is normal Chinese writing, so the console inserts a zero-width space before
+parsing and strips it again afterwards (`web/assets/markdown-cjk.js`, shared by chat, board and hover preview). Code
+blocks are untouched.
+
 ### Video plays right in the chat
 
 A video link in a message (`.mp4`, `.webm`, `.mov`, `.m4v`, `.ogv`, `.ogg`, `.mkv` - case insensitive, query strings

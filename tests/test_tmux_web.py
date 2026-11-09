@@ -2579,6 +2579,18 @@ class TmuxWebTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(sent_keys, ["Escape"])
 
+    def test_the_cjk_markdown_fix_is_served_and_wired_into_both_pages(self):
+        """**任务：**它 这种写法默认不会渲染成粗体，修正要在聊天和看板都挂上。"""
+        script = self.client.get("/assets/markdown-cjk.js")
+        self.assertEqual(script.status_code, 200)
+        self.assertIn("TmuxMarkdownCjk", script.text)
+        web = Path(__file__).resolve().parent.parent / "web"
+        for name in ("index.html", "home.html"):
+            html = (web / name).read_text()
+            self.assertIn("/assets/markdown-cjk.js", html, name)
+            self.assertIn("TmuxMarkdownCjk.fix(", html, name)
+            self.assertIn("TmuxMarkdownCjk.strip(", html, name)
+
     def test_the_video_helper_is_served_and_wired_into_the_chat(self):
         """聊天里的视频卡片：脚本要服务得到，页面要引到，样式要在。"""
         script = self.client.get("/assets/video-cards.js")
