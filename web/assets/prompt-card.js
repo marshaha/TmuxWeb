@@ -160,7 +160,18 @@
     }
     if (optimistic.index != null) {
       const rows = document.querySelectorAll('#' + CARD + '-options .prompt-option');
-      rows.forEach((row, index) => row.classList.toggle('picked', index === optimistic.index));
+      rows.forEach((row, index) => {
+        row.classList.toggle('picked', index === optimistic.index);
+        if (index === optimistic.index && !row.dataset.sent) {
+          row.dataset.sent = '1';
+          row.dataset.label = row.innerHTML;
+          // 用选项自己的文案（row.textContent 会把右边的 meta 也拼进来，变成「继续Enter」）
+          const label = (prompt.options && prompt.options[index] && prompt.options[index].label)
+            || row.textContent.trim();
+          row.innerHTML = esc(label) + ' · 已发送';
+          row.disabled = true;
+        }
+      });
     }
   }
 
@@ -213,7 +224,8 @@
 
   async function chooseByIndex(index) {
     const pane = paneNow();
-    if (!pane || busy) return;
+    if (!pane) return;
+    if (busy) { setState('上一条还在发送，稍等一下…'); return; }   // 别静默吞掉点击
     optimistic = {index, at: Date.now()};
     cursor = index;
     paintCursor();
@@ -239,7 +251,8 @@
 
   async function chooseToggle(toggleIndex, value) {
     const pane = paneNow();
-    if (!pane || busy) return;
+    if (!pane) return;
+    if (busy) { setState('上一条还在发送，稍等一下…'); return; }
     if (prompt && prompt.toggles && prompt.toggles[toggleIndex]
         && prompt.toggles[toggleIndex].active === value) {
       setState('已经是这个值了');
@@ -277,7 +290,8 @@
 
   async function chooseByKey(key) {
     const pane = paneNow();
-    if (!pane || busy) return;
+    if (!pane) return;
+    if (busy) { setState('上一条还在发送，稍等一下…'); return; }
     busy = true;
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {key});
