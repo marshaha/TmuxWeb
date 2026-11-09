@@ -1,6 +1,7 @@
 import hashlib
 import io
 import os
+import threading
 import time
 import re
 import shutil
@@ -3135,6 +3136,333 @@ class TmuxWebTests(unittest.TestCase):
         busy = self.client.get("/api/panes/%254/transcript?limit=20").json()
         self.assertTrue(busy["waiting"])
         self.assertEqual(busy["waiting_since"], "2026-10-27T22:10:00Z")
+
+    def _fake_session_transcript(self, messages, provider="claude"):
+        """A fake transcript backed by a real temp session file, so the sig cache works.
+
+        Returns (path, state, fake): mutate state["messages"] and rewrite the file
+        to simulate the agent appending, exactly like a real session file growing.
+        """
+        handle = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        handle.write("{}\n")
+        handle.close()
+        path = handle.name
+        self.addCleanup(os.unlink, path)
+        state = {"messages": list(messages)}
+
+        def fake(pane_id, limit=200, refresh=False, pane=None):
+            return {"pane": pane_id, "session_id": "s1",
+                    "mtime": os.path.getmtime(path), "has_more": False,
+                    "messages": list(state["messages"]), "path": path,
+                    "provider": provider}
+
+        return path, state, fake
+
+    def _get_in_thread(self, url, params=None):
+        """Run one client GET in a thread; returns (thread, started_at, result)."""
+        result = {}
+        started = time.time()
+
+        def run():
+            try:
+                result["response"] = self.client.get(url, params=params)
+            except Exception as exc:  # noqa: BLE001 - surfaced by the caller
+                result["error"] = exc
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread, started, result
+
+    def test_waiting_true_when_last_is_assistant_but_agent_busy(self):
+        """首条 assistant 回复到了不等于 turn 结束：session 文件说 BUSY 就还在等。"""
+        self.login()
+        messages = [
+            {"id": "u1", "role": "user", "text": "问题", "timestamp": "2026-10-27T22:00:00Z"},
+            {"id": "a1", "role": "assistant", "text": "先回答一部分", "timestamp": "2026-10-27T22:00:05Z"},
+        ]
+        self.tmux.transcript = lambda pane_id, limit=200, *args, **kwargs: {
+            "provider": "claude", "mtime": 1, "messages": list(messages)}
+        with patch("tmux_web.agent_status.status_for_pane", return_value="busy"):
+            body = self.client.get("/api/panes/%254/transcript?limit=20").json()
+        self.assertTrue(body["waiting"])
+        # waiting_since 是这一 turn 的开始（最后那条 user 消息），不是 assistant 回复的时间
+        self.assertEqual(body["waiting_since"], "2026-10-27T22:00:00Z")
+
+    def test_waiting_false_when_last_is_assistant_and_agent_idle(self):
+        self.login()
+        messages = [
+            {"id": "u1", "role": "user", "text": "问题", "timestamp": "2026-10-27T22:00:00Z"},
+            {"id": "a1", "role": "assistant", "text": "回答", "timestamp": "2026-10-27T22:00:05Z"},
+        ]
+        self.tmux.transcript = lambda pane_id, limit=200, *args, **kwargs: {
+            "provider": "claude", "mtime": 1, "messages": list(messages)}
+        with patch("tmux_web.agent_status.status_for_pane", return_value="idle"):
+            body = self.client.get("/api/panes/%254/transcript?limit=20").json()
+        self.assertFalse(body["waiting"])
+        self.assertIsNone(body["waiting_since"])
+
+    def test_waiting_true_for_trailing_user_message_even_when_agent_idle(self):
+        """最后一条是 user 消息时 waiting 为 true，与 session 文件的 verdict 无关。"""
+        self.login()
+        self.tmux.transcript = lambda pane_id, limit=200, *args, **kwargs: {
+            "provider": "claude", "mtime": 1, "messages": [
+                {"id": "u2", "role": "user", "text": "再来一次",
+                 "timestamp": "2026-10-27T22:10:00Z"}]}
+        with patch("tmux_web.agent_status.status_for_pane", return_value="idle"):
+            body = self.client.get("/api/panes/%254/transcript?limit=20").json()
+        self.assertTrue(body["waiting"])
+        self.assertEqual(body["waiting_since"], "2026-10-27T22:10:00Z")
+
+    def test_stub_poll_returns_fresh_waiting_after_agent_starts(self):
+        """stub 路径不能只回缓存的 waiting：agent 由 idle 变 busy 时同一 sig 也要翻转。"""
+        self.login()
+        messages = [
+            {"id": "u1", "role": "user", "text": "问题", "timestamp": "2026-10-27T22:00:00Z"},
+            {"id": "a1", "role": "assistant", "text": "先回答一部分",
+             "timestamp": "2026-10-27T22:00:05Z"},
+        ]
+        _path, _state, fake = self._fake_session_transcript(messages)
+        calls = []
+        orig = fake
+
+        def counting(pane_id, limit=200, refresh=False, pane=None):
+            calls.append(pane_id)
+            return orig(pane_id, limit, refresh, pane)
+
+        self.tmux.transcript = counting
+        with patch("tmux_web.agent_status.status_for_pane", return_value="idle"):
+            first = self.client.get("/api/panes/%254/transcript").json()
+        self.assertFalse(first["waiting"])
+        self.assertEqual(len(calls), 1)
+        sig = first["signature"]
+        with patch("tmux_web.agent_status.status_for_pane", return_value="busy"):
+            second = self.client.get("/api/panes/%254/transcript", params={"sig": sig}).json()
+        self.assertEqual(second, {"unchanged": True, "signature": sig, "waiting": True,
+                                  "waiting_since": "2026-10-27T22:00:00Z", "has_more": False})
+        self.assertEqual(len(calls), 1, "stub 路径不能重读 transcript")
+        with patch("tmux_web.agent_status.status_for_pane", return_value="idle"):
+            third = self.client.get("/api/panes/%254/transcript", params={"sig": sig}).json()
+        self.assertFalse(third["waiting"])
+        self.assertEqual(len(calls), 1)
+
+    def test_since_returns_only_new_messages(self):
+        """since=最后一条消息 id（或完整 signature）只回该点之后的新消息。"""
+        self.login()
+        messages = [
+            {"id": "m1", "role": "user", "text": "一", "timestamp": 1},
+            {"id": "m2", "role": "assistant", "text": "二", "timestamp": 2},
+        ]
+        _path, state, fake = self._fake_session_transcript(messages)
+        self.tmux.transcript = fake
+        first = self.client.get("/api/panes/%254/transcript").json()
+        self.assertEqual(first["signature"], "%s|2|m2" % first["mtime"])
+        state["messages"].append(
+            {"id": "m3", "role": "assistant", "text": "三", "timestamp": 3})
+        # 新消息一定伴随 session 文件变大：只改内存、不动文件时 stat 判定无变化是对的
+        Path(_path).write_text("{}\n{}\n{}\n")
+        by_id = self.client.get("/api/panes/%254/transcript",
+                                params={"since": "m2"}).json()
+        self.assertTrue(by_id.get("incremental"))
+        self.assertEqual([item["id"] for item in by_id["messages"]], ["m3"])
+        self.assertTrue(by_id["signature"].endswith("|3|m3"))
+        self.assertEqual(by_id["mtime"], os.path.getmtime(_path))
+        by_sig = self.client.get("/api/panes/%254/transcript",
+                                 params={"since": first["signature"]}).json()
+        self.assertTrue(by_sig.get("incremental"))
+        self.assertEqual([item["id"] for item in by_sig["messages"]], ["m3"])
+        self.assertEqual(by_sig["signature"], by_id["signature"])
+
+    def test_since_unknown_returns_full(self):
+        """since 对不上当前消息列表（会话轮换）时回全量兜底，而不是空增量。"""
+        self.login()
+        _path, _state, fake = self._fake_session_transcript([
+            {"id": "m1", "role": "user", "text": "一", "timestamp": 1},
+            {"id": "m2", "role": "assistant", "text": "二", "timestamp": 2},
+        ])
+        self.tmux.transcript = fake
+        body = self.client.get("/api/panes/%254/transcript",
+                               params={"since": "gone"}).json()
+        self.assertNotIn("unchanged", body)
+        self.assertFalse(body.get("incremental", False))
+        self.assertEqual([item["id"] for item in body["messages"]], ["m1", "m2"])
+
+    def test_since_at_tip_returns_unchanged_stub(self):
+        """since 指向最后一条消息说明没有新消息：回 stub，不回空 messages。"""
+        self.login()
+        _path, _state, fake = self._fake_session_transcript([
+            {"id": "m1", "role": "user", "text": "一", "timestamp": 1},
+            {"id": "m2", "role": "assistant", "text": "二", "timestamp": 2},
+        ])
+        self.tmux.transcript = fake
+        first = self.client.get("/api/panes/%254/transcript").json()
+        body = self.client.get("/api/panes/%254/transcript",
+                               params={"since": "m2"}).json()
+        self.assertTrue(body.get("unchanged"))
+        self.assertNotIn("messages", body)
+        self.assertEqual(body["signature"], first["signature"])
+
+    def test_since_after_rotation_returns_full(self):
+        """消息列表整体换掉后，旧 since 不在列表里：回全量。"""
+        self.login()
+        _path, state, fake = self._fake_session_transcript([
+            {"id": "m1", "role": "user", "text": "一", "timestamp": 1},
+            {"id": "m2", "role": "assistant", "text": "二", "timestamp": 2},
+        ])
+        self.tmux.transcript = fake
+        state["messages"] = [
+            {"id": "n1", "role": "user", "text": "新一", "timestamp": 10},
+            {"id": "n2", "role": "assistant", "text": "新二", "timestamp": 11},
+        ]
+        body = self.client.get("/api/panes/%254/transcript",
+                               params={"since": "m2"}).json()
+        self.assertFalse(body.get("incremental", False))
+        self.assertEqual([item["id"] for item in body["messages"]], ["n1", "n2"])
+
+    def test_long_poll_wait_is_clamped_to_25(self):
+        from tmux_web import clamp_long_poll_wait
+        self.assertEqual(clamp_long_poll_wait(99), 25)
+        self.assertEqual(clamp_long_poll_wait(25), 25)
+        self.assertEqual(clamp_long_poll_wait(10), 10)
+        self.assertEqual(clamp_long_poll_wait(0), 0)
+        self.assertEqual(clamp_long_poll_wait(-5), 0)
+        self.assertEqual(clamp_long_poll_wait(None), 0)
+
+    def test_long_poll_wakes_promptly_when_session_file_changes(self):
+        """文件一变，长轮询要在几秒内醒来回新数据，而不是等满 20 秒。"""
+        self.login()
+        path, state, fake = self._fake_session_transcript([
+            {"id": "m1", "role": "user", "text": "一", "timestamp": 1},
+            {"id": "m2", "role": "assistant", "text": "二", "timestamp": 2},
+        ])
+        self.tmux.transcript = fake
+        first = self.client.get("/api/panes/%254/transcript").json()
+        thread, started, result = self._get_in_thread(
+            "/api/panes/%254/transcript", params={"sig": first["signature"], "wait": 20})
+        time.sleep(0.7)
+        state["messages"].append(
+            {"id": "m3", "role": "assistant", "text": "三", "timestamp": 3})
+        Path(path).write_text("{}\n{}\n{}\n")
+        thread.join(timeout=15)
+        self.assertFalse(thread.is_alive(), "长轮询应在文件变化后醒来")
+        self.assertNotIn("error", result, result.get("error"))
+        elapsed = time.time() - started
+        self.assertLess(elapsed, 12, "唤醒延迟 %ss，远大于文件变化后应有的 ~1s" % elapsed)
+        body = result["response"].json()
+        self.assertNotIn("unchanged", body)
+        self.assertEqual(body["messages"][-1]["id"], "m3")
+
+    def test_long_poll_times_out_with_stub_when_nothing_changes(self):
+        """无变化时约 wait 秒后超时回 stub（带新鲜 waiting），不是立即回。"""
+        self.login()
+        _path, _state, fake = self._fake_session_transcript([
+            {"id": "m1", "role": "user", "text": "一", "timestamp": 1},
+            {"id": "m2", "role": "assistant", "text": "二", "timestamp": 2},
+        ])
+        self.tmux.transcript = fake
+        first = self.client.get("/api/panes/%254/transcript").json()
+        started = time.time()
+        body = self.client.get("/api/panes/%254/transcript",
+                               params={"sig": first["signature"], "wait": 1}).json()
+        elapsed = time.time() - started
+        self.assertGreaterEqual(elapsed, 0.8, "wait=1 至少要挂 ~1 秒")
+        self.assertLess(elapsed, 8)
+        self.assertTrue(body.get("unchanged"))
+        self.assertEqual(body["signature"], first["signature"])
+        self.assertFalse(body["waiting"])
+
+    def test_long_poll_wakes_when_waiting_flips(self):
+        """文件没变、agent 状态翻转（idle→busy）时也要醒来回新鲜 waiting。"""
+        self.login()
+        messages = [
+            {"id": "u1", "role": "user", "text": "问题", "timestamp": "2026-10-27T22:00:00Z"},
+            {"id": "a1", "role": "assistant", "text": "先回答一部分",
+             "timestamp": "2026-10-27T22:00:05Z"},
+        ]
+        _path, _state, fake = self._fake_session_transcript(messages)
+        self.tmux.transcript = fake
+        with patch("tmux_web.agent_status.status_for_pane", return_value="idle"):
+            first = self.client.get("/api/panes/%254/transcript").json()
+        self.assertFalse(first["waiting"])
+        with patch("tmux_web.agent_status.status_for_pane", return_value="busy"):
+            thread, started, result = self._get_in_thread(
+                "/api/panes/%254/transcript",
+                params={"sig": first["signature"], "wait": 20})
+            thread.join(timeout=15)
+        self.assertFalse(thread.is_alive(), "waiting 翻转应唤醒长轮询")
+        self.assertNotIn("error", result, result.get("error"))
+        self.assertLess(time.time() - started, 12)
+        body = result["response"].json()
+        self.assertTrue(body.get("unchanged"))
+        self.assertTrue(body["waiting"])
+        self.assertEqual(body["waiting_since"], "2026-10-27T22:00:00Z")
+
+    def test_long_poll_is_skipped_for_manual_refresh(self):
+        """refresh=1 的手动刷新要立即回，不能被 wait 挂住。"""
+        self.login()
+        _path, _state, fake = self._fake_session_transcript([
+            {"id": "m1", "role": "user", "text": "一", "timestamp": 1},
+        ])
+        self.tmux.transcript = fake
+        started = time.time()
+        body = self.client.get("/api/panes/%254/transcript",
+                               params={"wait": 20, "refresh": 1}).json()
+        self.assertLess(time.time() - started, 5)
+        self.assertNotIn("unchanged", body)
+        self.assertEqual(len(body["messages"]), 1)
+
+    def test_wait_zero_keeps_old_stub_behaviour(self):
+        """wait=0 时行为不变：sig 命中立即回 stub。"""
+        self.login()
+        _path, _state, fake = self._fake_session_transcript([
+            {"id": "m1", "role": "user", "text": "一", "timestamp": 1},
+            {"id": "m2", "role": "assistant", "text": "二", "timestamp": 2},
+        ])
+        self.tmux.transcript = fake
+        first = self.client.get("/api/panes/%254/transcript").json()
+        started = time.time()
+        body = self.client.get("/api/panes/%254/transcript",
+                               params={"sig": first["signature"], "wait": 0}).json()
+        self.assertLess(time.time() - started, 5)
+        self.assertTrue(body.get("unchanged"))
+
+    def test_inline_console_script_passes_node_check(self):
+        """index.html 的内联 <script type=module> 抽出来必须过 node --check。"""
+        if shutil.which("node") is None:
+            self.skipTest("node is not installed")
+        import re
+        page = Path(__file__).resolve().parent.parent.joinpath("web", "index.html").read_text()
+        match = re.search(r'<script type="module">(.*?)</script>', page, re.S)
+        self.assertIsNotNone(match, "找不到内联 module 脚本")
+        with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as handle:
+            handle.write(match.group(1))
+            script_path = handle.name
+        self.addCleanup(os.unlink, script_path)
+        completed = subprocess.run(["node", "--check", script_path],
+                                   capture_output=True, text=True, timeout=60)
+        self.assertEqual(completed.returncode, 0, completed.stderr[-2000:])
+
+    def test_incremental_merge_helper_is_covered_by_node(self):
+        if shutil.which("node") is None:
+            self.skipTest("node is not installed")
+        completed = subprocess.run(
+            ["node", "--test", "tests/js/chat-refresh.test.mjs"],
+            cwd=Path(__file__).resolve().parent.parent, capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout[-2000:] + completed.stderr[-2000:])
+        self.assertIn("fail 0", completed.stdout)
+
+    def test_chat_refresh_client_wiring_is_present(self):
+        self.login()
+        page = self.client.get("/").text
+        for marker in (
+            "refreshTranscript(pane,{force:true})",   # 1a：发送后立即刷新
+            "since=",                                # 2：增量 transcript
+            "wait=20",                               # 3：稳态长轮询
+            "transcriptFailures",                    # 1c：失败计数，≥2 次才报
+            "mergeIncrementalMessages(",             # 2：增量合并进完整列表
+            "long_poll",                             # 3：服务端挂住过才立即再挂
+        ):
+            self.assertIn(marker, page)
 
     def test_progress_indicator_markup_is_present(self):
         self.login()

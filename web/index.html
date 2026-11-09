@@ -444,7 +444,7 @@ import {AnsiUp} from '/assets/ansi_up.js?v=1';
 import {marked} from '/assets/marked.esm.js?v=1';
 (() => {
   const ansi=new AnsiUp();
-  const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},kbShift:false,kbSymbols:false,viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,restored:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0};
+  const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptFailures:0,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},kbShift:false,kbSymbols:false,viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,restored:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0};
   const $=id=>document.getElementById(id),list=$('pane-list'),term=$('terminal'),scroll=$('scroll'),input=$('input'),send=$('send');
   try{const saved=JSON.parse(localStorage.getItem('tmux-tree-open')||'[]');if(Array.isArray(saved))state.treeOpen=new Set(saved.filter(key=>typeof key==='string'));}catch{localStorage.removeItem('tmux-tree-open');}
   function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -1276,6 +1276,13 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     }else if(state.filesMode){openFiles(null);}
     $('sidebar').classList.remove('open');}
   function transcriptSignature(d){const messages=d.messages||[];return `${d.mtime}|${messages.length}|${messages.length?messages[messages.length-1].id:''}`;}
+  function mergeIncrementalMessages(existing,incoming,sinceId){
+    // 增量只在锚点仍是本地列表尾时才能接上；对不上（切 pane/加载更早消息/会话轮换）
+    // 就返回 null，调用方走全量刷新，绝不把两段不连续的消息拼在一起
+    if(!Array.isArray(existing)||!existing.length||!Array.isArray(incoming))return null;
+    if(String(existing[existing.length-1].id)!==String(sinceId))return null;
+    const seen=new Set(existing.map(message=>String(message.id)));
+    return existing.concat(incoming.filter(message=>!seen.has(String(message.id))));}
   function atBottom(){return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<90;}
   function htmlEscape(value){return value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function stripAnsi(value){return value.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g,'');}
@@ -1437,23 +1444,42 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   }
   async function refreshTranscript(id,{force=false,refresh=false}={}){if(state.selected!==id||state.mode!=='chat')return;
     const follow=atBottom(),first=state.transcriptMtime===null;
+    // 稳态轮询才挂长轮询：force/手动刷新走全量立即回；有基线（sig 或 since）才有得等
+    const steady=!force&&!refresh,longPoll=steady&&(!!state.transcriptSig||state.transcriptMessages.length>0);
+    const sinceId=!force&&!refresh&&state.transcriptMessages.length?String(state.transcriptMessages[state.transcriptMessages.length-1].id):'';
+    let nextDelay=null;
     try{const sig=state.transcriptSig?`&sig=${encodeURIComponent(state.transcriptSig)}`:'';
-      const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit}${refresh?'&refresh=1':''}${sig}`);if(state.selected!==id||state.mode!=='chat')return;
-      showError('');$('status-dot').className='status-dot live';
+      const since=sinceId?`&since=${encodeURIComponent(sinceId)}`:'';
+      const wait=longPoll?'&wait=20':'';
+      const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit}${refresh?'&refresh=1':''}${sig}${since}${wait}`);if(state.selected!==id||state.mode!=='chat')return;
+      showError('');state.transcriptFailures=0;$('status-dot').className='status-dot live';
+      // 服务端真的挂住过（long_poll）才立即再挂；远端 pane 和旧服务端没这个标记，
+      // 沿用原来的退避间隔，不会被打成紧循环
+      nextDelay=d.long_poll?0:transcriptPollDelay();
       if(d.unchanged){state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;syncProgress();
-        syncLiveTail(id);scheduleTranscriptPoll(id,transcriptPollDelay());
         return;}
-      const signature=transcriptSignature(d),changed=force||signature!==state.transcriptSig;
+      const signature=d.signature||transcriptSignature(d),changed=force||signature!==state.transcriptSig;
       state.hasMore=!!d.has_more;syncEarlierBar();
       state.transcriptProvider=d.provider||'';state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;syncProgress();
-      rememberTranscript(id,d);
-      if(changed){state.lastTranscriptChange=Date.now();state.transcriptSig=signature;state.transcriptMtime=d.mtime;renderTranscript(d.messages);syncProgress();
-        if(follow||first)requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
-      else {syncProgress();}
-    }catch(e){if(state.selected===id&&state.mode==='chat')showError(e.message);}
+      if(d.incremental){
+        const merged=mergeIncrementalMessages(state.transcriptMessages,d.messages,sinceId);
+        if(!merged){await refreshTranscript(id,{force:true});return;}
+        rememberTranscript(id,{...d,messages:merged});
+        if(changed){state.lastTranscriptChange=Date.now();state.transcriptSig=signature;state.transcriptMtime=d.mtime;renderTranscript(merged);syncProgress();
+          if(follow||first)requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
+        else {syncProgress();}
+      }else{
+        rememberTranscript(id,d);
+        if(changed){state.lastTranscriptChange=Date.now();state.transcriptSig=signature;state.transcriptMtime=d.mtime;renderTranscript(d.messages);syncProgress();
+          if(follow||first)requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
+        else {syncProgress();}
+      }
+    }catch(e){state.transcriptFailures=(state.transcriptFailures||0)+1;
+      if(state.transcriptFailures>=2&&state.selected===id&&state.mode==='chat')showError(e.message);
+      nextDelay=500;}
     finally{
       syncLiveTail(id);
-      scheduleTranscriptPoll(id,transcriptPollDelay());}}
+      scheduleTranscriptPoll(id,nextDelay==null?transcriptPollDelay():nextDelay);}}
   let tailTimer=null, tailDigest='';
   function liveTailBox(){let box=$('live-tail');
     if(!box){box=document.createElement('div');box.id='live-tail';box.className='live-tail';box.hidden=true;
@@ -1998,7 +2024,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(!pane||!text.trim()||attachmentsPending())return;
     // 条带在按 Enter 这一刻就收起来（以前等 POST 回来才清，那一秒图片还留着）
     const attachments=prompt?takeAttachments():[];
-    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});setOptimisticStatus(localId,'sent');setSendState('已发送 ✓','ok');showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');if(attachments.length)restoreAttachments(attachments);
+    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});setOptimisticStatus(localId,'sent');setSendState('已发送 ✓','ok');showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;refreshTranscript(pane,{force:true});}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');if(attachments.length)restoreAttachments(attachments);
     // 别把用户刚打的字弄丢：放回输入框，改完/网络好了直接再发
     // 别把用户刚打的字弄丢，也别把那行附件前缀留在输入框里：附件已经放回条带，
     // 再发一次会重新拼前缀，留着就变成两行 "user uploaded file …"
