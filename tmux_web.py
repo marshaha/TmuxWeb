@@ -596,6 +596,8 @@ class PromptChoiceRequest(BaseModel):
 
     index: int | None = None
     key: str = ""
+    toggle: int | None = None      # 第几个开关（[ Low ][ High ][ Max ] 那种）
+    value: int | None = None       # 要切到第几个值
 
 
 class TransferTicketRequest(BaseModel):
@@ -3052,7 +3054,11 @@ def create_app(
             found, _text = await read_prompt(pane_id)
             if not found:
                 raise HTTPException(status_code=409, detail="屏幕上没有等待中的选择")
-            if payload.index is not None:
+            if payload.toggle is not None and payload.value is not None:
+                keys = agent_prompts.toggle_keys(found, payload.toggle, payload.value)
+                if not keys:
+                    return {"ok": True, "prompt": found, "unchanged": True}
+            elif payload.index is not None:
                 keys = agent_prompts.choice_keys(found, payload.index)
             else:
                 keys = agent_prompts.choice_for_key(found, payload.key)
@@ -3073,7 +3079,8 @@ def create_app(
                 if after is None:
                     return {"ok": True, "prompt": None}
                 if (after.get("title") != found.get("title")
-                        or after.get("selected") != found.get("selected")):
+                        or after.get("selected") != found.get("selected")
+                        or after.get("toggles") != found.get("toggles")):
                     return {"ok": True, "prompt": after}
             return {"ok": False, "prompt": found,
                     "detail": "屏幕没有变化，可能没送到；再点一次或切到终端"}

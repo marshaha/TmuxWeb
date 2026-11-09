@@ -2419,6 +2419,9 @@ class TmuxWebTests(unittest.TestCase):
                        '/assets/prompt-card.js', "TmuxPrompt.start(()=>state.selected)"):
             self.assertIn(marker, html, marker)
         self.assertIn(".prompt-card{", html)
+        # 卡片本身不滚动，只有选项列表滚：标题/开关/Esc 必须常驻可见
+        self.assertIn(".prompt-options{display:flex;flex-direction:column;gap:6px;margin-top:8px;min-height:0;flex:1 1 auto", html)
+        self.assertIn("id=\"prompt-card-toggles\"", html)
 
     def test_the_prompt_endpoint_needs_a_login(self):
         for path in ("/api/panes/%254/prompt",):
@@ -2501,6 +2504,51 @@ class TmuxWebTests(unittest.TestCase):
         result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "2"}).json()
         self.assertTrue(result["ok"], result)
         self.assertEqual(sent_keys, ["2", "Enter"])
+
+    def test_a_switch_can_be_flipped_from_the_card(self):
+        """kimi 的 Thinking 开关：点 Max 就发一次 →，然后复核屏幕真的变了。"""
+        self.login()
+        self.tmux.output = ("  Select a model  (type to search)\n"
+                            "  ↑↓ navigate · Enter select · Esc cancel\n\n"
+                            "     Alpha\n"
+                            "  ❯ Beta\n"
+                            "  Thinking  (←→ to switch)\n"
+                            "     Low    [ High ]    Max\n")
+        sent_keys = []
+
+        after_screen = ("  Select a model  (type to search)\n"
+                        "  ↑↓ navigate · Enter select · Esc cancel\n\n"
+                        "     Alpha\n"
+                        "     Beta\n"
+                        "  Thinking  (←→ to switch)\n"
+                        "     Low      High    [ Max ]\n")
+
+        def recording(pane_id, key, pane=None):
+            sent_keys.append(key)
+            if key == "Right":
+                self.tmux.output = after_screen
+
+        self.tmux.send_key = recording
+        result = self.client.post("/api/panes/%254/prompt/choose",
+                                  json={"toggle": 0, "value": 2}).json()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(sent_keys, ["Right"])
+        self.assertEqual(result["prompt"]["toggles"][0]["active"], 2)
+
+    def test_clicking_the_value_it_already_has_sends_nothing(self):
+        self.login()
+        self.tmux.output = ("  Select a model  (type to search)\n"
+                            "  ↑↓ navigate · Enter select · Esc cancel\n\n"
+                            "     Alpha\n"
+                            "  ❯ Beta\n"
+                            "  Thinking  (←→ to switch)\n"
+                            "     Low    [ High ]    Max\n")
+        sent_keys = []
+        self.tmux.send_key = lambda pane_id, key, pane=None: sent_keys.append(key)
+        result = self.client.post("/api/panes/%254/prompt/choose",
+                                  json={"toggle": 0, "value": 1}).json()
+        self.assertTrue(result["ok"])
+        self.assertEqual(sent_keys, [])
 
     def test_choosing_without_a_menu_is_a_conflict(self):
         self.login()

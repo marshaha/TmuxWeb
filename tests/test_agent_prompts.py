@@ -43,6 +43,28 @@ MODEL_PICKER = """
  Ask When Needed  K2.8 Preview thinking: max  ~/workspace/taijiapi    ctrl+o expand
 """
 
+# kimi 的模型选择器 + 底部 Thinking 开关（实测）
+PICKER_WITH_THINKING = """
+  Select a model  (type to search)
+  Tab toggle provider · ↑↓ navigate · Enter select · Alt+S session-only · Esc cancel
+
+   All   axera   ctyun   Kimi Code
+
+     Claude Sonnet 5 5 High            ctyun
+  ❯ K3.1 Pro                          Kimi Code ← current
+     K2.8 Preview                      Kimi Code
+  ▼ 24 more
+  Thinking  (←→ to switch)
+     Low    [ High ]    Max
+  Deeper reasoning for complex tasks, with higher token usage
+"""
+
+ONLY_TOGGLE = """
+  Options
+  Verbosity  (←→ to switch)
+   [ On ]    Off
+"""
+
 # claude 的权限确认：光标 + 序号同时出现
 CLAUDE_PROCEED = """
  Do you want to proceed?
@@ -111,6 +133,40 @@ class CursorListTests(unittest.TestCase):
 
     def test_a_single_line_menu_is_ignored(self):
         self.assertIsNone(prompts.parse_screen("  ❯ only one option here\n"))
+
+
+class ToggleTests(unittest.TestCase):
+    def test_the_thinking_switch_is_parsed_next_to_the_picker(self):
+        found = prompts.parse_screen(PICKER_WITH_THINKING)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["title"], "Select a model  (type to search)")
+        self.assertEqual(len(found["toggles"]), 1)
+        toggle = found["toggles"][0]
+        self.assertEqual(toggle["label"], "Thinking")
+        self.assertEqual(toggle["options"], ["Low", "High", "Max"])
+        self.assertEqual(toggle["active"], 1, "带方括号的是当前值")
+        self.assertIn("←→", toggle["hint"])
+        # 开关行不能被当成列表项
+        self.assertNotIn("Low", [option["label"] for option in found["options"]])
+
+    def test_a_two_state_switch_reads_both_segments(self):
+        found = prompts.parse_screen(ONLY_TOGGLE)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["kind"], "toggle")
+        self.assertEqual(found["toggles"][0]["options"], ["On", "Off"])
+        self.assertEqual(found["toggles"][0]["active"], 0)
+        self.assertEqual(found["toggles"][0]["label"], "Verbosity")
+
+    def test_switching_uses_arrow_keys_relative_to_the_current_value(self):
+        found = prompts.parse_screen(PICKER_WITH_THINKING)
+        self.assertEqual(prompts.toggle_keys(found, 0, 2), ["Right"])       # High → Max
+        self.assertEqual(prompts.toggle_keys(found, 0, 0), ["Left"])        # High → Low
+        self.assertEqual(prompts.toggle_keys(found, 0, 1), [])              # 已经在 High
+
+    def test_a_two_state_switch_flips_either_way(self):
+        found = prompts.parse_screen(ONLY_TOGGLE)
+        self.assertEqual(prompts.toggle_keys(found, 0, 1), ["Right"])
+        self.assertEqual(prompts.toggle_keys(found, 0, 0), [])
 
 
 class NumberedTests(unittest.TestCase):

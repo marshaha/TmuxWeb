@@ -26,8 +26,9 @@ CURSOR_RE = re.compile(r"^\s{0,8}([❯➤→»]|>\s)\s*(\S.*)$")
 BULLET_RE = re.compile(r"^\s{0,8}([●○•])\s+(\S.*)$")
 RULE_RE = re.compile(r"^[\s─━═┄┈╭╮╰╯│┃|+*-]{3,}$")
 HINT_RE = re.compile(
-    r"(↑↓|↑/↓|navigate|Enter (?:select|confirm|to)|Esc (?:cancel|exit|to)|"
+    r"(↑↓|↑/↓|←→|←/→|navigate|Enter (?:select|confirm|to)|Esc (?:cancel|exit|to)|"
     r"shift\+tab|tab toggle|type to search|press enter)", re.I)
+BRACKET_RE = re.compile(r"\[\s*([^\]]{1,24}?)\s*\]")
 MORE_RE = re.compile(r"^\s*[▼▽]\s*(\d+)\s+more\b", re.I)
 
 YES_NO_RE = re.compile(r"(\[y/N\]|\[Y/n\]|\(y/n\)|\(y/N\))", re.I)
@@ -74,6 +75,8 @@ def _looks_like_row(line: str) -> bool:
     if SHELL_RE.search(text) or text.endswith("$"):
         return False
     if RULE_RE.match(line) or HINT_RE.search(text) or MORE_RE.match(text) or FOOTER_RE.search(text):
+        return False
+    if BRACKET_RE.search(text):
         return False
     if text.startswith(("╭", "╰", "╯", "│", "┃", "─")):
         return False
@@ -130,11 +133,15 @@ def _collect_rows(lines: list[str], anchor: int) -> list[dict]:
 
 def _hint_index(lines: list[str], first_line: int) -> int | None:
     """提示行（↑↓ navigate / Esc cancel / type to search）在选项块附近的位置。"""
-    # 提示行可能在选项块上方不少（kimi 的信任对话框：标题+提示贴顶部，选项在底部）
-    for position in range(max(0, first_line - 14), min(len(lines), first_line + 16)):
-        if HINT_RE.search(_clean(lines[position]).strip()):
-            return position
-    return None
+    # 提示行可能在选项块上方不少（kimi 的信任对话框：标题+提示贴顶部，选项在底部），
+    # 但取"离选项块最近"的那条：kimi 的选择器里标题行自己也含 "type to search"，
+    # 选错就会把标题认成上面那行无关的告警文字
+    low, high = max(0, first_line - 14), min(len(lines), first_line + 16)
+    hits = [position for position in range(low, high)
+            if HINT_RE.search(_clean(lines[position]).strip())]
+    if not hits:
+        return None
+    return min(hits, key=lambda position: abs(position - first_line))
 
 
 def _title_above(lines: list[str], before: int) -> str:
@@ -171,6 +178,7 @@ def _finish(kind: str, title: str, hint: str, options: list[dict], view: list[st
         cleaned.append(item)
     return {
         "kind": kind,
+        "toggles": _toggle_rows(view),
         "title": title,
         "hint": hint,
         "options": cleaned,
@@ -180,6 +188,64 @@ def _finish(kind: str, title: str, hint: str, options: list[dict], view: list[st
         "source": source,
         "raw": "\n".join(_clean(line) for line in view[-18:]),
     }
+
+
+def _toggle_rows(lines: list[str]) -> list[dict]:
+    """认 `[ High ]` 这种开关行：一行若干段，正好一段带方括号就是当前值。
+
+        Low    [ High ]    Max          ← kimi 的 Thinking
+        [ On ]    Off
+    """
+    found: list[dict] = []
+    for offset, raw in enumerate(lines):
+        line = _clean(raw)
+        brackets = BRACKET_RE.findall(line)
+        if len(brackets) != 1:
+            continue
+        segments = [part for part in COLUMNS_RE.split(line.strip()) if part.strip()]
+        if len(segments) < 2:
+            continue
+        options, active = [], -1
+        for index, segment in enumerate(segments):
+            inner = BRACKET_RE.fullmatch(segment.strip())
+            if inner:
+                options.append(inner.group(1).strip())
+                active = index
+            elif segment.strip().startswith("[") or segment.strip().endswith("]"):
+                options = []          # 半截方括号：不是开关，别猜
+                break
+            else:
+                options.append(segment.strip())
+        if active < 0 or len(options) < 2:
+            continue
+        label, hint = "", ""
+        for probe in range(offset - 1, max(-1, offset - 4), -1):
+            text = _clean(lines[probe]).strip()
+            if not text or RULE_RE.match(text) or MORE_RE.match(text):
+                continue
+            if BRACKET_RE.search(text) or FOOTER_RE.search(text):
+                continue
+            hint_match = re.search(r"([↑↓←→/ ]{1,6}\s*to (?:switch|toggle)[^)]*)", text)
+            label = re.split(r"\s{2,}", text)[0].strip()
+            hint = hint_match.group(1).strip() if hint_match else ""
+            break
+        found.append({"index": len(found), "label": label[:40], "hint": hint[:40],
+                      "options": [option[:24] for option in options], "active": active})
+    return found
+
+
+def toggle_keys(prompt: dict[str, Any], toggle_index: int, value_index: int) -> list[str]:
+    """把"要第几个值"翻译成 ←/→ 次数（相对当前值，不假设焦点在哪）。"""
+    toggles = prompt.get("toggles") or []
+    if not toggles:
+        raise ValueError("no toggle")
+    toggle = toggles[max(0, min(int(toggle_index), len(toggles) - 1))]
+    options = toggle["options"]
+    target = max(0, min(int(value_index), len(options) - 1))
+    delta = target - toggle["active"]
+    if delta == 0:
+        return []
+    return ["Right"] * delta if delta > 0 else ["Left"] * (-delta)
 
 
 def parse_screen(text: str) -> dict[str, Any] | None:
@@ -255,6 +321,13 @@ def parse_screen(text: str) -> dict[str, Any] | None:
             return _finish("confirm", line[:160], "",
                            [{"label": "继续", "meta": "Enter", "key": "enter"}],
                            lines, numbers=False, source="enter")
+
+    # 屏幕上只有开关（没有列表/确认）：也给一张卡，只要它有 ←→ 提示
+    toggles = _toggle_rows(lines)
+    if toggles and any(toggle.get("hint") for toggle in toggles):
+        first = next(toggle for toggle in toggles if toggle.get("hint"))
+        return _finish("toggle", first["label"], first["hint"], [], lines,
+                       numbers=False, source="toggle")
     return None
 
 

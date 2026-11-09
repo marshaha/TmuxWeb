@@ -88,6 +88,37 @@
       list.appendChild(button);
     });
 
+    const toggles = $('toggles');
+    toggles.innerHTML = '';
+    (data.toggles || []).forEach((toggle, toggleIndex) => {
+      const row = document.createElement('div');
+      row.className = 'prompt-toggle';
+      const label = document.createElement('span');
+      label.className = 'prompt-toggle-label';
+      label.textContent = toggle.label || '开关';
+      row.appendChild(label);
+      const group = document.createElement('div');
+      group.className = 'prompt-toggle-group';
+      toggle.options.forEach((option, valueIndex) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'prompt-toggle-btn' + (valueIndex === toggle.active ? ' on' : '');
+        button.textContent = option;
+        button.setAttribute('aria-pressed', valueIndex === toggle.active ? 'true' : 'false');
+        button.addEventListener('click', () => chooseToggle(toggleIndex, valueIndex));
+        group.appendChild(button);
+      });
+      row.appendChild(group);
+      if (toggle.hint) {
+        const hint = document.createElement('span');
+        hint.className = 'prompt-toggle-hint';
+        hint.textContent = toggle.hint;
+        row.appendChild(hint);
+      }
+      toggles.appendChild(row);
+    });
+    toggles.hidden = !(data.toggles && data.toggles.length);
+
     const raw = $('raw');
     if (raw) raw.textContent = (screen || []).join('\n');
     const details = $('raw-wrap');
@@ -119,6 +150,23 @@
       } else {
         hide();
       }
+    } catch (error) {
+      setState('没送到，再试一次：' + error.message, true);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function chooseToggle(toggleIndex, value) {
+    const pane = paneNow();
+    if (!pane || busy) return;
+    busy = true;
+    try {
+      const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`,
+        {toggle: toggleIndex, value});
+      if (!result.ok) { setState(result.data.detail || `HTTP ${result.status}`, true); return; }
+      if (result.data.prompt) render(result.data.prompt, (result.data.prompt.raw || '').split('\n'));
+      else hide();
     } catch (error) {
       setState('没送到，再试一次：' + error.message, true);
     } finally {

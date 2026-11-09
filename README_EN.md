@@ -207,8 +207,12 @@ POST /api/panes/{pane}/prompt/choose   # {"index": 2} or {"key": "esc"}
 2. **Verify after sending**: capture again; success means the menu is gone, the title changed, or the cursor moved.
    Three unchanged polls report "try again or use the terminal" instead of pretending it worked.
 
-Tab bars, toggles (`[ On ] Off`), progress bars and free-text input are deliberately left to the terminal - guessing
-those means answering a question on the user's behalf.
+Segmented switches (`Thinking  Low [ High ] Max`) are supported too: the segments are split on wide gaps and the one
+inside brackets is the current value. Clicking a segment sends only the `←`/`→` presses needed to get there (nothing
+when the segment is already active), and the same capture-and-verify step applies.
+
+Tab bars, progress bars and free-text input are deliberately left to the terminal - guessing those means answering a
+question on the user's behalf.
 
 ### Video plays right in the chat
 

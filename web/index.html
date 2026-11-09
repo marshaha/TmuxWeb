@@ -380,7 +380,9 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   </dialog>
   <section class="composer"><style>
   /* agent 的交互菜单：浮在输入框上方，不占消息区高度，菜单关掉就消失 */
-  .prompt-card{position:absolute;left:16px;right:16px;bottom:100%;margin:0 auto 8px;max-width:820px;padding:10px 12px 9px;border:1px solid var(--line-strong);border-radius:16px;background:var(--card);box-shadow:0 14px 34px rgba(32,31,28,.18);z-index:6;max-height:min(52vh,430px);overflow:auto}
+  /* 卡片本身不滚动：只有选项列表滚，标题/开关/Esc 永远钉在可见位置 */
+  .prompt-card{position:absolute;left:16px;right:16px;bottom:100%;margin:0 auto 8px;max-width:820px;padding:10px 12px 9px;border:1px solid var(--line-strong);border-radius:16px;background:var(--card);box-shadow:0 14px 34px rgba(32,31,28,.18);z-index:6;max-height:min(52vh,430px);display:flex;flex-direction:column;overflow:hidden}
+  .prompt-card>.prompt-head,.prompt-card>.prompt-hint,.prompt-card>.prompt-toggles,.prompt-card>.prompt-foot,.prompt-card>.prompt-raw{flex:none}
   .prompt-card[hidden]{display:none}
   .prompt-card:focus{outline:none}
   .prompt-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -390,12 +392,20 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   .prompt-x:hover{background:var(--surface2);color:var(--ink)}
   .prompt-x .ico{width:13px;height:13px}
   .prompt-hint{margin:3px 0 0;color:var(--muted);font-size:11px;line-height:1.4;overflow-wrap:anywhere}
-  .prompt-options{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  .prompt-options{display:flex;flex-direction:column;gap:6px;margin-top:8px;min-height:0;flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain}
   .prompt-option{display:flex;flex:none;align-items:center;gap:8px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);color:var(--ink);font:600 12.5px/1.35 inherit;text-align:left;cursor:pointer}
   .prompt-option:hover{border-color:var(--accent)}
   .prompt-option.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
   .prompt-label{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
   .prompt-meta{flex:none;max-width:46%;color:var(--muted);font-weight:400;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .prompt-toggles{display:flex;flex-direction:column;gap:7px;margin-top:10px;padding-top:9px;border-top:1px dashed var(--line)}
+  .prompt-toggle{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
+  .prompt-toggle-label{flex:none;color:var(--ink);font-size:12px;font-weight:600}
+  .prompt-toggle-group{display:flex;flex:none;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--surface2)}
+  .prompt-toggle-btn{flex:none;height:22px;padding:0 9px;border:0;border-radius:7px;background:none;color:var(--muted);font:600 11.5px/1 inherit;cursor:pointer}
+  .prompt-toggle-btn:hover{color:var(--ink)}
+  .prompt-toggle-btn.on{background:var(--accent);color:#fff}
+  .prompt-toggle-hint{flex:1 1 auto;min-width:0;color:var(--muted);font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .prompt-foot{display:flex;align-items:center;gap:8px;margin-top:8px;min-height:22px}
   .prompt-state{flex:1 1 auto;min-width:0;color:var(--muted);font-size:11px}
   .prompt-state.bad{color:var(--danger)}
@@ -407,12 +417,14 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   @media(max-width:760px){
     .prompt-card{left:8px;right:8px;max-height:46vh;border-radius:14px;padding:9px 10px 8px}
     .prompt-option{padding:9px 10px;font-size:13px}
+    .prompt-toggle-btn{height:24px;font-size:12px}
   }
 </style>
 <div class="prompt-card" id="prompt-card" hidden tabindex="0" role="dialog" aria-label="agent 正在等待选择">
   <div class="prompt-head"><span class="prompt-title" id="prompt-card-title"></span><button class="prompt-x" id="prompt-card-close" type="button" title="收起（不发任何键）" aria-label="收起"><svg class="ico"><use href="#i-close"/></svg></button></div>
   <p class="prompt-hint" id="prompt-card-hint" hidden></p>
   <div class="prompt-options" id="prompt-card-options" role="listbox"></div>
+  <div class="prompt-toggles" id="prompt-card-toggles" hidden></div>
   <div class="prompt-foot"><span class="prompt-state" id="prompt-card-state"></span><button class="prompt-btn" id="prompt-card-esc" type="button">Esc 取消</button></div>
   <details class="prompt-raw" id="prompt-card-raw-wrap" hidden><summary>屏幕原文</summary><pre id="prompt-card-raw"></pre></details>
 </div>
