@@ -72,6 +72,53 @@ BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
 
 
+# The console's scripts, concatenated once at startup into one bundle: one
+# request instead of sixteen, which matters most where a round trip costs a
+# third of a second or more. Every file is an IIFE exporting a single
+# window.Tmux* namespace, so concatenation cannot collide; files are joined
+# with ";\n" so a missing trailing semicolon can never merge two files into
+# one call, and sourceMappingURL lines are dropped (they would 404 under the
+# bundle URL). theme.js stays separate: it must run synchronously before
+# first paint. The order below is the order the tags used to load in.
+CONSOLE_BUNDLE_SOURCES = (
+    ("assets", "uploads.js"),
+    ("assets", "composer-files.js"),
+    ("assets", "path-links.js"),
+    ("assets", "prompt-card.js"),
+    ("assets", "markdown-cjk.js"),
+    ("assets", "video-cards.js"),
+    ("assets", "upload-cards.js"),
+    ("assets", "transfer.js"),
+    ("assets", "downloads.js"),
+    ("assets", "pane-preview.js"),
+    ("vendor/xterm", "xterm.js"),
+    ("vendor/xterm", "addon-fit.js"),
+    ("assets", "plugins-ui.js"),
+    ("assets", "recents.js"),
+    ("assets", "settings.js"),
+)
+
+
+def build_console_bundle() -> tuple[bytes, str]:
+    """Concatenate the console scripts once; return (bytes, 12-char sha1).
+
+    Bytes are read raw and split on "\\n" only: str.splitlines() would also
+    split on the control bytes xterm.js legitimately carries inside string
+    literals (\\x1c/\\x1d/\\x1e/\\x85), corrupting them into newlines.
+    """
+    parts = []
+    for directory, name in CONSOLE_BUNDLE_SOURCES:
+        text = (WEB_DIR / directory / name).read_bytes().decode("utf-8")
+        lines = [line for line in text.split("\n")
+                 if not line.startswith("//# sourceMappingURL=")]
+        parts.append("/* console.bundle: %s/%s */\n%s" % (directory, name, "\n".join(lines)))
+    blob = ";\n".join(parts).encode("utf-8")
+    return blob, hashlib.sha1(blob).hexdigest()[:12]
+
+
+CONSOLE_BUNDLE_BYTES, CONSOLE_BUNDLE_HASH = build_console_bundle()
+
+
 class LoginRateLimiter:
     def __init__(self, attempts: int = 5, window: int = 60):
         self.attempts = attempts
@@ -1154,6 +1201,23 @@ def create_app(
             response.headers[key] = value
         return response
 
+    @app.middleware("http")
+    async def versioned_asset_cache(request: Request, call_next):
+        """A ?v= asset URL is immutable for a year; anything else keeps its own headers.
+
+        The console is used over Cloudflare from places where one round trip costs
+        a third of a second or more, so a repeat visit must not re-download every
+        script. Only versioned URLs get the long cache: the version changes when
+        the bytes do (see ASSET_VERSION in web/index.html and the console bundle
+        hash), so a stale immutable copy can never be served under a fresh URL.
+        """
+        response = await call_next(request)
+        if (request.url.path.startswith(("/assets/", "/share-assets/"))
+                and response.status_code == 200
+                and "v" in request.query_params):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
     allowed_hosts = {item.strip().lower() for item in
                      os.environ.get("TMUX_WEB_ALLOWED_HOSTS", "").split(",") if item.strip()}
     if allowed_hosts:
@@ -1873,7 +1937,9 @@ def create_app(
     async def index(request: Request):
         if not authenticated(request):
             return RedirectResponse(f"/login?next={quote(request.url.path + ('?' + request.url.query if request.url.query else ''))}", status_code=303)
-        return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-store"})
+        html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html.replace("__CONSOLE_BUNDLE_HASH__", CONSOLE_BUNDLE_HASH),
+                            headers={"Cache-Control": "no-store"})
 
     @app.get("/shares")
     async def shares_page(request: Request):
@@ -2270,6 +2336,18 @@ def create_app(
         """The settings panel shared by the console and /grid."""
         return FileResponse(WEB_DIR / "assets" / "settings.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/console.bundle.js")
+    async def console_bundle() -> Response:
+        """The console scripts as one bundle, built once at startup.
+
+        Served with no-store unless the request carries the content-hash ?v=
+        (injected into index.html at serve time); a versioned URL is immutable
+        via the versioned_asset_cache middleware. theme.js is deliberately not
+        in the bundle: it must run synchronously before first paint.
+        """
+        return Response(content=CONSOLE_BUNDLE_BYTES, media_type="application/javascript",
+                        headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/app-icon.svg")
     async def app_icon_svg() -> FileResponse:
@@ -2974,6 +3052,11 @@ def create_app(
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    # Last full transcript read per local pane: the session file the messages
+    # came from, its stat, and the signature the client already holds. Lets an
+    # unchanged poll skip the read+parse entirely (see transcript()).
+    transcript_sig_cache: dict[str, dict] = {}
+
     def with_waiting_hint(data: dict) -> dict:
         """Tell the UI whether the agent is still working on the last message.
 
@@ -2999,10 +3082,22 @@ def create_app(
         The console polls this while a turn runs.  Sending 300 messages of JSON
         every 2s is the single biggest waste in the chat view, so the client
         echoes the signature it already has and gets ``{"unchanged": true}``
-        (a few dozen bytes) when nothing moved.
+        (a few dozen bytes) when nothing moved.  When the session file's stat
+        is unchanged since the last full read, the stub is answered without
+        re-reading or re-parsing anything at all.
         """
         require_auth(request)
         pane = await asyncio.to_thread(pane_or_404, pane_id)
+        if sig and not refresh and pane.get("host_id") in (None, "localhost"):
+            hit = transcript_sig_cache.get(pane_id)
+            if hit and hit["signature"] == sig:
+                try:
+                    stat = os.stat(hit["path"])
+                except OSError:
+                    stat = None
+                if stat is not None and (stat.st_mtime_ns, stat.st_size) == (hit["mtime_ns"], hit["size"]):
+                    return {"unchanged": True, "signature": sig, "waiting": hit["waiting"],
+                            "waiting_since": hit["waiting_since"], "has_more": hit["has_more"]}
         try:
             transport, actual_pane_id = pane_transport(pane_id)
             if refresh and hasattr(transport, "transcript"):
@@ -3013,6 +3108,21 @@ def create_app(
             messages = data.get("messages") or []
             signature = "%s|%s|%s" % (data.get("mtime"), len(messages),
                                      messages[-1].get("id") if messages else "")
+            source_path = data.get("path")
+            if source_path and pane.get("host_id") in (None, "localhost"):
+                try:
+                    stat = os.stat(source_path)
+                except OSError:
+                    stat = None
+                if stat is not None:
+                    transcript_sig_cache[pane_id] = {
+                        "path": source_path, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
+                        "signature": signature, "waiting": data.get("waiting"),
+                        "waiting_since": data.get("waiting_since"), "has_more": data.get("has_more")}
+                    if len(transcript_sig_cache) > 512:
+                        transcript_sig_cache.clear()
+                else:
+                    transcript_sig_cache.pop(pane_id, None)
             if sig and sig == signature:
                 return {"unchanged": True, "signature": signature, "waiting": data.get("waiting"),
                         "waiting_since": data.get("waiting_since"), "has_more": data.get("has_more")}

@@ -820,6 +820,37 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["messages"][1]["role"], "assistant")
 
+    def test_unchanged_transcript_poll_skips_the_reread(self):
+        """A poll whose sig matches and whose session file is untouched must not re-read."""
+        self.login()
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+            handle.write("{}\n")
+            session_path = handle.name
+        self.addCleanup(os.unlink, session_path)
+        calls = []
+
+        def fake_transcript(pane_id, limit=200, refresh=False, pane=None):
+            calls.append(pane_id)
+            return {"pane": pane_id, "session_id": "session-1",
+                    "mtime": os.path.getmtime(session_path), "has_more": False,
+                    "messages": [{"id": "u1", "role": "user", "text": "问题", "timestamp": None},
+                                 {"id": "a1", "role": "assistant", "text": "答", "timestamp": None}],
+                    "path": session_path}
+
+        with patch.object(self.tmux, "transcript", side_effect=fake_transcript):
+            first = self.client.get("/api/panes/%254/transcript")
+            self.assertEqual(first.status_code, 200)
+            sig = first.json()["signature"]
+            self.assertEqual(len(calls), 1)
+            second = self.client.get("/api/panes/%254/transcript", params={"sig": sig})
+            self.assertEqual(second.json(), {"unchanged": True, "signature": sig, "waiting": False,
+                                            "waiting_since": None, "has_more": False})
+            self.assertEqual(len(calls), 1)
+            Path(session_path).write_text("{}\n{}\n")
+            third = self.client.get("/api/panes/%254/transcript", params={"sig": sig})
+            self.assertEqual(len(calls), 2)
+            self.assertNotIn("unchanged", third.json())
+
     def test_reads_kimi_transcript_without_thinking_tools_or_notifications(self):
         self.tmux.panes[0].update({"command": "kimi", "title": "Kimi test", "path": "/work/kimi"})
         with tempfile.TemporaryDirectory() as directory:
@@ -2426,8 +2457,9 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("/prompt/choose", script.text)
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
         for marker in ('id="prompt-card"', 'id="prompt-card-options"', 'id="prompt-card-esc"',
-                       '/assets/prompt-card.js', "TmuxPrompt.start(()=>state.selected)"):
+                       '/assets/console.bundle.js?v=', "TmuxPrompt.start(()=>state.selected)"):
             self.assertIn(marker, html, marker)
+        self.assertIn("TmuxPrompt", self.client.get("/assets/console.bundle.js").text)
         self.assertIn(".prompt-card{", html)
         # 卡片本身不滚动，只有选项列表滚：标题/开关/Esc 必须常驻可见
         self.assertIn(".prompt-options{display:flex;flex-direction:column;gap:6px;margin-top:8px;min-height:0;flex:1 1 auto", html)
@@ -2876,9 +2908,12 @@ class TmuxWebTests(unittest.TestCase):
         web = Path(__file__).resolve().parent.parent / "web"
         for name in ("index.html", "home.html"):
             html = (web / name).read_text()
-            self.assertIn("/assets/markdown-cjk.js", html, name)
             self.assertIn("TmuxMarkdownCjk.fix(", html, name)
             self.assertIn("TmuxMarkdownCjk.strip(", html, name)
+        # the console loads it through the bundle now; the board page still has its own tag
+        self.assertIn("/assets/console.bundle.js?v=", (web / "index.html").read_text())
+        self.assertIn("TmuxMarkdownCjk", self.client.get("/assets/console.bundle.js").text)
+        self.assertIn("/assets/markdown-cjk.js", (web / "home.html").read_text())
 
     def test_the_video_helper_is_served_and_wired_into_the_chat(self):
         """聊天里的视频卡片：脚本要服务得到，页面要引到，样式要在。"""
@@ -2893,8 +2928,10 @@ class TmuxWebTests(unittest.TestCase):
         web = Path(__file__).resolve().parent.parent / "web"
         for name in ("index.html", "home.html"):
             html = (web / name).read_text()
-            self.assertIn("/assets/video-cards.js", html, name)
             self.assertIn("/assets/video-cards.css", html, name)
+        self.assertIn("/assets/video-cards.js", (web / "home.html").read_text())
+        self.assertIn("/assets/console.bundle.js?v=", (web / "index.html").read_text())
+        self.assertIn("TmuxVideo", self.client.get("/assets/console.bundle.js").text)
         self.assertIn("enhanceVideos(root)", (web / "index.html").read_text())
         self.assertIn("TmuxVideo.enhance($('cards'))", (web / "home.html").read_text())
 
@@ -3227,8 +3264,9 @@ class TmuxWebTests(unittest.TestCase):
         """侧栏（会话树 + 最近）悬停 N 秒预览最后消息，和 home 卡片共用一份实现。"""
         self.login()
         page = self.client.get("/").text
-        self.assertIn('<link rel="stylesheet" href="/assets/pane-preview.css">', page)
-        self.assertIn('<script src="/assets/pane-preview.js"></script>', page)
+        self.assertIn('<link rel="stylesheet" href="/assets/pane-preview.css?v=1">', page)
+        self.assertIn("/assets/console.bundle.js?v=", page)
+        self.assertIn("TmuxPanePreview", self.client.get("/assets/console.bundle.js").text)
         for marker in ("function setupPanePreview(){", "setupRecentPreview();",
                        "localStorage.getItem('tmux-preview-delay')",
                        "seconds*1000", "TmuxPanePreview.bind($('pane-list')",
@@ -3248,6 +3286,55 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".hp-body.md table{", css)
         self.assertEqual(self.client.get("/assets/pane-preview.css").headers["cache-control"], "no-store")
         self.assertEqual(self.client.get("/assets/pane-preview.js").headers["cache-control"], "no-store")
+
+    def test_versioned_assets_are_immutable_but_unversioned_keep_no_store(self):
+        self.login()
+        cases = {
+            "/assets/theme.js": "no-store",
+            "/assets/recents.js": "no-store",
+            "/assets/pane-preview.css": "no-store",
+            "/assets/xterm/xterm.js": None,
+            "/assets/mermaid/mermaid.min.js": "public, max-age=604800",
+        }
+        for path, plain_header in cases.items():
+            plain = self.client.get(path)
+            self.assertEqual(plain.headers.get("cache-control"), plain_header, path)
+            versioned = self.client.get(path + "?v=1")
+            self.assertEqual(versioned.headers.get("cache-control"),
+                             "public, max-age=31536000, immutable", path)
+
+    def test_console_bundle_is_one_versioned_request(self):
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn("/assets/console.bundle.js?v=", page)
+        self.assertNotIn('src="/assets/uploads.js"', page)
+        self.assertNotIn('src="/assets/recents.js"', page)
+        bundle = self.client.get("/assets/console.bundle.js")
+        self.assertEqual(bundle.status_code, 200)
+        self.assertIn("javascript", bundle.headers.get("content-type", ""))
+        self.assertEqual(bundle.headers.get("cache-control"), "no-store")
+        for marker in ("window.TmuxRecents", "window.TmuxUpload", "window.TmuxPaths",
+                       "window.TmuxPrompt", "window.TmuxDownload", "window.TmuxTransfer",
+                       "window.TmuxSettings", "window.TmuxPanePreview", "window.TmuxFiles",
+                       "window.TmuxUploads", "window.TmuxMarkdownCjk", "FitAddon",
+                       "console.bundle: vendor/xterm/xterm.js"):
+            self.assertIn(marker, bundle.text)
+        digest = hashlib.sha1(bundle.content).hexdigest()[:12]
+        self.assertIn("/assets/console.bundle.js?v=" + digest, page)
+        versioned = self.client.get("/assets/console.bundle.js?v=" + digest)
+        self.assertEqual(versioned.headers.get("cache-control"),
+                         "public, max-age=31536000, immutable")
+        node = shutil.which("node")
+        if node:
+            with tempfile.NamedTemporaryFile("wb", suffix=".js", delete=False) as handle:
+                handle.write(bundle.content)
+                name = handle.name
+            try:
+                result = subprocess.run([node, "--check", name], capture_output=True,
+                                        text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+            finally:
+                os.unlink(name)
 
     def test_the_hover_preview_delay_is_a_follow_me_preference(self):
         """设置面板里可调（关闭 / 1 / 2 / 3 秒），存到账号；手机没有悬停，默认不绑。"""
@@ -3418,7 +3505,8 @@ class TmuxWebTests(unittest.TestCase):
         self.login()
         page = self.client.get("/").text
         self.assertIn('/assets/downloads.css', page)
-        self.assertIn('/assets/downloads.js', page)
+        self.assertIn('/assets/console.bundle.js?v=', page)
+        self.assertIn("TmuxDownload", self.client.get("/assets/console.bundle.js").text)
         self.assertIn("TmuxDownload.maybe(", page)
         self.assertIn('downloadButton.onclick=event=>{', page)
 

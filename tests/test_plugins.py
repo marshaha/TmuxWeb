@@ -239,8 +239,12 @@ class PluginLoadingTests(unittest.TestCase):
         client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
         for page in ("/", "/home", "/grid"):
             body = client.get(page).text
-            self.assertIn("/assets/plugins-ui.js", body, page)
             self.assertIn('id="i-plug"', body, page)
+        for page in ("/home", "/grid"):
+            self.assertIn("/assets/plugins-ui.js", client.get(page).text, page)
+        # the console loads it through the bundle now (self-mounting script, no global)
+        self.assertIn("/assets/console.bundle.js?v=", client.get("/").text)
+        self.assertIn("data-plugin-button", client.get("/assets/console.bundle.js").text)
 
     def test_capabilities_must_be_declared_in_the_manifest(self):
         folder = tempfile.TemporaryDirectory()

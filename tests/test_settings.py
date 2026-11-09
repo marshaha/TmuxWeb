@@ -247,9 +247,12 @@ class SettingsPageWiringTests(unittest.TestCase):
     def test_every_page_with_a_settings_button_loads_it(self):
         for path in ("/", "/grid"):
             page = self.client.get(path).text
-            self.assertIn('/assets/settings.js', page, path)
             self.assertIn('id="settings-open"', page, path)
             self.assertNotIn('action="/logout"', page, path)   # logging out moved into the panel
+        self.assertIn('/assets/settings.js', self.client.get("/grid").text)
+        # the console loads it through the bundle now
+        self.assertIn('/assets/console.bundle.js?v=', self.client.get("/").text)
+        self.assertIn("TmuxSettings", self.client.get("/assets/console.bundle.js").text)
 
     def test_the_settings_panel_can_change_the_password_and_log_out(self):
         script = self.client.get("/assets/settings.js").text
