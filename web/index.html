@@ -234,6 +234,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 <script src="/assets/uploads.js"></script>
 <script src="/assets/composer-files.js"></script>
 <script src="/assets/path-links.js"></script>
+<script src="/assets/prompt-card.js"></script>
 <script src="/assets/video-cards.js"></script>
 <script src="/assets/transfer.js"></script>
 <script src="/assets/downloads.js"></script>
@@ -377,7 +378,45 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
       </div>
     </form>
   </dialog>
-  <section class="composer"><input id="upload-input" type="file" multiple hidden><div class="composer-inner"><div class="composer-card"><div class="cf-bar"><button class="cf-attach" id="attach" type="button" title="添加附件（存到 pane 目录下的 upload_files）" aria-label="添加附件" disabled><svg class="ico"><use href="#i-paperclip"/></svg><span>附件</span></button><div class="model-pick" id="model-pick-wrap" hidden><button type="button" class="model-toggle" id="model-toggle" aria-haspopup="true" aria-expanded="false" title="切换这个 agent 使用的模型"><svg class="ico"><use href="#i-gear"/></svg><span id="model-current">模型</span><svg class="ico model-caret"><use href="#i-chevron"/></svg></button><div class="model-menu" id="model-menu" hidden><input class="model-filter" id="model-filter" type="search" placeholder="筛选模型…" autocomplete="off" spellcheck="false"><div class="model-groups" id="model-groups"></div></div></div><span class="cf-hint">存到当前目录的 upload_files</span></div><div class="cf-strip" id="uploads" hidden></div><textarea id="input" disabled placeholder="选择会话后，在这里输入消息…"></textarea><button class="send" id="send" disabled title="发送" aria-label="发送"><svg class="ico"><use href="#i-arrow-up"/></svg></button></div><div class="composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><span class="send-state" id="send-state"></span><label class="submit-option"><input type="checkbox" id="submit-enter" checked> 同时按 Enter 提交</label></div></div></section>
+  <section class="composer"><style>
+  /* agent 的交互菜单：浮在输入框上方，不占消息区高度，菜单关掉就消失 */
+  .prompt-card{position:absolute;left:16px;right:16px;bottom:100%;margin:0 auto 8px;max-width:820px;padding:10px 12px 9px;border:1px solid var(--line-strong);border-radius:16px;background:var(--card);box-shadow:0 14px 34px rgba(32,31,28,.18);z-index:6;max-height:min(52vh,430px);overflow:auto}
+  .prompt-card[hidden]{display:none}
+  .prompt-card:focus{outline:none}
+  .prompt-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .prompt-head{display:flex;align-items:center;gap:8px;min-width:0}
+  .prompt-title{flex:1 1 auto;min-width:0;color:var(--ink);font-weight:650;font-size:13px;line-height:1.4;overflow-wrap:anywhere}
+  .prompt-x{flex:none;display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:7px;background:none;color:var(--muted);cursor:pointer}
+  .prompt-x:hover{background:var(--surface2);color:var(--ink)}
+  .prompt-x .ico{width:13px;height:13px}
+  .prompt-hint{margin:3px 0 0;color:var(--muted);font-size:11px;line-height:1.4;overflow-wrap:anywhere}
+  .prompt-options{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  .prompt-option{display:flex;flex:none;align-items:center;gap:8px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);color:var(--ink);font:600 12.5px/1.35 inherit;text-align:left;cursor:pointer}
+  .prompt-option:hover{border-color:var(--accent)}
+  .prompt-option.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+  .prompt-label{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+  .prompt-meta{flex:none;max-width:46%;color:var(--muted);font-weight:400;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .prompt-foot{display:flex;align-items:center;gap:8px;margin-top:8px;min-height:22px}
+  .prompt-state{flex:1 1 auto;min-width:0;color:var(--muted);font-size:11px}
+  .prompt-state.bad{color:var(--danger)}
+  .prompt-btn{flex:none;height:24px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--muted);font:600 11px/1 inherit;cursor:pointer}
+  .prompt-btn:hover{border-color:var(--accent);color:var(--accent)}
+  .prompt-raw{margin-top:6px;color:var(--muted);font-size:11px}
+  .prompt-raw summary{cursor:pointer}
+  .prompt-raw pre{margin:6px 0 0;padding:8px;border-radius:8px;background:var(--surface2);color:var(--ink);font:10.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:auto;max-height:22vh}
+  @media(max-width:760px){
+    .prompt-card{left:8px;right:8px;max-height:46vh;border-radius:14px;padding:9px 10px 8px}
+    .prompt-option{padding:9px 10px;font-size:13px}
+  }
+</style>
+<div class="prompt-card" id="prompt-card" hidden tabindex="0" role="dialog" aria-label="agent 正在等待选择">
+  <div class="prompt-head"><span class="prompt-title" id="prompt-card-title"></span><button class="prompt-x" id="prompt-card-close" type="button" title="收起（不发任何键）" aria-label="收起"><svg class="ico"><use href="#i-close"/></svg></button></div>
+  <p class="prompt-hint" id="prompt-card-hint" hidden></p>
+  <div class="prompt-options" id="prompt-card-options" role="listbox"></div>
+  <div class="prompt-foot"><span class="prompt-state" id="prompt-card-state"></span><button class="prompt-btn" id="prompt-card-esc" type="button">Esc 取消</button></div>
+  <details class="prompt-raw" id="prompt-card-raw-wrap" hidden><summary>屏幕原文</summary><pre id="prompt-card-raw"></pre></details>
+</div>
+<input id="upload-input" type="file" multiple hidden><div class="composer-inner"><div class="composer-card"><div class="cf-bar"><button class="cf-attach" id="attach" type="button" title="添加附件（存到 pane 目录下的 upload_files）" aria-label="添加附件" disabled><svg class="ico"><use href="#i-paperclip"/></svg><span>附件</span></button><div class="model-pick" id="model-pick-wrap" hidden><button type="button" class="model-toggle" id="model-toggle" aria-haspopup="true" aria-expanded="false" title="切换这个 agent 使用的模型"><svg class="ico"><use href="#i-gear"/></svg><span id="model-current">模型</span><svg class="ico model-caret"><use href="#i-chevron"/></svg></button><div class="model-menu" id="model-menu" hidden><input class="model-filter" id="model-filter" type="search" placeholder="筛选模型…" autocomplete="off" spellcheck="false"><div class="model-groups" id="model-groups"></div></div></div><span class="cf-hint">存到当前目录的 upload_files</span></div><div class="cf-strip" id="uploads" hidden></div><textarea id="input" disabled placeholder="选择会话后，在这里输入消息…"></textarea><button class="send" id="send" disabled title="发送" aria-label="发送"><svg class="ico"><use href="#i-arrow-up"/></svg></button></div><div class="composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><span class="send-state" id="send-state"></span><label class="submit-option"><input type="checkbox" id="submit-enter" checked> 同时按 Enter 提交</label></div></div></section>
   </main>
   <div class="drawer-backdrop" id="drawer-backdrop"></div>
 </div>
@@ -1201,7 +1240,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     $('status-dot').className='status-dot live';$('status-text').textContent=`${entry.provider||'缓存'} · 更新中…`;
     restorePaneUi(id);return true;}
   function selectPane(id){if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
-    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedIds=[];$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?`#${p.number}`:'';num.title=p.number?`窗口编号 #${p.number}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`#${p.number} · ${shownTitle} · Tmux Chat`:'Tmux Chat';$('selected-sub').textContent=`${p.target} · ${p.command} · ${p.path}`;$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);syncLiveButton();syncFavButton();
+    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedIds=[];$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?`#${p.number}`:'';num.title=p.number?`窗口编号 #${p.number}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`#${p.number} · ${shownTitle} · Tmux Chat`:'Tmux Chat';$('selected-sub').textContent=`${p.target} · ${p.command} · ${p.path}`;$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);syncLiveButton();syncFavButton();
     if(state.mode==='terminal'){connectTerminal(id);}
     else if(paintCachedTranscript(id)){refreshTranscript(id);}  // instant paint, then revalidate
     else {connectTranscript(id,true);}
@@ -1963,6 +2002,8 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
     setupRecentPreview();
   }
   loadPanes();setInterval(()=>{if(!document.hidden)loadPanes();},20000);
+  // agent 的交互菜单（kimi 选择器、claude 权限确认）：跟着选中的 pane 轮询
+  if(window.TmuxPrompt)TmuxPrompt.start(()=>state.selected);
 
   if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 })();

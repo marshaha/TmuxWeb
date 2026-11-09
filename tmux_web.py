@@ -41,6 +41,7 @@ import mcp_relay
 import agent_status
 import agent_catalog
 import agent_models
+import agent_prompts
 import relay
 import transcript_reader
 import transfer_tickets
@@ -588,6 +589,13 @@ def guard_panel_path(path: str) -> str:
 
 class KeyRequest(BaseModel):
     key: str = Field(min_length=1, max_length=16)
+
+
+class PromptChoiceRequest(BaseModel):
+    """选一个菜单项（index）或者直接发一个键（key: esc/enter/yes/no/数字）。"""
+
+    index: int | None = None
+    key: str = ""
 
 
 class TransferTicketRequest(BaseModel):
@@ -2123,6 +2131,12 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "downloads.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/prompt-card.js")
+    async def prompt_card_script() -> FileResponse:
+        """agent 交互菜单卡片：把 pane 里等着的选择渲染成按钮。"""
+        return FileResponse(WEB_DIR / "assets" / "prompt-card.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/video-cards.css")
     async def video_cards_style() -> FileResponse:
         """视频卡片样式：聊天页和看板共用一份。"""
@@ -2991,6 +3005,80 @@ def create_app(
             transport, actual_pane_id = pane_transport(pane_id)
             await asyncio.to_thread(transport.send_key, actual_pane_id, payload.key, pane=pane)
             return {"status": "sent", "pane": pane_id, "key": payload.key}
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    async def read_prompt(pane_id: str) -> tuple[dict | None, str]:
+        """抓一次屏幕并解析出等待中的菜单；认不出就是 (None, screen)。"""
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        transport, actual = pane_transport(pane_id)
+        text = await asyncio.to_thread(transport.capture, actual, 80, pane=pane)
+        return agent_prompts.parse_screen(text), text
+
+    def keys_are_safe(keys: list[str]) -> bool:
+        for key in keys:
+            if key in ALLOWED_KEYS:
+                continue
+            if len(key) == 1 and (key.isalnum() or key in "\r"):
+                continue
+            return False
+        return True
+
+    @app.get("/api/panes/{pane_id}/prompt")
+    async def pane_prompt(request: Request, pane_id: str):
+        """屏幕上正在等的选择（kimi 的模型菜单、claude 的权限确认…）。
+
+        认不出就返回 ``{"prompt": null}`` —— 前端据此不显示按钮，用户照旧用终端。
+        """
+        require_auth(request)
+        try:
+            found, text = await read_prompt(pane_id)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        lines = (text or "").splitlines()
+        while lines and not lines[-1].strip():      # TUI 下方常留空白，别把它当"屏幕原文"
+            lines.pop()
+        return {"pane": pane_id, "prompt": found, "screen": lines[-14:] if found else []}
+
+    @app.post("/api/panes/{pane_id}/prompt/choose")
+    async def pane_prompt_choose(request: Request, pane_id: str, payload: PromptChoiceRequest):
+        """把"选第 N 项"变成按键发进 pane，再抓屏复核。
+
+        位置式的列表不能发数字（kimi 的输入框会把数字当搜索词），所以按键序列
+        由 ``agent_prompts.choice_keys`` 生成：顶到第一项，再走 N 步，最后 Enter。
+        """
+        require_auth(request)
+        try:
+            found, _text = await read_prompt(pane_id)
+            if not found:
+                raise HTTPException(status_code=409, detail="屏幕上没有等待中的选择")
+            if payload.index is not None:
+                keys = agent_prompts.choice_keys(found, payload.index)
+            else:
+                keys = agent_prompts.choice_for_key(found, payload.key)
+                if keys is None:
+                    raise HTTPException(status_code=422, detail="unsupported key")
+            if not keys_are_safe(keys):
+                raise HTTPException(status_code=422, detail="unsupported key")
+            pane = await asyncio.to_thread(pane_or_404, pane_id)
+            transport, actual = pane_transport(pane_id)
+            for key in keys:
+                await asyncio.to_thread(transport.send_key, actual, key, pane=pane)
+                await asyncio.sleep(0.06)
+            # 复核：菜单消失、标题换了、或者光标动了，都算送进去了
+            for _ in range(3):
+                await asyncio.sleep(0.12)
+                after_text = await asyncio.to_thread(transport.capture, actual, 80, pane=pane)
+                after = agent_prompts.parse_screen(after_text)
+                if after is None:
+                    return {"ok": True, "prompt": None}
+                if (after.get("title") != found.get("title")
+                        or after.get("selected") != found.get("selected")):
+                    return {"ok": True, "prompt": after}
+            return {"ok": False, "prompt": found,
+                    "detail": "屏幕没有变化，可能没送到；再点一次或切到终端"}
+        except HTTPException:
+            raise
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

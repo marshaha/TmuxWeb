@@ -2398,6 +2398,129 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(paths, ("/srv/work/one.txt",))
         self.assertEqual(base, "/srv/work")
 
+    def test_the_prompt_card_asset_and_markup_are_wired(self):
+        script = self.client.get("/assets/prompt-card.js")
+        self.assertEqual(script.status_code, 200)
+        self.assertIn("TmuxPrompt", script.text)
+        self.assertIn("/prompt/choose", script.text)
+        html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
+        for marker in ('id="prompt-card"', 'id="prompt-card-options"', 'id="prompt-card-esc"',
+                       '/assets/prompt-card.js', "TmuxPrompt.start(()=>state.selected)"):
+            self.assertIn(marker, html, marker)
+        self.assertIn(".prompt-card{", html)
+
+    def test_the_prompt_endpoint_needs_a_login(self):
+        for path in ("/api/panes/%254/prompt",):
+            response = self.client.get(path, follow_redirects=False)
+            self.assertIn(response.status_code, (303, 401, 403), path)
+        response = self.client.post("/api/panes/%254/prompt/choose", json={"index": 0},
+                                    follow_redirects=False)
+        self.assertIn(response.status_code, (303, 401, 403))
+
+    def test_a_menu_on_screen_becomes_buttons(self):
+        """kimi 的信任对话框：聊天里要能看见并点，而不是只能切终端。"""
+        self.login()
+        self.tmux.output = (
+            "──────────────────────────────\n"
+            "  Trust this folder?\n"
+            "  ↑↓ navigate · Enter select · Esc exit\n"
+            "\n"
+            "  /tmp\n"
+            "\n"
+            "   ❯ Trust and continue\n"
+            "     Exit\n"
+            " ──────────────────────────────\n"
+        )
+        payload = self.client.get("/api/panes/%254/prompt").json()
+        prompt = payload["prompt"]
+        self.assertIsNotNone(prompt)
+        self.assertEqual(prompt["title"], "Trust this folder?")
+        self.assertEqual([option["label"] for option in prompt["options"]],
+                         ["Trust and continue", "Exit"])
+        self.assertEqual(payload["screen"], payload["screen"])
+        self.assertTrue(payload["screen"], "要带屏幕原文，用户得能核对在答什么")
+
+    def test_no_menu_means_no_buttons(self):
+        self.login()
+        self.tmux.output = "hello\n❯ Ask Codex to do anything\n"
+        payload = self.client.get("/api/panes/%254/prompt").json()
+        self.assertIsNone(payload["prompt"])
+        self.assertEqual(payload["screen"], [])
+
+    def test_choosing_sends_keys_and_recheck_the_screen(self):
+        self.login()
+        menu = ("  Select a model  (type to search)\n"
+                "  ↑↓ navigate · Enter select · Esc cancel\n\n"
+                "     Alpha\n"
+                "  ❯ Beta\n"
+                "     Gamma\n")
+        self.tmux.output = menu
+        sent_keys = []
+        original_send_key = self.tmux.send_key
+
+        def recording(pane_id, key, pane=None):
+            sent_keys.append(key)
+            if key == "Enter":
+                self.tmux.output = "  done\n"      # 选完之后菜单消失
+            return original_send_key(pane_id, key, pane=pane)
+
+        self.tmux.send_key = recording
+        response = self.client.post("/api/panes/%254/prompt/choose", json={"index": 2})
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(sent_keys[-1], "Enter")
+        self.assertEqual(sent_keys.count("Down"), 2, "第三项要往下走两步")
+        self.assertGreaterEqual(sent_keys.count("Up"), 3, "先顶到第一项")
+        self.assertIsNone(result["prompt"])
+
+    def test_a_numbered_menu_can_be_chosen_by_digit(self):
+        self.login()
+        self.tmux.output = (" Context is getting full.\n\n"
+                            " What would you like to do?\n"
+                            " 1. Compact and continue\n"
+                            " 2. Start a new session\n"
+                            " Enter select · Esc cancel\n")
+        sent_keys = []
+        original_send_key = self.tmux.send_key
+
+        def recording(pane_id, key, pane=None):
+            sent_keys.append(key)
+            if key == "Enter":
+                self.tmux.output = "compacting…\n"
+            return original_send_key(pane_id, key, pane=pane)
+
+        self.tmux.send_key = recording
+        result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "2"}).json()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(sent_keys, ["2", "Enter"])
+
+    def test_choosing_without_a_menu_is_a_conflict(self):
+        self.login()
+        self.tmux.output = "idle\n"
+        response = self.client.post("/api/panes/%254/prompt/choose", json={"index": 0})
+        self.assertEqual(response.status_code, 409)
+
+    def test_escape_is_always_available(self):
+        self.login()
+        self.tmux.output = ("  Select a model  (type to search)\n"
+                            "  ↑↓ navigate · Enter select · Esc cancel\n\n"
+                            "  ❯ Alpha\n"
+                            "    Beta\n")
+        sent_keys = []
+        original_send_key = self.tmux.send_key
+
+        def recording(pane_id, key, pane=None):
+            sent_keys.append(key)
+            if key == "Escape":
+                self.tmux.output = "idle\n"
+            return original_send_key(pane_id, key, pane=pane)
+
+        self.tmux.send_key = recording
+        result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "esc"}).json()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(sent_keys, ["Escape"])
+
     def test_the_video_helper_is_served_and_wired_into_the_chat(self):
         """聊天里的视频卡片：脚本要服务得到，页面要引到，样式要在。"""
         script = self.client.get("/assets/video-cards.js")

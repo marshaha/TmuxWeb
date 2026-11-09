@@ -184,6 +184,32 @@ The 「附件」 button sits in the first row **inside** the composer card, sepa
   knows what to read;
 - switching panes clears the strip; the upload limit is the file panel's `TMUX_WEB_FILE_UPLOAD_MAX` (256MB default).
 
+### The agent's own menus are clickable in the chat
+
+A harness waiting for a decision takes over the screen: kimi's `/model` picker, claude's
+`Do you want to proceed?`, kimi's `1. Compact and continue`. The chat used to show only "sent"; now those become a
+card above the composer:
+
+- three shapes are recognised: cursor lists (`❯`), numbered lists (`1.`), and yes/no or press-enter confirms;
+- click a button, or with the card focused use `↑↓` to move, `Enter` to choose, `Esc` to cancel;
+- the card carries the raw screen text so you can check what you are answering; `✕` only closes it and sends nothing;
+- never auto-answers, never guesses (no card when the screen is not understood), and the terminal is always there.
+
+Two rules make it safe:
+
+```bash
+GET  /api/panes/{pane}/prompt          # parsed prompt, or {"prompt": null}
+POST /api/panes/{pane}/prompt/choose   # {"index": 2} or {"key": "esc"}
+```
+
+1. **No digits for positional lists**: in kimi's picker a digit is a search filter, so the selection would move under
+   us. The key sequence is "press ↑ enough times to reach the top (harmless), then ↓ index times, then Enter".
+2. **Verify after sending**: capture again; success means the menu is gone, the title changed, or the cursor moved.
+   Three unchanged polls report "try again or use the terminal" instead of pretending it worked.
+
+Tab bars, toggles (`[ On ] Off`), progress bars and free-text input are deliberately left to the terminal - guessing
+those means answering a question on the user's behalf.
+
 ### Video plays right in the chat
 
 A video link in a message (`.mp4`, `.webm`, `.mov`, `.m4v`, `.ogv`, `.ogg`, `.mkv` - case insensitive, query strings
