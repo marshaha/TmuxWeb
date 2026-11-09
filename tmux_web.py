@@ -486,6 +486,14 @@ class TmuxBackend:
             self.validate_pane(pane_id)
         self._run("send-keys", "-t", pane_id, key)
 
+    def send_keys(self, pane_id: str, keys: list[str], pane: dict | None = None) -> None:
+        """一次把一串键发进去（菜单导航要走好几步，逐条发会慢得离谱）。"""
+        if pane is None:
+            self.validate_pane(pane_id)
+        if not keys:
+            return
+        self._run("send-keys", "-t", pane_id, *keys)
+
     def screen(self, pane_id: str, lines: int = 12) -> str:
         """Plain text of the pane's last lines (cheap, no history)."""
         try:
@@ -3068,12 +3076,17 @@ def create_app(
                 raise HTTPException(status_code=422, detail="unsupported key")
             pane = await asyncio.to_thread(pane_or_404, pane_id)
             transport, actual = pane_transport(pane_id)
-            for key in keys:
-                await asyncio.to_thread(transport.send_key, actual, key, pane=pane)
-                await asyncio.sleep(0.06)
-            # 复核：菜单消失、标题换了、或者光标动了，都算送进去了
-            for _ in range(3):
-                await asyncio.sleep(0.12)
+            send_many = getattr(transport, "send_keys", None)
+            if send_many is not None:
+                await asyncio.to_thread(send_many, actual, keys, pane=pane)
+            else:
+                for key in keys:
+                    await asyncio.to_thread(transport.send_key, actual, key, pane=pane)
+                    await asyncio.sleep(0.06)
+            # 复核：菜单消失、标题换了、光标动了都算送进去了。远端一次 ssh 往返
+            # 就要一两秒，所以窗口比本地宽（五次、每次 0.25s 起步）。
+            for _ in range(5):
+                await asyncio.sleep(0.25)
                 after_text = await asyncio.to_thread(transport.capture, actual, 80, pane=pane)
                 after = agent_prompts.parse_screen(after_text)
                 if after is None:

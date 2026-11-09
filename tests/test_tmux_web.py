@@ -108,6 +108,11 @@ class FakeTmux(TmuxBackend):
         self.validate_pane(pane_id)
         self.keys.append((pane_id, key))
 
+    def send_keys(self, pane_id, keys, pane=None):
+        """批量发送在测试里逐条走 send_key，用例只要拦一个方法就够。"""
+        for key in keys:
+            self.send_key(pane_id, key, pane=pane)
+
     def capture(self, pane_id, history=500, pane=None):
         self.validate_pane(pane_id)
         return self.output

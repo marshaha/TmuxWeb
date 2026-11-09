@@ -65,6 +65,45 @@ ONLY_TOGGLE = """
    [ On ]    Off
 """
 
+# codex 的目录信任对话框（实测；注意光标是 › 而不是 ❯，问题被折成两行）
+CODEX_TRUST = """
+╭───────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.155.0)            │
+╰───────────────────────────────────────╯
+> You are in /tmp/twx-codex
+  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt
+  hooks, and exec policies to load.
+› 1. Yes, continue
+  2. No, quit
+  Press enter to continue
+"""
+
+# codex 的更新提示（实测；标题在页脚上方，页脚 "? for shortcuts" 不能当标题）
+CODEX_UPDATE = """
+✨ Update available! 0.155.0 -> 0.167.0
+  Release notes: https://github.com/openai/codex/releases/latest
+› 1. Update now (runs `sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'`)
+  2. Skip
+  3. Skip until next version
+  Press enter to continue
+"""
+
+# claude code 的目录信任对话框（实测：光标列表 + 普通续行 + Enter/Esc 提示）
+CLAUDE_TRUST = """
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source pro
+
+ review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+"""
+
 # claude 的权限确认：光标 + 序号同时出现
 CLAUDE_PROCEED = """
  Do you want to proceed?
@@ -169,6 +208,36 @@ class ToggleTests(unittest.TestCase):
         self.assertEqual(prompts.toggle_keys(found, 0, 0), [])
 
 
+class OtherAgentsTests(unittest.TestCase):
+    def test_codex_trust_dialog_uses_the_question_not_the_wrapped_tail(self):
+        found = prompts.parse_screen(CODEX_TRUST)
+        self.assertIsNotNone(found)
+        self.assertTrue(found["title"].startswith("Do you trust the contents of this directory?"))
+        self.assertEqual([option["label"] for option in found["options"]],
+                         ["Yes, continue", "No, quit"])
+        self.assertTrue(found["numbers"])
+        self.assertTrue(found["cursor"], "› 也是光标")
+        # 有光标就走方向键：数字在 codex 的对话框里不生效
+        self.assertNotIn("1", prompts.choice_keys(found, 0))
+
+    def test_codex_update_dialog_ignores_the_shortcut_footer_as_title(self):
+        found = prompts.parse_screen(CODEX_UPDATE)
+        self.assertIsNotNone(found)
+        self.assertIn("Update available", found["title"])
+        self.assertNotIn("for shortcuts", found["title"])
+        self.assertEqual(len(found["options"]), 3)
+
+    def test_claude_trust_dialog_lists_plain_rows_after_the_cursor(self):
+        found = prompts.parse_screen(CLAUDE_TRUST)
+        self.assertIsNotNone(found)
+        self.assertTrue(found["title"].startswith("Quick safety check"))
+        self.assertEqual([option["label"] for option in found["options"]],
+                         ["No, exit", "Yes, I trust this folder"])
+        self.assertEqual(found["hint"], "Enter to confirm · Esc to cancel")
+        self.assertFalse(found["numbers"])
+        self.assertEqual(prompts.choice_keys(found, 1)[-2:], ["Down", "Enter"])
+
+
 class NumberedTests(unittest.TestCase):
     def test_a_numbered_list_is_marked_as_numberable(self):
         found = prompts.parse_screen(COMPACT)
@@ -179,13 +248,18 @@ class NumberedTests(unittest.TestCase):
                          ["Compact and continue", "Start a new session", "Cancel"])
         self.assertTrue(found["numbers"])
 
-    def test_cursor_plus_numbers_keeps_the_numbers(self):
+    def test_cursor_plus_numbers_still_walks_with_arrows(self):
+        """claude 是「❯ 1. Yes」：序号认得，但有光标时发方向键才可靠。"""
         found = prompts.parse_screen(CLAUDE_PROCEED)
         self.assertIsNotNone(found)
         self.assertTrue(found["numbers"])
+        self.assertTrue(found["cursor"])
         self.assertEqual(len(found["options"]), 3)
         self.assertEqual(found["selected"], 0)
         self.assertEqual(found["title"], "Do you want to proceed?")
+        keys = prompts.choice_keys(found, 2)
+        self.assertNotIn("3", keys)
+        self.assertEqual(keys[-2:], ["Down", "Down"] if False else ["Down", "Enter"])
 
 
 class ConfirmTests(unittest.TestCase):

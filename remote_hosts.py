@@ -2196,9 +2196,16 @@ class SSHRunner:
         return result
 
     def send_key(self, pane_id: str, key: str, pane: dict | None = None) -> None:
+        self.send_keys(pane_id, [key], pane=pane)
+
+    def send_keys(self, pane_id: str, keys: list[str], pane: dict | None = None) -> None:
+        """一次 ssh 把整串键发完：菜单导航要 5~10 个键，逐条发就是 5~10 次往返。"""
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
-        command = f"${{TMUX_BIN:-tmux}} send-keys -t {shlex.quote(pane_id)} {shlex.quote(key)}"
+        if not keys:
+            return
+        sent = " ".join(shlex.quote(key) for key in keys)
+        command = f"${{TMUX_BIN:-tmux}} send-keys -t {shlex.quote(pane_id)} {sent}"
         completed = self.run(command)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote key send failed")

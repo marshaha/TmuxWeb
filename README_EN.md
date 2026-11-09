@@ -211,6 +211,21 @@ Segmented switches (`Thinking  Low [ High ] Max`) are supported too: the segment
 inside brackets is the current value. Clicking a segment sends only the `←`/`→` presses needed to get there (nothing
 when the segment is already active), and the same capture-and-verify step applies.
 
+Shapes seen in practice (all parsed against real captures):
+
+| agent | shape | state |
+|---|---|---|
+| kimi | `❯` cursor list, `1.` numbered list, `Low [ High ] Max` switch | verified end to end |
+| claude code | `❯ No, exit` cursor list with `Enter to confirm · Esc to cancel` | verified end to end, including a remote pane over SSH |
+| codex | `› 1. Yes, continue` numbered list with a `›` cursor | parsing verified; its dialogs ignored both digits and arrows in our test, so key delivery needs a working codex login to confirm |
+| hermes | `[y/N]` / numbered | parsing supported; the current config no longer prompts, so no live sample |
+
+**With a cursor, send arrows - never digits**: digits did nothing in codex's dialog and act as a search filter in kimi's
+picker; only a purely numbered list without any cursor gets the digit.
+
+The whole sequence goes out in **one** `send-keys` call: sending key by key to a remote pane costs one SSH round trip
+each and takes seconds.
+
 Tab bars, progress bars and free-text input are deliberately left to the terminal - guessing those means answering a
 question on the user's behalf.
 

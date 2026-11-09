@@ -18,11 +18,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-CURSOR_MARKS = ("❯", "➤", "→", "»")
+CURSOR_MARKS = ("❯", "➤", "→", "»", "›", "▸", "▶")
 BULLET_MARKS = ("●", "○", "•")
 
 NUMBERED_RE = re.compile(r"^\s{0,8}(\d{1,2})[.)]\s+(\S.*)$")
-CURSOR_RE = re.compile(r"^\s{0,8}([❯➤→»]|>\s)\s*(\S.*)$")
+CURSOR_RE = re.compile(r"^\s{0,8}([❯➤→»›▸▶]|>\s)\s*(\S.*)$")
 BULLET_RE = re.compile(r"^\s{0,8}([●○•])\s+(\S.*)$")
 RULE_RE = re.compile(r"^[\s─━═┄┈╭╮╰╯│┃|+*-]{3,}$")
 HINT_RE = re.compile(
@@ -37,7 +37,8 @@ PROCEED_RE = re.compile(r"(do you want to (?:proceed|continue|allow)|would you l
 PRESS_ENTER_RE = re.compile(r"press enter to (?:continue|confirm)", re.I)
 
 COLUMNS_RE = re.compile(r"\s{2,}")
-FOOTER_RE = re.compile(r"(context:\s*\d|ctrl\+o expand|/help|/init:|/yolo)", re.I)
+FOOTER_RE = re.compile(r"(context:\s*\d|ctrl\+o expand|/help|/init:|/yolo|"
+                       r"for shortcuts|^\s*\?\s|release notes|https?://)", re.I)
 
 
 def _clean(line: str) -> str:
@@ -145,10 +146,21 @@ def _hint_index(lines: list[str], first_line: int) -> int | None:
 
 
 def _title_above(lines: list[str], before: int) -> str:
-    """标题一般紧贴提示行的上一行（或选项块上方），不是更早的说明文字。"""
+    """标题一般紧贴提示行的上一行（或选项块上方），不是更早的说明文字。
+
+    codex 的信任对话框把问题折成两三行，标题行本身不以问号结尾，所以先往上找
+    最近的一行「以问号结尾」，那才是真正的问题。
+    """
+    for position in range(before - 1, max(-1, before - 9), -1):     # 问题常被折成几行，往上找 8 行
+        text = _clean(lines[position]).strip()
+        if (len(text) > 12 and ("?" in text or "？" in text)
+                and not HINT_RE.search(text) and not FOOTER_RE.search(text)):
+            return text[:160]
     for position in range(before - 1, max(-1, before - 12), -1):
         text = _clean(lines[position]).strip()
         if not text or MORE_RE.match(text) or RULE_RE.match(text):
+            continue
+        if FOOTER_RE.search(text):
             continue
         if _marker(text)[0] or NUMBERED_RE.match(text):
             continue
@@ -183,6 +195,7 @@ def _finish(kind: str, title: str, hint: str, options: list[dict], view: list[st
         "hint": hint,
         "options": cleaned,
         "selected": next((item["index"] for item in cleaned if item["selected"]), 0),
+        "cursor": any(item["selected"] for item in cleaned),
         "numbers": numbers,
         "more": more,
         "source": source,
@@ -283,7 +296,7 @@ def parse_screen(text: str) -> dict[str, Any] | None:
             position += 1
         if len(block) >= 2:
             hint_at = _hint_index(lines, offset)
-            title = _title_above(lines, hint_at) if hint_at is not None else _title_above(lines, offset)
+            title = _title_above(lines, min(hint_at, offset) if hint_at is not None else offset)
             hint = _clean(lines[hint_at]).strip()[:160] if hint_at is not None else ""
             return _finish("menu", title, hint, block, lines, numbers=True, source="numbered")
 
@@ -301,7 +314,10 @@ def parse_screen(text: str) -> dict[str, Any] | None:
         # 没有提示行的"列表"多半是 shell 提示符/聊天正文，宁可不出卡片
         if hint_at is None:
             continue
-        return _finish("menu", _title_above(lines, hint_at), _clean(lines[hint_at]).strip()[:160],
+        # 标题在「提示行」或「选项块」两者更靠上的那个的上面：kimi 是提示在标题下方、
+        # 选项在底部；claude 是选项紧跟标题、提示行在最后
+        return _finish("menu", _title_above(lines, min(hint_at, top)),
+                       _clean(lines[hint_at]).strip()[:160],
                        options, lines, numbers=collected["numbers"], source="cursor")
 
     # C：确认类
@@ -346,7 +362,9 @@ def choice_keys(prompt: dict[str, Any], index: int) -> list[str]:
     if option.get("key"):
         return {"yes": ["y", "Enter"], "no": ["n", "Enter"],
                 "enter": ["Enter"], "esc": ["Escape"]}[option["key"]]
-    if prompt.get("numbers") and option.get("number"):
+    # 有光标就用方向键：数字在 codex 的更新对话框里根本不生效（实测按 2 毫无反应），
+    # 而在 kimi 的选择器里会被当成搜索词。只有「纯编号、没有光标」的列表才发数字。
+    if prompt.get("numbers") and option.get("number") and not prompt.get("cursor"):
         return [option["number"], "Enter"]
     keys = ["Up"] * (len(options) + 3)
     keys += ["Down"] * index
