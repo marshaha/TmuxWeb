@@ -21,6 +21,20 @@
   let getPane = null;
   let timer = null;
   let busy = false;
+  let busyTimer = 0;
+  // busy 只是防重复提交的锁，不是"永远别再点"的状态：请求万一挂着没回来，
+  // 8 秒后自动放开，否则卡片会一直回"上一条还在发送"、看着像坏了。
+  const BUSY_MAX_MS = 8000;
+  function lockBusy() {
+    busy = true;
+    clearTimeout(busyTimer);
+    busyTimer = setTimeout(() => { busy = false; }, BUSY_MAX_MS);
+  }
+  function unlockBusy() {
+    busy = false;
+    clearTimeout(busyTimer);
+    busyTimer = 0;
+  }
   let prompt = null;
   let cursor = 0;
   let hiddenByUser = false;      // 用户点了 ✕：这一轮别再弹
@@ -231,7 +245,7 @@
     paintCursor();
     paintOptimistic();
     setState('已发送：' + optionLabel(index) + '（等屏幕刷新…）', false);
-    busy = true;
+    lockBusy();
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {index});
       if (!result.ok) {
@@ -240,12 +254,12 @@
         setState(result.data.detail || `HTTP ${result.status}`, true);
         return;
       }
-      busy = false;                     // 先放开锁：followUp 里的 poll 靠它判断
+      unlockBusy();                     // 先放开锁：followUp 里的 poll 靠它判断
       await followUp();
     } catch (error) {
       setState('没送到，再试一次：' + error.message, true);
     } finally {
-      busy = false;
+      unlockBusy();
     }
   }
 
@@ -262,7 +276,7 @@
     optimistic = {toggle: toggleIndex, value, at: Date.now()};
     paintOptimistic();
     setState('已发送（等屏幕刷新…）', false);
-    busy = true;
+    lockBusy();
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`,
         {toggle: toggleIndex, value});
@@ -279,12 +293,12 @@
         return;
       }
       setState('已发送（等屏幕刷新…）', false);
-      busy = false;                     // 先放开锁：followUp 里的 poll 靠它判断
+      unlockBusy();                     // 先放开锁：followUp 里的 poll 靠它判断
       await followUp();
     } catch (error) {
       setState('没送到，再试一次：' + error.message, true);
     } finally {
-      busy = false;
+      unlockBusy();
     }
   }
 
@@ -292,17 +306,17 @@
     const pane = paneNow();
     if (!pane) return;
     if (busy) { setState('上一条还在发送，稍等一下…'); return; }
-    busy = true;
+    lockBusy();
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {key});
       if (!result.ok) { setState(result.data.detail || `HTTP ${result.status}`, true); return; }
       setState('已发送', false);
-      busy = false;                     // 先放开锁：followUp 里的 poll 靠它判断
+      unlockBusy();                     // 先放开锁：followUp 里的 poll 靠它判断
       await followUp();
     } catch (error) {
       setState('没送到，再试一次：' + error.message, true);
     } finally {
-      busy = false;
+      unlockBusy();
     }
   }
 
@@ -317,7 +331,7 @@
     if (busy || document.hidden) return;
     const pane = paneNow();
     if (!pane) { if (prompt) hide(); return; }
-    busy = true;
+    lockBusy();
     try {
       const response = await fetch(`/api/panes/${encodeURIComponent(pane)}/prompt`, {credentials: 'same-origin'});
       if (!response.ok) { if (prompt) hide(); return; }
@@ -338,7 +352,7 @@
     } catch (_error) {
       // 网络抖动：保持现状，下一轮再说
     } finally {
-      busy = false;
+      unlockBusy();
     }
   }
 

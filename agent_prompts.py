@@ -73,6 +73,32 @@ def _indent(line: str) -> int:
 SHELL_RE = re.compile(r"(\S+@\S+:|\$\s+\S|#\s+\S)")
 
 
+# 被 echo 出来的命令/源码里也会出现 "press Enter to continue"。
+# 真的对话框只有一句话；带这些痕迹的一律不是对话框。
+CODE_MARKERS = ("sys.stdout", "print(", "console.log", "\\r\\n", "\\n", '"""', ");")
+SHELL_PROMPT_RE = re.compile(r"^\s*(\$|>|>>>|#)\s")
+CONFIRM_MAX = 120
+
+
+def _looks_like_code(line: str) -> bool:
+    """这一行像被回显的源码/命令，而不是对话框在问你。"""
+    text = line.strip()
+    if len(text) > CONFIRM_MAX:
+        return True
+    if SHELL_PROMPT_RE.match(text):
+        return True
+    if any(marker in text for marker in CODE_MARKERS):
+        return True
+    # 落单的引号、或"注释 + 引号"（`# ... "press enter to continue"`）都是源码特征；
+    # 真对话框要引用文件名时引号是成对的（`Overwrite "a.txt"? [y/N]`）
+    if text.count('"') % 2:
+        return True
+    if "# " in text and '"' in text:
+        return True
+    # `foo("...")` 这种以调用收尾的
+    return bool(re.search(r"[\w\]\)]\([^)]*\)\s*$", text))
+
+
 def _option_is_plausible(label: str) -> bool:
     """菜单项长得像菜单项吗：短、不以句号结尾。"""
     text = label.strip()
@@ -375,9 +401,14 @@ def parse_screen(text: str) -> dict[str, Any] | None:
                        _clean(lines[hint_at]).strip()[:160],
                        options, lines, numbers=collected["numbers"], source="cursor")
 
-    # C：确认类
-    for offset, raw in enumerate(lines):
+    # C：确认类。对话框一定贴着屏幕底部，所以只看最后 6 行非空内容：
+    # 聊天/终端里被回显的命令、diff 常常写着 "press Enter to continue"，位置高得多。
+    confirm_tail = max(0, len(lines) - 6)
+    for offset in range(confirm_tail, len(lines)):
+        raw = lines[offset]
         line = _clean(raw).strip()
+        if _looks_like_code(line):
+            continue          # 源码/命令回显里的 "press enter to continue" 不是对话框
         if YES_NO_RE.search(line):
             return _finish("confirm", line[:160], "",
                            [{"label": "是", "meta": "y + Enter", "key": "yes"},

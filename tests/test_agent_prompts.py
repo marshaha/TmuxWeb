@@ -277,7 +277,39 @@ class OtherAgentsTests(unittest.TestCase):
         self.assertEqual(prompts.choice_keys(found, 1)[-2:], ["Down", "Enter"])
 
 
+# 真踩过：pane 里是 hermes 自己，屏上有被打出来的源码/diff，里面写着
+# "press enter to continue"，于是弹出「继续」卡片 —— 一点就往 agent 里敲了个回车。
+ECHOED_CODE = """
+│      for offset, raw in enumerate(lines):
+│          line = _clean(raw).strip()
+│ +        if _looks_like_code(line):
+│ +            continue          # 源码/命令回显里的 "press enter to continue" 不是对话框
+│          if YES_NO_RE.search(line):
+│              return _finish("confirm", line[:160], "",
+💻 $ ./.venv/bin/python -c " import agent_prompts as ap cases = { '真确认': ' press '
+
+☤ ❯ type to redirect this turn · Tab queues it for after
+────────────────────────────────────────────────────────────────────
+ ☤ deepseek-flash · 259K/1M · 26% · ◎ 99.5%
+"""
+
+
 class NotAMenuTests(unittest.TestCase):
+    def test_echoed_source_and_diff_never_become_a_confirm_card(self):
+        """命令被回显在屏幕上时，里面的 "press enter to continue" 不是对话框。"""
+        self.assertIsNone(prompts.parse_screen(ECHOED_CODE))
+        self.assertIsNone(prompts.parse_screen(
+            '            sys.stdout.write("  press Enter to continue (another round)\\r\\n")'))
+        self.assertIsNone(prompts.parse_screen('    print("press Enter to continue")'))
+
+    def test_a_real_confirm_prompt_still_parses(self):
+        found = prompts.parse_screen("  all three steps done\n  press Enter to continue (another round)\n")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["kind"], "confirm")
+        self.assertEqual(found["options"][0]["key"], "enter")
+        yes_no = prompts.parse_screen('  Overwrite "a.txt"? [y/N]\n')
+        self.assertEqual(yes_no["kind"], "confirm")
+
     def test_prose_that_mentions_hint_words_is_not_a_menu(self):
         """聊天里引用「←→ to switch」不能让它变成菜单，句子也不是菜单项。"""
         self.assertIsNone(prompts.parse_screen(CHAT_PROSE_QUOTING_HINTS))
