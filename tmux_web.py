@@ -1646,9 +1646,11 @@ def create_app(
             raise HTTPException(status_code=400, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="expected an object of preferences")
-        allowed = {"theme", "sidebar", "preview"}
+        allowed = {"theme", "sidebar", "preview", "prompt_card"}
         # preview = 侧栏悬停预览的延迟（off 关闭；1/2/3 秒）
-        choices = {"sidebar": {"pane", "none"}, "preview": {"off", "1", "2", "3"}}
+        # prompt_card = 聊天里的 agent 交互菜单卡片（实验性，默认 off）
+        choices = {"sidebar": {"pane", "none"}, "preview": {"off", "1", "2", "3"},
+                   "prompt_card": {"off", "on"}}
         saved = home.get_prefs()
         for key, value in payload.items():
             if key not in allowed:
@@ -3086,6 +3088,9 @@ def create_app(
         认不出就返回 ``{"prompt": null}`` —— 前端据此不显示按钮，用户照旧用终端。
         """
         require_auth(request)
+        if home.get_prefs().get("prompt_card", "off") != "on":
+            # 实验性功能：设置里没打开就当屏幕上没有等待中的选择
+            return {"pane": pane_id, "prompt": None, "screen": [], "disabled": True}
         try:
             found, text = await read_prompt(pane_id)
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
@@ -3103,6 +3108,8 @@ def create_app(
         由 ``agent_prompts.choice_keys`` 生成：顶到第一项，再走 N 步，最后 Enter。
         """
         require_auth(request)
+        if home.get_prefs().get("prompt_card", "off") != "on":
+            raise HTTPException(status_code=409, detail="交互菜单卡片已在设置里关闭")
         try:
             found = await cached_prompt(pane_id)
             if not found:

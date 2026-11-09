@@ -236,7 +236,7 @@ class SettingsPageWiringTests(unittest.TestCase):
             self.assertIn(marker, script)
         # one section with two tabs, not two separate rows
         # 修改密码 / 直连地址 / 导入导出 / 插件 / 主题 —— every one of them starts collapsed
-        self.assertEqual(script.count('class="ts-row"'), 5)
+        self.assertEqual(script.count('class="ts-row"'), 6, '新增交互菜单卡片开关')
         self.assertIn("/api/system/addresses", script)
         self.assertIn('id="ts-direct-panel"', script)
         self.assertIn("data-ts-tab=\"export\"", script)

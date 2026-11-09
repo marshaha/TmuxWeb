@@ -2042,8 +2042,24 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
     setupRecentPreview();
   }
   loadPanes();setInterval(()=>{if(!document.hidden)loadPanes();},20000);
-  // agent 的交互菜单（kimi 选择器、claude 权限确认）：跟着选中的 pane 轮询
-  if(window.TmuxPrompt)TmuxPrompt.start(()=>state.selected);
+  // agent 的交互菜单（kimi 选择器、claude 权限确认）是实验性功能：
+  // 设置里打开才轮询 /prompt，否则连请求都不发（读屏识别偶尔会误判）
+  let promptCardOn=false;
+  try{promptCardOn=localStorage.getItem('tmux-prompt-card')==='on';}catch{}
+  function syncPromptCard(){
+    if(!window.TmuxPrompt)return;
+    if(promptCardOn)TmuxPrompt.start(()=>state.selected);
+    else TmuxPrompt.stop();
+  }
+  syncPromptCard();
+  fetch('/api/prefs',{credentials:'same-origin'}).then(r=>r.json()).then(data=>{
+    const value=(data.prefs||{}).prompt_card;
+    if(value!=='on'&&value!=='off')return;
+    promptCardOn=value==='on';
+    try{localStorage.setItem('tmux-prompt-card',value);}catch{}
+    syncPromptCard();
+  }).catch(()=>{});
+  window.addEventListener('tmuxweb:prompt-card',event=>{promptCardOn=!!event.detail;syncPromptCard();});
 
   if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 })();

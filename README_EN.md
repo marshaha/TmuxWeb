@@ -195,6 +195,11 @@ card above the composer:
 - the card carries the raw screen text so you can check what you are answering; `✕` only closes it and sends nothing;
 - never auto-answers, never guesses (no card when the screen is not understood), and the terminal is always there.
 
+**This is experimental and off by default**: it works by reading the screen, so unrelated content (an echoed
+command, a diff, chat prose) is occasionally mistaken for a menu. Turn it on in Settings ›
+**Interactive menu cards (experimental)**; while it is off the console does not even request `/prompt` and
+`choose` answers 409. The switch follows the account (`prefs.prompt_card`).
+
 Two rules make it safe:
 
 ```bash

@@ -331,6 +331,11 @@ class TmuxWebTests(unittest.TestCase):
         response = self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
         self.assertEqual(response.status_code, 303)
 
+    def enable_prompt_card(self):
+        """交互菜单卡片是实验性功能，默认关；要测它的用例先把它打开。"""
+        self.login()
+        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "on"}).status_code, 200)
+
     def _fake_ip_output(self):
         return (
             "1: lo    inet 127.0.0.1/8 scope host lo\n"
@@ -2438,7 +2443,7 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_a_menu_on_screen_becomes_buttons(self):
         """kimi 的信任对话框：聊天里要能看见并点，而不是只能切终端。"""
-        self.login()
+        self.enable_prompt_card()
         self.tmux.output = (
             "──────────────────────────────\n"
             "  Trust this folder?\n"
@@ -2467,7 +2472,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(payload["screen"], [])
 
     def test_choosing_sends_keys_and_recheck_the_screen(self):
-        self.login()
+        self.enable_prompt_card()
         menu = ("  Select a model  (type to search)\n"
                 "  ↑↓ navigate · Enter select · Esc cancel\n\n"
                 "     Alpha\n"
@@ -2494,7 +2499,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
 
     def test_a_numbered_menu_can_be_chosen_by_digit(self):
-        self.login()
+        self.enable_prompt_card()
         self.tmux.output = (" Context is getting full.\n\n"
                             " What would you like to do?\n"
                             " 1. Compact and continue\n"
@@ -2515,7 +2520,7 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_a_switch_can_be_flipped_from_the_card(self):
         """kimi 的 Thinking 开关：点 Max 就发一次 →，然后复核屏幕真的变了。"""
-        self.login()
+        self.enable_prompt_card()
         self.tmux.output = ("  Select a model  (type to search)\n"
                             "  ↑↓ navigate · Enter select · Esc cancel\n\n"
                             "     Alpha\n"
@@ -2566,6 +2571,45 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("屏幕没有变化，再点一次或切到终端", script)
         page = (root / "web" / "index.html").read_text()
         self.assertIn(".prompt-option.picked", page)
+
+    def test_the_prompt_card_is_off_until_the_preference_says_on(self):
+        """实验性功能：默认关闭时连 /prompt 都不该解析，choose 直接 409。"""
+        self.login()
+        # 这个用例断言的是"关掉之后"的行为，先把偏好摆到 off（别依赖库里现有的值）
+        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "off"}).status_code, 200)
+        idle = self.client.get("/api/panes/%254/prompt").json()
+        self.assertIsNone(idle["prompt"])
+        self.assertTrue(idle.get("disabled"), "默认关闭要明确告诉前端")
+
+        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "on"}).status_code, 200)
+        self.tmux.output = ("  Trust this folder?\n"
+                            "  ↑↓ navigate · Enter select · Esc exit\n\n"
+                            "  ❯ Trust and continue\n"
+                            "     Exit\n")
+        live = self.client.get("/api/panes/%254/prompt").json()
+        self.assertIsNotNone(live["prompt"])
+        self.assertFalse(live.get("disabled"))
+
+        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "off"}).status_code, 200)
+        off = self.client.post("/api/panes/%254/prompt/choose", json={"index": 0})
+        self.assertEqual(off.status_code, 409)
+        self.assertIn("设置", off.json()["detail"])
+
+    def test_the_preference_rejects_unknown_values(self):
+        self.login()
+        bad = self.client.put("/api/prefs", json={"prompt_card": "maybe"})
+        self.assertEqual(bad.status_code, 400)
+
+    def test_settings_exposes_the_experimental_switch(self):
+        self.login()
+        panel = self.client.get("/assets/settings.js").text   # 设置面板的标记在脚本里
+        self.assertIn('data-ts-prompt="off"', panel)
+        self.assertIn('data-ts-prompt="on"', panel)
+        self.assertIn("交互菜单卡片（实验性）", panel)
+        page = self.client.get("/").text
+        # 控制台据此决定要不要轮询
+        self.assertIn("tmuxweb:prompt-card", page)
+        self.assertIn("TmuxPrompt.stop()", page)
 
     def test_the_card_answers_the_arrow_keys_the_switch_advertises(self):
         """分段开关写着 left/right to switch：卡片必须真的处理 ←→，否则键盘按下去没反应。"""
@@ -2660,7 +2704,7 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_a_switch_only_screen_answers_422_not_a_server_error(self):
         """只有开关、没有选项时点「选第 0 项」不该冒成 503 的 'no options'。"""
-        self.login()
+        self.enable_prompt_card()
         self.tmux.output = ("  形态\n"
                             "  ←→ to switch · Enter confirm · Esc cancel\n"
                             "   Thinking\n"
@@ -2673,7 +2717,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(sent_keys, [], "出错时一个键都不该发")
 
     def test_enter_on_a_switch_only_screen_confirms_it(self):
-        self.login()
+        self.enable_prompt_card()
         self.tmux.output = ("  ←→ to switch · Enter confirm · Esc cancel\n"
                             "   Thinking\n"
                             "      Low    [ High ]    Max\n")
@@ -2693,7 +2737,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
 
     def test_clicking_the_value_it_already_has_sends_nothing(self):
-        self.login()
+        self.enable_prompt_card()
         self.tmux.output = ("  Select a model  (type to search)\n"
                             "  ↑↓ navigate · Enter select · Esc cancel\n\n"
                             "     Alpha\n"
@@ -2708,13 +2752,13 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(sent_keys, [])
 
     def test_choosing_without_a_menu_is_a_conflict(self):
-        self.login()
+        self.enable_prompt_card()
         self.tmux.output = "idle\n"
         response = self.client.post("/api/panes/%254/prompt/choose", json={"index": 0})
         self.assertEqual(response.status_code, 409)
 
     def test_escape_is_always_available(self):
-        self.login()
+        self.enable_prompt_card()
         self.tmux.output = ("  Select a model  (type to search)\n"
                             "  ↑↓ navigate · Enter select · Esc cancel\n\n"
                             "  ❯ Alpha\n"

@@ -184,6 +184,21 @@
     </section>
 
     <section class="ts-block">
+      <button class="ts-row" type="button" id="ts-prompt-toggle" aria-expanded="false" aria-controls="ts-prompt-panel">
+        <span>交互菜单卡片（实验性）</span><span class="ts-caret" aria-hidden="true"></span>
+      </button>
+      <div class="ts-panel" id="ts-prompt-panel" hidden>
+        <p class="ts-hint">agent 在终端里弹出选择时（kimi 的模型选择器、claude 的权限确认），在聊天里显示成可点的卡片。
+          实验性：靠读屏识别，可能把屏幕上别的内容误认成菜单，默认关闭。</p>
+        <div class="ts-tabs" role="group" aria-label="交互菜单卡片">
+          <button type="button" data-ts-prompt="off" class="on">关</button>
+          <button type="button" data-ts-prompt="on">开</button>
+        </div>
+        <p class="ts-state" id="ts-prompt-state" role="status"></p>
+      </div>
+    </section>
+
+    <section class="ts-block">
       <button class="ts-row" type="button" id="ts-theme-toggle" aria-expanded="false" aria-controls="ts-theme-panel">
         <span>主题</span>
         <span class="ts-tail"><span class="ts-hint" id="ts-theme-current"></span><span class="ts-caret" aria-hidden="true"></span></span>
@@ -478,6 +493,41 @@
   const PREVIEW_KEY = 'tmux-preview-delay';
   const PREVIEW_VALUES = new Set(['off', '1', '2', '3']);
 
+  const PROMPT_KEY = 'tmux-prompt-card';
+  function paintPromptCard(on) {
+    for (const button of document.querySelectorAll('[data-ts-prompt]')) {
+      button.classList.toggle('on', (button.dataset.tsPrompt === 'on') === on);
+    }
+    try { localStorage.setItem(PROMPT_KEY, on ? 'on' : 'off'); } catch {}
+    // 控制台据此决定要不要轮询 /prompt
+    window.dispatchEvent(new CustomEvent('tmuxweb:prompt-card', {detail: on}));
+  }
+
+  async function loadPromptCardPref() {
+    let on = false;
+    try { on = localStorage.getItem(PROMPT_KEY) === 'on'; } catch {}
+    paintPromptCard(on);
+    try {
+      const data = await api('/api/prefs');
+      const server = (data.prefs || {}).prompt_card;
+      if (server === 'on' || server === 'off') paintPromptCard(server === 'on');
+    } catch { /* 离线：用本地镜像 */ }
+  }
+
+  async function savePromptCardPref(on) {
+    paintPromptCard(on);
+    try {
+      await api('/api/prefs', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({prompt_card: on ? 'on' : 'off'}),
+      });
+      note($('ts-prompt-state'), on ? '已打开（立即生效）' : '已关闭（立即生效）', on ? 'ok' : '');
+    } catch {
+      note($('ts-prompt-state'), '保存到账号失败，已记在本浏览器', 'bad');
+    }
+  }
+
   function paintPreviewDelay(value) {
     const select = $('ts-preview-delay');
     if (select) select.value = PREVIEW_VALUES.has(value) ? value : '2';
@@ -738,6 +788,10 @@
     });
     $('ts-sidebar-memory').addEventListener('click', () => toggleSidebarMemory());
     $('ts-preview-delay').addEventListener('change', event => savePreviewDelay(event.target.value));
+  for (const button of document.querySelectorAll('[data-ts-prompt]')) {
+    button.addEventListener('click', () => savePromptCardPref(button.dataset.tsPrompt === 'on'));
+  }
+  loadPromptCardPref();
     $('ts-themes').addEventListener('click', event => {
       const button = event.target.closest('[data-theme]');
       if (button) chooseTheme(button.dataset.theme);
