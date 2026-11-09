@@ -48,6 +48,11 @@ class MintAndVerifyTests(unittest.TestCase):
             with self.assertRaises(tickets.TicketError):
                 tickets.peek(SECRET, token)
 
+    def test_a_negative_use_budget_is_kept_as_unlimited(self):
+        grant = tickets.mint(SECRET, pane="%4", path="/x.bin", direction="up",
+                             max_bytes=1, name="x.bin", uses=-1)
+        self.assertEqual(tickets.peek(SECRET, grant["token"])["u"], -1)
+
     def test_minting_requires_a_pane_path_and_known_direction(self):
         with self.assertRaises(ValueError):
             tickets.mint(SECRET, pane="", path="/x", direction="down")
@@ -64,6 +69,13 @@ class LedgerTests(unittest.TestCase):
         ledger.spent(payload)
         ledger.spent(payload)
         with self.assertRaises(tickets.TicketError):
+            ledger.spent(payload)
+
+    def test_an_upload_ticket_with_no_limit_never_runs_out(self):
+        """块大小是自适应的，事先估块数一定不准 —— 上传票据不该按次数失效。"""
+        ledger = tickets.Ledger()
+        payload = {"i": "unlimited", "u": -1, "e": int(time.time()) + 60}
+        for _ in range(500):
             ledger.spent(payload)
 
     def test_an_upload_ticket_is_worth_several_chunks(self):

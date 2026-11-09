@@ -2123,6 +2123,12 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "downloads.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/video-cards.css")
+    async def video_cards_style() -> FileResponse:
+        """视频卡片样式：聊天页和看板共用一份。"""
+        return FileResponse(WEB_DIR / "assets" / "video-cards.css", media_type="text/css",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/video-cards.js")
     async def video_cards_script() -> FileResponse:
         """聊天里把视频链接变成就播放器（preload=metadata，不点不下载）。"""
@@ -3418,11 +3424,11 @@ def create_app(
         if payload.size > upload_limit:
             raise HTTPException(status_code=413,
                                 detail=f"file exceeds the upload limit of {upload_limit} bytes")
-        chunks = max(1, -(-int(payload.size) // (4 * 1024 * 1024))) if direction == "up" else 0
         ticket = transfer_tickets.mint(
             transfer_secret, pane=payload.pane, path=payload.path, direction=direction,
             max_bytes=int(payload.size), name=payload.name,
-            uses=chunks * 2 + 4 if direction == "up" else 0,
+            # 上传不限次数：块大小是自适应的，事先估出来的块数一定不准
+            uses=-1 if direction == "up" else 0,
         )
         return ticket
 

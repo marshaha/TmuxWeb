@@ -16,6 +16,7 @@
 <link rel="stylesheet" href="/assets/shell.css">
 <link rel="stylesheet" href="/assets/recents.css">
 <link rel="stylesheet" href="/assets/pane-preview.css">
+<link rel="stylesheet" href="/assets/video-cards.css">
 <style>
   :root{--bg:#F0EEE6;--surface:#FAF9F5;--card:#fff;--ink:#262520;--muted:#6f6a5e;--faint:#a09a8c;--line:#E2DFD5;--accent:#C96442;--green:#3f8f5f;--amber:#D89A3C;--danger:#B4442F;--side-w:268px;--card-hover:#f3f2ed;--bubble:#e9e7df;--line-strong:#cbc9c0;--shimmer:var(--card-hover)}
   *{box-sizing:border-box}
@@ -436,6 +437,8 @@
     const cards=board.cards||[];
     $('card-count').textContent=`${cards.length}`;
     $('cards').innerHTML=cards.length?cards.map(cardHtml).join(''):'<div class="empty"><b>看板是空的</b>在任意 agent pane 里让模型调用 MCP 工具 publish_home_card，就能把结论贴到这里。</div>';
+    // 卡片正文是 markdown：里面贴的视频链接也变成播放器（不点只取元信息）
+    if(window.TmuxVideo)window.TmuxVideo.enhance($('cards'));
   }
 
   function card(favorite){
@@ -743,6 +746,7 @@
 
 </script>
 <script>if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));</script>
+<script src="/assets/video-cards.js"></script>
 <script src="/assets/plugins-ui.js"></script>
 </body>
 </html>

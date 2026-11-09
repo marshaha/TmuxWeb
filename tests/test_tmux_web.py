@@ -2404,12 +2404,17 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(script.status_code, 200)
         self.assertIn("TmuxVideo", script.text)
         self.assertIn("preload = 'metadata'", script.text)
-        page = self.client.get("/", follow_redirects=False)
-        # 没登录会被重定向，所以直接读文件里的接线
-        html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
-        self.assertIn("/assets/video-cards.js", html)
-        self.assertIn(".video-card", html)
-        self.assertIn("enhanceVideos(root)", html)
+        style = self.client.get("/assets/video-cards.css")
+        self.assertEqual(style.status_code, 200)
+        self.assertIn(".video-card", style.text)
+        # 没登录会被重定向，所以直接读文件里的接线；聊天页和看板共用同一份脚本/样式
+        web = Path(__file__).resolve().parent.parent / "web"
+        for name in ("index.html", "home.html"):
+            html = (web / name).read_text()
+            self.assertIn("/assets/video-cards.js", html, name)
+            self.assertIn("/assets/video-cards.css", html, name)
+        self.assertIn("enhanceVideos(root)", (web / "index.html").read_text())
+        self.assertIn("TmuxVideo.enhance($('cards'))", (web / "home.html").read_text())
 
     def test_a_local_video_is_served_inline_so_a_player_can_use_it(self):
         """<video> 只能就地播；如果 raw 给 attachment，Safari 会直接下载。"""
@@ -2454,6 +2459,24 @@ class TmuxWebTests(unittest.TestCase):
                 content=b"hello")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(Path(directory, "x.bin").read_text(), "hello")
+
+    def test_one_upload_ticket_covers_every_chunk(self):
+        """真实上传里块大小会自适应缩小，块数远超事先估算 —— 不能中途 403。"""
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            total = 12 * 100
+            grant = self.client.post("/api/transfer/ticket",
+                                     json={"pane": "%4", "path": "/many.bin", "direction": "up",
+                                           "size": total, "name": "many.bin"}).json()
+            stranger = TestClient(self.client.app)
+            for offset in range(0, total, 100):
+                response = stranger.put(
+                    f"/t/upload?t={grant['token']}&name=many.bin&dir={directory}"
+                    f"&offset={offset}&total={total}&token=abc",
+                    content=b"x" * 100)
+                self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(Path(directory, "many.bin").stat().st_size, total)
 
     def test_a_download_ticket_cannot_be_used_to_upload(self):
         self.login()

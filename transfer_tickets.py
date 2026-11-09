@@ -64,8 +64,11 @@ def mint(secret: bytes, *, pane: str, path: str, direction: str,
     if not pane or not path:
         raise ValueError("pane and path are required")
     now = int(time.time())
-    if uses <= 0:
+    if uses is None or uses == 0:
         uses = DOWNLOAD_USES if direction == "down" else UPLOAD_USES_PER_CHUNK
+    # uses < 0 表示不限次数：上传按块计数天生不可估（块大小会随链路自适应，
+    # 256KB~4MB 差 16 倍），数错了用户就会看到"上传失败：ticket already used"。
+    # 票据本身已经绑定 pane/路径/大小上限且 10 分钟过期，次数不是防护点。
     payload = {
         "p": pane,
         "f": path,
@@ -123,6 +126,8 @@ class Ledger:
         if not nonce:
             raise TicketError("malformed ticket")
         allowed = int(payload.get("u", 0))
+        if allowed < 0:
+            return                       # 不计数（上传方向）
         entry = self._seen.get(nonce)
         if entry is None:
             entry = [allowed - 1, int(payload.get("e", 0))]

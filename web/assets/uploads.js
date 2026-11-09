@@ -90,6 +90,11 @@
         await sleep(500 * attempts);
         continue;
       }
+      if (response.status === 403 && route) {
+        // 直连票据失效/过期：这份文件改用公网继续传，已经写进去的字节服务端还在
+        route = null;
+        continue;
+      }
       if (response.status === 409) {
         let server = Number(response.header);
         if (!Number.isFinite(server)) {
