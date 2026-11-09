@@ -41,6 +41,7 @@ class FakeTmux(TmuxBackend):
         ]
         self.output = "hello\n› Ask Codex to do anything\n"
         self.sent = []
+        self.keys = []
         self.created = []
         self.auto_reply = None
 
@@ -96,6 +97,16 @@ class FakeTmux(TmuxBackend):
 
     def list_panes(self):
         return self.panes
+
+    def send_key(self, pane_id, key, pane=None):
+        """记录按键，绝不落到真实 tmux 上。
+
+        继承来的 TmuxBackend.send_key 会真的执行 `tmux send-keys`：本机恰好有
+        pane %4 时测试会"通过"，CI 上没有 tmux 就 503 —— 更糟的是本地那一跑会
+        往用户真实 pane 里敲按键。用例可以覆盖这个方法，别覆盖回父类。
+        """
+        self.validate_pane(pane_id)
+        self.keys.append((pane_id, key))
 
     def capture(self, pane_id, history=500, pane=None):
         self.validate_pane(pane_id)
@@ -2456,13 +2467,11 @@ class TmuxWebTests(unittest.TestCase):
                 "     Gamma\n")
         self.tmux.output = menu
         sent_keys = []
-        original_send_key = self.tmux.send_key
 
         def recording(pane_id, key, pane=None):
             sent_keys.append(key)
             if key == "Enter":
                 self.tmux.output = "  done\n"      # 选完之后菜单消失
-            return original_send_key(pane_id, key, pane=pane)
 
         self.tmux.send_key = recording
         response = self.client.post("/api/panes/%254/prompt/choose", json={"index": 2})
@@ -2482,13 +2491,11 @@ class TmuxWebTests(unittest.TestCase):
                             " 2. Start a new session\n"
                             " Enter select · Esc cancel\n")
         sent_keys = []
-        original_send_key = self.tmux.send_key
 
         def recording(pane_id, key, pane=None):
             sent_keys.append(key)
             if key == "Enter":
                 self.tmux.output = "compacting…\n"
-            return original_send_key(pane_id, key, pane=pane)
 
         self.tmux.send_key = recording
         result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "2"}).json()
@@ -2508,13 +2515,11 @@ class TmuxWebTests(unittest.TestCase):
                             "  ❯ Alpha\n"
                             "    Beta\n")
         sent_keys = []
-        original_send_key = self.tmux.send_key
 
         def recording(pane_id, key, pane=None):
             sent_keys.append(key)
             if key == "Escape":
                 self.tmux.output = "idle\n"
-            return original_send_key(pane_id, key, pane=pane)
 
         self.tmux.send_key = recording
         result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "esc"}).json()
