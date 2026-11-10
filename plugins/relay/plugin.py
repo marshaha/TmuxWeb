@@ -47,14 +47,20 @@ class RelayPlugin(Plugin):
             auth(request)
             transport, pane_id, pane, host_name = await asyncio.to_thread(services.relay_target, payload.target)
             try:
-                await asyncio.to_thread(transport.send, pane_id, payload.text, payload.submit)
+                submitted = await asyncio.to_thread(transport.send, pane_id, payload.text, payload.submit)
             except (services.tmux_error, RuntimeError, OSError, ValueError) as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
+            if submitted is None:
+                submitted = True
+            # The paste landed but Enter never moved it: say so, and keep the
+            # 200 - the text did arrive, so a 503 would be a lie.
+            status = "pasted_not_submitted" if payload.submit and not submitted else "sent"
             services.relay_log.appendleft({
                 "at": time.time(), "target": payload.target, "source": "message",
-                "status": "sent", "question": payload.text[:400], "elapsed": 0,
+                "status": status, "question": payload.text[:400], "elapsed": 0,
             })
-            return {"status": "sent", "target": payload.target, "host": host_name}
+            return {"status": status, "target": payload.target, "host": host_name,
+                    "submitted": submitted}
 
         @app.get("/api/relay/log")
         async def relay_history(request: Request):

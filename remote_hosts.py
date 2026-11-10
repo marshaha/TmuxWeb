@@ -2222,8 +2222,40 @@ class SSHRunner:
             return ""
         return completed.stdout.decode(errors="replace")
 
+    def _capture_bottom(self, tmux: str, target: str, lines: int = 6) -> str:
+        """The prompt box area of a remote pane, whitespace-normalised for matching."""
+        screen = self.run(f"{tmux} capture-pane -p -t {target}", timeout=15)
+        return " ".join(" ".join(screen.stdout.decode(errors="replace").splitlines()[-max(2, lines):]).split())
+
+    def _wait_for_paste_visible(self, tmux: str, target: str, fingerprint: str,
+                                polls: int = 20, interval: float = 0.1) -> bool:
+        """Wait until our pasted text shows up in the prompt box (see TmuxBackend).
+
+        A capture that fails or times out just counts as "not visible yet";
+        the caller presses anyway after the budget, so a flaky capture can
+        never block a submit.
+        """
+        if not fingerprint:
+            return False
+        for index in range(max(0, polls)):
+            try:
+                if fingerprint in self._capture_bottom(tmux, target):
+                    return True
+            except (RuntimeError, OSError):
+                pass
+            if index + 1 < polls:
+                time.sleep(interval)
+        return False
+
     def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None,
-             tries: int = 3, submit_delay: float | None = None) -> None:
+             tries: int = 5, submit_delay: float | None = None) -> bool:
+        """Paste text into a remote pane and, when asked, press Enter until it submits.
+
+        Returns True when the text is in (and, for submit, no longer sitting in
+        the prompt box).  Returns False instead of raising when the Enter
+        presses never move it: the paste itself succeeded, so the caller must
+        report "pasted but not submitted", not a failed send.
+        """
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
         name = "web-" + secrets.token_hex(6)
@@ -2236,25 +2268,45 @@ class SSHRunner:
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote send failed")
         if not submit:
-            return
+            return True
         # Same story as the local backend: a long paste over ssh can still be
         # in flight when the first C-m lands, so press again while the screen is
         # frozen.  An extra Enter on an empty prompt does nothing.
         delay = submit_delay if submit_delay is not None else 0.18 + min(2.0, len(text) / 2500.0)
         time.sleep(delay)
         fingerprint = " ".join((text or "").split())[-40:]
+        # Do not press into a paste that has not landed yet; a miss just falls
+        # through to the press-and-check loop below.
+        self._wait_for_paste_visible(tmux, target, fingerprint)
+        presses = 0
+        submitted = False
         for attempt in range(max(1, tries)):
             pressed = self.run(f"{tmux} send-keys -t {target} C-m", timeout=15)
             if pressed.returncode != 0:
                 raise RuntimeError(pressed.stderr.decode(errors="replace").strip() or "remote send failed")
-            if attempt + 1 >= tries or not fingerprint:
-                return
+            presses += 1
+            if not fingerprint:
+                submitted = True
+                break
+            if attempt + 1 >= tries:
+                break
             time.sleep(0.5)
-            # 屏幕还在动不代表提交了：直接看我们那行字还在不在底部输入框里
-            screen = self.run(f"{tmux} capture-pane -p -t {target}", timeout=15)
-            bottom = " ".join(" ".join(screen.stdout.decode(errors="replace").splitlines()[-6:]).split())
-            if fingerprint not in bottom:
-                return
+            # 屏幕还在动不代表提交了：直接看我们那行字还在不在底部输入框里。
+            # 只看最后 3 行：提交后消息还留在 transcript 里、就在输入框上面，
+            # 宽窗口会在一次成功提交后误报未提交（见 TmuxBackend.still_in_prompt）。
+            if fingerprint not in self._capture_bottom(tmux, target, lines=3):
+                submitted = True
+                break
+        if not submitted and fingerprint:
+            # The loop ended without seeing the text leave: confirm once more
+            # (the last Enter may have submitted it) before calling it stuck.
+            try:
+                submitted = fingerprint not in self._capture_bottom(tmux, target, lines=3)
+            except (RuntimeError, OSError):
+                submitted = False
+        if not submitted:
+            LOGGER.warning("remote paste not submitted after %d enters: pane=%s", presses, pane_id)
+        return submitted
 
 
 class RemoteTerminalSession:

@@ -99,7 +99,11 @@ class RelayTools:
         text = self._text(arguments, "text", limit=20_000)
         result = request("/api/relay/message", {"target": target, "text": text,
                                                 "submit": bool(arguments.get("submit", True))})
-        return {"target": target, "sent": True, "pane": result.get("pane")}
+        # The server reports whether the paste actually left the prompt box;
+        # an old server without the field is treated as submitted, as before.
+        submitted = bool(result.get("submitted", True))
+        return {"target": target, "sent": submitted, "submitted": submitted,
+                "pane": result.get("pane")}
 
     def _resolve_host(self, value: str) -> str:
         """Accept a host id, a host name or "localhost" - names are friendlier."""

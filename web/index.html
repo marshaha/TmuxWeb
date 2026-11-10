@@ -1998,6 +1998,11 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     el.className='send-state'+(kind?' '+kind:'');
     if(kind==='ok'&&text)sendStateTimer=setTimeout(()=>{el.textContent='';el.className='send-state';},1400);
   }
+  function sendResultState(result){
+    if(result&&result.status==='pasted_not_submitted')return {text:'已粘贴但未提交',kind:'bad'};
+    return {text:'已发送 ✓',kind:'ok'};
+  }
+
   async function resendPending(localId){
     const pending=state.pendingMessages.get(localId);
     if(!pending)return;
@@ -2005,9 +2010,10 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     setOptimisticStatus(localId,'sending');
     setSendState('重发中…');
     try{
-      await api(`/api/panes/${encodeURIComponent(pending.pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:pending.text,submit:pending.submit!==false})});
-      setOptimisticStatus(localId,'sent');
-      setSendState('已发送 ✓','ok');
+      const d=await api(`/api/panes/${encodeURIComponent(pending.pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:pending.text,submit:pending.submit!==false})});
+      const st=sendResultState(d);
+      setOptimisticStatus(localId,st.kind==='bad'?'failed':'sent');
+      if(st.kind==='bad')setSendState(st.text,st.kind);else setSendState('已发送 ✓','ok');
       showError('');
     }catch(e){
       setOptimisticStatus(localId,'failed');
@@ -2024,7 +2030,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(!pane||!text.trim()||attachmentsPending())return;
     // 条带在按 Enter 这一刻就收起来（以前等 POST 回来才清，那一秒图片还留着）
     const attachments=prompt?takeAttachments():[];
-    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});setOptimisticStatus(localId,'sent');setSendState('已发送 ✓','ok');showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;refreshTranscript(pane,{force:true});}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');if(attachments.length)restoreAttachments(attachments);
+    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});const st=sendResultState(d);setOptimisticStatus(localId,st.kind==='bad'?'failed':'sent');setSendState(st.text,st.kind);showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;refreshTranscript(pane,{force:true});}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');if(attachments.length)restoreAttachments(attachments);
     // 别把用户刚打的字弄丢：放回输入框，改完/网络好了直接再发
     // 别把用户刚打的字弄丢，也别把那行附件前缀留在输入框里：附件已经放回条带，
     // 再发一次会重新拼前缀，留着就变成两行 "user uploaded file …"
