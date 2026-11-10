@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import gzip
 import hashlib
 import json
@@ -2170,16 +2171,8 @@ class SSHRunner:
             result[current] = ANSI_RE.sub("", "\n".join(buffer))
         return result
 
-    def status_many(self, pane_ids) -> dict:
-        """Ask each agent pane's session file whether its turn is still running.
-
-        One ssh for the whole host: the transcript script's status-only mode resolves
-        the session file exactly like a transcript read would (same Claude/Kimi
-        disambiguation) and prints nothing but the verdict.
-        """
-        ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))][:80]
-        if not ids:
-            return {}
+    def _status_many_chunk(self, ids) -> dict:
+        """One ssh call asking the verdict for a few panes; see status_many."""
         script = (
             "S=" + shlex.quote(REMOTE_TRANSCRIPT_SCRIPT) + "; "
             "for pane in " + " ".join(shlex.quote(pane) for pane in ids) + "; do "
@@ -2196,6 +2189,40 @@ class SSHRunner:
             state = state.strip()
             if pane and state:
                 result[pane] = state
+        return result
+
+    def status_many(self, pane_ids) -> dict:
+        """Ask each agent pane's session file whether its turn is still running.
+
+        The transcript script's status-only mode resolves the session file exactly
+        like a transcript read would (same Claude/Kimi disambiguation) and prints
+        nothing but the verdict.
+
+        One host used to pay the per-pane loop serially: ~440ms a pane on a slow
+        link, 7s+ for 17 panes on macmini, which was the whole pane sweep. Split
+        into a few chunks and run them side by side; each chunk is still one ssh
+        call, so a small host still costs exactly one round trip. A chunk that
+        fails only loses its own panes (they stay unknown); the rest still land.
+        """
+        ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))][:80]
+        if not ids:
+            return {}
+        workers = 1 if len(ids) <= 8 else 4
+        if workers == 1:
+            return self._status_many_chunk(ids)
+
+        def _safe(chunk):
+            try:
+                return self._status_many_chunk(chunk)
+            except Exception:
+                return {}
+
+        size = (len(ids) + workers - 1) // workers
+        chunks = [ids[i:i + size] for i in range(0, len(ids), size)]
+        result: dict = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for partial in pool.map(_safe, chunks):
+                result.update(partial)
         return result
 
     def send_key(self, pane_id: str, key: str, pane: dict | None = None) -> None:
