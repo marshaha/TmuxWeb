@@ -55,6 +55,23 @@ LOGGER = logging.getLogger("tmux_web")
 
 PANE_RE = re.compile(r"^%[0-9]+$")
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+
+# Long polling on the transcript route: a steady-state poll hangs for up to
+# this long waiting for the session file (or the agent's running state) to
+# move, so one request replaces ~10 polls on a slow link. 25s stays under the
+# usual 30s proxy idle timeout; 0 keeps the old poll-stub behaviour.
+LONG_POLL_MAX_SECONDS = 25.0
+LONG_POLL_CHECK_SECONDS = 0.2
+LONG_POLL_WAITING_CHECK_SECONDS = 1.0
+
+
+def clamp_long_poll_wait(value) -> float:
+    """Clamp a client-supplied long-poll wait to 0..LONG_POLL_MAX_SECONDS."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(LONG_POLL_MAX_SECONDS, seconds))
 def safe_next_url(value: str, default: str = "/") -> str:
     """Only a same-origin path may be used as a post-login target."""
     candidate = (value or "").strip()
@@ -3087,26 +3104,111 @@ def create_app(
     # unchanged poll skip the read+parse entirely (see transcript()).
     transcript_sig_cache: dict[str, dict] = {}
 
-    def with_waiting_hint(data: dict) -> dict:
+    def waiting_facts(messages):
+        """(last role, last user timestamp) — what the waiting verdict is built on."""
+        last = messages[-1] if messages else {}
+        last_user_ts = None
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                last_user_ts = message.get("timestamp")
+                break
+        return (last.get("role") or "", last_user_ts)
+
+    def agent_busy(provider: str, pane: dict | None) -> bool:
+        """True when the pane's own session file says its turn is still running.
+
+        One tail read (<=64KB) plus the session-file lookup, no tmux capture
+        and no shell out — the same probe the state sweep already makes.
+        Remote panes never reach here: their session files are not local.
+        """
+        if not pane or pane.get("host_id") not in (None, "localhost") or not provider:
+            return False
+        try:
+            return agent_status.status_for_pane(
+                provider, pane.get("path", ""), pane.get("title", "")) == agent_status.BUSY
+        except Exception:  # noqa: BLE001 - a failed probe must not fail the transcript
+            return False
+
+    def with_waiting_hint(data: dict, pane: dict | None = None) -> dict:
         """Tell the UI whether the agent is still working on the last message.
 
-        A trailing user message means the turn has not been answered yet; a
-        transcript that is still being written (recent mtime) means the agent is
-        streaming something we parse only when it completes.
+        A trailing user message means the turn has not been answered yet. But
+        the first assistant reply does not end the turn: a long task keeps
+        streaming after it, so when the last message is an assistant one the
+        session file gets the final say — BUSY there means still waiting.
+        ``waiting_since`` is the turn's start (the last user message), so the
+        progress clock does not restart on every partial reply.
         """
         messages = data.get("messages") or []
-        last = messages[-1] if messages else {}
-        # an unanswered user turn is the one signal a transcript can give cheaply;
-        # agents that stream (codex) are covered by the pane-state probe instead
-        waiting = (last.get("role") == "user")
-        since = last.get("timestamp") if waiting else None
+        last_role, last_user_ts = waiting_facts(messages)
+        waiting = (last_role == "user")
+        if not waiting and pane is not None:
+            provider = (data.get("provider") or pane.get("provider")
+                        or transcript_reader.provider_for_command(pane.get("command")) or "")
+            waiting = agent_busy(provider, pane)
         data["waiting"] = bool(waiting)
-        data["waiting_since"] = since
+        data["waiting_since"] = last_user_ts if waiting else None
         return data
+
+    def fresh_waiting_for_hit(pane: dict, hit: dict) -> tuple[bool, object]:
+        """Re-judge waiting for a stat-unchanged stub.
+
+        The messages are the same as when the cache entry was written, so the
+        last-role rule still holds — but the agent may have started (or
+        finished) since, which only the session file knows. A cached waiting
+        must never be served stale, or the poll interval decays to 10s while
+        a long task is still silently running.
+        """
+        waiting = (hit.get("last_role") == "user")
+        if not waiting:
+            provider = (pane.get("provider")
+                        or transcript_reader.provider_for_command(pane.get("command")) or "")
+            waiting = agent_busy(provider, pane)
+        return bool(waiting), (hit.get("last_user_ts") if waiting else None)
+
+    def unchanged_stub(pane: dict, hit: dict, signature: str, long_poll: bool = False) -> dict:
+        """The tiny unchanged reply, with waiting re-judged and the cache updated."""
+        waiting, since = fresh_waiting_for_hit(pane, hit)
+        hit["waiting"] = waiting
+        hit["waiting_since"] = since
+        stub: dict = {"unchanged": True, "signature": signature, "waiting": waiting,
+                      "waiting_since": since, "has_more": hit["has_more"]}
+        if long_poll:
+            stub["long_poll"] = True
+        return stub
+
+    async def await_transcript_change(pane: dict, hit: dict, wait_seconds: float) -> str:
+        """Hang until the session file moves, waiting flips, or the deadline.
+
+        Returns "changed", "waiting_flipped" or "timeout". The caller already
+        checked that the client's baseline matches this cache entry. Only
+        stat() and the cheap session-file status probe run here; the transcript
+        itself is never re-read inside the loop, and the loop only ever sleeps
+        with asyncio.sleep, so the event loop stays free for other requests.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_seconds
+        last_waiting_check = 0.0
+        while True:
+            try:
+                stat = os.stat(hit["path"])
+            except OSError:
+                return "changed"
+            if (stat.st_mtime_ns, stat.st_size) != (hit["mtime_ns"], hit["size"]):
+                return "changed"
+            now = loop.time()
+            if now - last_waiting_check >= LONG_POLL_WAITING_CHECK_SECONDS:
+                last_waiting_check = now
+                waiting, _since = await asyncio.to_thread(fresh_waiting_for_hit, pane, hit)
+                if waiting != hit["waiting"]:
+                    return "waiting_flipped"
+            if now >= deadline:
+                return "timeout"
+            await asyncio.sleep(min(LONG_POLL_CHECK_SECONDS, max(0.0, deadline - now)))
 
     @app.get("/api/panes/{pane_id}/transcript")
     async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0,
-                         sig: str = ""):
+                         sig: str = "", since: str = "", wait: float = 0):
         """Structured messages; ``sig`` lets an unchanged poll return a stub.
 
         The console polls this while a turn runs.  Sending 300 messages of JSON
@@ -3115,31 +3217,57 @@ def create_app(
         (a few dozen bytes) when nothing moved.  When the session file's stat
         is unchanged since the last full read, the stub is answered without
         re-reading or re-parsing anything at all.
+
+        ``since`` (last message id, or a full signature) asks for only the
+        messages after that point; an unknown anchor falls back to the full
+        list. ``wait`` (seconds, clamped to 0..25) long-polls instead: while
+        the baseline still matches, the request hangs until the session file
+        moves, the agent's running state flips, or the deadline passes.
+        ``refresh=1`` never hangs — a manual refresh answers immediately.
+        Remote panes keep the old behaviour for waiting (no local session
+        file to probe, no stat to wait on); ``since`` still slices their
+        already-read messages.
         """
         require_auth(request)
         pane = await asyncio.to_thread(pane_or_404, pane_id)
-        if sig and not refresh and pane.get("host_id") in (None, "localhost"):
+        is_local = pane.get("host_id") in (None, "localhost")
+        wait_seconds = 0.0 if refresh else clamp_long_poll_wait(wait)
+        if not refresh and is_local:
             hit = transcript_sig_cache.get(pane_id)
-            if hit and hit["signature"] == sig:
+            if hit:
                 try:
                     stat = os.stat(hit["path"])
                 except OSError:
                     stat = None
                 if stat is not None and (stat.st_mtime_ns, stat.st_size) == (hit["mtime_ns"], hit["size"]):
-                    return {"unchanged": True, "signature": sig, "waiting": hit["waiting"],
-                            "waiting_since": hit["waiting_since"], "has_more": hit["has_more"]}
+                    baseline = False
+                    if sig and sig == hit["signature"]:
+                        baseline = True
+                    if since:
+                        anchor = since.rsplit("|", 1)[-1] if "|" in since else since
+                        if anchor and anchor == hit["signature"].rsplit("|", 1)[-1]:
+                            baseline = True
+                    if baseline:
+                        if wait_seconds > 0:
+                            outcome = await await_transcript_change(pane, hit, wait_seconds)
+                            if outcome in ("waiting_flipped", "timeout"):
+                                return unchanged_stub(pane, hit, hit["signature"], long_poll=True)
+                            # "changed": fall through to the full read below
+                        else:
+                            return unchanged_stub(pane, hit, sig or hit["signature"])
         try:
             transport, actual_pane_id = pane_transport(pane_id)
             if refresh and hasattr(transport, "transcript"):
                 data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, True, pane=pane)
             else:
                 data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, pane=pane)
-            data = with_waiting_hint(data)
+            data = with_waiting_hint(data, pane if is_local else None)
             messages = data.get("messages") or []
             signature = "%s|%s|%s" % (data.get("mtime"), len(messages),
                                      messages[-1].get("id") if messages else "")
+            last_role, last_user_ts = waiting_facts(messages)
             source_path = data.get("path")
-            if source_path and pane.get("host_id") in (None, "localhost"):
+            if source_path and is_local:
                 try:
                     stat = os.stat(source_path)
                 except OSError:
@@ -3148,15 +3276,44 @@ def create_app(
                     transcript_sig_cache[pane_id] = {
                         "path": source_path, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
                         "signature": signature, "waiting": data.get("waiting"),
-                        "waiting_since": data.get("waiting_since"), "has_more": data.get("has_more")}
+                        "waiting_since": data.get("waiting_since"), "has_more": data.get("has_more"),
+                        "last_role": last_role, "last_user_ts": last_user_ts}
                     if len(transcript_sig_cache) > 512:
                         transcript_sig_cache.clear()
                 else:
                     transcript_sig_cache.pop(pane_id, None)
+            held = bool(wait_seconds > 0 and is_local)
             if sig and sig == signature:
-                return {"unchanged": True, "signature": signature, "waiting": data.get("waiting"),
-                        "waiting_since": data.get("waiting_since"), "has_more": data.get("has_more")}
+                stub: dict = {"unchanged": True, "signature": signature, "waiting": data.get("waiting"),
+                              "waiting_since": data.get("waiting_since"), "has_more": data.get("has_more")}
+                if held:
+                    stub["long_poll"] = True
+                return stub
+            if since and not refresh:
+                anchor = since.rsplit("|", 1)[-1] if "|" in since else since
+                ids = [str(item.get("id")) for item in messages]
+                if anchor in ids:
+                    index = ids.index(anchor)
+                    if index == len(ids) - 1:
+                        stub = {"unchanged": True, "signature": signature,
+                                "waiting": data.get("waiting"),
+                                "waiting_since": data.get("waiting_since"),
+                                "has_more": data.get("has_more")}
+                        if held:
+                            stub["long_poll"] = True
+                        return stub
+                    incremental = dict(data)
+                    incremental["messages"] = messages[index + 1:]
+                    incremental["signature"] = signature
+                    incremental["incremental"] = True
+                    if held:
+                        incremental["long_poll"] = True
+                    return incremental
+                # anchor not in the current window (rotation, or older than the
+                # limit): fall through to the full list below
             data["signature"] = signature
+            if held:
+                data["long_poll"] = True
             return data
         except HTTPException:
             raise
@@ -4019,7 +4176,8 @@ def create_app(
             }
             break
         try:
-            entry["waiting"] = bool(with_waiting_hint(data).get("waiting"))
+            entry["waiting"] = bool(with_waiting_hint(
+                data, pane if "~" not in pane_id else None).get("waiting"))
         except (RuntimeError, ValueError):
             entry["waiting"] = False
         # the provider's own transcript knows whether a turn is running; the screen
