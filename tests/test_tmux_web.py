@@ -4228,6 +4228,43 @@ class SendSubmittedTests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "pasted_not_submitted")
         self.assertFalse(response.json()["submitted"])
 
+    def guest_for_share(self, tmux, slug="share001"):
+        tmux.panes[0]["command"] = "claude"
+        client = self.client_for(tmux)
+        self.login(client)
+        created = client.post("/api/shares", json={
+            "pane_id": "%4", "slug": slug, "password": "", "expires_in": 3600,
+        })
+        self.assertEqual(created.status_code, 201)
+        return TestClient(client.app), slug
+
+    def test_share_input_reports_pasted_not_submitted_with_200(self):
+        guest, slug = self.guest_for_share(self.NeverSubmits())
+        response = guest.post(f"/share/{slug}/api/input", json={"text": "继续分析", "submit": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "pasted_not_submitted")
+        self.assertFalse(response.json()["submitted"])
+
+    def test_share_input_reports_sent_when_submitted(self):
+        guest, slug = self.guest_for_share(self.AlwaysSubmits())
+        response = guest.post(f"/share/{slug}/api/input", json={"text": "继续分析", "submit": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "sent")
+        self.assertTrue(response.json()["submitted"])
+
+    def test_share_input_without_submit_still_reports_sent(self):
+        guest, slug = self.guest_for_share(self.NeverSubmits())
+        response = guest.post(f"/share/{slug}/api/input", json={"text": "继续分析", "submit": False})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "sent")
+
+    def test_share_input_none_return_treated_as_submitted(self):
+        guest, slug = self.guest_for_share(FakeTmux())
+        response = guest.post(f"/share/{slug}/api/input", json={"text": "继续分析", "submit": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "sent")
+        self.assertTrue(response.json()["submitted"])
+
 
 if __name__ == "__main__":
     unittest.main()

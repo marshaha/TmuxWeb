@@ -2281,8 +2281,14 @@ def create_app(
             raise HTTPException(status_code=403, detail="this share is read-only")
         await asyncio.to_thread(validate_shared_session, row)
         transport, actual_pane_id = pane_transport(row["pane_id"])
-        await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit)
-        return {"status": "sent", "submit": payload.submit}
+        submitted = await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit)
+        if submitted is None:
+            submitted = True
+        if payload.submit and not submitted:
+            # The paste landed but Enter never moved it: say so, and keep
+            # the 200 - the text did arrive, so a 503 would be a lie.
+            return {"status": "pasted_not_submitted", "submit": payload.submit, "submitted": False}
+        return {"status": "sent", "submit": payload.submit, "submitted": submitted}
 
     @app.get("/manifest.webmanifest")
     async def web_manifest() -> FileResponse:
