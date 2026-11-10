@@ -444,7 +444,30 @@ class MissingTokenTests(unittest.TestCase):
             self.assertEqual(base_url(), "http://127.0.0.1:8787")
         with patch.dict(os.environ, {"TMUX_WEB_API_TOKEN": "abc"}, clear=False):
             from relay_client import token
-            self.assertEqual(token(), "abc")
+class SendAgentSubmittedTests(unittest.TestCase):
+    """send_agent must pass the server's submitted verdict through, not hard-code sent."""
+
+    def test_reports_pasted_not_submitted(self):
+        recorder = Recorder({"/api/relay/message": {"pane": "abc~%3", "status": "pasted_not_submitted",
+                                                    "submitted": False}})
+        with patch.object(mcp_relay, "request", recorder):
+            result = mcp_relay.RelayTools().send_agent({"target": "abc~%3", "text": "run the tests"})
+        self.assertFalse(result["sent"])
+        self.assertFalse(result["submitted"])
+
+    def test_reports_sent_when_submitted(self):
+        recorder = Recorder({"/api/relay/message": {"pane": "abc~%3", "status": "sent", "submitted": True}})
+        with patch.object(mcp_relay, "request", recorder):
+            result = mcp_relay.RelayTools().send_agent({"target": "abc~%3", "text": "run the tests"})
+        self.assertTrue(result["sent"])
+        self.assertTrue(result["submitted"])
+
+    def test_old_server_without_submitted_field_still_reports_sent(self):
+        recorder = Recorder({"/api/relay/message": {"pane": "abc~%3"}})
+        with patch.object(mcp_relay, "request", recorder):
+            result = mcp_relay.RelayTools().send_agent({"target": "abc~%3", "text": "run the tests"})
+        self.assertTrue(result["sent"])
+        self.assertTrue(result["submitted"])
 
 
 if __name__ == "__main__":

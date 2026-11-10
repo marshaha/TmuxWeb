@@ -1409,5 +1409,70 @@ class RemoteHostTests(unittest.TestCase):
             validate_private_key_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest user@example")
 
 
+class SSHRunnerSendTests(unittest.TestCase):
+    """Remote send() resends Enter until the text leaves the prompt, and says so when it cannot."""
+
+    class _Completed:
+        def __init__(self, returncode=0, stdout=b"", stderr=b""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class Runner(remote_hosts.SSHRunner):
+        def __init__(self, screens):
+            super().__init__({"id": "test", "host": "example.test", "port": 22})
+            self.screens = list(screens)
+            self.runs = []
+
+        def run(self, command, *, input_bytes=None, timeout=15, resolve_tmux=True):
+            self.runs.append(command)
+            if "capture-pane" in command:
+                text = self.screens.pop(0) if self.screens else ""
+                return SSHRunnerSendTests._Completed(0, text.encode(), b"")
+            return SSHRunnerSendTests._Completed(0, b"", b"")
+
+    def presses(self, runner):
+        return [command for command in runner.runs if "C-m" in command]
+
+    def captures(self, runner):
+        return [command for command in runner.runs if "capture-pane" in command]
+
+    def run_send(self, runner, text="hello world"):
+        with patch("remote_hosts.time.sleep"):
+            return runner.send("%9", text, True)
+
+    def test_sends_once_when_the_paste_shows_up_and_submits(self):
+        runner = self.Runner(["❯ hello world\n", ""])
+        self.assertTrue(self.run_send(runner))
+        self.assertEqual(len(self.presses(runner)), 1)
+        first_capture = next(i for i, command in enumerate(runner.runs) if "capture-pane" in command)
+        first_enter = next(i for i, command in enumerate(runner.runs) if "C-m" in command)
+        self.assertLess(first_capture, first_enter, "first Enter only fires after a capture saw the paste")
+
+    def test_submitted_message_left_in_the_transcript_is_not_still_in_the_prompt(self):
+        runner = self.Runner(["❯ hello world\n", "hello world\nx\n─\n❯ \n",
+                              "hello world\nx\n─\n❯ \n"])
+        self.assertTrue(self.run_send(runner))
+        self.assertEqual(len(self.presses(runner)), 1)
+
+    def test_presses_again_when_the_first_enter_is_swallowed(self):
+        runner = self.Runner(["❯ hello world\n", "❯ hello world\n", ""])
+        self.assertTrue(self.run_send(runner))
+        self.assertEqual(len(self.presses(runner)), 2)
+
+    def test_returns_false_and_warns_after_five_unanswered_enters(self):
+        runner = self.Runner(["❯ hello world\n"] + ["❯ hello world\n"] * 30)
+        with self.assertLogs("tmuxweb.remote", level="WARNING") as logs:
+            self.assertFalse(self.run_send(runner))
+        self.assertEqual(len(self.presses(runner)), 5)
+        self.assertTrue(any("not submitted" in line and "%9" in line for line in logs.output))
+
+    def test_no_enter_and_true_when_submit_is_false(self):
+        runner = self.Runner([])
+        with patch("remote_hosts.time.sleep"):
+            self.assertTrue(runner.send("%9", "hello world", False))
+        self.assertEqual(self.presses(runner), [])
+
+
 if __name__ == "__main__":
     unittest.main()

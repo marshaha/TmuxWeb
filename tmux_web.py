@@ -577,19 +577,53 @@ class TmuxBackend:
         joined = " ".join((text or "").split())
         return joined[-40:] if joined else ""
 
-    def still_in_prompt(self, pane_id: str, text: str, lines: int = 6) -> bool:
+    def _screen_bottom(self, pane_id: str, lines: int = 6) -> str:
+        """The prompt box area of the screen, whitespace-normalised for matching."""
+        screen = self._run("capture-pane", "-p", "-t", pane_id) if hasattr(self, "_run") else ""
+        return " ".join(" ".join(screen.splitlines()[-max(2, lines):]).split())
+
+    def still_in_prompt(self, pane_id: str, text: str, lines: int = 3) -> bool:
         """Is the text we just typed still sitting in the prompt box?
 
         Comparing whole screens is unreliable (TUIs repaint constantly, so "the
         screen changed" does not mean "it was submitted"); looking for our own
         text in the bottom rows is the direct question.
+
+        Only the last 3 lines count, not the bottom 6: after a submit the
+        message stays visible in the transcript just above the input box, so
+        a wider window still "finds" our text after a successful submit and
+        would report a false not-submitted.  The input box itself is the last
+        2-3 lines (text line plus border/status), so those lines are the
+        prompt; anything above them is transcript.
         """
         fingerprint = self.submit_fingerprint(text)
         if not fingerprint:
             return False
-        screen = self._run("capture-pane", "-p", "-t", pane_id) if hasattr(self, "_run") else ""
-        bottom = " ".join(" ".join(screen.splitlines()[-max(2, lines):]).split())
-        return fingerprint in bottom
+        return fingerprint in self._screen_bottom(pane_id, lines)
+
+    def wait_for_paste_visible(self, pane_id: str, text: str,
+                               polls: int = 20, interval: float = 0.1) -> bool:
+        """Wait until our pasted text shows up in the prompt box.
+
+        A paste bigger than the TUI can digest is still landing when the first
+        C-m fires, and the key is dropped.  The length-based delay in
+        press_enter_until_submitted is only a guess; this watches the screen
+        instead.  Returns False when the text never shows (a pane whose prompt
+        hides it, say) - the caller then presses anyway, so a missed
+        fingerprint can never block a submit.
+        """
+        fingerprint = self.submit_fingerprint(text)
+        if not fingerprint:
+            return False
+        for index in range(max(0, polls)):
+            try:
+                if fingerprint in self._screen_bottom(pane_id):
+                    return True
+            except TmuxError:
+                pass
+            if index + 1 < polls:
+                time.sleep(interval)
+        return False
 
     def press_enter_until_submitted(self, pane_id: str, text: str, python: bool = False,
                                     tries: int = 3) -> int:
@@ -603,6 +637,10 @@ class TmuxBackend:
         """
         delay = 0.12 + (0.25 if python else 0.0) + min(1.8, len(text) / 2500.0)
         time.sleep(delay)
+        # Do not press into a paste that has not landed yet: one capture that
+        # already shows the text is worth more than the guessed delay above.
+        # A miss just falls through to the old press-and-check loop.
+        self.wait_for_paste_visible(pane_id, text)
         presses = 0
         for attempt in range(max(1, tries)):
             self._run("send-keys", "-t", pane_id, "C-m")
@@ -617,10 +655,19 @@ class TmuxBackend:
                 break
         return presses
 
-    def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None) -> None:
+    def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None) -> bool:
+        """Paste text into a pane and, when asked, press Enter until it submits.
+
+        Returns True when the text is in (and, for submit, no longer sitting in
+        the prompt box).  Returns False instead of raising when the Enter
+        presses never move it: the paste itself succeeded, so the caller must
+        report "pasted but not submitted", not a failed send.
+        """
         if pane is None:
             pane = self.validate_pane(pane_id)
         buffer_name = f"tmux-web-{secrets.token_hex(8)}"
+        submitted = True
+        presses = 0
         try:
             if submit:
                 self._run("send-keys", "-t", pane_id, "C-u")
@@ -628,14 +675,21 @@ class TmuxBackend:
             self._run("load-buffer", "-b", buffer_name, "-", input_bytes=text.encode())
             self._run("paste-buffer", "-b", buffer_name, "-d", "-t", pane_id)
             if submit:
-                self.press_enter_until_submitted(pane_id, text,
-                                                 python=pane.get("command") == "python3")
+                presses = self.press_enter_until_submitted(
+                    pane_id, text, python=pane.get("command") == "python3", tries=5)
+                try:
+                    submitted = not self.still_in_prompt(pane_id, text)
+                except TmuxError:
+                    submitted = False
+                if not submitted:
+                    LOGGER.warning("paste not submitted after %d enters: pane=%s", presses, pane_id)
         finally:
             subprocess.run(
                 ["tmux", "delete-buffer", "-b", buffer_name],
                 capture_output=True,
                 check=False,
             )
+        return submitted
 
 
 class InputRequest(BaseModel):
@@ -3326,8 +3380,15 @@ def create_app(
         pane = await asyncio.to_thread(pane_or_404, pane_id)
         try:
             transport, actual_pane_id = pane_transport(pane_id)
-            await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit, pane=pane)
-            return {"status": "sent", "pane": pane_id, "submit": payload.submit}
+            submitted = await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit, pane=pane)
+            if submitted is None:
+                submitted = True
+            if payload.submit and not submitted:
+                # The paste landed but Enter never moved it: say so, and keep
+                # the 200 - the text did arrive, so a 503 would be a lie.
+                return {"status": "pasted_not_submitted", "pane": pane_id,
+                        "submit": payload.submit, "submitted": False}
+            return {"status": "sent", "pane": pane_id, "submit": payload.submit, "submitted": submitted}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

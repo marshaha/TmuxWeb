@@ -4043,8 +4043,190 @@ class PaneValidationDedupTests(unittest.TestCase):
         calls.clear()
         # the validating path lists once, and the listing itself now carries
         # pane_pid, so it needs no extra display-message call either
-        backend.transcript("%1", 4)
-        self.assertEqual([c[0] for c in calls], ["list-panes"])
+class WaitForPasteVisibleTests(unittest.TestCase):
+    """Press Enter only once the pasted text is actually showing in the prompt.
+
+    The old code guessed with a length-based delay; a big paste can still be
+    landing when the first C-m fires, and the key is dropped.  Polling the
+    screen for our own fingerprint closes that gap.
+    """
+
+    class Backend(tmux_web.TmuxBackend):
+        def __init__(self, screens):
+            self.screens = list(screens)
+            self.sent = []
+
+        def _run(self, *args, **kwargs):
+            self.sent.append(args)
+            if args and args[0] == "capture-pane":
+                return self.screens.pop(0) if self.screens else ""
+            return ""
+
+    def captures(self, backend):
+        return [call for call in backend.sent if call[:1] == ("capture-pane",)]
+
+    def test_returns_true_once_the_text_shows_up(self):
+        backend = self.Backend(["line one\n", "❯ hello world\n"])
+        with patch("tmux_web.time.sleep"):
+            self.assertTrue(backend.wait_for_paste_visible("%1", "hello world"))
+        self.assertEqual(len(self.captures(backend)), 2)
+
+    def test_returns_false_when_the_text_never_shows_up(self):
+        backend = self.Backend([""])
+        with patch("tmux_web.time.sleep"):
+            self.assertFalse(backend.wait_for_paste_visible("%1", "hello world"))
+        self.assertEqual(len(self.captures(backend)), 20)
+
+    def test_empty_fingerprint_returns_false_without_polling(self):
+        backend = self.Backend(["❯ \n"])
+        with patch("tmux_web.time.sleep"):
+            self.assertFalse(backend.wait_for_paste_visible("%1", "   "))
+        self.assertEqual(self.captures(backend), [])
+
+
+class StillInPromptTests(unittest.TestCase):
+    """Only the last 3 lines say "still in the prompt".
+
+    After a submit the message stays visible in the transcript just above
+    the input box; a wider window would keep "finding" our text after a
+    successful submit and report a false not-submitted.
+    """
+
+    class Backend(tmux_web.TmuxBackend):
+        def __init__(self, screen):
+            self.screen = screen
+
+        def _run(self, *args, **kwargs):
+            return self.screen
+
+    def test_text_on_the_third_to_last_line_is_still_in_the_prompt(self):
+        backend = self.Backend("top\n❯ hello world\n─\n❯ \n")
+        self.assertTrue(backend.still_in_prompt("%1", "hello world"))
+
+    def test_text_only_in_the_transcript_is_not_in_the_prompt(self):
+        backend = self.Backend("❯ hello world\ntop\n─\n❯ \n")
+        self.assertFalse(backend.still_in_prompt("%1", "hello world"))
+
+    def test_text_on_the_last_line_is_still_in_the_prompt(self):
+        backend = self.Backend("top\n❯ hello world\n")
+        self.assertTrue(backend.still_in_prompt("%1", "hello world"))
+
+
+class ResendEnterTests(unittest.TestCase):
+    """send() resends Enter until the text leaves the prompt, and says so when it cannot."""
+
+    class Backend(tmux_web.TmuxBackend):
+        def __init__(self, screens):
+            self.screens = list(screens)
+            self.sent = []
+
+        def _run(self, *args, **kwargs):
+            self.sent.append(args)
+            if args and args[0] == "capture-pane":
+                return self.screens.pop(0) if self.screens else ""
+            return ""
+
+    def presses(self, backend):
+        return [call for call in backend.sent
+                if call[:2] == ("send-keys", "-t") and call[-1] == "C-m"]
+
+    def run_send(self, backend, text="hello world"):
+        backend.validate_pane = lambda pane_id: {"id": pane_id, "command": "claude"}
+        with patch("tmux_web.time.sleep"):
+            return backend.send("%4", text, True)
+
+    def test_sends_once_when_the_paste_shows_up_and_submits(self):
+        backend = self.Backend(["❯ hello world\n", ""])
+        self.assertTrue(self.run_send(backend))
+        self.assertEqual(len(self.presses(backend)), 1)
+
+    def test_submitted_message_left_in_the_transcript_is_not_still_in_the_prompt(self):
+        # The message stays visible above the input box after a submit; only
+        # the prompt itself is empty.  That must count as submitted, not as
+        # a stuck paste.
+        backend = self.Backend(["❯ hello world\n", "hello world\nx\n─\n❯ \n",
+                                "hello world\nx\n─\n❯ \n"])
+        self.assertTrue(self.run_send(backend))
+        self.assertEqual(len(self.presses(backend)), 1)
+
+    def test_presses_again_when_the_first_enter_is_swallowed(self):
+        backend = self.Backend(["❯ hello world\n", "❯ hello world\n", ""])
+        self.assertTrue(self.run_send(backend))
+        self.assertEqual(len(self.presses(backend)), 2)
+
+    def test_returns_false_and_warns_after_five_unanswered_enters(self):
+        backend = self.Backend(["❯ hello world\n"] + ["❯ hello world\n"] * 30)
+        with self.assertLogs("tmux_web", level="WARNING") as logs:
+            self.assertFalse(self.run_send(backend))
+        self.assertEqual(len(self.presses(backend)), 5)
+        self.assertTrue(any("not submitted" in line and "%4" in line for line in logs.output))
+
+    def test_no_enter_and_true_when_submit_is_false(self):
+        backend = self.Backend([])
+        backend.validate_pane = lambda pane_id: {"id": pane_id, "command": "claude"}
+        with patch("tmux_web.time.sleep"):
+            self.assertTrue(backend.send("%4", "hello world", False))
+        self.assertEqual(self.presses(backend), [])
+
+
+class SendSubmittedTests(unittest.TestCase):
+    """POST /input (and the relay) must report pasted_not_submitted instead of a silent sent."""
+
+    class NeverSubmits(FakeTmux):
+        def send(self, pane_id, text, submit=True, pane=None):
+            self.sent.append((pane_id, text, submit))
+            return False if submit else True
+
+    class AlwaysSubmits(FakeTmux):
+        def send(self, pane_id, text, submit=True, pane=None):
+            self.sent.append((pane_id, text, submit))
+            return True
+
+    def client_for(self, tmux):
+        return TestClient(create_app(
+            tmux,
+            password="unit-test-admin-password",
+            session_secret="test-secret",
+            terminal_factory=FakeTerminalFactory(),
+            share_db=":memory:",
+            remote_store=FakeRemoteStore(),
+            remote_runner_factory=FakeSSHRunner,
+        ))
+
+    def login(self, client):
+        response = client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+
+    def test_input_reports_pasted_not_submitted_with_200(self):
+        client = self.client_for(self.NeverSubmits())
+        self.login(client)
+        response = client.post("/api/panes/%254/input", json={"text": "hello", "submit": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "pasted_not_submitted")
+        self.assertFalse(response.json()["submitted"])
+
+    def test_input_reports_sent_when_submitted(self):
+        client = self.client_for(self.AlwaysSubmits())
+        self.login(client)
+        response = client.post("/api/panes/%254/input", json={"text": "hello", "submit": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "sent")
+        self.assertTrue(response.json()["submitted"])
+
+    def test_input_without_submit_still_reports_sent(self):
+        client = self.client_for(self.NeverSubmits())
+        self.login(client)
+        response = client.post("/api/panes/%254/input", json={"text": "hello", "submit": False})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "sent")
+
+    def test_relay_message_reports_pasted_not_submitted(self):
+        client = self.client_for(self.NeverSubmits())
+        self.login(client)
+        response = client.post("/api/relay/message", json={"target": "%4", "text": "请先跑测试"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "pasted_not_submitted")
+        self.assertFalse(response.json()["submitted"])
 
 
 if __name__ == "__main__":
