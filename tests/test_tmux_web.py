@@ -4169,6 +4169,85 @@ class ResendEnterTests(unittest.TestCase):
         self.assertEqual(self.presses(backend), [])
 
 
+class FingerprintWindowTests(unittest.TestCase):
+    """A multi-line prompt counts as still in the prompt even when its tail spans two lines.
+
+    Regression for the 2026-11-11 incident: a ~250-char message on oracle
+    claude %0 sat unsubmitted in the input box while send() reported success.
+    #11 had narrowed the check to the last 3 lines; the fingerprint (last 40
+    chars) straddled the last two input lines, and the bottom 3 rows hold only
+    the last input line plus the divider and the status line, so the check
+    could not assemble the fingerprint and called it submitted after one Enter.
+    """
+
+    TEXT = (
+        "vendor 問題 , 简单说是整个8533数模混合时钟通路一路缩小duty "
+        "cycle直到最后不work。修的方式也是整个通路上找合适的多个PMOS和NMOS，"
+        "用analog方式删一点finger，每个MOS修一点点来调整duty。累计达到效果。\n\n"
+        "所以問題處在 duty cycle 到後面快被擠占沒了, "
+        "需要我們基於這個信息 做正向的行爲模型建模 驗證 以及 walkaround 問題 , 目標是 7500 跑穩定"
+    )
+
+    # The screen as captured on the incident pane: transcript, divider, the
+    # multi-line input box, divider, status line.  The fingerprint (last 40
+    # chars) spans the last two input lines.
+    SCREEN = (
+        "● Compacted while idle, before the prompt cache expired\n"
+        "● +4 more tasks completed\n"
+        "────────────────────────────────────────────────────────────────────\n"
+        "❯ vendor 問題 ,  简单说是整个8533数模混合时钟通路一路缩小duty\n"
+        "  cycle直到最后不work。修的方式也是整个通路上找合适的多个PMOS和NMO\n"
+        "  S，用analog方式删一点finger，每个MOS修一点点来调整duty。累计达到\n"
+        "  效果。\n"
+        "\n"
+        "  所以問題處在 duty cycle  到後面快被擠占沒了,\n"
+        "  需要我們基於這個信息 做正向的行爲模型建模  驗證 以及 walkaround\n"
+        "  問題 , 目標是 7500 跑穩定\n"
+        "────────────────────────────────────────────────────────────────────\n"
+        "  ⏵⏵ auto mode on · 3 shells · ⧉ 6\n"
+    )
+
+    class Backend(tmux_web.TmuxBackend):
+        def __init__(self, screens):
+            self.screens = list(screens)
+            self.sent = []
+
+        def _run(self, *args, **kwargs):
+            self.sent.append(args)
+            if args and args[0] == "capture-pane":
+                return self.screens.pop(0) if self.screens else ""
+            return ""
+
+    def presses(self, backend):
+        return [call for call in backend.sent
+                if call[:2] == ("send-keys", "-t") and call[-1] == "C-m"]
+
+    def run_send(self, backend, text):
+        backend.validate_pane = lambda pane_id: {"id": pane_id, "command": "claude"}
+        with patch("tmux_web.time.sleep"):
+            return backend.send("%4", text, True)
+
+    def test_multiline_prompt_tail_is_still_in_the_prompt(self):
+        backend = self.Backend([self.SCREEN])
+        self.assertTrue(backend.still_in_prompt("%1", self.TEXT))
+
+    def test_send_presses_five_times_and_warns_when_the_multiline_prompt_never_leaves(self):
+        backend = self.Backend([self.SCREEN] * 8)
+        with self.assertLogs("tmux_web", level="WARNING") as logs:
+            self.assertFalse(self.run_send(backend, self.TEXT))
+        self.assertEqual(len(self.presses(backend)), 5)
+        self.assertTrue(any("not submitted" in line and "%4" in line for line in logs.output))
+
+    def test_mid_word_wrap_does_not_hide_the_fingerprint(self):
+        # The screen wraps "walkaround" as "walkar" / "ound": joining the
+        # lines gains a space the text never had, so plain substring matching
+        # misses the fingerprint even when the whole input box is in view.
+        screen = self.SCREEN.replace("驗證 以及 walkaround\n  問題",
+                                     "驗證 以及 walkar\n  ound 問題")
+        backend = self.Backend([screen])
+        self.assertTrue(backend.still_in_prompt("%1", self.TEXT))
+
+
 class SendSubmittedTests(unittest.TestCase):
     """POST /input (and the relay) must report pasted_not_submitted instead of a silent sent."""
 
