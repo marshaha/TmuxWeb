@@ -577,29 +577,69 @@ class TmuxBackend:
         joined = " ".join((text or "").split())
         return joined[-40:] if joined else ""
 
-    def _screen_bottom(self, pane_id: str, lines: int = 6) -> str:
+    @staticmethod
+    def _prompt_region_lines(screen: str, lines: int = 3) -> list[str]:
+        """Lines of the prompt box: from the last ❯ line to the bottom, plus the bottom lines.
+
+        The input box starts at the ❯ marker and can span many lines for a
+        long message, so a fixed line count misses a fingerprint that
+        straddles the last two input lines (the divider and status line sit
+        below them).  The transcript lives above the ❯ line, so anchoring
+        there keeps a submitted message out of the check; the bottom-lines
+        fallback covers panes whose prompt does not use ❯ (python >>>,
+        shells).  Both the wait and the post-press check use this region, so
+        they can no longer disagree about what counts as the prompt.
+        """
+        screen_lines = screen.splitlines()
+        if not screen_lines:
+            return []
+        start = len(screen_lines) - max(2, lines)
+        prompt_at = None
+        for index, line in enumerate(screen_lines):
+            if "❯" in line:
+                prompt_at = index
+        if prompt_at is not None:
+            start = min(start, prompt_at)
+        return screen_lines[max(0, start):]
+
+    @staticmethod
+    def _fingerprint_matches(fingerprint: str, region: str) -> bool:
+        """Match ignoring all whitespace: the screen wraps our text, so a line
+        break can land mid-word and the joined region gains a space the text
+        never had.  Comparing with whitespace stripped makes the wrap invisible.
+        """
+        needle = "".join(fingerprint.split())
+        if not needle:
+            return False
+        return needle in "".join(region.split())
+
+    def _screen_bottom(self, pane_id: str, lines: int = 3) -> str:
         """The prompt box area of the screen, whitespace-normalised for matching."""
         screen = self._run("capture-pane", "-p", "-t", pane_id) if hasattr(self, "_run") else ""
-        return " ".join(" ".join(screen.splitlines()[-max(2, lines):]).split())
+        return " ".join(" ".join(self._prompt_region_lines(screen, lines)).split())
 
     def still_in_prompt(self, pane_id: str, text: str, lines: int = 3) -> bool:
         """Is the text we just typed still sitting in the prompt box?
 
         Comparing whole screens is unreliable (TUIs repaint constantly, so "the
         screen changed" does not mean "it was submitted"); looking for our own
-        text in the bottom rows is the direct question.
+        text in the prompt box is the direct question.
 
-        Only the last 3 lines count, not the bottom 6: after a submit the
-        message stays visible in the transcript just above the input box, so
-        a wider window still "finds" our text after a successful submit and
-        would report a false not-submitted.  The input box itself is the last
-        2-3 lines (text line plus border/status), so those lines are the
-        prompt; anything above them is transcript.
+        The prompt box starts at the ❯ marker and can span many lines for a
+        long message, so the check takes everything from the last ❯ line to
+        the bottom of the screen, plus the bottom lines as a fallback for
+        prompts that do not use ❯.  A fixed 3-line window missed a fingerprint
+        straddling the last two input lines (the divider and status line sit
+        below them) and called a stuck multi-line paste submitted.  The
+        transcript lives above the ❯ line, so anchoring there keeps a
+        submitted message out of the check: after a submit the message stays
+        visible in the transcript just above the input box, and a wider
+        unanchored window would report a false not-submitted.
         """
         fingerprint = self.submit_fingerprint(text)
         if not fingerprint:
             return False
-        return fingerprint in self._screen_bottom(pane_id, lines)
+        return self._fingerprint_matches(fingerprint, self._screen_bottom(pane_id, lines))
 
     def wait_for_paste_visible(self, pane_id: str, text: str,
                                polls: int = 20, interval: float = 0.1) -> bool:
@@ -617,7 +657,7 @@ class TmuxBackend:
             return False
         for index in range(max(0, polls)):
             try:
-                if fingerprint in self._screen_bottom(pane_id):
+                if self._fingerprint_matches(fingerprint, self._screen_bottom(pane_id)):
                     return True
             except TmuxError:
                 pass

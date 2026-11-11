@@ -2222,10 +2222,33 @@ class SSHRunner:
             return ""
         return completed.stdout.decode(errors="replace")
 
-    def _capture_bottom(self, tmux: str, target: str, lines: int = 6) -> str:
+    @staticmethod
+    def _prompt_region_lines(screen: str, lines: int = 3) -> list[str]:
+        """Lines of the prompt box (see TmuxBackend._prompt_region_lines)."""
+        screen_lines = screen.splitlines()
+        if not screen_lines:
+            return []
+        start = len(screen_lines) - max(2, lines)
+        prompt_at = None
+        for index, line in enumerate(screen_lines):
+            if "❯" in line:
+                prompt_at = index
+        if prompt_at is not None:
+            start = min(start, prompt_at)
+        return screen_lines[max(0, start):]
+
+    @staticmethod
+    def _fingerprint_matches(fingerprint: str, region: str) -> bool:
+        """Match ignoring all whitespace (see TmuxBackend._fingerprint_matches)."""
+        needle = "".join(fingerprint.split())
+        if not needle:
+            return False
+        return needle in "".join(region.split())
+
+    def _capture_bottom(self, tmux: str, target: str, lines: int = 3) -> str:
         """The prompt box area of a remote pane, whitespace-normalised for matching."""
         screen = self.run(f"{tmux} capture-pane -p -t {target}", timeout=15)
-        return " ".join(" ".join(screen.stdout.decode(errors="replace").splitlines()[-max(2, lines):]).split())
+        return " ".join(" ".join(self._prompt_region_lines(screen.stdout.decode(errors="replace"), lines)).split())
 
     def _wait_for_paste_visible(self, tmux: str, target: str, fingerprint: str,
                                 polls: int = 20, interval: float = 0.1) -> bool:
@@ -2239,7 +2262,7 @@ class SSHRunner:
             return False
         for index in range(max(0, polls)):
             try:
-                if fingerprint in self._capture_bottom(tmux, target):
+                if self._fingerprint_matches(fingerprint, self._capture_bottom(tmux, target)):
                     return True
             except (RuntimeError, OSError):
                 pass
@@ -2291,17 +2314,18 @@ class SSHRunner:
             if attempt + 1 >= tries:
                 break
             time.sleep(0.5)
-            # 屏幕还在动不代表提交了：直接看我们那行字还在不在底部输入框里。
-            # 只看最后 3 行：提交后消息还留在 transcript 里、就在输入框上面，
-            # 宽窗口会在一次成功提交后误报未提交（见 TmuxBackend.still_in_prompt）。
-            if fingerprint not in self._capture_bottom(tmux, target, lines=3):
+            # 屏幕还在动不代表提交了：直接看我们那行字还在不在输入框里。
+            # 输入框从最后一个 ❯ 起、到底部（见 _prompt_region_lines），
+            # transcript 在 ❯ 上面，不会误报未提交。
+            if not self._fingerprint_matches(fingerprint, self._capture_bottom(tmux, target, lines=3)):
                 submitted = True
                 break
         if not submitted and fingerprint:
             # The loop ended without seeing the text leave: confirm once more
             # (the last Enter may have submitted it) before calling it stuck.
             try:
-                submitted = fingerprint not in self._capture_bottom(tmux, target, lines=3)
+                submitted = not self._fingerprint_matches(
+                    fingerprint, self._capture_bottom(tmux, target, lines=3))
             except (RuntimeError, OSError):
                 submitted = False
         if not submitted:

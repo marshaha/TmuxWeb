@@ -1474,5 +1474,83 @@ class SSHRunnerSendTests(unittest.TestCase):
         self.assertEqual(self.presses(runner), [])
 
 
+class SSHRunnerFingerprintWindowTests(unittest.TestCase):
+    """Same multi-line prompt window case as FingerprintWindowTests, remote side.
+
+    The remote check lives inline in send() (via _capture_bottom), so the
+    region rule is asserted on _capture_bottom directly as well as end to end
+    through send().
+    """
+
+    TEXT = (
+        "vendor 問題 , 简单说是整个8533数模混合时钟通路一路缩小duty "
+        "cycle直到最后不work。修的方式也是整个通路上找合适的多个PMOS和NMOS，"
+        "用analog方式删一点finger，每个MOS修一点点来调整duty。累计达到效果。\n\n"
+        "所以問題處在 duty cycle 到後面快被擠占沒了, "
+        "需要我們基於這個信息 做正向的行爲模型建模 驗證 以及 walkaround 問題 , 目標是 7500 跑穩定"
+    )
+
+    SCREEN = (
+        "● Compacted while idle, before the prompt cache expired\n"
+        "● +4 more tasks completed\n"
+        "────────────────────────────────────────────────────────────────────\n"
+        "❯ vendor 問題 ,  简单说是整个8533数模混合时钟通路一路缩小duty\n"
+        "  cycle直到最后不work。修的方式也是整个通路上找合适的多个PMOS和NMO\n"
+        "  S，用analog方式删一点finger，每个MOS修一点点来调整duty。累计达到\n"
+        "  效果。\n"
+        "\n"
+        "  所以問題處在 duty cycle  到後面快被擠占沒了,\n"
+        "  需要我們基於這個信息 做正向的行爲模型建模  驗證 以及 walkaround\n"
+        "  問題 , 目標是 7500 跑穩定\n"
+        "────────────────────────────────────────────────────────────────────\n"
+        "  ⏵⏵ auto mode on · 3 shells · ⧉ 6\n"
+    )
+
+    class Runner(remote_hosts.SSHRunner):
+        def __init__(self, screens):
+            super().__init__({"id": "test", "host": "example.test", "port": 22})
+            self.screens = list(screens)
+            self.runs = []
+
+        def run(self, command, *, input_bytes=None, timeout=15, resolve_tmux=True):
+            self.runs.append(command)
+            if "capture-pane" in command:
+                text = self.screens.pop(0) if self.screens else ""
+                return SSHRunnerSendTests._Completed(0, text.encode(), b"")
+            return SSHRunnerSendTests._Completed(0, b"", b"")
+
+    def presses(self, runner):
+        return [command for command in runner.runs if "C-m" in command]
+
+    def run_send(self, runner, text):
+        with patch("remote_hosts.time.sleep"):
+            return runner.send("%9", text, True)
+
+    @staticmethod
+    def fingerprint(text):
+        return " ".join((text or "").split())[-40:]
+
+    def test_capture_bottom_sees_the_multiline_prompt_tail(self):
+        runner = self.Runner([self.SCREEN])
+        region = runner._capture_bottom("${TMUX_BIN:-tmux}", "%9", lines=3)
+        self.assertIn(self.fingerprint(self.TEXT), region)
+
+    def test_send_presses_five_times_and_warns_when_the_multiline_prompt_never_leaves(self):
+        runner = self.Runner([self.SCREEN] * 8)
+        with self.assertLogs("tmuxweb.remote", level="WARNING") as logs:
+            self.assertFalse(self.run_send(runner, self.TEXT))
+        self.assertEqual(len(self.presses(runner)), 5)
+        self.assertTrue(any("not submitted" in line and "%9" in line for line in logs.output))
+
+    def test_mid_word_wrap_does_not_hide_the_fingerprint(self):
+        # Same wrap as the local case: "walkaround" split as "walkar" / "ound".
+        screen = self.SCREEN.replace("驗證 以及 walkaround\n  問題",
+                                     "驗證 以及 walkar\n  ound 問題")
+        runner = self.Runner([screen])
+        region = runner._capture_bottom("${TMUX_BIN:-tmux}", "%9", lines=3)
+        fingerprint = self.fingerprint(self.TEXT)
+        self.assertIn("".join(fingerprint.split()), "".join(region.split()))
+
+
 if __name__ == "__main__":
     unittest.main()
