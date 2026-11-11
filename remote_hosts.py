@@ -2246,9 +2246,33 @@ class SSHRunner:
         return needle in "".join(region.split())
 
     def _capture_bottom(self, tmux: str, target: str, lines: int = 3) -> str:
-        """The prompt box area of a remote pane, whitespace-normalised for matching."""
-        screen = self.run(f"{tmux} capture-pane -p -t {target}", timeout=15)
-        return " ".join(" ".join(self._prompt_region_lines(screen.stdout.decode(errors="replace"), lines)).split())
+        """The prompt box area of a remote pane, whitespace-normalised for matching.
+
+        A failed capture raises instead of returning "": the old empty string
+        made the final check in send() read "fingerprint not found" as
+        submitted.  The callers already catch (RuntimeError, OSError), so a
+        failure now reports not-submitted instead of a false success.
+        """
+        completed = self.run(f"{tmux} capture-pane -p -t {target}", timeout=15)
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.decode(errors="replace").strip()
+                               or "remote capture failed")
+        screen = completed.stdout.decode(errors="replace")
+        return " ".join(" ".join(self._prompt_region_lines(screen, lines)).split())
+
+    def fingerprint_in_prompt(self, pane_id: str, fingerprint: str, lines: int = 3) -> bool:
+        """Is the stored fingerprint still sitting in the prompt box?
+
+        Same check as the local backend's, for the background retry loop:
+        only the fingerprint is kept, never the text.  A failed capture
+        raises (see _capture_bottom) so the caller can tell "unknown" from
+        "gone".
+        """
+        if not fingerprint:
+            return False
+        tmux = "${TMUX_BIN:-tmux}"
+        return self._fingerprint_matches(
+            fingerprint, self._capture_bottom(tmux, shlex.quote(pane_id), lines))
 
     def _wait_for_paste_visible(self, tmux: str, target: str, fingerprint: str,
                                 polls: int = 20, interval: float = 0.1) -> bool:
@@ -2317,9 +2341,14 @@ class SSHRunner:
             # 屏幕还在动不代表提交了：直接看我们那行字还在不在输入框里。
             # 输入框从最后一个 ❯ 起、到底部（见 _prompt_region_lines），
             # transcript 在 ❯ 上面，不会误报未提交。
-            if not self._fingerprint_matches(fingerprint, self._capture_bottom(tmux, target, lines=3)):
-                submitted = True
-                break
+            # 一次失败的 capture 什么都证明不了：继续按，别把它当成已提交
+            # （旧的空串读法），也别让一次 ssh 抖动把整个发送打成 503。
+            try:
+                if not self._fingerprint_matches(fingerprint, self._capture_bottom(tmux, target, lines=3)):
+                    submitted = True
+                    break
+            except (RuntimeError, OSError):
+                pass
         if not submitted and fingerprint:
             # The loop ended without seeing the text leave: confirm once more
             # (the last Enter may have submitted it) before calling it stuck.

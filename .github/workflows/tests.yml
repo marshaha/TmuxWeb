@@ -33,5 +33,5 @@ jobs:
         with:
           node-version: "20"
       - name: 前端胶水（直连传输、视频卡片）
-        run: node --test tests/transfer_client.test.mjs tests/video_cards.test.mjs tests/markdown_cjk.test.mjs tests/paste_files.test.mjs tests/js/resend-enter.test.mjs tests/js/share-resend-enter.test.mjs
+        run: node --test tests/transfer_client.test.mjs tests/video_cards.test.mjs tests/markdown_cjk.test.mjs tests/paste_files.test.mjs tests/js/resend-enter.test.mjs tests/js/share-resend-enter.test.mjs tests/js/background-retry.test.mjs
 
