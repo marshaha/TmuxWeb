@@ -636,7 +636,16 @@ class TmuxBackend:
         visible in the transcript just above the input box, and a wider
         unanchored window would report a false not-submitted.
         """
-        fingerprint = self.submit_fingerprint(text)
+        return self.fingerprint_in_prompt(pane_id, self.submit_fingerprint(text), lines)
+
+    def fingerprint_in_prompt(self, pane_id: str, fingerprint: str, lines: int = 3) -> bool:
+        """Is the stored fingerprint still sitting in the prompt box?
+
+        Same check as still_in_prompt, but for a fingerprint instead of the
+        full text: the background retry loop keeps only the fingerprint (it
+        never stores the message), so this is the question it asks every
+        round before pressing Enter again.
+        """
         if not fingerprint:
             return False
         return self._fingerprint_matches(fingerprint, self._screen_bottom(pane_id, lines))
@@ -730,6 +739,181 @@ class TmuxBackend:
                 check=False,
             )
         return submitted
+
+
+class BackgroundResend:
+    """Retry Enter in the background until a stuck paste submits.
+
+    The in-request retry (#11) gives up after 5 tries; this picks up where
+    it left off.  One task per pane, at most: a new send to the same pane
+    supersedes the old task, so its Enter can never land in the new
+    message's paste.  Only the fingerprint is kept, never the text.
+
+    The loop only presses while the fingerprint is visibly in the prompt
+    box, so it cannot hammer Enter into a permission dialog: the moment
+    the text leaves the prompt it stops.  It stops, too, after time_limit
+    (5 minutes) or when the pane is gone.  A restart drops the in-memory
+    state - the client then shows "pasted but not submitted" instead of
+    pretending the retry is still running.
+
+    Records are keyed by the pane ref the routes already use (the chat and
+    share routes pass the pane id; the relay rebuilds it from the resolved
+    target), so a later send to the same pane finds and supersedes them.
+    All dict access happens on the event loop; the blocking tmux/SSH calls
+    go through asyncio.to_thread.
+    """
+
+    def __init__(self, interval: float = 2.0, time_limit: float = 300.0):
+        self.interval = interval
+        self.time_limit = time_limit
+        self._resolver = None
+        self._records: dict[str, dict] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+
+    def bind(self, resolver):
+        """resolver(pane_id) -> (transport, actual_pane_id), as pane_transport."""
+        self._resolver = resolver
+
+    @staticmethod
+    def _key(pane_id: str) -> str:
+        return str(pane_id or "").strip()
+
+    def status(self, pane_id: str) -> dict | None:
+        """The public record for a pane: status, presses and reason only.
+
+        The fingerprint is deliberately left out - the transcript response
+        carries this record, and the text fragment must never leak there.
+        """
+        record = self._records.get(self._key(pane_id))
+        if record is None:
+            return None
+        return {"status": record["status"], "presses": record["presses"],
+                "reason": record.get("reason")}
+
+    def start(self, pane_id: str, fingerprint: str) -> dict | None:
+        """Start (or restart) the background retry for a pane."""
+        if not fingerprint:
+            return None
+        key = self._key(pane_id)
+        self.cancel(key, "superseded")
+        record = {"pane": key, "status": "retrying", "presses": 0,
+                  "reason": None, "fingerprint": fingerprint,
+                  "generation": self._records.get(key, {}).get("generation", 0) + 1,
+                  "started_at": time.monotonic()}
+        self._records[key] = record
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop to run on (a sync caller): fail at once, never pretend.
+            record["status"] = "failed"
+            record["reason"] = "no event loop"
+            return self.status(key)
+        self._tasks[key] = loop.create_task(self._run(key, record))
+        return self.status(key)
+
+    def cancel(self, pane_id: str, reason: str = "superseded") -> dict | None:
+        """Mark a pane's retry superseded and stop its task.  A no-op when idle."""
+        key = self._key(pane_id)
+        record = self._records.get(key)
+        if record is None:
+            return None
+        task = self._tasks.pop(key, None)
+        if task is not None and not task.done():
+            task.cancel()
+        if record["status"] == "retrying":
+            record["status"] = "superseded"
+            record["reason"] = reason
+        return self.status(key)
+
+    async def _run(self, key: str, record: dict) -> None:
+        fingerprint = record["fingerprint"]
+        started_at = record["started_at"]
+        try:
+            if self._resolver is None:
+                record["status"] = "failed"
+                record["reason"] = "not bound"
+                LOGGER.warning("background resend stopped, manager is not bound: pane=%s", key)
+                return
+            while True:
+                if time.monotonic() - started_at > self.time_limit:
+                    record["status"] = "failed"
+                    record["reason"] = "timeout"
+                    LOGGER.warning("background resend gave up after %d enters (%.0fs): pane=%s",
+                                   record["presses"], self.time_limit, key)
+                    return
+                if self._records.get(key) is not record or record["status"] != "retrying":
+                    return
+                try:
+                    transport, actual = self._resolver(key)
+                    check = getattr(transport, "fingerprint_in_prompt", None)
+                    if check is None:
+                        record["status"] = "failed"
+                        record["reason"] = "unsupported transport"
+                        LOGGER.warning("background resend stopped, transport has no fingerprint check: pane=%s", key)
+                        return
+                    in_prompt = await asyncio.to_thread(check, actual, fingerprint)
+                except asyncio.CancelledError:
+                    raise
+                except TmuxError:
+                    record["status"] = "failed"
+                    record["reason"] = "pane gone"
+                    LOGGER.warning("background resend stopped, pane gone: pane=%s", key)
+                    return
+                except HTTPException:
+                    # The resolver could not find the host or pane any more.
+                    record["status"] = "failed"
+                    record["reason"] = "pane gone"
+                    LOGGER.warning("background resend stopped, pane gone: pane=%s", key)
+                    return
+                except (RuntimeError, OSError) as exc:
+                    # A flaky capture or ssh hiccup: skip this round, keep going.
+                    LOGGER.debug("background resend check failed, will retry: pane=%s error=%s", key, exc)
+                    await asyncio.sleep(self.interval)
+                    continue
+                # The task may have been superseded while the check was running:
+                # re-check before pressing, so a stale Enter can never land in
+                # the new message's paste.
+                if self._records.get(key) is not record or record["status"] != "retrying":
+                    return
+                if not in_prompt:
+                    record["status"] = "submitted"
+                    record["reason"] = None
+                    LOGGER.info("background resend submitted after %d enters: pane=%s",
+                                record["presses"], key)
+                    return
+                try:
+                    await asyncio.to_thread(transport.send_key, actual, "Enter")
+                except asyncio.CancelledError:
+                    raise
+                except TmuxError:
+                    record["status"] = "failed"
+                    record["reason"] = "pane gone"
+                    LOGGER.warning("background resend stopped, pane gone: pane=%s", key)
+                    return
+                except (RuntimeError, OSError) as exc:
+                    LOGGER.debug("background resend press failed, will retry: pane=%s error=%s", key, exc)
+                    await asyncio.sleep(self.interval)
+                    continue
+                record["presses"] += 1
+                await asyncio.sleep(self.interval)
+        finally:
+            if self._tasks.get(key) is asyncio.current_task():
+                self._tasks.pop(key, None)
+
+
+def retry_or_fail(manager: BackgroundResend | None, pane_id: str, text: str) -> tuple[str, bool]:
+    """Map a failed in-request submit to the background retry.
+
+    Returns (status, retrying): "retrying" when a background task started,
+    "pasted_not_submitted" when there is nothing to retry with (an empty
+    fingerprint, or no manager at all).  The three message routes share
+    this so the failure wording stays identical.
+    """
+    fingerprint = TmuxBackend.submit_fingerprint(text)
+    if manager is None or not fingerprint:
+        return "pasted_not_submitted", False
+    manager.start(pane_id, fingerprint)
+    return "retrying", True
 
 
 class InputRequest(BaseModel):
@@ -1208,10 +1392,15 @@ def create_app(
     plugins_dir: str | None = None,
     plugins: str | None = None,
     plugin_state: str | None = None,
+    resend_manager: BackgroundResend | None = None,
 ) -> FastAPI:
     plugin_manager = PLUGIN_MANAGER
     plugin_manager.clear()
     tmux = backend or TmuxBackend()
+    # One background retry loop per pane, shared by the chat, share and relay
+    # routes (and visible through the transcript polling channel).  Tests pass
+    # their own manager to shrink the interval and the cap.
+    resend_manager = resend_manager or BackgroundResend()
     configured_password = password if password is not None else os.environ.get("TMUX_WEB_PASSWORD")
     if not configured_password:
         raise RuntimeError("TMUX_WEB_PASSWORD must be set")
@@ -1471,6 +1660,10 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="remote host not found") from exc
         return runner_for(host), pane_id
+
+    # The background retry loop resolves its pane fresh every round through
+    # this, so it never holds a stale runner across a host change.
+    resend_manager.bind(pane_transport)
 
     def relay_target(target: str):
         """Resolve a relay target to (transport, pane_id, pane, host_name)."""
@@ -2304,13 +2497,19 @@ def create_app(
         require_share_access(request, row)
         await asyncio.to_thread(validate_shared_session, row)
         transport, actual_pane_id = pane_transport(row["pane_id"])
+        resend_state = resend_manager.status(row["pane_id"])
         if not row["session_id"]:
             content = await asyncio.to_thread(transport.capture, actual_pane_id, 2000)
             digest = hashlib.sha1(content.encode()).hexdigest()
-            return {"mode": "screen", "provider": row["provider"] or None, "session_id": None,
-                    "mtime": digest, "messages": [], "content": content}
+            screen_data = {"mode": "screen", "provider": row["provider"] or None, "session_id": None,
+                           "mtime": digest, "messages": [], "content": content}
+            if resend_state is not None:
+                screen_data["resend"] = resend_state
+            return screen_data
         data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit)
         data["mode"] = "transcript"
+        if resend_state is not None:
+            data["resend"] = resend_state
         return data
 
     @app.post("/share/{slug}/api/input")
@@ -2320,14 +2519,18 @@ def create_app(
         if not row["allow_input"]:
             raise HTTPException(status_code=403, detail="this share is read-only")
         await asyncio.to_thread(validate_shared_session, row)
+        resend_manager.cancel(row["pane_id"], "superseded")
         transport, actual_pane_id = pane_transport(row["pane_id"])
         submitted = await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit)
         if submitted is None:
             submitted = True
         if payload.submit and not submitted:
-            # The paste landed but Enter never moved it: say so, and keep
-            # the 200 - the text did arrive, so a 503 would be a lie.
-            return {"status": "pasted_not_submitted", "submit": payload.submit, "submitted": False}
+            # The paste landed but Enter never moved it: hand it to the
+            # background retry instead of failing it, and keep the 200 -
+            # the text did arrive, so a 503 would be a lie.
+            status, retrying = retry_or_fail(resend_manager, row["pane_id"], payload.text)
+            return {"status": status, "submit": payload.submit,
+                    "submitted": False, "retrying": retrying}
         return {"status": "sent", "submit": payload.submit, "submitted": submitted}
 
     @app.get("/manifest.webmanifest")
@@ -3266,13 +3469,16 @@ def create_app(
             waiting = agent_busy(provider, pane)
         return bool(waiting), (hit.get("last_user_ts") if waiting else None)
 
-    def unchanged_stub(pane: dict, hit: dict, signature: str, long_poll: bool = False) -> dict:
+    def unchanged_stub(pane: dict, hit: dict, signature: str, long_poll: bool = False,
+                       resend: dict | None = None) -> dict:
         """The tiny unchanged reply, with waiting re-judged and the cache updated."""
         waiting, since = fresh_waiting_for_hit(pane, hit)
         hit["waiting"] = waiting
         hit["waiting_since"] = since
         stub: dict = {"unchanged": True, "signature": signature, "waiting": waiting,
                       "waiting_since": since, "has_more": hit["has_more"]}
+        if resend is not None:
+            stub["resend"] = resend
         if long_poll:
             stub["long_poll"] = True
         return stub
@@ -3330,6 +3536,10 @@ def create_app(
         """
         require_auth(request)
         pane = await asyncio.to_thread(pane_or_404, pane_id)
+        # The background retry state rides the same poll the console already
+        # makes.  The field is only attached while a record exists for this
+        # pane, so an idle pane's responses stay byte-identical.
+        resend_state = resend_manager.status(pane_id)
         is_local = pane.get("host_id") in (None, "localhost")
         wait_seconds = 0.0 if refresh else clamp_long_poll_wait(wait)
         if not refresh and is_local:
@@ -3351,10 +3561,12 @@ def create_app(
                         if wait_seconds > 0:
                             outcome = await await_transcript_change(pane, hit, wait_seconds)
                             if outcome in ("waiting_flipped", "timeout"):
-                                return unchanged_stub(pane, hit, hit["signature"], long_poll=True)
+                                return unchanged_stub(pane, hit, hit["signature"], long_poll=True,
+                                                      resend=resend_state)
                             # "changed": fall through to the full read below
                         else:
-                            return unchanged_stub(pane, hit, sig or hit["signature"])
+                            return unchanged_stub(pane, hit, sig or hit["signature"],
+                                                  resend=resend_state)
         try:
             transport, actual_pane_id = pane_transport(pane_id)
             if refresh and hasattr(transport, "transcript"):
@@ -3386,6 +3598,8 @@ def create_app(
             if sig and sig == signature:
                 stub: dict = {"unchanged": True, "signature": signature, "waiting": data.get("waiting"),
                               "waiting_since": data.get("waiting_since"), "has_more": data.get("has_more")}
+                if resend_state is not None:
+                    stub["resend"] = resend_state
                 if held:
                     stub["long_poll"] = True
                 return stub
@@ -3399,6 +3613,8 @@ def create_app(
                                 "waiting": data.get("waiting"),
                                 "waiting_since": data.get("waiting_since"),
                                 "has_more": data.get("has_more")}
+                        if resend_state is not None:
+                            stub["resend"] = resend_state
                         if held:
                             stub["long_poll"] = True
                         return stub
@@ -3406,12 +3622,16 @@ def create_app(
                     incremental["messages"] = messages[index + 1:]
                     incremental["signature"] = signature
                     incremental["incremental"] = True
+                    if resend_state is not None:
+                        incremental["resend"] = resend_state
                     if held:
                         incremental["long_poll"] = True
                     return incremental
                 # anchor not in the current window (rotation, or older than the
                 # limit): fall through to the full list below
             data["signature"] = signature
+            if resend_state is not None:
+                data["resend"] = resend_state
             if held:
                 data["long_poll"] = True
             return data
@@ -3425,15 +3645,20 @@ def create_app(
         require_auth(request)
         pane = await asyncio.to_thread(pane_or_404, pane_id)
         try:
+            # A new send supersedes any background retry still running for
+            # this pane, so its Enter can never land in this paste.
+            resend_manager.cancel(pane_id, "superseded")
             transport, actual_pane_id = pane_transport(pane_id)
             submitted = await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit, pane=pane)
             if submitted is None:
                 submitted = True
             if payload.submit and not submitted:
-                # The paste landed but Enter never moved it: say so, and keep
-                # the 200 - the text did arrive, so a 503 would be a lie.
-                return {"status": "pasted_not_submitted", "pane": pane_id,
-                        "submit": payload.submit, "submitted": False}
+                # The paste landed but Enter never moved it: hand it to the
+                # background retry instead of failing it, and keep the 200 -
+                # the text did arrive, so a 503 would be a lie.
+                status, retrying = retry_or_fail(resend_manager, pane_id, payload.text)
+                return {"status": status, "pane": pane_id, "submit": payload.submit,
+                        "submitted": False, "retrying": retrying}
             return {"status": "sent", "pane": pane_id, "submit": payload.submit, "submitted": submitted}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -4979,6 +5204,7 @@ def create_app(
         relay_ask=perform_relay_ask,
         relay_target=relay_target,
         collect_pane_states=collect_pane_states,
+        resend=resend_manager,
         version=os.environ.get("TMUX_WEB_VERSION", ""),
     )
     # Same rule as the password file: an app built with an explicit password (the tests, a throwaway

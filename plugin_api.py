@@ -88,6 +88,7 @@ class PluginServices:
     relay_ask: Callable[..., Any] | None = None
     relay_target: Callable[..., Any] | None = None
     collect_pane_states: Callable[..., Any] | None = None
+    resend: Any = None            # BackgroundResend: background Enter retry for a stuck paste
     version: str = ""
 
 

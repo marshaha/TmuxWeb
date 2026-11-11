@@ -1335,7 +1335,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     const pane=message.pane||state.selected;
     return window.TmuxUploads?TmuxUploads.bubbleHtml(message.text,pane):htmlEscape(message.text);
   }
-  function deliveryHtml(pending,localId){if(pending.status==='sending')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>发送中</span>`;if(pending.status==='sent')return `<span class="message-delivery sent">已发送 ✓</span>`;return `<span class="message-delivery failed">发送失败<button class="retry-send" type="button" data-resend="${esc(localId||'')}" title="重新发送这条消息">重发</button></span>`;}
+  function deliveryHtml(pending,localId){if(pending.status==='sending')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>发送中</span>`;if(pending.status==='sent')return `<span class="message-delivery sent">已发送 ✓</span>`;if(pending.status==='retrying')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>正在重试提交…</span>`;return `<span class="message-delivery failed">发送失败<button class="retry-send" type="button" data-resend="${esc(localId||'')}" title="重新发送这条消息">重发</button></span>`;}
   function transcriptBubble(message){
     const copy=`<div class="msg-actions"><button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`;
     return message.role==='user'
@@ -1452,6 +1452,9 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
       const since=sinceId?`&since=${encodeURIComponent(sinceId)}`:'';
       const wait=longPoll?'&wait=20':'';
       const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit}${refresh?'&refresh=1':''}${sig}${since}${wait}`);if(state.selected!==id||state.mode!=='chat')return;
+      // 后台重试的状态也走这条轮询：必须在 unchanged 早退之前同步，否则
+      // transcript 不动时气泡永远收不到终态。
+      syncResendState(d);
       showError('');state.transcriptFailures=0;$('status-dot').className='status-dot live';
       // 服务端真的挂住过（long_poll）才立即再挂；远端 pane 和旧服务端没这个标记，
       // 沿用原来的退避间隔，不会被打成紧循环
@@ -2000,7 +2003,26 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   }
   function sendResultState(result){
     if(result&&result.status==='pasted_not_submitted')return {text:'已粘贴但未提交',kind:'bad'};
+    if(result&&(result.status==='retrying'||result.retrying))return {text:'正在重试提交…',kind:'retrying'};
     return {text:'已发送 ✓',kind:'ok'};
+  }
+  // 后台重试的终态 → 乐观气泡该变成什么：还在重试不用动，提交了变已发送，
+  // 到上限或被新发送顶掉都按未提交显示（旧文字已被新发送的 C-u 清掉，
+  // 本来也没提交，显示未提交是实话）。
+  function resendAction(resend){
+    if(!resend||!resend.status)return null;
+    if(resend.status==='submitted')return 'sent';
+    if(resend.status==='failed'||resend.status==='superseded')return 'failed';
+    return null;
+  }
+  function syncResendState(d){
+    const action=resendAction(d&&d.resend);
+    if(!action)return;
+    for(const [localId,pending] of state.pendingMessages){
+      if(pending.pane!==state.selected||pending.status!=='retrying')continue;
+      setOptimisticStatus(localId,action);
+      if(action==='failed')setSendState('已粘贴但未提交','bad');
+    }
   }
 
   async function resendPending(localId){
@@ -2012,8 +2034,8 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     try{
       const d=await api(`/api/panes/${encodeURIComponent(pending.pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:pending.text,submit:pending.submit!==false})});
       const st=sendResultState(d);
-      setOptimisticStatus(localId,st.kind==='bad'?'failed':'sent');
-      if(st.kind==='bad')setSendState(st.text,st.kind);else setSendState('已发送 ✓','ok');
+      setOptimisticStatus(localId,st.kind==='bad'?'failed':st.kind==='retrying'?'retrying':'sent');
+      if(st.kind==='bad')setSendState(st.text,st.kind);else if(st.kind==='retrying')setSendState(st.text,st.kind);else setSendState('已发送 ✓','ok');
       showError('');
     }catch(e){
       setOptimisticStatus(localId,'failed');
@@ -2030,7 +2052,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(!pane||!text.trim()||attachmentsPending())return;
     // 条带在按 Enter 这一刻就收起来（以前等 POST 回来才清，那一秒图片还留着）
     const attachments=prompt?takeAttachments():[];
-    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});const st=sendResultState(d);setOptimisticStatus(localId,st.kind==='bad'?'failed':'sent');setSendState(st.text,st.kind);showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;refreshTranscript(pane,{force:true});}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');if(attachments.length)restoreAttachments(attachments);
+    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});const st=sendResultState(d);setOptimisticStatus(localId,st.kind==='bad'?'failed':st.kind==='retrying'?'retrying':'sent');setSendState(st.text,st.kind);showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;refreshTranscript(pane,{force:true});}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');if(attachments.length)restoreAttachments(attachments);
     // 别把用户刚打的字弄丢：放回输入框，改完/网络好了直接再发
     // 别把用户刚打的字弄丢，也别把那行附件前缀留在输入框里：附件已经放回条带，
     // 再发一次会重新拼前缀，留着就变成两行 "user uploaded file …"

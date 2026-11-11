@@ -103,7 +103,8 @@ class RelayTools:
         # an old server without the field is treated as submitted, as before.
         submitted = bool(result.get("submitted", True))
         return {"target": target, "sent": submitted, "submitted": submitted,
-                "pane": result.get("pane")}
+                "pane": result.get("pane"), "retrying": bool(result.get("retrying", False)),
+                "status": result.get("status", "sent" if submitted else "pasted_not_submitted")}
 
     def _resolve_host(self, value: str) -> str:
         """Accept a host id, a host name or "localhost" - names are friendlier."""

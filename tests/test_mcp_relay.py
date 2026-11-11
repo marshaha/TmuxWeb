@@ -469,6 +469,16 @@ class SendAgentSubmittedTests(unittest.TestCase):
         self.assertTrue(result["sent"])
         self.assertTrue(result["submitted"])
 
+    def test_reports_retrying_when_the_server_keeps_retrying(self):
+        recorder = Recorder({"/api/relay/message": {"pane": "abc~%3", "status": "retrying",
+                                                    "submitted": False, "retrying": True}})
+        with patch.object(mcp_relay, "request", recorder):
+            result = mcp_relay.RelayTools().send_agent({"target": "abc~%3", "text": "run the tests"})
+        self.assertFalse(result["sent"])
+        self.assertFalse(result["submitted"])
+        self.assertTrue(result["retrying"])
+        self.assertEqual(result["status"], "retrying")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,8 +35,26 @@ import {marked} from '/share-assets/marked.esm.js';
     if(field)field.placeholder='在终端中输入…';}
   function renderScreen(text){messages.innerHTML=`<article class="message assistant"><div><pre class="screen">${esc(text||'')}</pre></div></article>`;scroll.scrollTop=scroll.scrollHeight;}
   function render(list){messages.innerHTML=list.map(m=>`<article class="message ${m.role}"><div><div class="bubble ${m.role==='assistant'?'markdown':''}">${m.role==='assistant'?markdown(m.text):esc(m.text)}</div>${m.status?`<div class="pending ${pendingClass(m.status)}">${m.status}</div>`:''}</div></article>`).join('')+pending.map(m=>`<article class="message user"><div><div class="bubble">${esc(m.text)}</div><div class="pending ${pendingClass(m.status)}">${m.status}</div></div></article>`).join('');scroll.scrollTop=scroll.scrollHeight;}
-  async function refresh(){try{const r=await fetch(`/share/${encodeURIComponent(slug)}/api/transcript?limit=300`,{cache:'no-store'});if(r.status===401){$('login').hidden=false;return;}if(r.status===410){messages.innerHTML='<p>此分享已过期或被撤销。</p>';return;}if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();if(d.mode==='screen'){setScreenMode();if(d.mtime!==lastMtime){lastMtime=d.mtime;renderScreen(d.content);}timer=setTimeout(refresh,1000);return;}if(d.mtime!==lastMtime){lastMtime=d.mtime;pending=pending.filter(p=>!d.messages.some(m=>m.role==='user'&&String(m.text).includes(p.text)));render(d.messages);}timer=setTimeout(refresh,1000);}catch(e){timer=setTimeout(refresh,2000);}}
-  function inputResultText(result){return result&&result.status==='pasted_not_submitted'?'已粘贴但未提交':'已发送 ✓';}
+  async function refresh(){try{const r=await fetch(`/share/${encodeURIComponent(slug)}/api/transcript?limit=300`,{cache:'no-store'});if(r.status===401){$('login').hidden=false;return;}if(r.status===410){messages.innerHTML='<p>此分享已过期或被撤销。</p>';return;}if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();applyResend(d);if(d.mode==='screen'){setScreenMode();if(d.mtime!==lastMtime){lastMtime=d.mtime;renderScreen(d.content);}timer=setTimeout(refresh,1000);return;}if(d.mtime!==lastMtime){lastMtime=d.mtime;pending=pending.filter(p=>!d.messages.some(m=>m.role==='user'&&String(m.text).includes(p.text)));render(d.messages);}timer=setTimeout(refresh,1000);}catch(e){timer=setTimeout(refresh,2000);}}
+  // 和主页同一份映射：后台重试的终态 → 待发送项该变成什么。
+  function resendAction(resend){
+    if(!resend||!resend.status)return null;
+    if(resend.status==='submitted')return 'sent';
+    if(resend.status==='failed'||resend.status==='superseded')return 'failed';
+    return null;
+  }
+  function applyResend(d){
+    const action=resendAction(d&&d.resend);
+    if(!action||d.mode==='screen')return;
+    let changed=false;
+    for(const item of pending){
+      if(item.status!=='正在重试提交…')continue;
+      item.status=action==='failed'?'已粘贴但未提交':'已发送 ✓';
+      changed=true;
+    }
+    if(changed)render(d.messages||[]);
+  }
+  function inputResultText(result){return result&&result.status==='pasted_not_submitted'?'已粘贴但未提交':result&&(result.status==='retrying'||result.retrying)?'正在重试提交…':'已发送 ✓';}
   function pendingClass(s){return s==='已发送 ✓'?'ok':(s==='发送失败'||s==='已粘贴但未提交')?'fail':'';}
   async function sendMessage(){if(!allowInput)return;const text=input.value;if(!text.trim())return;input.value='';const item={text,status:'发送中 …'};pending.push(item);render([]);send.disabled=true;try{const r=await fetch(`/share/${encodeURIComponent(slug)}/api/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:true})});if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();item.status=inputResultText(d);}catch(e){item.status='发送失败';}finally{send.disabled=false;render([]);}}
   $('login-form').onsubmit=async e=>{e.preventDefault();const body=new URLSearchParams({password:$('password').value});const r=await fetch(`/share/${encodeURIComponent(slug)}/login`,{method:'POST',body,redirect:'manual'});if(r.status===401){$('login-error').textContent='密码错误';return;}location.reload();};send.onclick=sendMessage;input.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&matchMedia('(min-width:761px)').matches){e.preventDefault();sendMessage();}};if(!allowInput){const composer=$('composer');if(composer)composer.innerHTML='<div class="card readonly">只读分享：可以查看内容，但不能发送消息。</div>';const badge=document.querySelector('.badge');if(badge){badge.textContent='只读';badge.classList.add('readonly');}input.disabled=true;send.disabled=true;}

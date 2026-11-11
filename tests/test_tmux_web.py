@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import io
 import os
@@ -4249,7 +4250,14 @@ class FingerprintWindowTests(unittest.TestCase):
 
 
 class SendSubmittedTests(unittest.TestCase):
-    """POST /input (and the relay) must report pasted_not_submitted instead of a silent sent."""
+    """POST /input (and the relay) must report retrying instead of a silent sent.
+
+    The in-request send still fails the same way, but the failure is now
+    handed to the background retry loop: the response says "retrying" and
+    the client watches the transcript poll for the outcome.  The old
+    pasted_not_submitted wording survives as the loop's terminal state
+    (cap reached or pane gone), covered by BackgroundResendRouteTests.
+    """
 
     class NeverSubmits(FakeTmux):
         def send(self, pane_id, text, submit=True, pane=None):
@@ -4276,13 +4284,14 @@ class SendSubmittedTests(unittest.TestCase):
         response = client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
         self.assertEqual(response.status_code, 303)
 
-    def test_input_reports_pasted_not_submitted_with_200(self):
+    def test_input_reports_retrying_with_200(self):
         client = self.client_for(self.NeverSubmits())
         self.login(client)
         response = client.post("/api/panes/%254/input", json={"text": "hello", "submit": True})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "pasted_not_submitted")
+        self.assertEqual(response.json()["status"], "retrying")
         self.assertFalse(response.json()["submitted"])
+        self.assertTrue(response.json()["retrying"])
 
     def test_input_reports_sent_when_submitted(self):
         client = self.client_for(self.AlwaysSubmits())
@@ -4299,13 +4308,14 @@ class SendSubmittedTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "sent")
 
-    def test_relay_message_reports_pasted_not_submitted(self):
+    def test_relay_message_reports_retrying(self):
         client = self.client_for(self.NeverSubmits())
         self.login(client)
         response = client.post("/api/relay/message", json={"target": "%4", "text": "请先跑测试"})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "pasted_not_submitted")
+        self.assertEqual(response.json()["status"], "retrying")
         self.assertFalse(response.json()["submitted"])
+        self.assertTrue(response.json()["retrying"])
 
     def guest_for_share(self, tmux, slug="share001"):
         tmux.panes[0]["command"] = "claude"
@@ -4317,12 +4327,13 @@ class SendSubmittedTests(unittest.TestCase):
         self.assertEqual(created.status_code, 201)
         return TestClient(client.app), slug
 
-    def test_share_input_reports_pasted_not_submitted_with_200(self):
+    def test_share_input_reports_retrying_with_200(self):
         guest, slug = self.guest_for_share(self.NeverSubmits())
         response = guest.post(f"/share/{slug}/api/input", json={"text": "继续分析", "submit": True})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "pasted_not_submitted")
+        self.assertEqual(response.json()["status"], "retrying")
         self.assertFalse(response.json()["submitted"])
+        self.assertTrue(response.json()["retrying"])
 
     def test_share_input_reports_sent_when_submitted(self):
         guest, slug = self.guest_for_share(self.AlwaysSubmits())
@@ -4343,6 +4354,306 @@ class SendSubmittedTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "sent")
         self.assertTrue(response.json()["submitted"])
+
+
+class FingerprintInPromptTests(unittest.TestCase):
+    """fingerprint_in_prompt answers the same question still_in_prompt asks,
+    but for a stored fingerprint instead of the full text."""
+
+    class Backend(tmux_web.TmuxBackend):
+        def __init__(self, screen):
+            self.screen = screen
+
+        def _run(self, *args, **kwargs):
+            return self.screen
+
+    def test_fingerprint_in_the_prompt_region_is_found(self):
+        backend = self.Backend("top\n❯ hello world\n─\n❯ \n")
+        self.assertTrue(backend.fingerprint_in_prompt("%1", "hello world"))
+
+    def test_fingerprint_only_in_the_transcript_is_not_found(self):
+        backend = self.Backend("❯ hello world\ntop\n─\n❯ \n")
+        self.assertFalse(backend.fingerprint_in_prompt("%1", "hello world"))
+
+    def test_fingerprint_matches_across_a_mid_word_wrap(self):
+        # The screen wraps "walkaround" as "walkar" / "ound": the
+        # whitespace-stripped match still finds it.
+        backend = self.Backend("top\n❯ walkar\nound 問題\n")
+        self.assertTrue(backend.fingerprint_in_prompt("%1", "walkaround 問題"))
+
+
+class BackgroundResendTests(unittest.IsolatedAsyncioTestCase):
+    """The background loop presses Enter until the fingerprint leaves the prompt."""
+
+    class Transport:
+        def __init__(self, visible):
+            self.visible = list(visible)
+            self.keys = []
+
+        def fingerprint_in_prompt(self, pane_id, fingerprint):
+            value = self.visible.pop(0) if self.visible else False
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        def send_key(self, pane_id, key, pane=None):
+            self.keys.append((pane_id, key))
+
+    def manager_for(self, transport, **kwargs):
+        params = {"interval": 0.01, "time_limit": 30.0}
+        params.update(kwargs)
+        manager = tmux_web.BackgroundResend(**params)
+        manager.bind(lambda pane_id: (transport, pane_id))
+        return manager
+
+    async def wait_for(self, manager, pane_id, wanted, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            record = manager.status(pane_id)
+            if record and record["status"] in wanted:
+                return record
+            await asyncio.sleep(0.01)
+        return manager.status(pane_id)
+
+    async def test_presses_until_the_fingerprint_leaves_then_reports_submitted(self):
+        transport = self.Transport([True, True, False])
+        manager = self.manager_for(transport)
+        manager.start("%4", "hello world")
+        record = await self.wait_for(manager, "%4", ("submitted",))
+        self.assertEqual(record["status"], "submitted")
+        self.assertEqual(record["presses"], 2)
+        self.assertEqual(transport.keys, [("%4", "Enter")] * 2)
+
+    async def test_stops_at_the_cap_and_warns(self):
+        transport = self.Transport([True] * 100)
+        manager = self.manager_for(transport, time_limit=0.05)
+        with self.assertLogs("tmux_web", level="WARNING") as logs:
+            manager.start("%4", "hello world")
+            record = await self.wait_for(manager, "%4", ("failed",))
+        self.assertEqual(record["status"], "failed")
+        self.assertGreaterEqual(record["presses"], 1)
+        self.assertTrue(any("gave up" in line and "%4" in line for line in logs.output))
+
+    async def test_pane_gone_stops_without_more_presses(self):
+        transport = self.Transport([True, TmuxError("can't find pane: %4")])
+        manager = self.manager_for(transport)
+        manager.start("%4", "hello world")
+        record = await self.wait_for(manager, "%4", ("failed",))
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["presses"], 1)
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(transport.keys), 1)
+
+    async def test_transient_error_skips_a_press_but_keeps_going(self):
+        transport = self.Transport([RuntimeError("ssh timed out"),
+                                    RuntimeError("ssh timed out"), False])
+        manager = self.manager_for(transport)
+        manager.start("%4", "hello world")
+        record = await self.wait_for(manager, "%4", ("submitted",))
+        self.assertEqual(record["status"], "submitted")
+        self.assertEqual(record["presses"], 0)
+
+    async def test_new_start_supersedes_the_old_task(self):
+        first = self.Transport([True] * 100)
+        second = self.Transport([True] * 100)
+        manager = self.manager_for(first)
+        manager.start("%4", "first message")
+        await asyncio.sleep(0.05)
+        self.assertGreater(len(first.keys), 0)
+        manager.bind(lambda pane_id: (second, pane_id))
+        manager.start("%4", "second message")
+        first_keys = len(first.keys)
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(first.keys), first_keys, "旧任务被顶掉后不能再按回车")
+        self.assertGreater(len(second.keys), 0, "新任务继续重试")
+        self.assertEqual(manager.status("%4")["status"], "retrying")
+        manager.cancel("%4", "superseded")
+
+    async def test_cancel_marks_the_record_superseded_and_stops_pressing(self):
+        transport = self.Transport([True] * 100)
+        manager = self.manager_for(transport)
+        manager.start("%4", "hello world")
+        await asyncio.sleep(0.03)
+        record = manager.cancel("%4", "superseded")
+        self.assertEqual(record["status"], "superseded")
+        keys = len(transport.keys)
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(transport.keys), keys)
+        self.assertEqual(manager.status("%4")["status"], "superseded")
+
+    async def test_cancel_unknown_pane_is_a_noop(self):
+        manager = self.manager_for(self.Transport([]))
+        self.assertIsNone(manager.cancel("%9", "superseded"))
+        self.assertIsNone(manager.status("%9"))
+
+    async def test_status_hides_the_fingerprint(self):
+        transport = self.Transport([True, False])
+        manager = self.manager_for(transport)
+        manager.start("%4", "secret text here")
+        record = manager.status("%4")
+        self.assertEqual(record["status"], "retrying")
+        self.assertNotIn("fingerprint", record)
+        self.assertNotIn("secret text here", str(record))
+
+    async def test_transport_without_a_fingerprint_check_stops_cleanly(self):
+        class NoCheck:
+            def send_key(self, pane_id, key, pane=None):
+                raise AssertionError("must not press without a check")
+
+        manager = self.manager_for(NoCheck())
+        manager.start("%4", "hello world")
+        record = await self.wait_for(manager, "%4", ("failed",))
+        self.assertEqual(record["status"], "failed")
+
+
+class BackgroundResendRouteTests(unittest.TestCase):
+    """POST /input hands a stuck paste to the background loop instead of failing it."""
+
+    class ScriptedTmux(FakeTmux):
+        """Fake app backend whose screen is scripted and whose send() is the real one."""
+
+        def __init__(self, screens):
+            super().__init__()
+            self.screens = list(screens)
+            self.tmux_calls = []
+
+        def _run(self, *args, **kwargs):
+            self.tmux_calls.append(args)
+            if args and args[0] == "capture-pane":
+                return self.screens.pop(0) if self.screens else ""
+            return ""
+
+        def send(self, pane_id, text, submit=True, pane=None):
+            return tmux_web.TmuxBackend.send(self, pane_id, text, submit, pane=pane)
+
+    def client_for(self, tmux, manager=None):
+        return TestClient(create_app(
+            tmux,
+            password="unit-test-admin-password",
+            session_secret="test-secret",
+            terminal_factory=FakeTerminalFactory(),
+            share_db=":memory:",
+            remote_store=FakeRemoteStore(),
+            remote_runner_factory=FakeSSHRunner,
+            resend_manager=manager,
+        ))
+
+    def login(self, client):
+        response = client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+
+    def poll_resend(self, client, pane_id="%254", timeout=5.0):
+        deadline = time.monotonic() + timeout
+        resend = None
+        while time.monotonic() < deadline:
+            response = client.get(f"/api/panes/{pane_id}/transcript")
+            self.assertEqual(response.status_code, 200)
+            resend = response.json().get("resend")
+            if resend and resend["status"] != "retrying":
+                return resend
+            time.sleep(0.02)
+        return resend
+
+    def test_input_returns_retrying_and_the_background_loop_submits(self):
+        # In-request send burns 6 stuck screens (wait 1 + press checks 4 +
+        # final 1); the background loop then presses 6 more and the 7th check
+        # sees the empty screen.
+        tmux = self.ScriptedTmux(["❯ hello\n"] * 12 + [""] * 10)
+        tmux.panes[0]["command"] = "claude"
+        manager = tmux_web.BackgroundResend(interval=0.02, time_limit=30.0)
+        # The client must stay open as a context manager: starlette 1.10
+        # gives each bare request its own portal and cancels background
+        # tasks when the response body is read, so only a shared portal
+        # lets the retry loop run between requests.  (Production uvicorn
+        # keeps one loop, so this is test-only.)
+        with self.client_for(tmux, manager) as client:
+            self.login(client)
+            with patch("tmux_web.time.sleep"):
+                response = client.post("/api/panes/%254/input", json={"text": "hello", "submit": True})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["status"], "retrying")
+            self.assertFalse(response.json()["submitted"])
+            self.assertTrue(response.json()["retrying"])
+            resend = client.get("/api/panes/%254/transcript").json().get("resend")
+            self.assertEqual(resend["status"], "retrying")
+            final = self.poll_resend(client)
+            self.assertEqual(final["status"], "submitted")
+            self.assertEqual(final["presses"], 6)
+            self.assertEqual(tmux.keys, [("%4", "Enter")] * 6)
+            self.assertEqual(len([call for call in tmux.tmux_calls
+                                  if call[:2] == ("send-keys", "-t") and call[-1] == "C-m"]), 5)
+            data = client.get("/api/panes/%254/transcript").json()
+            self.assertEqual(len(data["messages"]), 2)
+
+    def test_input_cap_fails_back_to_pasted_not_submitted(self):
+        tmux = self.ScriptedTmux(["❯ hello\n"] * 100)
+        tmux.panes[0]["command"] = "claude"
+        manager = tmux_web.BackgroundResend(interval=0.02, time_limit=0.3)
+        with self.client_for(tmux, manager) as client:
+            self.login(client)
+            with patch("tmux_web.time.sleep"):
+                response = client.post("/api/panes/%254/input", json={"text": "hello", "submit": True})
+            self.assertEqual(response.json()["status"], "retrying")
+            with self.assertLogs("tmux_web", level="WARNING") as logs:
+                final = self.poll_resend(client)
+            self.assertEqual(final["status"], "failed")
+            self.assertGreaterEqual(final["presses"], 1)
+            self.assertTrue(any("gave up" in line and "%4" in line for line in logs.output))
+
+    def test_new_send_supersedes_the_old_retry(self):
+        tmux = self.ScriptedTmux(["❯ hello\n"] * 10 + [""] * 60)
+        tmux.panes[0]["command"] = "claude"
+        manager = tmux_web.BackgroundResend(interval=0.02, time_limit=30.0)
+        with self.client_for(tmux, manager) as client:
+            self.login(client)
+            with patch("tmux_web.time.sleep"):
+                first = client.post("/api/panes/%254/input", json={"text": "hello", "submit": True})
+                self.assertEqual(first.json()["status"], "retrying")
+                second = client.post("/api/panes/%254/input", json={"text": "hello", "submit": True})
+            self.assertEqual(second.json()["status"], "sent")
+            self.assertTrue(second.json()["submitted"])
+            resend = client.get("/api/panes/%254/transcript").json().get("resend")
+            self.assertEqual(resend["status"], "superseded")
+            time.sleep(0.1)
+            keys = len(tmux.keys)
+            time.sleep(0.3)
+            self.assertEqual(len(tmux.keys), keys, "旧重试被顶掉后不能再按回车")
+
+    def test_relay_message_returns_retrying(self):
+        tmux = self.ScriptedTmux(["❯ 请先跑测试\n"] * 20)
+        manager = tmux_web.BackgroundResend(interval=0.02, time_limit=0.3)
+        client = self.client_for(tmux, manager)
+        self.login(client)
+        with patch("tmux_web.time.sleep"):
+            response = client.post("/api/relay/message", json={"target": "%4", "text": "请先跑测试"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "retrying")
+        self.assertFalse(response.json()["submitted"])
+        self.assertTrue(response.json()["retrying"])
+
+    def guest_for_share(self, tmux, manager, slug="share001"):
+        tmux.panes[0]["command"] = "claude"
+        client = self.client_for(tmux, manager)
+        self.login(client)
+        created = client.post("/api/shares", json={
+            "pane_id": "%4", "slug": slug, "password": "", "expires_in": 3600,
+        })
+        self.assertEqual(created.status_code, 201)
+        return TestClient(client.app), slug
+
+    def test_share_input_returns_retrying(self):
+        tmux = self.ScriptedTmux(["❯ 继续分析\n"] * 20)
+        manager = tmux_web.BackgroundResend(interval=0.02, time_limit=0.3)
+        guest, slug = self.guest_for_share(tmux, manager)
+        with patch("tmux_web.time.sleep"):
+            response = guest.post(f"/share/{slug}/api/input", json={"text": "继续分析", "submit": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "retrying")
+        self.assertFalse(response.json()["submitted"])
+        self.assertTrue(response.json()["retrying"])
+        transcript = guest.get(f"/share/{slug}/api/transcript")
+        self.assertEqual(transcript.status_code, 200)
+        self.assertEqual(transcript.json().get("resend", {}).get("status"), "retrying")
 
 
 if __name__ == "__main__":

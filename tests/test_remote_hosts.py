@@ -1552,5 +1552,56 @@ class SSHRunnerFingerprintWindowTests(unittest.TestCase):
         self.assertIn("".join(fingerprint.split()), "".join(region.split()))
 
 
+class SSHRunnerFingerprintInPromptTests(unittest.TestCase):
+    """fingerprint_in_prompt for the background loop, remote side.
+
+    A failed capture used to return "" here, so the final check in send()
+    read "fingerprint not found" as submitted.  It now raises, and the
+    callers that already catch (RuntimeError, OSError) turn that into a
+    straight not-submitted instead of a false success.
+    """
+
+    class Runner(remote_hosts.SSHRunner):
+        def __init__(self, screens, fail_capture_at=None):
+            super().__init__({"id": "test", "host": "example.test", "port": 22})
+            self.screens = list(screens)
+            self.fail_capture_at = fail_capture_at
+            self.captures = 0
+            self.runs = []
+
+        def run(self, command, *, input_bytes=None, timeout=15, resolve_tmux=True):
+            self.runs.append(command)
+            if "capture-pane" in command:
+                self.captures += 1
+                if self.fail_capture_at is not None and self.captures == self.fail_capture_at:
+                    return SSHRunnerSendTests._Completed(1, b"", b"can't find pane: %9")
+                text = self.screens.pop(0) if self.screens else ""
+                return SSHRunnerSendTests._Completed(0, text.encode(), b"")
+            return SSHRunnerSendTests._Completed(0, b"", b"")
+
+    def test_fingerprint_in_the_prompt_region_is_found(self):
+        runner = self.Runner(["top\n❯ hello world\n─\n❯ \n"])
+        self.assertTrue(runner.fingerprint_in_prompt("%9", "hello world"))
+
+    def test_fingerprint_only_in_the_transcript_is_not_found(self):
+        runner = self.Runner(["❯ hello world\ntop\n─\n❯ \n"])
+        self.assertFalse(runner.fingerprint_in_prompt("%9", "hello world"))
+
+    def test_failed_capture_raises_instead_of_returning_empty(self):
+        with self.assertRaises(RuntimeError):
+            self.Runner([], fail_capture_at=1)._capture_bottom("${TMUX_BIN:-tmux}", "%9")
+        with self.assertRaises(RuntimeError):
+            self.Runner([], fail_capture_at=1).fingerprint_in_prompt("%9", "hello world")
+
+    def test_send_reports_not_submitted_when_the_final_capture_fails(self):
+        # A failing send burns 6 captures: wait 1 + press checks 4 + final 1.
+        runner = self.Runner(["❯ hello world\n"] * 6, fail_capture_at=6)
+        with patch("remote_hosts.time.sleep"):
+            with self.assertLogs("tmuxweb.remote", level="WARNING") as logs:
+                self.assertFalse(runner.send("%9", "hello world", True))
+        self.assertEqual(len([command for command in runner.runs if "C-m" in command]), 5)
+        self.assertTrue(any("not submitted" in line and "%9" in line for line in logs.output))
+
+
 if __name__ == "__main__":
     unittest.main()
