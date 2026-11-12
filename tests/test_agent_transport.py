@@ -47,6 +47,16 @@ def _ok(data: bytes) -> dict:
             "stderr_b64": "", "returncode": 0}
 
 
+def _sweep_exec(op) -> dict:
+    """Answer the sweep's two scripts: \\x1e-marked captures, \\x1f-marked statuses."""
+    command = op["command"]
+    if "TMUXWEB_STATUS_ONLY" in command:
+        return _ok(b"\x1f%9 busy\n\x1f%10 idle\n")
+    if "capture-pane" in command:
+        return _ok(b"\x1e%9\nscreen nine\n\x1e%10\nscreen ten\n")
+    return _ok(b"")
+
+
 def _close_code(exc) -> int | None:
     """The close code the peer sent (``.code`` is deprecated in websockets)."""
     received = getattr(exc, "rcvd", None)
@@ -655,6 +665,60 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
         self._connect_agent(exec_handler=handler)
         with self.assertRaises(RuntimeError):
             self._transport().capture_with_pane("%9")
+
+    # -- sweep batch (capture_many + status_many in one agent round trip) -----
+
+    def test_capture_and_status_many_sends_one_batch(self):
+        agent = self._connect_agent(exec_handler=_sweep_exec)
+        before = len(agent.received)
+        captures, statuses = self._transport().capture_and_status_many(
+            ["%9", "%10"], status_ids=["%9", "%10"])
+        self.assertEqual(captures, {"%9": "screen nine", "%10": "screen ten"})
+        self.assertEqual(statuses, {"%9": "busy", "%10": "idle"})
+        packets = agent.received[before:]
+        self.assertEqual(len(packets), 1)
+        ops = packets[0]["ops"]
+        self.assertEqual(len(ops), 2)
+        self.assertIn("capture-pane", ops[0]["command"])
+        self.assertIn("TMUXWEB_STATUS_ONLY", ops[1]["command"])
+
+    def test_capture_and_status_many_no_status_ids_sends_one_op(self):
+        agent = self._connect_agent(exec_handler=_sweep_exec)
+        before = len(agent.received)
+        captures, statuses = self._transport().capture_and_status_many(["%9", "%10"])
+        self.assertEqual(captures, {"%9": "screen nine", "%10": "screen ten"})
+        self.assertEqual(statuses, {})
+        packets = agent.received[before:]
+        self.assertEqual(len(packets), 1)
+        self.assertEqual(len(packets[0]["ops"]), 1)
+
+    def test_capture_and_status_many_failed_capture_raises(self):
+        def handler(op):
+            if "capture-pane" in op["command"]:
+                return {"ok": False, "error": "tmux died"}
+            return _ok(b"\x1f%9 busy\n")
+
+        self._connect_agent(exec_handler=handler)
+        with self.assertRaises(RuntimeError):
+            self._transport().capture_and_status_many(["%9"], status_ids=["%9"])
+
+    def test_capture_and_status_many_falls_back_to_ssh_when_agent_unavailable(self):
+        calls = []
+
+        def fake_ssh_run(self, remote_command, *, input_bytes=None, timeout=15,
+                         resolve_tmux=True):
+            calls.append(remote_command)
+            return subprocess.CompletedProcess(args=remote_command, returncode=0,
+                                               stdout=b"via-ssh", stderr=b"")
+
+        with mock.patch.object(SSHRunner, "run", fake_ssh_run):
+            captures, statuses = self._transport().capture_and_status_many(
+                ["%9"], status_ids=["%9"])
+        self.assertEqual((captures, statuses), ({}, {}))
+        self.assertEqual(len(calls), 2)
+        self.assertIn("capture-pane", calls[0])
+        self.assertIn("TMUXWEB_STATUS_ONLY", calls[1])
+        self.assertEqual(self.registry.status(self.host_id)["last_transport"], "ssh")
 
     def test_list_capture_send_go_through_the_agent(self):
         agent = self._connect_agent()
