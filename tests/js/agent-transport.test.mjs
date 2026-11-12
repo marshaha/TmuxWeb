@@ -91,25 +91,19 @@ test('manualInstallCommand splices the tailnet server, program URL and token int
   assert.ok(!cmd.includes('wss://'), 'the tailnet link is plain ws, not wss');
 });
 
-test('transportSwitchPayload keeps the host fields and only changes transport', () => {
+test('transportSwitchPayload only sends transport and verify', () => {
   const host = {
     name: 'build-box', hostname: '10.0.0.8', port: 22, username: 'ubuntu',
     auth_type: 'key', jump_host_id: 'j1', jump_spec: '', host_key: 'hk', fingerprint: 'fp',
     transport: 'ssh',
   };
-  assert.deepEqual(transportSwitchPayload(host, 'agent'), {
-    name: 'build-box', hostname: '10.0.0.8', port: 22, username: 'ubuntu',
-    auth_type: 'key', jump_host_id: 'j1', jump_spec: '', host_key: 'hk', fingerprint: 'fp',
-    verify: false, transport: 'agent',
-  });
+  assert.deepEqual(transportSwitchPayload(host, 'agent'), { verify: false, transport: 'agent' });
   assert.equal(transportSwitchPayload(host, 'ssh').transport, 'ssh');
   assert.equal(transportSwitchPayload(host, 'pigeon').transport, 'ssh');
+  // a host without a pinned key must not send empty key fields at all:
+  // the backend used to 422 on host_key '' (min_length 20)
   const bare = transportSwitchPayload({ name: 'n', hostname: 'h', port: '2222', username: 'u', auth_type: 'password' }, 'agent');
-  assert.equal(bare.port, 2222);
-  assert.equal(bare.jump_host_id, '');
-  assert.equal(bare.jump_spec, '');
-  assert.equal(bare.host_key, '');
-  assert.equal(bare.fingerprint, '');
+  assert.deepEqual(bare, { verify: false, transport: 'agent' });
 });
 
 test('the list row renders the badge, agent status, last transport, switch and install buttons', () => {

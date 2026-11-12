@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 import tmux_web
 import agent_catalog
@@ -592,6 +593,66 @@ class TmuxWebTests(unittest.TestCase):
 
         missing = self.client.put("/api/remote-hosts/nope", json={"name": "x"})
         self.assertEqual(missing.status_code, 404)
+
+    def test_update_treats_empty_host_key_and_fingerprint_as_omitted(self):
+        # A host saved before its first successful connection (like macmini)
+        # stores an empty host_key; the switch and edit-save payloads carry
+        # that empty string back, and the update must not 422 on it.
+        empty = tmux_web.RemoteHostUpdateRequest(
+            transport="agent", host_key="", fingerprint="")
+        self.assertIsNone(empty.host_key)
+        self.assertIsNone(empty.fingerprint)
+        # a real key still passes through, and a too-short one still fails
+        host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        keyed = tmux_web.RemoteHostUpdateRequest(
+            host_key=host_key, fingerprint=host_key_fingerprint(host_key))
+        self.assertEqual(keyed.host_key, host_key)
+        with self.assertRaises(ValidationError):
+            tmux_web.RemoteHostUpdateRequest(host_key="too-short", fingerprint="SHA256:xxxx")
+
+    def test_transport_switch_works_on_a_host_without_a_host_key(self):
+        self.login()
+        created = self.client.post("/api/remote-hosts", json={
+            "name": "macmini", "hostname": "10.0.0.7", "port": 22, "username": "mini",
+            "auth_type": "password", "credential": "secret", "verify": False,
+        }).json()
+        host_id = created["id"]
+        self.assertEqual(self.remote_store.hosts[host_id][0]["host_key"], "")
+
+        # the minimal switch payload the UI now sends
+        switched = self.client.put(f"/api/remote-hosts/{host_id}",
+                                   json={"transport": "agent", "verify": False})
+        self.assertEqual(switched.status_code, 200)
+        self.assertEqual(switched.json()["transport"], "agent")
+        self.assertEqual(self.remote_store.hosts[host_id][0]["host_key"], "")
+
+        # the old full-payload shape (empty host_key/fingerprint included)
+        # must not 422 either: the edit-save path sends it the same way when
+        # the key scan fails and the save is skipped-verified
+        edited = self.client.put(f"/api/remote-hosts/{host_id}", json={
+            "name": "macmini", "hostname": "10.0.0.7", "port": 22, "username": "mini",
+            "auth_type": "password", "transport": "ssh", "host_key": "", "fingerprint": "",
+            "verify": False})
+        self.assertEqual(edited.status_code, 200)
+        self.assertEqual(edited.json()["transport"], "ssh")
+
+    def test_empty_host_key_never_clears_a_pinned_key(self):
+        self.login()
+        host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        fingerprint = host_key_fingerprint(host_key)
+        created = self.client.post("/api/remote-hosts", json={
+            "name": "build-box", "hostname": "10.0.0.8", "port": 22, "username": "ubuntu",
+            "auth_type": "password", "credential": "secret", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        }).json()
+        host_id = created["id"]
+        updated = self.client.put(f"/api/remote-hosts/{host_id}", json={
+            "transport": "agent", "host_key": "", "fingerprint": "", "verify": False})
+        self.assertEqual(updated.status_code, 200)
+        stored = self.remote_store.hosts[host_id][0]
+        self.assertEqual(stored["host_key"], host_key)
+        self.assertEqual(stored["fingerprint"], fingerprint)
+        self.assertEqual(stored["transport"], "agent")
 
     def test_rejects_an_edit_that_would_break_the_host(self):
         self.login()
