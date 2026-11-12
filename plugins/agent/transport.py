@@ -36,7 +36,7 @@ import threading
 import time
 import uuid
 
-from remote_hosts import SSHRunner
+from remote_hosts import ANSI_RE, PANE_ID_RE, SSHRunner
 
 LOGGER = logging.getLogger("tmuxweb.agent")
 
@@ -256,9 +256,10 @@ class AgentRegistry:
 class AgentTransport(SSHRunner):
     """An SSHRunner that runs commands through the agent when it is online.
 
-    Everything except :meth:`run` and :meth:`stream_file` is inherited:
+    Everything except :meth:`run`, :meth:`run_many`,
+    :meth:`capture_with_pane` and :meth:`stream_file` is inherited:
     ``tmux_binary`` / ``check`` / ``list_panes`` / ``capture`` / ``send``
-    and the rest all go through ``self.run()``, so they pick the transport
+    and the rest all go through :meth:`run`, so they pick the transport
     up for free. ``spawn`` stays SSH-only on purpose — it is only used by
     the SSH ``stream_file``, which this class overrides.
     """
@@ -297,6 +298,135 @@ class AgentTransport(SSHRunner):
         return subprocess.CompletedProcess(args=remote_command,
                                            returncode=int(result.get("returncode", 0)),
                                            stdout=stdout, stderr=stderr)
+
+    def run_many(self, remote_commands, *, timeout: int = 15,
+                 resolve_tmux: bool = True) -> list[subprocess.CompletedProcess]:
+        """Run several commands in a single agent round trip.
+
+        One :meth:`AgentRegistry.call` carries every op, so N commands cost
+        one round trip instead of N. The results come back in order, one
+        ``CompletedProcess`` per command. Batches carry no stdin.
+
+        A per-op failure is a ``CompletedProcess`` with returncode 1 and the
+        agent's error in stderr (never an exception), so callers can treat a
+        failed op like a failed command. The batch itself failing (no reply,
+        wrong shape) raises like :meth:`run` does, and the
+        AgentUnavailable / timeout split is the same: no live agent falls
+        back to SSH per command, a timeout while connected never does.
+        ``timeout`` budgets the whole batch reply and each op's own kill
+        deadline, same as :meth:`run`.
+        """
+        commands = [str(command) for command in remote_commands]
+        if not commands:
+            return []
+        host_id = str(self.host.get("id") or "")
+        ops = [{"op": "exec", "command": command, "timeout": timeout}
+               for command in commands]
+        try:
+            packet = self.registry.call(host_id, ops, timeout=timeout)
+        except AgentUnavailable:
+            self.registry.note_transport(host_id, "ssh")
+            # Plain loop, not a comprehension: zero-arg super() inside a
+            # comprehension binds to the comprehension's implicit argument
+            # on Python <= 3.11 (TypeError), so it must stay outside one.
+            fallback = []
+            for command in commands:
+                fallback.append(super().run(command, timeout=timeout,
+                                            resolve_tmux=resolve_tmux))
+            return fallback
+        # A timeout (RuntimeError) propagates: commands may already be
+        # running on the far side, so they must not be re-run over SSH.
+        self.registry.note_transport(host_id, "agent")
+        if not isinstance(packet, dict) or not packet.get("ok"):
+            error = packet.get("error") if isinstance(packet, dict) else None
+            raise RuntimeError(str(error or "agent returned an invalid response"))
+        results = packet.get("results") or []
+        if len(results) != len(commands):
+            raise RuntimeError("agent returned %d results for %d ops"
+                               % (len(results), len(commands)))
+        return [self._decode_result(command, result)
+                for command, result in zip(commands, results)]
+
+    @staticmethod
+    def _decode_result(command: str, result) -> subprocess.CompletedProcess:
+        """One batch result -> CompletedProcess; an op error becomes rc 1."""
+        if not isinstance(result, dict) or not result.get("ok"):
+            error = result.get("error") if isinstance(result, dict) else None
+            return subprocess.CompletedProcess(
+                args=command, returncode=1, stdout=b"",
+                stderr=str(error or "agent command failed").encode())
+        stdout = base64.b64decode(b"".join((result.get("stdout_b64") or "").encode().split()))
+        stderr = base64.b64decode(b"".join((result.get("stderr_b64") or "").encode().split()))
+        return subprocess.CompletedProcess(
+            args=command, returncode=int(result.get("returncode", 0)),
+            stdout=stdout, stderr=stderr)
+
+    def capture_and_status_many(self, pane_ids, history: int = 40,
+                                status_ids=None, panes: dict | None = None) -> tuple[dict, dict]:
+        """Capture panes and ask their session files in one agent round trip.
+
+        The sweep needs both per host per cycle; sending the two scripts
+        as one batch costs one round trip instead of two. ``status_ids``
+        is the subset with a provider (only those have a session file to
+        ask); omit it and only the capture runs. Returns
+        ``(captures, statuses)``, parsed exactly like :meth:`capture_many`
+        and :meth:`status_many` parse them, so a host answers the same
+        over either transport. A failed capture op raises RuntimeError,
+        like ``capture_many``; a failed status op just yields no statuses,
+        like ``status_many``. AgentUnavailable falls back to the two SSH
+        runs (see :meth:`run_many`); a timeout while connected propagates,
+        never re-run over SSH.
+        """
+        cap_script = self._capture_many_script(pane_ids, history)
+        status_script = self._status_many_script(status_ids) if status_ids else None
+        commands = [script for script in (cap_script, status_script)
+                    if script is not None]
+        if not commands:
+            return {}, {}
+        results = self.run_many(commands, timeout=self.capture_timeout or 15)
+        # run_many returns one CompletedProcess per command, in order.
+        captured = results[0]
+        if captured.returncode != 0 and not captured.stdout:
+            raise RuntimeError(captured.stderr.decode(errors="replace").strip()
+                               or "remote capture failed")
+        captures = self._parse_capture_many_output(
+            captured.stdout.decode(errors="replace"))
+        statuses = {}
+        if status_script is not None:
+            statuses = self._parse_status_many_output(
+                results[1].stdout.decode(errors="replace"))
+        return captures, statuses
+
+    def capture_with_pane(self, pane_id: str, history: int = 500) -> tuple[dict, str]:
+        """List panes and capture one pane in a single agent round trip.
+
+        The capture endpoint used to pay for two: ``list_panes`` to find the
+        pane, then ``capture``. This sends both commands in one batch and
+        splits the answers apart, so a capture costs one round trip. The two
+        commands are the same ones :meth:`list_panes` and
+        :meth:`capture_ansi` build, and the answers are judged the same way.
+
+        Returns ``(pane, text)``. Raises ``KeyError`` when the pane is not
+        in the listing (the endpoint turns that into a 404) and
+        ``RuntimeError`` when either command fails.
+        """
+        if not PANE_ID_RE.fullmatch(pane_id):
+            raise ValueError("invalid pane id")
+        listed, captured = self.run_many(
+            [self._list_panes_command(),
+             self._capture_ansi_command(pane_id, history)],
+            timeout=self.capture_timeout or 15)
+        if listed.returncode != 0:
+            raise RuntimeError(listed.stderr.decode(errors="replace").strip()
+                               or "remote tmux failed")
+        panes = self._parse_list_output(listed.stdout.decode(errors="replace"))
+        for pane in panes:
+            if pane.get("pane_id") == pane_id:
+                if captured.returncode != 0:
+                    raise RuntimeError(captured.stderr.decode(errors="replace").strip()
+                                       or "remote capture failed")
+                return pane, ANSI_RE.sub("", captured.stdout.decode(errors="replace"))
+        raise KeyError(pane_id)
 
     def stream_file(self, path: str, max_bytes: int, chunk: int = 65536,
                     idle_timeout: float = 90.0):

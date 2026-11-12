@@ -389,6 +389,78 @@ class ExecTests(unittest.TestCase):
             agent_program.handle_batch({"id": 7, "ops": []},
                                        self.resolver)["ok"], False)
 
+    def test_handle_batch_runs_slow_ops_in_parallel(self):
+        # Four half-second sleeps that would take 2s one after another
+        # must finish in about the time of the slowest one, not the sum:
+        # the batch runs its ops in a thread pool, not one by one.
+        started = time.monotonic()
+        reply = agent_program.handle_batch(
+            {"id": "par-1", "ops": [
+                {"op": "exec", "command": "sleep 0.5; echo one", "timeout": 5},
+                {"op": "exec", "command": "sleep 0.5; echo two", "timeout": 5},
+                {"op": "exec", "command": "sleep 0.5; echo three", "timeout": 5},
+                {"op": "exec", "command": "sleep 0.5; echo four", "timeout": 5},
+            ]}, self.resolver)
+        elapsed = time.monotonic() - started
+        self.assertEqual(reply["ok"], True)
+        self.assertEqual(len(reply["results"]), 4)
+        # Serial would be 2.0s + spawn overhead; parallel is ~0.5s.
+        self.assertLess(elapsed, 1.5)
+        outs = [base64.b64decode(r["stdout_b64"]) for r in reply["results"]]
+        self.assertEqual(outs, [b"one\n", b"two\n", b"three\n", b"four\n"])
+
+    def test_handle_batch_results_stay_in_order_when_ops_finish_out_of_order(self):
+        # The slow op is first and finishes last; its result must still
+        # come back first — results are assembled in op order.
+        reply = agent_program.handle_batch(
+            {"id": "ord-1", "ops": [
+                {"op": "exec", "command": "sleep 0.4; echo slow", "timeout": 5},
+                {"op": "exec", "command": "echo fast", "timeout": 5},
+            ]}, self.resolver)
+        self.assertEqual(reply["ok"], True)
+        outs = [base64.b64decode(r["stdout_b64"]) for r in reply["results"]]
+        self.assertEqual(outs, [b"slow\n", b"fast\n"])
+
+    def test_handle_batch_outputs_do_not_interleave(self):
+        # Each op's stdout/stderr belong to that op alone, even when the
+        # ops run at the same time.
+        reply = agent_program.handle_batch(
+            {"id": "mix-1", "ops": [
+                {"op": "exec", "command": "printf 'a1\\na2\\na3\\n'", "timeout": 5},
+                {"op": "exec", "command": "printf 'b1\\nb2\\nb3\\n'", "timeout": 5},
+            ]}, self.resolver)
+        outs = [base64.b64decode(r["stdout_b64"]) for r in reply["results"]]
+        self.assertEqual(outs, [b"a1\na2\na3\n", b"b1\nb2\nb3\n"])
+
+    def test_handle_message_blocks_until_its_batch_is_done(self):
+        # Messages are still processed one at a time: _handle_message does
+        # not return (and so the main loop cannot start the next message)
+        # until the whole batch — pool included — has finished. A send
+        # sequence can therefore never overtake itself on the agent.
+        sent = []
+
+        class _CaptureConn:
+            def send_text(self, text):
+                sent.append(json.loads(text))
+
+        conn = _CaptureConn()
+        started = time.monotonic()
+        agent_program._handle_message(
+            conn, json.dumps({"id": "m-1", "ops": [
+                {"op": "exec", "command": "sleep 0.5; echo first",
+                 "timeout": 5}]}),
+            self.resolver)
+        self.assertGreaterEqual(time.monotonic() - started, 0.5)
+        agent_program._handle_message(
+            conn, json.dumps({"id": "m-2", "ops": [
+                {"op": "exec", "command": "echo second", "timeout": 5}]}),
+            self.resolver)
+        self.assertEqual([m["id"] for m in sent], ["m-1", "m-2"])
+        self.assertEqual(
+            base64.b64decode(sent[0]["results"][0]["stdout_b64"]), b"first\n")
+        self.assertEqual(
+            base64.b64decode(sent[1]["results"][0]["stdout_b64"]), b"second\n")
+
 
 class TmuxResolverTests(unittest.TestCase):
     def test_override_is_used_as_is_and_never_reprobed(self):

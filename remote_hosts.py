@@ -1698,7 +1698,8 @@ class SSHRunner:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "agent probe failed")
         return agent_catalog.parse_probe(completed.stdout.decode(errors="replace"))
 
-    def list_panes(self, timeout: int = 15) -> list[dict]:
+    @staticmethod
+    def _list_panes_command() -> str:
         fmt = FIELD_SEPARATOR.join([
             "#{pane_id}", "#{session_name}:#{window_index}.#{pane_index}", "#{session_name}",
             "#{window_index}", "#{window_name}", "#{pane_index}", "#{pane_current_command}",
@@ -1707,14 +1708,12 @@ class SSHRunner:
         ])
         # 一次 SSH 同时取 pane 列表和进程表：进程表用来认出「被 shell 包着启动」的
         # agent（tmux 报的前台命令是 zsh，实际里面跑着 codex）。
-        command = (
+        return (
             f"${{TMUX_BIN:-tmux}} list-panes -a -F {shlex.quote(fmt)}; "
             f"printf '\\n{PROCESS_TABLE_MARK}\\n'; ps -A -o pid=,ppid=,args= 2>/dev/null || true"
         )
-        completed = self.run(command, timeout=timeout)
-        if completed.returncode != 0:
-            raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
-        raw = completed.stdout.decode(errors="replace")
+
+    def _parse_list_output(self, raw: str) -> list[dict]:
         pane_text, _, process_text = raw.partition(PROCESS_TABLE_MARK)
         panes = parse_tmux_panes(pane_text, self.host["id"])
         table = transcript_reader.parse_process_table(process_text)
@@ -1722,15 +1721,25 @@ class SSHRunner:
             pane["provider"] = transcript_reader.provider_for_pane(pane, table)
         return panes
 
+    def list_panes(self, timeout: int = 15) -> list[dict]:
+        completed = self.run(self._list_panes_command(), timeout=timeout)
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
+        return self._parse_list_output(completed.stdout.decode(errors="replace"))
+
+    @staticmethod
+    def _capture_ansi_command(pane_id: str, history: int = 5000, visible_only: bool = False) -> str:
+        scroll = "" if visible_only else f" -S -{max(20, min(history, 5000))}"
+        return f"${{TMUX_BIN:-tmux}} capture-pane -p -J -e -t {shlex.quote(pane_id)}{scroll}"
+
     def capture_ansi(self, pane_id: str, history: int = 5000, pane: dict | None = None,
                      visible_only: bool = False) -> str:
         # pane is accepted for interface symmetry with the local backend and
         # ignored: remote transports never validate, the id check below is free
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
-        scroll = "" if visible_only else f" -S -{max(20, min(history, 5000))}"
-        command = f"${{TMUX_BIN:-tmux}} capture-pane -p -J -e -t {shlex.quote(pane_id)}{scroll}"
-        completed = self.run(command, timeout=self.capture_timeout or 15)
+        completed = self.run(self._capture_ansi_command(pane_id, history, visible_only),
+                             timeout=self.capture_timeout or 15)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote capture failed")
         return completed.stdout.decode(errors="replace")
@@ -2234,21 +2243,33 @@ class SSHRunner:
         The status sweep needs a short tail of every pane on a host; doing that one
         ssh per pane made a 35-pane macmini cost 35 round trips.
         """
-        ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))]
-        if not ids:
+        script = self._capture_many_script(pane_ids, history)
+        if script is None:
             return {}
-        ids = ids[:80]
-        lines = max(20, min(int(history), 5000))
-        script = "for pane in " + " ".join(shlex.quote(pane) for pane in ids) + "; do " \
-                 "printf '\\036%s\\n' \"$pane\"; " \
-                 "${TMUX_BIN:-tmux} capture-pane -p -J -t \"$pane\" -S -" + str(lines) + " 2>/dev/null; done"
         completed = self.run(script, timeout=self.capture_timeout or 15)
         if completed.returncode != 0 and not completed.stdout:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote capture failed")
+        return self._parse_capture_many_output(completed.stdout.decode(errors="replace"))
+
+    @staticmethod
+    def _capture_many_script(pane_ids, history: int = 40) -> str | None:
+        """The sweep's one-script capture, or None when there is nothing to ask."""
+        ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))]
+        if not ids:
+            return None
+        ids = ids[:80]
+        lines = max(20, min(int(history), 5000))
+        return ("for pane in " + " ".join(shlex.quote(pane) for pane in ids) + "; do "
+                "printf '\\036%s\\n' \"$pane\"; "
+                "${TMUX_BIN:-tmux} capture-pane -p -J -t \"$pane\" -S -" + str(lines) + " 2>/dev/null; done")
+
+    @staticmethod
+    def _parse_capture_many_output(text: str) -> dict:
+        """Split one capture script's \\x1e-marked output back per pane."""
         result = {}
         current = None
         buffer = []
-        for line in completed.stdout.decode(errors="replace").split("\n"):
+        for line in text.split("\n"):
             if line.startswith("\x1e"):
                 if current is not None:
                     result[current] = ANSI_RE.sub("", "\n".join(buffer))
@@ -2267,19 +2288,31 @@ class SSHRunner:
         the session file exactly like a transcript read would (same Claude/Kimi
         disambiguation) and prints nothing but the verdict.
         """
+        script = self._status_many_script(pane_ids)
+        if script is None:
+            return {}
+        completed = self.run(script, timeout=self.transcript_timeout)
+        return self._parse_status_many_output(completed.stdout.decode(errors="replace"))
+
+    @staticmethod
+    def _status_many_script(pane_ids) -> str | None:
+        """The sweep's one-script status probe, or None when there is nothing to ask."""
         ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))][:80]
         if not ids:
-            return {}
-        script = (
+            return None
+        return (
             "S=" + shlex.quote(REMOTE_TRANSCRIPT_SCRIPT) + "; "
             "for pane in " + " ".join(shlex.quote(pane) for pane in ids) + "; do "
             "printf '\\037%s ' \"$pane\"; "
             "TMUXWEB_STATUS_ONLY=1 sh -c \"$S\" sh \"$pane\" 1 2>/dev/null "
             "| sed -n 's/^TMUXWEB_STATUS" + FIELD_SEPARATOR + r"\(.*\)$/\1/p' | head -1; done"
         )
-        completed = self.run(script, timeout=self.transcript_timeout)
+
+    @staticmethod
+    def _parse_status_many_output(text: str) -> dict:
+        """Split one status script's \\x1f-marked output back per pane."""
         result = {}
-        for line in completed.stdout.decode(errors="replace").splitlines():
+        for line in text.splitlines():
             if not line.startswith("\x1f"):
                 continue
             pane, _, state = line[1:].partition(" ")

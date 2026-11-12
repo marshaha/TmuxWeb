@@ -1796,6 +1796,46 @@ class TmuxWebTests(unittest.TestCase):
         statuses = self.client.get("/api/panes/status").json()["panes"]
         self.assertEqual({item["id"] for item in statuses}, {"%4", remote["id"]})
 
+    def test_sweep_sends_one_batched_call_per_remote_host(self):
+        """sweep 每 host 每轮只发一次 capture_and_status_many，不再拆两调用。"""
+        class RecordingRunner(FakeSSHRunner):
+            calls = []
+
+            def capture_and_status_many(self, pane_ids, history=40, status_ids=None, panes=None):
+                RecordingRunner.calls.append(
+                    ("capture_and_status_many", tuple(pane_ids), history, tuple(status_ids or ())))
+                return ({pane_id: "screen %s" % pane_id for pane_id in pane_ids},
+                        {pane_id: "idle" for pane_id in (status_ids or ())})
+
+            def capture_many(self, pane_ids, history=40, panes=None):
+                RecordingRunner.calls.append(("capture_many", tuple(pane_ids)))
+                return {pane_id: "screen %s" % pane_id for pane_id in pane_ids}
+
+            def status_many(self, pane_ids):
+                RecordingRunner.calls.append(("status_many", tuple(pane_ids)))
+                return {pane_id: "idle" for pane_id in pane_ids}
+
+        self.client = TestClient(create_app(
+            self.tmux, password="unit-test-admin-password",
+            session_secret="test-secret", terminal_factory=self.terminals,
+            share_db=":memory:", home_db=":memory:",
+            remote_store=self.remote_store,
+            remote_runner_factory=RecordingRunner))
+        self.login()
+        host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        fingerprint = host_key_fingerprint(host_key)
+        self.client.post("/api/remote-hosts", json={
+            "name": "build-box", "hostname": "10.0.0.8", "port": 22, "username": "ubuntu",
+            "auth_type": "password", "credential": "secret", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        })
+        statuses = self.client.get("/api/panes/status").json()["panes"]
+        remote = next(item for item in statuses if "~" in item["id"])
+        self.assertEqual(remote["status"], "idle")
+        self.assertEqual(remote["status_source"], "session")
+        self.assertEqual(RecordingRunner.calls,
+                         [("capture_and_status_many", ("%9",), 40, ("%9",))])
+
     def test_every_pane_gets_a_stable_short_number(self):
         """多服务器场景：每个窗口一个 #N，和主机/pane id 无关，编号不回收。"""
         # 独立的 home.db：编号是全局的，不能和别的用例共用一张表
