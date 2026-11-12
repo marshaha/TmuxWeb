@@ -22,7 +22,7 @@
   function lastTransportText(h){if(!h||!h.last_transport)return '';return h.last_transport==='agent'?'上次走 Agent':'上次走 SSH';}
   function agentInstallLabel(h){return h&&h.agent_online?'重新安装':'安装 agent';}
   function manualInstallCommand(server,programUrl,token){return 'curl -fsSL '+programUrl+' -o ~/.tmuxweb-agent/agent.py && python3 ~/.tmuxweb-agent/agent.py install --server '+server+' --token '+token;}
-  function transportSwitchPayload(host,transport){return {name:host.name,hostname:host.hostname,port:Number(host.port),username:host.username,auth_type:host.auth_type,jump_host_id:host.jump_host_id||'',jump_spec:host.jump_spec||'',host_key:host.host_key||'',fingerprint:host.fingerprint||'',verify:false,transport:transportOf({transport:transport})};}
+  function transportSwitchPayload(host,transport){return {verify:false,transport:transportOf({transport:transport})};}
 function syncJumpInputs(){const spec=$('jump-spec');if(spec&&spec.value.trim()&&$('jump-host'))$('jump-host').value='';
   const editSpec=$('edit-jump-spec');if(editSpec&&editSpec.value.trim()&&$('edit-jump-host'))$('edit-jump-host').value='';}
 function fillJumpSelects(){const options=hosts.map(h=>`<option value="${esc(h.id)}">${esc(h.name)} · ${esc(h.hostname)}</option>`).join('');

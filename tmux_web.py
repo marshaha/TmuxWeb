@@ -35,7 +35,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, RedirectResponse,
                                Response, StreamingResponse)
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import file_browser
 from home_store import HomeStore
 import mcp_relay
@@ -1066,6 +1066,15 @@ class RemoteHostUpdateRequest(BaseModel):
     jump_host_id: str | None = Field(default=None, max_length=64)
     jump_spec: str | None = Field(default=None, max_length=300)
     transport: str | None = None
+
+    @field_validator("host_key", "fingerprint", mode="before")
+    @classmethod
+    def _empty_means_omitted(cls, value):
+        # A host saved before its first successful connection stores an empty
+        # key; the switch and edit-save payloads send that empty string back.
+        # An empty string means "not provided" — never "clear the pinned key":
+        # update_host keeps the stored value when it receives None.
+        return None if value == "" else value
 
 
 class RemoteHostReorderRequest(BaseModel):
