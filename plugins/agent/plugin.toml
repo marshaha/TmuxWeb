@@ -1,0 +1,7 @@
+name = "agent"
+version = "1.0.0"
+api = 1
+entry = "plugin.py"
+description = "Agent transport: run remote commands over a WebSocket agent program instead of SSH, with SSH fallback"
+default_enabled = true
+permissions = []

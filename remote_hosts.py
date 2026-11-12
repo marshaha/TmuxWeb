@@ -4,6 +4,7 @@ import base64
 import copy
 import gzip
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -34,6 +35,11 @@ import transcript_reader
 
 HOST_ID_RE = re.compile(r"^[a-f0-9]{16}$")
 AUTH_TYPES = ("password", "key", "agent")
+# How commands reach a host. This is a different axis from ``auth_type``: an
+# "agent" auth_type means "log in over SSH with the local ssh agent", while a
+# transport of "agent" means "run commands through the WebSocket agent
+# program on that host instead of over SSH at all".
+TRANSPORTS = ("ssh", "agent")
 # tmux splits targets on ":" and ".". Keep new session names boring so the
 # name can be handed to tmux and to our pane references unchanged.
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -967,7 +973,20 @@ class RemoteHostStore:
                     jump_spec TEXT NOT NULL DEFAULT '', tmux_path TEXT NOT NULL DEFAULT ''
                 )
             """)
+            # One revocable token per host for the agent program: only the
+            # sha256 of the token is stored, the plaintext is returned once
+            # at issue time and never written anywhere else.
+            self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS agent_tokens (
+                    host_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL,
+                    created_at REAL NOT NULL, last_seen REAL
+                )
+            """)
             columns = {row[1] for row in self.connection.execute("PRAGMA table_info(remote_hosts)")}
+            if "transport" not in columns:  # databases from before the agent transport
+                self.connection.execute(
+                    "ALTER TABLE remote_hosts ADD COLUMN transport TEXT NOT NULL DEFAULT 'ssh'"
+                )
             if "position" not in columns:  # databases from before manual ordering
                 self.connection.execute(
                     "ALTER TABLE remote_hosts ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
@@ -1062,11 +1081,20 @@ class RemoteHostStore:
                 return jump_host_id
         raise ValueError("jump host chain is too deep")
 
+    @staticmethod
+    def _validate_transport(transport: str) -> str:
+        transport = (transport or "ssh").strip()
+        if transport not in TRANSPORTS:
+            raise ValueError("transport must be 'ssh' or 'agent'")
+        return transport
+
     def add_host(self, *, name: str, hostname: str, port: int, username: str,
                  auth_type: str, credential: str, host_key: str, fingerprint: str,
-                 jump_host_id: str = "", jump_spec: str = "", tmux_path: str = "") -> dict:
+                 jump_host_id: str = "", jump_spec: str = "", tmux_path: str = "",
+                 transport: str = "ssh") -> dict:
         if auth_type not in AUTH_TYPES:
             raise ValueError("invalid auth type")
+        transport = self._validate_transport(transport)
         if auth_type in {"password", "key"} and not credential:
             raise ValueError("this auth type needs a credential")
         if auth_type == "agent":
@@ -1088,10 +1116,12 @@ class RemoteHostStore:
         with self.connection:
             self.connection.execute(
                 "INSERT INTO remote_hosts (id, name, hostname, port, username, auth_type, credential,"
-                " host_key, fingerprint, created_at, enabled, position, jump_host_id, jump_spec, tmux_path)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)",
+                " host_key, fingerprint, created_at, enabled, position, jump_host_id, jump_spec, tmux_path,"
+                " transport)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)",
                 (host_id, name, hostname, int(port), username, auth_type, encrypted,
-                 host_key, fingerprint, time.time(), position, jump_host_id, jump_spec, tmux_path or ""),
+                 host_key, fingerprint, time.time(), position, jump_host_id, jump_spec, tmux_path or "",
+                 transport),
             )
         return self.get_host(host_id)
 
@@ -1101,6 +1131,7 @@ class RemoteHostStore:
             raise KeyError(host_id)
         result = dict(row)
         result["enabled"] = bool(result["enabled"])
+        result.setdefault("transport", "ssh")   # rows written before the column existed
         encrypted = result.pop("credential")
         if include_credential:
             result["credential"] = self.fernet.decrypt(encrypted).decode()
@@ -1115,7 +1146,8 @@ class RemoteHostStore:
                     port: int | None = None, username: str | None = None, auth_type: str | None = None,
                     credential: str | None = None, host_key: str | None = None,
                     fingerprint: str | None = None, jump_host_id: str | None = None,
-                    jump_spec: str | None = None, tmux_path: str | None = None) -> dict:
+                    jump_spec: str | None = None, tmux_path: str | None = None,
+                    transport: str | None = None) -> dict:
         """Edit a stored host. ``credential=None`` keeps the saved secret."""
         current = self.get_host(host_id, include_credential=True)
         auth = auth_type or current["auth_type"]
@@ -1141,6 +1173,8 @@ class RemoteHostStore:
                 current.get("jump_host_id", "") if jump_host_id is None else jump_host_id, host_id),
             "jump_spec": (current.get("jump_spec", "") if jump_spec is None else jump_spec or "").strip(),
             "tmux_path": (current.get("tmux_path", "") if tmux_path is None else tmux_path or "").strip(),
+            "transport": (current.get("transport", "ssh") if transport is None
+                          else self._validate_transport(transport)),
         }
         if fields["jump_host_id"] and fields["jump_spec"]:
             raise ValueError("choose a saved jump host or type one, not both")
@@ -1152,13 +1186,68 @@ class RemoteHostStore:
         with self.connection:
             self.connection.execute(
                 "UPDATE remote_hosts SET name=?, hostname=?, port=?, username=?, auth_type=?,"
-                " credential=?, host_key=?, fingerprint=?, jump_host_id=?, jump_spec=?, tmux_path=?"
+                " credential=?, host_key=?, fingerprint=?, jump_host_id=?, jump_spec=?, tmux_path=?,"
+                " transport=?"
                 " WHERE id=?",
                 (fields["name"], fields["hostname"], fields["port"], fields["username"],
                  fields["auth_type"], fields["credential"], fields["host_key"], fields["fingerprint"],
-                 fields["jump_host_id"], fields["jump_spec"], fields["tmux_path"], host_id),
+                 fields["jump_host_id"], fields["jump_spec"], fields["tmux_path"],
+                 fields["transport"], host_id),
             )
         return self.get_host(host_id)
+
+    # -- agent tokens ------------------------------------------------------
+    # The plaintext token is returned exactly once, by issue_agent_token.
+    # Only its sha256 is stored; nothing here (or in the logs) ever sees the
+    # plaintext again. Re-issuing rotates: the old token stops working at once.
+    def issue_agent_token(self, host_id: str) -> str:
+        self.get_host(host_id)          # KeyError when the host does not exist
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self.connection:
+            self.connection.execute(
+                "INSERT INTO agent_tokens (host_id, token_hash, created_at, last_seen)"
+                " VALUES (?,?,?,NULL)"
+                " ON CONFLICT(host_id) DO UPDATE SET token_hash=excluded.token_hash,"
+                " created_at=excluded.created_at, last_seen=NULL",
+                (host_id, digest, time.time()),
+            )
+        LOGGER.info("agent token issued for host %s", host_id)
+        return token
+
+    def verify_agent_token(self, token: str) -> str | None:
+        if not token or not isinstance(token, str):
+            return None
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        row = self.connection.execute(
+            "SELECT host_id, token_hash FROM agent_tokens WHERE token_hash = ?", (digest,)
+        ).fetchone()
+        if row is None:
+            return None
+        # The lookup already matched, but compare in constant time anyway so
+        # the check does not depend on the query planner's behaviour.
+        if not hmac.compare_digest(row["token_hash"], digest):
+            return None
+        return row["host_id"]
+
+    def revoke_agent_token(self, host_id: str) -> bool:
+        with self.connection:
+            cursor = self.connection.execute(
+                "DELETE FROM agent_tokens WHERE host_id = ?", (host_id,))
+        return cursor.rowcount > 0
+
+    def agent_token_info(self, host_id: str) -> dict | None:
+        row = self.connection.execute(
+            "SELECT created_at, last_seen FROM agent_tokens WHERE host_id = ?", (host_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {"created_at": row["created_at"], "last_seen": row["last_seen"]}
+
+    def touch_agent_last_seen(self, host_id: str, at: float) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE agent_tokens SET last_seen=? WHERE host_id = ?", (float(at), host_id))
 
     def reorder_hosts(self, ordered_ids: list[str]) -> list[dict]:
         """Persist the sidebar order: the first id becomes position 0."""
@@ -1178,6 +1267,7 @@ class RemoteHostStore:
             self.connection.execute(
                 "UPDATE remote_hosts SET jump_host_id = '' WHERE jump_host_id = ?", (host_id,)
             )
+            self.connection.execute("DELETE FROM agent_tokens WHERE host_id = ?", (host_id,))
             cursor = self.connection.execute("DELETE FROM remote_hosts WHERE id = ?", (host_id,))
         return cursor.rowcount > 0
 

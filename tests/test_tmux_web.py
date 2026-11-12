@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
+import hmac
 import io
 import os
+import secrets
 import threading
 import time
 import re
@@ -150,11 +152,13 @@ class FakeRemoteStore:
     def __init__(self):
         self.hosts = {}
         self._sequence = 0
+        self.agent_tokens = {}      # host_id -> {"token_hash", "created_at", "last_seen"}
 
     def add_host(self, **data):
         self._sequence += 1
         host = {"id": "0123456789abc%03d" % self._sequence, "enabled": True, "created_at": 0.0,
                 "position": len(self.hosts), **data}
+        host.setdefault("transport", "ssh")
         credential = host.pop("credential")
         self.hosts[host["id"]] = (host, credential)
         return host
@@ -168,9 +172,11 @@ class FakeRemoteStore:
         host, credential = self.hosts[host_id]
         updated = dict(host)
         for key in ("name", "hostname", "port", "username", "auth_type", "host_key", "fingerprint",
-                    "jump_host_id"):
+                    "jump_host_id", "transport"):
             if changes.get(key) is not None:
                 updated[key] = changes[key]
+        if updated.get("transport") not in (None, "ssh", "agent"):
+            raise ValueError("transport must be 'ssh' or 'agent'")
         if changes.get("credential") is not None:
             credential = changes["credential"]
         if updated["auth_type"] == "agent":
@@ -203,15 +209,61 @@ class FakeRemoteStore:
             self.hosts[host_id][0]["position"] = position
         return self.list_hosts()
 
+    # -- agent tokens (same shape as RemoteHostStore: only the sha256 is kept) --
+    def issue_agent_token(self, host_id):
+        if host_id not in self.hosts:
+            raise KeyError(host_id)
+        token = secrets.token_urlsafe(32)
+        self.agent_tokens[host_id] = {
+            "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+            "created_at": time.time(), "last_seen": None}
+        return token
+
+    def verify_agent_token(self, token):
+        if not token:
+            return None
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        for host_id, record in self.agent_tokens.items():
+            if hmac.compare_digest(record["token_hash"], digest):
+                return host_id
+        return None
+
+    def revoke_agent_token(self, host_id):
+        return self.agent_tokens.pop(host_id, None) is not None
+
+    def agent_token_info(self, host_id):
+        record = self.agent_tokens.get(host_id)
+        if record is None:
+            return None
+        return {"created_at": record["created_at"], "last_seen": record["last_seen"]}
+
+    def touch_agent_last_seen(self, host_id, at):
+        if host_id in self.agent_tokens:
+            self.agent_tokens[host_id]["last_seen"] = at
+
 
 class FakeSSHRunner:
     sent = []
     screen = "\x1b[32mREMOTE_OK\x1b[0m\n❯ "
     auto_reply = None
+    run_calls = []          # (command, input_bytes) for every run()
+    upload_calls = []       # (path, data) for every upload_file()
 
     def __init__(self, host):
         self.host = host
         self.created = []
+
+    def run(self, remote_command, *, input_bytes=None, timeout=15, resolve_tmux=True):
+        """Record the call and answer like a healthy host (no real ssh)."""
+        FakeSSHRunner.run_calls.append((remote_command, input_bytes))
+        if remote_command.startswith("printf"):
+            return subprocess.CompletedProcess(args=remote_command, returncode=0,
+                                               stdout=b"/home/fake", stderr=b"")
+        return subprocess.CompletedProcess(args=remote_command, returncode=0,
+                                           stdout=b"", stderr=b"")
+
+    def upload_file(self, path, data):
+        FakeSSHRunner.upload_calls.append((path, data))
     def check(self, timeout=12):
         FakeSSHRunner.last_check_timeout = timeout
         return "TMUX_REMOTE_OK"
