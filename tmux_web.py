@@ -1043,6 +1043,9 @@ class RemoteHostCreateRequest(BaseModel):
     # directly (it then borrows this host's credential); at most one of the two
     jump_host_id: str = Field(default="", max_length=64)
     jump_spec: str = Field(default="", max_length=300)
+    # how commands reach the host: "ssh" (default) or "agent" (the WebSocket
+    # agent program, installed over SSH); anything else is rejected below
+    transport: str = Field(default="ssh", max_length=16)
     # saving with a wrong password/key is allowed: the host is stored and shows
     # up as offline until the credential is fixed
     verify: bool = True
@@ -1062,6 +1065,7 @@ class RemoteHostUpdateRequest(BaseModel):
     fingerprint: str | None = Field(default=None, min_length=8, max_length=256)
     jump_host_id: str | None = Field(default=None, max_length=64)
     jump_spec: str | None = Field(default=None, max_length=300)
+    transport: str | None = None
 
 
 class RemoteHostReorderRequest(BaseModel):
@@ -1463,6 +1467,10 @@ def create_app(
         os.environ.get("TMUX_WEB_HOST_KEY", str(BASE_DIR / ".remote_hosts.key")),
     )
     make_remote_runner = remote_runner_factory or SSHRunner
+    # Set after the plugins load (below): the agent plugin may offer a
+    # runner factory and a per-host status provider. A closure, so routes
+    # defined above this line still read the reassigned value at call time.
+    agent_status_provider = None
 
     def runner_for(host: dict):
         """Build a runner; a host saved without a pinned key gets pinned on first use."""
@@ -3229,6 +3237,8 @@ def create_app(
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         if payload.auth_type in {"password", "key"} and not payload.credential:
             raise HTTPException(status_code=422, detail="password or private key is required")
+        if payload.transport not in {"ssh", "agent"}:
+            raise HTTPException(status_code=422, detail="transport must be ssh or agent")
         if payload.verify and not (payload.host_key and payload.fingerprint):
             raise HTTPException(status_code=422, detail="SSH host key is required unless verification is skipped")
         if payload.host_key or payload.fingerprint:
@@ -3247,7 +3257,7 @@ def create_app(
                 name=payload.name, hostname=payload.hostname, port=payload.port, username=payload.username,
                 auth_type=payload.auth_type, credential=payload.credential, host_key=payload.host_key,
                 fingerprint=payload.fingerprint, jump_host_id=payload.jump_host_id,
-                jump_spec=payload.jump_spec,
+                jump_spec=payload.jump_spec, transport=payload.transport,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3315,6 +3325,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="remote host not found") from None
         if payload.auth_type is not None and payload.auth_type not in AUTH_TYPES:
             raise HTTPException(status_code=422, detail="auth_type must be password, key or agent")
+        if payload.transport is not None and payload.transport not in {"ssh", "agent"}:
+            raise HTTPException(status_code=422, detail="transport must be ssh or agent")
         host_key = payload.host_key
         fingerprint = payload.fingerprint
         if host_key or fingerprint:
@@ -3333,6 +3345,7 @@ def create_app(
                 username=payload.username, auth_type=payload.auth_type,
                 credential=payload.credential, host_key=host_key, fingerprint=fingerprint,
                 jump_host_id=payload.jump_host_id, jump_spec=payload.jump_spec,
+                transport=payload.transport,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3350,6 +3363,7 @@ def create_app(
                 credential=previous["credential"], host_key=previous["host_key"],
                 fingerprint=previous["fingerprint"], jump_host_id=previous.get("jump_host_id", ""),
                 jump_spec=previous.get("jump_spec", ""), tmux_path=previous.get("tmux_path", ""),
+                transport=previous.get("transport", "ssh"),
             )
             raise HTTPException(status_code=424, detail=str(exc)) from exc
         return host
@@ -3372,8 +3386,14 @@ def create_app(
         for host in stored:
             item = {key: host.get(key, "") for key in (
                 "id", "name", "hostname", "port", "username", "auth_type", "fingerprint", "created_at",
-                "enabled", "position", "jump_host_id", "jump_spec", "tmux_path",
+                "enabled", "position", "jump_host_id", "jump_spec", "tmux_path", "transport",
             )}
+            item["transport"] = item.get("transport") or "ssh"   # hosts stored before the column existed
+            status = agent_status_provider(host["id"]) if agent_status_provider else {}
+            item["agent_online"] = bool(status.get("agent_online", False))
+            item["agent_last_seen"] = status.get("agent_last_seen")
+            item["last_transport"] = status.get("last_transport")
+            item["last_transport_at"] = status.get("last_transport_at")
             chain = remote_hosts.jump_chain(host, limit=jump_max_depth)
             item["jump_chain"] = [{"id": hop["id"], "name": hop.get("name") or hop["id"],
                                    "hostname": hop.get("hostname")}
@@ -5219,6 +5239,14 @@ def create_app(
                             state_path=plugin_state_path, logger=logging.getLogger("tmuxweb.plugins"))
     plugin_manager["mgr"] = manager
     manager.load_all()
+    # A plugin may offer its own runner factory (the agent plugin does):
+    # it becomes make_remote_runner unless the caller passed an explicit
+    # remote_runner_factory — the tests do, so their fake is untouched.
+    # runner_for is a closure that reads make_remote_runner at call time,
+    # so reassigning it here, after load_all, is effective.
+    plugin_runner_factory = manager.runner_factory()
+    make_remote_runner = remote_runner_factory or plugin_runner_factory or SSHRunner
+    agent_status_provider = manager.host_status
     install_routes(app, manager, require_auth)
     app.state.plugins = manager
     app.router.add_event_handler("shutdown", manager.shutdown)

@@ -267,6 +267,8 @@ class PluginManager:
         self.paths: dict[str, str] = {}                    # route path -> plugin name
         self.tools: dict[str, dict] = {}                   # mcp tool name -> {owner, description, schema, handler}
         self.buttons: list[dict] = []                      # sidebar buttons contributed by plugins
+        self._runner_factories: list = []                  # host -> runner, first registered wins
+        self._host_status_providers: list = []             # host_id -> dict, first non-empty wins
 
     # -- persisted decisions ----------------------------------------------
     def _read_state(self) -> dict[str, bool]:
@@ -397,6 +399,35 @@ class PluginManager:
         self.require_permission(owner, "ui")
         self.buttons = [item for item in self.buttons if not (item["owner"] == owner and item["href"] == href)]
         self.buttons.append({"owner": owner, "label": label, "href": href, "icon": icon, "title": title})
+
+    # -- runners and host status -----------------------------------------
+    def register_runner_factory(self, factory) -> None:
+        """A plugin offers a ``host -> runner`` factory; the first one wins.
+
+        The core asks ``runner_factory()`` once, after all plugins load, and
+        uses the result as ``make_remote_runner`` unless the caller passed an
+        explicit ``remote_runner_factory`` (the tests do, so their fake wins).
+        """
+        self._runner_factories.append(factory)
+
+    def runner_factory(self):
+        """The first registered runner factory, or None when nobody offered one."""
+        return self._runner_factories[0] if self._runner_factories else None
+
+    def register_host_status(self, provider) -> None:
+        """A plugin offers a ``host_id -> dict`` status provider; first non-empty wins."""
+        self._host_status_providers.append(provider)
+
+    def host_status(self, host_id: str) -> dict:
+        """Live status for one host (agent online/last seen/...), or {} when unknown."""
+        for provider in self._host_status_providers:
+            try:
+                result = provider(host_id)
+            except Exception:                              # a broken provider must not break the list
+                continue
+            if result:
+                return dict(result)
+        return {}
 
     def tool_schemas(self) -> list[dict]:
         return [{"name": name, "description": tool["description"], "inputSchema": tool["schema"]}

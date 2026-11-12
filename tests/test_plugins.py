@@ -64,7 +64,7 @@ class PluginLoadingTests(unittest.TestCase):
         off.post("/login", data={"password": PASSWORD}, follow_redirects=False)
         self.assertEqual(off.get("/api/relay/log").status_code, 404)
         self.assertEqual(sorted(off.get("/api/plugins").json()["plugins"][i]["enabled"]
-                                for i in range(len(off.get("/api/plugins").json()["plugins"]))), [False, False])
+                                for i in range(len(off.get("/api/plugins").json()["plugins"]))), [False, False, False])
 
     def test_a_plugin_can_be_turned_on_explicitly(self):
         client = make_app(plugins="example")
