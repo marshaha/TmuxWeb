@@ -13,6 +13,7 @@ the exec tests only run shell commands like ``echo`` in this sandbox.
 import base64
 import json
 import os
+import shutil
 import socket
 import stat
 import struct
@@ -397,9 +398,12 @@ class TmuxResolverTests(unittest.TestCase):
         self.assertEqual(resolver.path, "/opt/bin/tmux")
 
     def test_refresh_finds_tmux_on_path_and_empty_when_absent(self):
-        tools = str(Path.home() / "tools" / "bin")
-        with mock.patch.dict(os.environ, {"PATH": tools}):
-            self.assertTrue(agent_program.TmuxResolver().refresh())
+        # Wherever tmux lives on this machine (never assume the sandbox
+        # layout): with only its directory on PATH it must be found.
+        found = shutil.which("tmux")
+        if found:
+            with mock.patch.dict(os.environ, {"PATH": str(Path(found).parent)}):
+                self.assertTrue(agent_program.TmuxResolver().refresh())
         with mock.patch.dict(os.environ, {"PATH": "/nonexistent-dir"}):
             self.assertEqual(agent_program.TmuxResolver().refresh(), "")
 
