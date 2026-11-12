@@ -416,12 +416,79 @@ def _close_quietly(conn: WSConnection | None) -> None:
 # tmux discovery
 # ---------------------------------------------------------------------------
 
-class TmuxResolver:
-    """Caches the tmux path, probed with ``command -v tmux``.
+# Where to look for tmux, in the same order as the SSH probe
+# (remote_hosts.TMUX_PROBE_SCRIPT): PATH first, then the well-known
+# locations a non-interactive shell does not have on PATH (macOS keeps
+# tmux in /opt/homebrew/bin), then a login shell as a last resort.
+TMUX_CANDIDATE_PATHS = (
+    "/opt/homebrew/bin/tmux",
+    "/usr/local/bin/tmux",
+    "/opt/local/bin/tmux",
+    "~/bin/tmux",
+    "~/.local/bin/tmux",
+)
 
-    ``override`` (from ``--tmux`` / config) is used as-is and never
-    re-probed. Otherwise the probe runs at startup and again whenever a
-    command returns 127, in case tmux appeared (or moved) mid-run.
+_LOGIN_SHELLS = ("bash", "zsh")
+_PROBE_TIMEOUT = 5.0
+
+
+def _command_v_tmux() -> str:
+    """First line of ``command -v tmux`` under /bin/sh, or ""."""
+    try:
+        proc = subprocess.run(
+            ["/bin/sh", "-c", "command -v tmux"],
+            capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    lines = proc.stdout.strip().splitlines()
+    return lines[0].strip() if lines else ""
+
+
+def _first_executable(candidates) -> str:
+    """First candidate that is an executable file, or ""."""
+    for candidate in candidates:
+        path = os.path.expanduser(candidate)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return ""
+
+
+def _login_shell_tmux() -> str:
+    """Ask a login shell where tmux is (its rc files set the real PATH).
+
+    A login shell can hang for ages on a slow host (rc files doing
+    network work), so each attempt is bounded; a shell that is not on
+    PATH is skipped outright.
+    """
+    for shell in _LOGIN_SHELLS:
+        shell_path = shutil.which(shell)
+        if not shell_path:
+            continue
+        try:
+            proc = subprocess.run(
+                [shell_path, "-lc", "command -v tmux"],
+                capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        lines = proc.stdout.strip().splitlines()
+        if not lines or not lines[0].strip():
+            continue
+        found = lines[0].strip()
+        # `command -v` may name a shell function instead of a binary;
+        # only a real executable is usable as TMUX_BIN.
+        if os.path.isfile(found) and os.access(found, os.X_OK):
+            return found
+    return ""
+
+
+class TmuxResolver:
+    """Caches the tmux path, probed in the SSH probe's order.
+
+    PATH first (``command -v tmux``), then the well-known locations,
+    then a login shell. ``override`` (from ``--tmux`` / config) is used
+    as-is and never re-probed. Otherwise the probe runs at startup and
+    again whenever a command returns 127, in case tmux appeared (or
+    moved) mid-run.
     """
 
     def __init__(self, override: str | None = None) -> None:
@@ -431,14 +498,11 @@ class TmuxResolver:
     def refresh(self) -> str:
         if self.fixed:
             return self.path
-        try:
-            proc = subprocess.run(
-                ["/bin/sh", "-c", "command -v tmux"],
-                capture_output=True, text=True, timeout=5)
-            found = proc.stdout.strip().splitlines()
-            self.path = found[0].strip() if found else ""
-        except (OSError, subprocess.SubprocessError):
-            self.path = ""
+        self.path = (
+            _command_v_tmux()
+            or _first_executable(TMUX_CANDIDATE_PATHS)
+            or _login_shell_tmux()
+        )
         return self.path
 
 
@@ -1013,7 +1077,19 @@ def cmd_install(args: argparse.Namespace) -> int:
         return 2
 
     config_path = Path(args.config) if args.config else default_config_path()
-    tmux = args.tmux or TmuxResolver().refresh() or ""
+    if args.tmux:
+        tmux = args.tmux
+    else:
+        tmux = TmuxResolver().refresh()
+        if not tmux:
+            # A fresh probe that finds nothing must not wipe a tmux path
+            # a previous install (or a manual fix) already recorded:
+            # with "" every agent op fails, with the old path the agent
+            # keeps working. Only overwrite when the probe finds one.
+            try:
+                tmux = load_config_file(config_path).get("tmux") or ""
+            except (OSError, ValueError):
+                tmux = ""
     write_config(config_path, server, token, tmux)
     agent_abs = str(Path(__file__).resolve())
     config_abs = str(config_path.resolve())
