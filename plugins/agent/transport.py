@@ -326,8 +326,14 @@ class AgentTransport(SSHRunner):
             packet = self.registry.call(host_id, ops, timeout=timeout)
         except AgentUnavailable:
             self.registry.note_transport(host_id, "ssh")
-            return [super().run(command, timeout=timeout, resolve_tmux=resolve_tmux)
-                    for command in commands]
+            # Plain loop, not a comprehension: zero-arg super() inside a
+            # comprehension binds to the comprehension's implicit argument
+            # on Python <= 3.11 (TypeError), so it must stay outside one.
+            fallback = []
+            for command in commands:
+                fallback.append(super().run(command, timeout=timeout,
+                                            resolve_tmux=resolve_tmux))
+            return fallback
         # A timeout (RuntimeError) propagates: commands may already be
         # running on the far side, so they must not be re-run over SSH.
         self.registry.note_transport(host_id, "agent")
