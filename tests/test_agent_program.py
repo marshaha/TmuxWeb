@@ -465,6 +465,14 @@ class ExecTests(unittest.TestCase):
             base64.b64decode(sent[1]["results"][0]["stdout_b64"]), b"second\n")
 
 
+def _write_executable(path: Path, content: str = "#!/bin/sh\nexit 0\n") -> Path:
+    """Create an executable file (a stand-in tmux / shell binary)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 class TmuxResolverTests(unittest.TestCase):
     def test_override_is_used_as_is_and_never_reprobed(self):
         resolver = agent_program.TmuxResolver(override="/opt/bin/tmux")
@@ -484,6 +492,56 @@ class TmuxResolverTests(unittest.TestCase):
 
     def test_probe_tmux_returns_a_string(self):
         self.assertIsInstance(agent_program.probe_tmux(), str)
+
+    def test_candidate_list_matches_ssh_probe_order(self):
+        # The agent must look in the same places the SSH probe does
+        # (remote_hosts.TMUX_PROBE_SCRIPT): PATH first, then the
+        # well-known locations in this order, then a login shell.
+        self.assertEqual(
+            list(agent_program.TMUX_CANDIDATE_PATHS),
+            ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux",
+             "/opt/local/bin/tmux", "~/bin/tmux", "~/.local/bin/tmux"])
+
+    def test_refresh_finds_tmux_in_well_known_location(self):
+        # macmini: tmux is /opt/homebrew/bin/tmux, not on PATH.
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            fake = _write_executable(Path(tmp) / "tmux")
+            with mock.patch.dict(os.environ, {"PATH": "/nonexistent-dir"}), \
+                    mock.patch.object(agent_program, "TMUX_CANDIDATE_PATHS",
+                                     [str(fake)]):
+                self.assertEqual(
+                    agent_program.TmuxResolver().refresh(), str(fake))
+
+    def test_refresh_finds_tmux_under_home_bin(self):
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            fake = _write_executable(home / "bin" / "tmux")
+            with mock.patch.dict(os.environ, {
+                    "PATH": "/nonexistent-dir", "HOME": str(home)}):
+                self.assertEqual(
+                    agent_program.TmuxResolver().refresh(), str(fake))
+
+    def test_refresh_finds_tmux_via_login_shell(self):
+        # Only a login shell knows about tmux: a fake bash on PATH
+        # answers `command -v tmux` with a real executable path.
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            found = _write_executable(root / "login-tmux")
+            bindir = root / "bin"
+            _write_executable(
+                bindir / "bash", "#!/bin/sh\necho " + str(found) + "\n")
+            empty_home = root / "home"
+            empty_home.mkdir()
+            with mock.patch.dict(os.environ, {
+                    "PATH": str(bindir), "HOME": str(empty_home)}):
+                self.assertEqual(
+                    agent_program.TmuxResolver().refresh(), str(found))
+
+    def test_refresh_returns_empty_when_tmux_is_nowhere(self):
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {
+                    "PATH": "/nonexistent-dir", "HOME": tmp}):
+                self.assertEqual(agent_program.TmuxResolver().refresh(), "")
 
 
 # ---------------------------------------------------------------------------
@@ -657,6 +715,52 @@ class InstallTests(unittest.TestCase):
             code = agent_program.cmd_uninstall(self._args(["uninstall"]))
         self.assertEqual(code, 0)
         self.assertIn("not installed", out.getvalue())
+
+    def test_reinstall_keeps_existing_tmux_when_probe_finds_nothing(self):
+        # A reinstall on a host whose tmux is not on PATH (macmini) must
+        # not wipe the tmux path a previous install already recorded.
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        config_path = (self.home / ".config" / "tmuxweb-agent"
+                       / "config.json")
+        agent_program.write_config(
+            config_path, "ws://127.0.0.1:9/ws/agent", "test-token-abc",
+            "/opt/homebrew/bin/tmux")
+        token_path = self.home / "token.txt"
+        token_path.write_text("test-token-abc", encoding="utf-8")
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err), \
+                mock.patch.dict(os.environ, {"PATH": "/nonexistent-dir"}):
+            code = agent_program.cmd_install(self._args([
+                "install", "--server", "ws://127.0.0.1:9/ws/agent",
+                "--token-file", str(token_path)]))
+        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
+        config = agent_program.load_config_file(config_path)
+        self.assertEqual(config["tmux"], "/opt/homebrew/bin/tmux")
+
+    def test_reinstall_overwrites_tmux_when_probe_finds_new_path(self):
+        # ... but when the fresh probe does find tmux, the new value wins.
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        config_path = (self.home / ".config" / "tmuxweb-agent"
+                       / "config.json")
+        agent_program.write_config(
+            config_path, "ws://127.0.0.1:9/ws/agent", "test-token-abc",
+            "/old/tmux")
+        fake = _write_executable(self.home / "fakebin" / "tmux")
+        token_path = self.home / "token.txt"
+        token_path.write_text("test-token-abc", encoding="utf-8")
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err), \
+                mock.patch.dict(os.environ, {
+                    "PATH": str(fake.parent) + os.pathsep
+                    + os.environ["PATH"]}):
+            code = agent_program.cmd_install(self._args([
+                "install", "--server", "ws://127.0.0.1:9/ws/agent",
+                "--token-file", str(token_path)]))
+        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
+        config = agent_program.load_config_file(config_path)
+        self.assertEqual(config["tmux"], str(fake))
 
 
 # ---------------------------------------------------------------------------
