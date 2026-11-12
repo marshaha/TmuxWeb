@@ -85,6 +85,18 @@ BACKOFF_CAP = 60.0
 # How many ops of one batch run at once. The batch still returns a
 # single reply, in op order; the pool only overlaps the waiting.
 _BATCH_MAX_WORKERS = 8
+# How many messages run at once (see _MessagePool). The pool exists so
+# one slow message cannot block the others, not to parallelise CPU
+# work: the tmux server itself serialises commands, so more workers
+# would only add threads, never speed. Eight covers the shapes the
+# server actually sends at once (a sweep batch, transcript polls, a
+# capture, a send). Worst-case threads: 8 message workers, each with
+# its own op pool of up to 8 threads plus 3 helper threads per exec
+# (two drains, one stdin writer) — about 260 transient threads if 8
+# full 8-op batches ever overlapped; in practice the server sends at
+# most ~5 concurrent messages per host with batches of at most 2 ops,
+# so the steady state stays under 30.
+_MESSAGE_MAX_WORKERS = 8
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 CONNECT_TIMEOUT = 10.0
 
@@ -601,11 +613,11 @@ def handle_batch(message: dict, resolver: TmuxResolver) -> dict:
     not the sum. Each op keeps its own process, pipes and buffers (see
     run_exec), so outputs cannot interleave; the only shared state is
     the resolver's cached tmux path, whose re-probe is idempotent.
-    Messages are still handled one at a time by the main loop (see
-    _serve_connection), so two sends can never overtake each other on
-    the agent — only ops inside one batch overlap. The reply (and the
-    heartbeat) are sent from the main loop thread under the connection's
-    _send_lock, never from the pool.
+    Batches from different messages may overlap (see _MessagePool):
+    a single send sequence still cannot overtake itself, because the
+    server only sends its next op after the previous reply arrives.
+    Replies are sent under the connection's _send_lock (see
+    WSConnection.send_text), so they never interleave on the wire.
     """
     request_id = message.get("id")
     if not isinstance(request_id, str):
@@ -679,6 +691,76 @@ def _handle_message(conn: WSConnection, text: str, resolver: TmuxResolver) -> No
     log(f"ignoring unknown message type: {message.get('type')!r}")
 
 
+class _MessagePool:
+    """Bounded pool of daemon threads for concurrent message handling.
+
+    The main loop only reads and dispatches; a worker runs one whole
+    message (``_handle_message``, which blocks until its batch is
+    done). That is what keeps a slow message — a sweep over dozens of
+    panes, a big file read — from holding up the next transcript or
+    capture behind it.
+
+    Why daemon threads instead of ``ThreadPoolExecutor``: a worker
+    stuck in a slow op must never hold up process exit, and on
+    disconnect the queued work must go away at once. ``shutdown()``
+    drains the queue (not-yet-started items are dropped) and the
+    workers exit after their current item; a worker whose connection
+    is already gone just drops its reply. No deadlock is possible
+    between the pools: a message worker only ever waits on its own
+    op pool (see ``handle_batch``), never on this pool, and op workers
+    never touch this pool.
+    """
+
+    def __init__(self, max_workers: int, handler) -> None:
+        self._handler = handler
+        self._queue: queue.Queue = queue.Queue()
+        self._closed = False
+        self._lock = threading.Lock()
+        self._threads: list[threading.Thread] = []
+        for index in range(max_workers):
+            thread = threading.Thread(
+                target=self._run, name=f"tmuxweb-agent-msg-{index}",
+                daemon=True)
+            thread.start()
+            self._threads.append(thread)
+
+    def submit(self, item) -> bool:
+        """Queue ``item`` for a worker; False once the pool is closed."""
+        with self._lock:
+            if self._closed:
+                return False
+            self._queue.put(item)
+            return True
+
+    def shutdown(self) -> None:
+        """Stop accepting work and drop everything still queued.
+
+        In-flight items run to their (bounded) op timeout and then the
+        workers exit; this call itself never blocks.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        for _ in self._threads:
+            self._queue.put(None)
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            try:
+                self._handler(item)
+            except Exception as exc:  # noqa: BLE001 - a worker never dies
+                log(f"message worker failed: {exc!r}")
+
+
 def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
                       stop_event: threading.Event | None) -> None:
     """Hello + read loop for one connection. Raises on disconnect."""
@@ -701,25 +783,42 @@ def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
     thread = threading.Thread(target=_reader, name="tmuxweb-agent-reader", daemon=True)
     thread.start()
 
-    last_heartbeat = time.monotonic()
-    while True:
-        if stop_event is not None and stop_event.is_set():
-            return
+    # Messages run on the pool (see _MessagePool), so the loop never
+    # blocks on a slow batch: the next message is read and dispatched
+    # right away and the heartbeat stays on schedule. Replies are
+    # sent from the workers under the connection's _send_lock (see
+    # WSConnection.send_text) and matched to callers by request_id on
+    # the server, so arrival order between messages does not matter.
+    def _dispatch(text: str) -> None:
         try:
-            kind, item = inbox.get(timeout=0.5)
-        except queue.Empty:
-            kind, item = None, None
-        if kind == "closed":
-            if item.code == CLOSE_AUTH_FAILED:
-                raise AuthFailed("server rejected the token (close 4403)")
-            raise item
-        if kind == "error":
-            raise item
-        if kind == "message":
-            _handle_message(conn, item, resolver)
-        if time.monotonic() - last_heartbeat >= HEARTBEAT_INTERVAL:
-            conn.send_text(json.dumps({"type": "heartbeat", "at": int(time.time())}))
-            last_heartbeat = time.monotonic()
+            _handle_message(conn, text, resolver)
+        except Exception as exc:  # noqa: BLE001 - socket gone, drop it
+            log(f"dropping reply for a message: {exc!r}")
+
+    pool = _MessagePool(_MESSAGE_MAX_WORKERS, _dispatch)
+    try:
+        last_heartbeat = time.monotonic()
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                return
+            try:
+                kind, item = inbox.get(timeout=0.5)
+            except queue.Empty:
+                kind, item = None, None
+            if kind == "closed":
+                if item.code == CLOSE_AUTH_FAILED:
+                    raise AuthFailed("server rejected the token (close 4403)")
+                raise item
+            if kind == "error":
+                raise item
+            if kind == "message":
+                if not pool.submit(item):
+                    log("dropping message: connection closing")
+            if time.monotonic() - last_heartbeat >= HEARTBEAT_INTERVAL:
+                conn.send_text(json.dumps({"type": "heartbeat", "at": int(time.time())}))
+                last_heartbeat = time.monotonic()
+    finally:
+        pool.shutdown()
 
 
 def _install_signal_handlers(stop_event: threading.Event) -> None:

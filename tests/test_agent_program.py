@@ -18,6 +18,7 @@ import socket
 import stat
 import struct
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -433,10 +434,12 @@ class ExecTests(unittest.TestCase):
         self.assertEqual(outs, [b"a1\na2\na3\n", b"b1\nb2\nb3\n"])
 
     def test_handle_message_blocks_until_its_batch_is_done(self):
-        # Messages are still processed one at a time: _handle_message does
-        # not return (and so the main loop cannot start the next message)
-        # until the whole batch — pool included — has finished. A send
-        # sequence can therefore never overtake itself on the agent.
+        # _handle_message itself still blocks until its whole batch —
+        # pool included — has finished. (It now runs on a message-pool
+        # worker instead of the main loop, so the loop can dispatch the
+        # next message meanwhile; but one message's own reply is only
+        # sent once its batch is done, and a send sequence still cannot
+        # overtake itself on the agent.)
         sent = []
 
         class _CaptureConn:
@@ -736,6 +739,346 @@ class DaemonTests(unittest.TestCase):
         code = agent_program.run_daemon(
             "ws://127.0.0.1:1/ws/agent", "any-token", stop_event=stop)
         self.assertEqual(code, 0)
+
+
+# ---------------------------------------------------------------------------
+# Message-level concurrency: the bounded pool _serve_connection dispatches to
+# ---------------------------------------------------------------------------
+
+class MessagePoolTests(unittest.TestCase):
+    """The pool itself: bounded workers, daemon threads, clean shutdown."""
+
+    def _pool_threads(self):
+        return [t for t in threading.enumerate()
+                if t.name.startswith("tmuxweb-agent-msg")]
+
+    def _wait_for_no_pool_threads(self, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        remaining = self._pool_threads()
+        while remaining and time.monotonic() < deadline:
+            time.sleep(0.05)
+            remaining = self._pool_threads()
+        return remaining
+
+    def test_pool_runs_at_most_max_workers(self):
+        # Ten slow tasks on an 8-worker pool: at most 8 message workers
+        # ever exist, and all ten tasks still complete.
+        done = []
+        pool = agent_program._MessagePool(
+            agent_program._MESSAGE_MAX_WORKERS,
+            lambda item: (time.sleep(1), done.append(item)))
+        try:
+            for index in range(10):
+                self.assertTrue(pool.submit(index))
+            time.sleep(0.3)
+            self.assertEqual(len(self._pool_threads()),
+                             agent_program._MESSAGE_MAX_WORKERS)
+            deadline = time.monotonic() + 5
+            while len(done) < 10 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(sorted(done), list(range(10)))
+        finally:
+            pool.shutdown()
+        self.assertEqual(self._wait_for_no_pool_threads(), [])
+
+    def test_a_failing_task_does_not_kill_the_pool(self):
+        done = []
+
+        def handler(item):
+            if item == "boom":
+                raise RuntimeError("boom")
+            done.append(item)
+
+        pool = agent_program._MessagePool(2, handler)
+        try:
+            pool.submit("boom")
+            pool.submit("ok")
+            deadline = time.monotonic() + 5
+            while "ok" not in done and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(done, ["ok"])
+            self.assertEqual(len(self._pool_threads()), 2)
+        finally:
+            pool.shutdown()
+        self.assertEqual(self._wait_for_no_pool_threads(), [])
+
+    def test_shutdown_drops_queued_work(self):
+        # Two workers, ten short tasks, shutdown at once: only the tasks
+        # that already started may finish; the queued ones are dropped
+        # and never run. (Broken shutdown would run all ten.)
+        done = []
+
+        def handler(item):
+            time.sleep(0.2)
+            done.append(item)
+
+        pool = agent_program._MessagePool(2, handler)
+        try:
+            for index in range(10):
+                pool.submit(index)
+            pool.shutdown()
+            time.sleep(3)
+            self.assertLess(len(done), 10)
+        finally:
+            pool.shutdown()
+        self.assertEqual(self._wait_for_no_pool_threads(), [])
+
+
+class ConcurrentDaemonTests(unittest.TestCase):
+    """The daemon serves messages concurrently (see _serve_connection)."""
+
+    def _run_daemon(self, handler):
+        with _MiniWS(handler) as server:
+            return agent_program.run_daemon(
+                f"ws://127.0.0.1:{server.port}/ws/agent", "good-token")
+
+    def test_fast_message_returns_while_slow_message_is_in_flight(self):
+        # The core acceptance: a 5s slow batch must not hold up a fast
+        # one behind it. On the old one-message-at-a-time loop the fast
+        # reply only arrives after ~5s.
+        arrivals = {}
+
+        def handler(conn):
+            _handshake_101(conn)
+            opcode, payload = conn.read_frame()
+            self.assertEqual(json.loads(payload.decode("utf-8"))["type"],
+                             "hello")
+            sent_at = time.monotonic()
+            conn.send_text(json.dumps({"id": "slow-1", "ops": [
+                {"op": "exec", "command": "sleep 5; echo slow",
+                 "timeout": 10}]}))
+            conn.send_text(json.dumps({"id": "fast-1", "ops": [
+                {"op": "exec", "command": "echo fast", "timeout": 5}]}))
+            deadline = sent_at + 10
+            while len(arrivals) < 2 and time.monotonic() < deadline:
+                frame = conn.read_frame()
+                if frame is None:
+                    break
+                opcode, payload = frame
+                if opcode != agent_program.OP_TEXT:
+                    continue
+                msg = json.loads(payload.decode("utf-8"))
+                if "id" in msg:
+                    arrivals[msg["id"]] = time.monotonic() - sent_at
+            conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+
+        code = self._run_daemon(handler)
+        self.assertEqual(code, 3)
+        self.assertIn("fast-1", arrivals)
+        self.assertIn("slow-1", arrivals)
+        self.assertLess(arrivals["fast-1"], 2.0)
+        self.assertGreaterEqual(arrivals["slow-1"], 4.5)
+
+    def test_concurrent_replies_are_matched_by_request_id(self):
+        # Five batches with different sleeps and distinct outputs, sent
+        # back-to-back: each reply must carry its own id and its own
+        # output, even though they finish out of order.
+        jobs = [("j1", 0.5, "one"), ("j2", 0.1, "two"), ("j3", 0.3, "three"),
+                ("j4", 0.0, "four"), ("j5", 0.2, "five")]
+        replies = {}
+
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            for job_id, delay, word in jobs:
+                conn.send_text(json.dumps({"id": job_id, "ops": [
+                    {"op": "exec",
+                     "command": f"sleep {delay}; echo {word}",
+                     "timeout": 5}]}))
+            deadline = time.monotonic() + 10
+            while len(replies) < len(jobs) and time.monotonic() < deadline:
+                frame = conn.read_frame()
+                if frame is None:
+                    break
+                opcode, payload = frame
+                if opcode != agent_program.OP_TEXT:
+                    continue
+                msg = json.loads(payload.decode("utf-8"))
+                if "id" in msg:
+                    replies[msg["id"]] = msg
+            conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+
+        code = self._run_daemon(handler)
+        self.assertEqual(code, 3)
+        self.assertEqual(set(replies), {job_id for job_id, _, _ in jobs})
+        for job_id, _, word in jobs:
+            out = base64.b64decode(
+                replies[job_id]["results"][0]["stdout_b64"])
+            self.assertEqual(out, (word + "\n").encode())
+
+    def test_heartbeat_continues_while_a_message_is_in_flight(self):
+        # While a 3s batch runs, the main loop must still emit
+        # heartbeats on schedule instead of blocking behind the batch.
+        # The interval is patched down so the test can observe it.
+        heartbeats = []
+        old_interval = agent_program.HEARTBEAT_INTERVAL
+        agent_program.HEARTBEAT_INTERVAL = 0.5
+        try:
+            def handler(conn):
+                _handshake_101(conn)
+                conn.read_frame()  # hello
+                conn.send_text(json.dumps({"id": "slow-hb", "ops": [
+                    {"op": "exec", "command": "sleep 3; echo slow",
+                     "timeout": 5}]}))
+                deadline = time.monotonic() + 2.5
+                while time.monotonic() < deadline:
+                    frame = conn.read_frame()
+                    if frame is None:
+                        break
+                    opcode, payload = frame
+                    if opcode != agent_program.OP_TEXT:
+                        continue
+                    msg = json.loads(payload.decode("utf-8"))
+                    if msg.get("type") == "heartbeat":
+                        heartbeats.append(time.monotonic())
+                conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+
+            code = self._run_daemon(handler)
+            self.assertEqual(code, 3)
+            self.assertGreaterEqual(len(heartbeats), 1)
+        finally:
+            agent_program.HEARTBEAT_INTERVAL = old_interval
+
+    def test_send_sequence_order_is_preserved(self):
+        # A dependent chain sent one op at a time (each after the
+        # previous reply, as the server's registry.call does) executes
+        # in order even with a slow message running alongside it.
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        marker = os.path.join(tmp, "chain.txt")
+        seen = {}
+
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            conn.send_text(json.dumps({"id": "slow-chain", "ops": [
+                {"op": "exec", "command": "sleep 1; echo slow",
+                 "timeout": 5}]}))
+            for step, word in (("c1", "one"), ("c2", "two")):
+                conn.send_text(json.dumps({"id": step, "ops": [
+                    {"op": "exec",
+                     "command": f"printf '%s\\n' {word} >> '{marker}'",
+                     "timeout": 5}]}))
+                while step not in seen:
+                    frame = conn.read_frame()
+                    if frame is None:
+                        raise AssertionError("connection closed mid-chain")
+                    opcode, payload = frame
+                    if opcode != agent_program.OP_TEXT:
+                        continue
+                    msg = json.loads(payload.decode("utf-8"))
+                    if "id" in msg:
+                        seen[msg["id"]] = msg
+            conn.send_text(json.dumps({"id": "c3", "ops": [
+                {"op": "exec", "command": f"cat '{marker}'",
+                 "timeout": 5}]}))
+            while "c3" not in seen:
+                frame = conn.read_frame()
+                if frame is None:
+                    break
+                opcode, payload = frame
+                if opcode != agent_program.OP_TEXT:
+                    continue
+                msg = json.loads(payload.decode("utf-8"))
+                if "id" in msg:
+                    seen[msg["id"]] = msg
+            conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+
+        code = self._run_daemon(handler)
+        self.assertEqual(code, 3)
+        out = base64.b64decode(seen["c3"]["results"][0]["stdout_b64"])
+        self.assertEqual(out, b"one\ntwo\n")
+
+    def test_bad_message_does_not_break_later_messages(self):
+        replies = {}
+
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            conn.send_text(json.dumps({"id": "bad-1", "ops": "not-a-list"}))
+            conn.send_text(json.dumps({"id": "good-1", "ops": [
+                {"op": "exec", "command": "echo good", "timeout": 5}]}))
+            deadline = time.monotonic() + 10
+            while len(replies) < 2 and time.monotonic() < deadline:
+                frame = conn.read_frame()
+                if frame is None:
+                    break
+                opcode, payload = frame
+                if opcode != agent_program.OP_TEXT:
+                    continue
+                msg = json.loads(payload.decode("utf-8"))
+                if "id" in msg:
+                    replies[msg["id"]] = msg
+            conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+
+        code = self._run_daemon(handler)
+        self.assertEqual(code, 3)
+        self.assertEqual(replies["bad-1"]["ok"], False)
+        self.assertEqual(replies["good-1"]["ok"], True)
+        out = base64.b64decode(
+            replies["good-1"]["results"][0]["stdout_b64"])
+        self.assertEqual(out, b"good\n")
+
+    def test_daemon_returns_promptly_on_stop_with_a_message_in_flight(self):
+        # Stop mid-batch: the main loop must notice at once instead of
+        # waiting out the 5s op. (The worker itself is a daemon thread
+        # and keeps running its op; it just cannot hold up the return.)
+        stop = threading.Event()
+
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            conn.send_text(json.dumps({"id": "slow-stop", "ops": [
+                {"op": "exec", "command": "sleep 5; echo slow",
+                 "timeout": 10}]}))
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                frame = conn.read_frame()
+                if frame is None:
+                    return
+
+        with _MiniWS(handler) as server:
+            threading.Timer(0.5, stop.set).start()
+            started = time.monotonic()
+            code = agent_program.run_daemon(
+                f"ws://127.0.0.1:{server.port}/ws/agent", "good-token",
+                stop_event=stop)
+            elapsed = time.monotonic() - started
+        self.assertEqual(code, 0)
+        self.assertLess(elapsed, 2.0)
+
+    def test_disconnect_leaves_no_pool_threads(self):
+        # The server closes mid-batch: the daemon returns at once, and
+        # no message-pool thread lingers past the in-flight op's time.
+        # The handler keeps the socket open a while after the close
+        # frame: on the old serial loop the in-flight reply must still
+        # be deliverable, or the send fails and the daemon reconnects
+        # forever instead of returning.
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            conn.send_text(json.dumps({"id": "slow-disc", "ops": [
+                {"op": "exec", "command": "sleep 3; echo slow",
+                 "timeout": 5}]}))
+            time.sleep(0.2)  # let the agent pick the message up
+            conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+            time.sleep(5)  # keep the socket open for the in-flight reply
+
+        with _MiniWS(handler) as server:
+            started = time.monotonic()
+            code = agent_program.run_daemon(
+                f"ws://127.0.0.1:{server.port}/ws/agent", "good-token")
+            elapsed = time.monotonic() - started
+        self.assertEqual(code, 3)
+        self.assertLess(elapsed, 2.0)
+        deadline = time.monotonic() + 5
+        remaining = [t for t in threading.enumerate()
+                     if t.name.startswith("tmuxweb-agent-msg")]
+        while remaining and time.monotonic() < deadline:
+            time.sleep(0.05)
+            remaining = [t for t in threading.enumerate()
+                         if t.name.startswith("tmuxweb-agent-msg")]
+        self.assertEqual(remaining, [])
 
 
 if __name__ == "__main__":
