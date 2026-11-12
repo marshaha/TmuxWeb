@@ -1698,7 +1698,8 @@ class SSHRunner:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "agent probe failed")
         return agent_catalog.parse_probe(completed.stdout.decode(errors="replace"))
 
-    def list_panes(self, timeout: int = 15) -> list[dict]:
+    @staticmethod
+    def _list_panes_command() -> str:
         fmt = FIELD_SEPARATOR.join([
             "#{pane_id}", "#{session_name}:#{window_index}.#{pane_index}", "#{session_name}",
             "#{window_index}", "#{window_name}", "#{pane_index}", "#{pane_current_command}",
@@ -1707,14 +1708,12 @@ class SSHRunner:
         ])
         # 一次 SSH 同时取 pane 列表和进程表：进程表用来认出「被 shell 包着启动」的
         # agent（tmux 报的前台命令是 zsh，实际里面跑着 codex）。
-        command = (
+        return (
             f"${{TMUX_BIN:-tmux}} list-panes -a -F {shlex.quote(fmt)}; "
             f"printf '\\n{PROCESS_TABLE_MARK}\\n'; ps -A -o pid=,ppid=,args= 2>/dev/null || true"
         )
-        completed = self.run(command, timeout=timeout)
-        if completed.returncode != 0:
-            raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
-        raw = completed.stdout.decode(errors="replace")
+
+    def _parse_list_output(self, raw: str) -> list[dict]:
         pane_text, _, process_text = raw.partition(PROCESS_TABLE_MARK)
         panes = parse_tmux_panes(pane_text, self.host["id"])
         table = transcript_reader.parse_process_table(process_text)
@@ -1722,15 +1721,25 @@ class SSHRunner:
             pane["provider"] = transcript_reader.provider_for_pane(pane, table)
         return panes
 
+    def list_panes(self, timeout: int = 15) -> list[dict]:
+        completed = self.run(self._list_panes_command(), timeout=timeout)
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
+        return self._parse_list_output(completed.stdout.decode(errors="replace"))
+
+    @staticmethod
+    def _capture_ansi_command(pane_id: str, history: int = 5000, visible_only: bool = False) -> str:
+        scroll = "" if visible_only else f" -S -{max(20, min(history, 5000))}"
+        return f"${{TMUX_BIN:-tmux}} capture-pane -p -J -e -t {shlex.quote(pane_id)}{scroll}"
+
     def capture_ansi(self, pane_id: str, history: int = 5000, pane: dict | None = None,
                      visible_only: bool = False) -> str:
         # pane is accepted for interface symmetry with the local backend and
         # ignored: remote transports never validate, the id check below is free
         if not PANE_ID_RE.fullmatch(pane_id):
             raise ValueError("invalid pane id")
-        scroll = "" if visible_only else f" -S -{max(20, min(history, 5000))}"
-        command = f"${{TMUX_BIN:-tmux}} capture-pane -p -J -e -t {shlex.quote(pane_id)}{scroll}"
-        completed = self.run(command, timeout=self.capture_timeout or 15)
+        completed = self.run(self._capture_ansi_command(pane_id, history, visible_only),
+                             timeout=self.capture_timeout or 15)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote capture failed")
         return completed.stdout.decode(errors="replace")

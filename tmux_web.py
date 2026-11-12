@@ -3423,11 +3423,21 @@ def create_app(
     @app.get("/api/panes/{pane_id}/capture")
     async def capture(request: Request, pane_id: str, history: int = 500):
         require_auth(request)
-        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        transport, actual_pane_id = pane_transport(pane_id)
+        batched = getattr(transport, "capture_with_pane", None)
         try:
-            transport, actual_pane_id = pane_transport(pane_id)
-            content = await asyncio.to_thread(transport.capture, actual_pane_id, history, pane=pane)
+            if batched is not None:
+                # One agent round trip: list + capture in a single batch.
+                # Anything without the batched path keeps the two-step flow.
+                _, content = await asyncio.to_thread(
+                    batched, actual_pane_id, history)
+            else:
+                pane = await asyncio.to_thread(pane_or_404, pane_id)
+                content = await asyncio.to_thread(
+                    transport.capture, actual_pane_id, history, pane=pane)
             return {"pane": pane_id, "content": content}
+        except KeyError:
+            raise HTTPException(status_code=404, detail="remote pane not found") from None
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

@@ -554,6 +554,108 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
             [base64.b64decode(item["stdout_b64"]) for item in packet["results"]],
             [b"out:one", b"out:two"])
 
+    # -- batched calls (one agent round trip for several ops) ----------------
+
+    def test_run_many_sends_one_batch_for_many_commands(self):
+        agent = self._connect_agent()
+        before = len(agent.received)
+        results = self._transport().run_many(
+            ["printf a", "printf b", "printf c"], timeout=5)
+        self.assertEqual([r.stdout for r in results],
+                         [b"out:printf a", b"out:printf b", b"out:printf c"])
+        self.assertTrue(all(r.returncode == 0 for r in results))
+        packets = agent.received[before:]
+        self.assertEqual(len(packets), 1)
+        self.assertEqual(len(packets[0]["ops"]), 3)
+        self.assertTrue(all(op["op"] == "exec" for op in packets[0]["ops"]))
+
+    def test_run_many_one_failed_op_does_not_break_the_others(self):
+        def handler(op):
+            if op["command"] == "boom":
+                return {"ok": False, "error": "boom failed"}
+            return _ok(("out:" + op["command"]).encode())
+
+        agent = self._connect_agent(exec_handler=handler)
+        before = len(agent.received)
+        results = self._transport().run_many(
+            ["printf a", "boom", "printf c"], timeout=5)
+        self.assertEqual(results[0].stdout, b"out:printf a")
+        self.assertEqual(results[0].returncode, 0)
+        self.assertEqual(results[1].returncode, 1)
+        self.assertIn("boom failed", results[1].stderr.decode())
+        self.assertEqual(results[2].stdout, b"out:printf c")
+        self.assertEqual(results[2].returncode, 0)
+        self.assertEqual(len(agent.received[before:]), 1)
+
+    def test_run_many_falls_back_to_ssh_when_agent_unavailable(self):
+        calls = []
+
+        def fake_ssh_run(self, remote_command, *, input_bytes=None, timeout=15,
+                         resolve_tmux=True):
+            calls.append(remote_command)
+            return subprocess.CompletedProcess(args=remote_command, returncode=0,
+                                               stdout=b"via-ssh", stderr=b"")
+
+        with mock.patch.object(SSHRunner, "run", fake_ssh_run):
+            results = self._transport().run_many(["echo a", "echo b"], timeout=5)
+        self.assertEqual([r.stdout for r in results], [b"via-ssh", b"via-ssh"])
+        self.assertEqual(calls, ["echo a", "echo b"])
+        self.assertEqual(self.registry.status(self.host_id)["last_transport"], "ssh")
+
+    def test_run_many_timeout_propagates_without_ssh_fallback(self):
+        self._connect_agent(silent=True)
+        self.assertTrue(self._wait_online(self.host_id, True))
+
+        def boom(self, *args, **kwargs):
+            raise AssertionError("a timeout must never fall back to SSH")
+
+        started = time.time()
+        with mock.patch.object(SSHRunner, "run", boom):
+            with self.assertRaises(RuntimeError):
+                self._transport().run_many(["echo hi"], timeout=2)
+        self.assertLess(time.time() - started, 10)
+
+    def test_capture_with_pane_batches_list_and_capture(self):
+        agent = self._connect_agent()
+        before = len(agent.received)
+        pane, content = self._transport().capture_with_pane("%9")
+        self.assertEqual(pane["pane_id"], "%9")
+        self.assertIn("old output", content)
+        packets = agent.received[before:]
+        self.assertEqual(len(packets), 1)
+        ops = packets[0]["ops"]
+        self.assertEqual(len(ops), 2)
+        self.assertIn("list-panes", ops[0]["command"])
+        self.assertIn("capture-pane -p -J -e -t %9 -S -500", ops[1]["command"])
+
+    def test_capture_with_pane_missing_pane_raises_keyerror(self):
+        def handler(op):
+            if "list-panes" in op["command"]:
+                return _ok(b"\n__TMUXWEB_PROCESS_TABLE__\n")
+            return _ok(b"")
+
+        self._connect_agent(exec_handler=handler)
+        with self.assertRaises(KeyError):
+            self._transport().capture_with_pane("%9")
+
+    def test_capture_with_pane_failed_capture_raises(self):
+        fields = ["%9", "remote:0.0", "remote", "0", "agent", "0", "claude",
+                  "Remote Claude", "/srv/work", "1", "100", "30", "0", "1234"]
+
+        def handler(op):
+            if "list-panes" in op["command"]:
+                return _ok(("<::>".join(fields)
+                            + "\n__TMUXWEB_PROCESS_TABLE__\n").encode())
+            if "capture-pane" in op["command"]:
+                return {"ok": True, "stdout_b64": "",
+                        "stderr_b64": base64.b64encode(b"can't find pane").decode(),
+                        "returncode": 1}
+            return _ok(b"")
+
+        self._connect_agent(exec_handler=handler)
+        with self.assertRaises(RuntimeError):
+            self._transport().capture_with_pane("%9")
+
     def test_list_capture_send_go_through_the_agent(self):
         agent = self._connect_agent()
         transport = self._transport()
@@ -834,6 +936,68 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
             self.assertEqual(anonymous.get("/agent/agent.py").status_code, 404)
         finally:
             self.plugin.agent_file = original
+
+
+class AgentCaptureEndpointTests(unittest.TestCase, _UvicornServer):
+    """GET /api/panes/{id}/capture costs one agent round trip (list + capture).
+
+    Unlike AgentTransportTests this app keeps the default runner factory,
+    so the agent plugin's factory hands the endpoint a real AgentTransport.
+    """
+
+    def setUp(self):
+        self.tmux = FakeTmux()
+        self.store = FakeRemoteStore()
+        self.app = create_app(
+            self.tmux, password=PASSWORD, session_secret="test-secret",
+            terminal_factory=FakeTerminalFactory(), share_db=":memory:",
+            home_db=":memory:", remote_store=self.store,
+            plugin_state=str(Path(tempfile.mkdtemp()) / "plugins.json"))
+        self.client = TestClient(self.app)
+        self.client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.host = self.store.add_host(
+            name="agent-host", hostname="10.0.0.9", port=22, username="ubuntu",
+            auth_type="agent", credential="", host_key="", fingerprint="",
+            transport="agent")
+        self.host_id = self.host["id"]
+        self.plugin = self.app.state.plugins.loaded["agent"]
+        self.registry = self.plugin.registry
+        self.plugin.tailscale_ip = "100.123.123.5"
+        self._agents = []
+        self._start_server(self.app)
+
+    def tearDown(self):
+        for agent in self._agents:
+            agent.stop()
+        self._stop_server()
+        remote_hosts._TMUX_BIN_CACHE.clear()
+        remote_hosts._TMUX_BIN_FAILED.clear()
+
+    def _connect_agent(self, **kwargs):
+        token = self.client.post(
+            "/api/hosts/%s/agent-token" % self.host_id).json()["token"]
+        agent = FakeAgent(self.ws_url, token, **kwargs)
+        agent.start()
+        self._agents.append(agent)
+        return agent
+
+    def test_capture_endpoint_uses_one_agent_round_trip(self):
+        agent = self._connect_agent()
+        response = self.client.get("/api/panes/%s~%%259/capture" % self.host_id)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("old output", response.json()["content"])
+        self.assertEqual(len(agent.received), 1)
+        self.assertEqual(len(agent.received[0]["ops"]), 2)
+
+    def test_capture_endpoint_missing_pane_is_404(self):
+        # %8, not %99: the fake list only has %9, and TestClient decodes
+        # %25 twice, so a two-digit pane id would arrive mangled (%99 ->
+        # the byte 0x99) instead of as a pane id at all.
+        agent = self._connect_agent()
+        response = self.client.get("/api/panes/%s~%%258/capture" % self.host_id)
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(len(agent.received), 1)
+        self.assertEqual(len(agent.received[0]["ops"]), 2)
 
 
 if __name__ == "__main__":
