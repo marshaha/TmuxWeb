@@ -71,6 +71,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -81,6 +82,9 @@ DEFAULT_EXEC_TIMEOUT = 15.0
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024  # per stream (stdout / stderr)
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024  # one incoming WebSocket message
 BACKOFF_CAP = 60.0
+# How many ops of one batch run at once. The batch still returns a
+# single reply, in op order; the pool only overlaps the waiting.
+_BATCH_MAX_WORKERS = 8
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 CONNECT_TIMEOUT = 10.0
 
@@ -577,16 +581,45 @@ def run_op(op, resolver: TmuxResolver) -> dict:
     return run_exec(op, resolver)
 
 
+def _run_op_guarded(op, resolver: TmuxResolver) -> dict:
+    """run_op, with a worker crash turned into an error result.
+
+    run_op/run_exec never raise by contract, but a pool worker raising
+    would kill the whole batch reply — one bad op must not do that.
+    """
+    try:
+        return run_op(op, resolver)
+    except Exception as exc:  # noqa: BLE001 - see above
+        return {"ok": False, "error": f"op failed: {exc}"}
+
+
 def handle_batch(message: dict, resolver: TmuxResolver) -> dict:
-    """Run a batch request in order; returns the reply dict."""
+    """Run a batch request; returns the reply dict.
+
+    Ops run in parallel in a thread pool and the results are assembled
+    in op order, so a batch of independent reads costs the slowest op,
+    not the sum. Each op keeps its own process, pipes and buffers (see
+    run_exec), so outputs cannot interleave; the only shared state is
+    the resolver's cached tmux path, whose re-probe is idempotent.
+    Messages are still handled one at a time by the main loop (see
+    _serve_connection), so two sends can never overtake each other on
+    the agent — only ops inside one batch overlap. The reply (and the
+    heartbeat) are sent from the main loop thread under the connection's
+    _send_lock, never from the pool.
+    """
     request_id = message.get("id")
     if not isinstance(request_id, str):
         return {"id": "", "ok": False, "error": "request 'id' must be a string"}
     ops = message.get("ops")
     if not isinstance(ops, list):
         return {"id": request_id, "ok": False, "error": "request 'ops' must be a list"}
-    return {"id": request_id, "ok": True,
-            "results": [run_op(op, resolver) for op in ops]}
+    if len(ops) <= 1:
+        return {"id": request_id, "ok": True,
+                "results": [run_op(op, resolver) for op in ops]}
+    with ThreadPoolExecutor(max_workers=min(len(ops), _BATCH_MAX_WORKERS)) as pool:
+        results = list(pool.map(
+            lambda op: _run_op_guarded(op, resolver), ops))
+    return {"id": request_id, "ok": True, "results": results}
 
 
 # ---------------------------------------------------------------------------

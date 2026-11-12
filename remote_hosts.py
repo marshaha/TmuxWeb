@@ -2243,21 +2243,33 @@ class SSHRunner:
         The status sweep needs a short tail of every pane on a host; doing that one
         ssh per pane made a 35-pane macmini cost 35 round trips.
         """
-        ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))]
-        if not ids:
+        script = self._capture_many_script(pane_ids, history)
+        if script is None:
             return {}
-        ids = ids[:80]
-        lines = max(20, min(int(history), 5000))
-        script = "for pane in " + " ".join(shlex.quote(pane) for pane in ids) + "; do " \
-                 "printf '\\036%s\\n' \"$pane\"; " \
-                 "${TMUX_BIN:-tmux} capture-pane -p -J -t \"$pane\" -S -" + str(lines) + " 2>/dev/null; done"
         completed = self.run(script, timeout=self.capture_timeout or 15)
         if completed.returncode != 0 and not completed.stdout:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote capture failed")
+        return self._parse_capture_many_output(completed.stdout.decode(errors="replace"))
+
+    @staticmethod
+    def _capture_many_script(pane_ids, history: int = 40) -> str | None:
+        """The sweep's one-script capture, or None when there is nothing to ask."""
+        ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))]
+        if not ids:
+            return None
+        ids = ids[:80]
+        lines = max(20, min(int(history), 5000))
+        return ("for pane in " + " ".join(shlex.quote(pane) for pane in ids) + "; do "
+                "printf '\\036%s\\n' \"$pane\"; "
+                "${TMUX_BIN:-tmux} capture-pane -p -J -t \"$pane\" -S -" + str(lines) + " 2>/dev/null; done")
+
+    @staticmethod
+    def _parse_capture_many_output(text: str) -> dict:
+        """Split one capture script's \\x1e-marked output back per pane."""
         result = {}
         current = None
         buffer = []
-        for line in completed.stdout.decode(errors="replace").split("\n"):
+        for line in text.split("\n"):
             if line.startswith("\x1e"):
                 if current is not None:
                     result[current] = ANSI_RE.sub("", "\n".join(buffer))
@@ -2276,19 +2288,31 @@ class SSHRunner:
         the session file exactly like a transcript read would (same Claude/Kimi
         disambiguation) and prints nothing but the verdict.
         """
+        script = self._status_many_script(pane_ids)
+        if script is None:
+            return {}
+        completed = self.run(script, timeout=self.transcript_timeout)
+        return self._parse_status_many_output(completed.stdout.decode(errors="replace"))
+
+    @staticmethod
+    def _status_many_script(pane_ids) -> str | None:
+        """The sweep's one-script status probe, or None when there is nothing to ask."""
         ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))][:80]
         if not ids:
-            return {}
-        script = (
+            return None
+        return (
             "S=" + shlex.quote(REMOTE_TRANSCRIPT_SCRIPT) + "; "
             "for pane in " + " ".join(shlex.quote(pane) for pane in ids) + "; do "
             "printf '\\037%s ' \"$pane\"; "
             "TMUXWEB_STATUS_ONLY=1 sh -c \"$S\" sh \"$pane\" 1 2>/dev/null "
             "| sed -n 's/^TMUXWEB_STATUS" + FIELD_SEPARATOR + r"\(.*\)$/\1/p' | head -1; done"
         )
-        completed = self.run(script, timeout=self.transcript_timeout)
+
+    @staticmethod
+    def _parse_status_many_output(text: str) -> dict:
+        """Split one status script's \\x1f-marked output back per pane."""
         result = {}
-        for line in completed.stdout.decode(errors="replace").splitlines():
+        for line in text.splitlines():
             if not line.startswith("\x1f"):
                 continue
             pane, _, state = line[1:].partition(" ")

@@ -1757,63 +1757,54 @@ def create_app(
             if hasattr(transport, "capture_timeout"):
                 transport.capture_timeout = sweep_timeout
 
-        # One capture per host: the tail text is classified locally afterwards.
+        # One round trip per host: the tail text is classified locally
+        # afterwards, and the session-file verdict comes back in the same
+        # packet. Agent transports send capture + status as one batch;
+        # anything without capture_and_status_many runs the same two
+        # calls as before, one each.
         captured: dict[int, dict] = {}
-        def grab(transport_panes):
-            key, transport, pane_ids, panes = transport_panes
+        native: dict[str, str] = {}
+        def grab_both(group):
+            key, transport, host_id, pane_ids, panes, status_ids = group
             try:
-                return key, transport.capture_many(pane_ids, 40, panes=panes)
+                both = getattr(transport, "capture_and_status_many", None)
+                if both is not None:
+                    texts, states = both(pane_ids, 40, status_ids=status_ids, panes=panes)
+                else:
+                    texts = transport.capture_many(pane_ids, 40, panes=panes)
+                    states = (transport.status_many(status_ids)
+                              if status_ids and hasattr(transport, "status_many") else {})
             except Exception:  # noqa: BLE001 - fall back to per-pane captures
-                return key, {}
+                return key, {}, []
+            # host-scoped: "%8" exists on several hosts and means a different pane
+            return key, texts, [
+                (f"{host_id}~{pane_id}" if "~" not in str(pane_id) else str(pane_id), state)
+                for pane_id, state in states.items()]
         groups: dict[int, tuple] = {}
         for job in jobs:
-            transport = job[2]
-            actual = job[3].get("pane_id") or job[3]["id"]
-            entry = groups.setdefault(id(transport), (id(transport), transport, [], {}))
-            entry[2].append(actual)
-            entry[3][actual] = job[3]
+            host_id, _, transport, pane = job
+            actual = pane.get("pane_id") or pane["id"]
+            entry = groups.setdefault(
+                id(transport), (id(transport), transport, host_id, [], {}, []))
+            entry[3].append(actual)
+            entry[4][actual] = pane
+            provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
+            if host_id != "localhost" and provider and hasattr(transport, "status_many"):
+                entry[5].append(actual)
         with ThreadPoolExecutor(max_workers=max(1, min(8, len(groups) or 1))) as pool:
-            for index, texts in pool.map(grab, list(groups.values())):
+            for index, texts, listing in pool.map(grab_both, list(groups.values())):
                 captured[index] = texts
+                for key, state in listing:
+                    native[key] = state
 
         # Ask each agent's own session file whether its turn is running: the screen lies
         # (a status bar saying "thinking: high" is a model setting, a TUI redraws while
-        # idle) while the session file records the turn boundary. Remote hosts answer for
-        # all their panes in one ssh call.
-        native: dict[str, str] = {}
+        # idle) while the session file records the turn boundary. Remote verdicts
+        # already came back with the captures above; only localhost is probed here.
         local_agents = [job[3] for job in jobs
                         if job[0] == "localhost"
                         and (job[3].get("provider")
                              or transcript_reader.provider_for_command(job[3].get("command")))]
-        remote_agents: dict[int, tuple] = {}
-        for job in jobs:
-            host_id, _, transport, pane = job
-            provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
-            if host_id == "localhost" or not provider or not hasattr(transport, "status_many"):
-                continue
-            group = remote_agents.setdefault(id(transport), (transport, host_id, []))
-            group[2].append(pane.get("pane_id") or pane["id"])
-
-        def ask_host(group):
-            transport, host_id, ids = group
-            try:
-                states = transport.status_many(ids) or {}
-            except Exception:  # noqa: BLE001 - a dead host keeps its screen verdict
-                return []
-            # host-scoped: "%8" exists on several hosts and means a different pane
-            return [(f"{host_id}~{pane_id}" if "~" not in str(pane_id) else str(pane_id), state)
-                    for pane_id, state in states.items()]
-
-        def probe_native():
-            groups = list(remote_agents.values())
-            if not groups:
-                return []
-            answers = []
-            with ThreadPoolExecutor(max_workers=max(1, min(6, len(groups)))) as host_pool:
-                for listing in host_pool.map(ask_host, groups):
-                    answers.extend(listing)
-            return answers
-
         if local_agents:
             def probe_local():
                 out = []
@@ -1831,12 +1822,8 @@ def create_app(
             def probe_local():
                 return []
 
-        with ThreadPoolExecutor(max_workers=2) as probe_pool:
-            local_future = probe_pool.submit(probe_local)
-            remote_future = probe_pool.submit(probe_native)
-            for listing in (local_future.result(), remote_future.result()):
-                for key, state in listing:
-                    native[key] = state
+        for key, state in probe_local():
+            native[key] = state
 
         busy_window = float(os.environ.get("TMUX_WEB_ACTIVITY_BUSY_SECONDS", "3"))
         now = time.time()

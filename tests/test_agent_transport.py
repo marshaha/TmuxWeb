@@ -673,7 +673,7 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
         before = len(agent.received)
         captures, statuses = self._transport().capture_and_status_many(
             ["%9", "%10"], status_ids=["%9", "%10"])
-        self.assertEqual(captures, {"%9": "screen nine", "%10": "screen ten"})
+        self.assertEqual(captures, {"%9": "screen nine", "%10": "screen ten\n"})
         self.assertEqual(statuses, {"%9": "busy", "%10": "idle"})
         packets = agent.received[before:]
         self.assertEqual(len(packets), 1)
@@ -686,7 +686,7 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
         agent = self._connect_agent(exec_handler=_sweep_exec)
         before = len(agent.received)
         captures, statuses = self._transport().capture_and_status_many(["%9", "%10"])
-        self.assertEqual(captures, {"%9": "screen nine", "%10": "screen ten"})
+        self.assertEqual(captures, {"%9": "screen nine", "%10": "screen ten\n"})
         self.assertEqual(statuses, {})
         packets = agent.received[before:]
         self.assertEqual(len(packets), 1)
@@ -719,6 +719,19 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
         self.assertIn("capture-pane", calls[0])
         self.assertIn("TMUXWEB_STATUS_ONLY", calls[1])
         self.assertEqual(self.registry.status(self.host_id)["last_transport"], "ssh")
+
+    def test_capture_many_sends_one_batch_for_many_panes(self):
+        # capture_many is a single script, so N panes cost one agent
+        # round trip — pin it, so a future refactor cannot silently
+        # turn it back into one call per pane.
+        agent = self._connect_agent(exec_handler=_sweep_exec)
+        before = len(agent.received)
+        result = self._transport().capture_many(["%9", "%10"], 40)
+        self.assertEqual(result, {"%9": "screen nine", "%10": "screen ten\n"})
+        packets = agent.received[before:]
+        self.assertEqual(len(packets), 1)
+        self.assertEqual(len(packets[0]["ops"]), 1)
+        self.assertIn("capture-pane", packets[0]["ops"][0]["command"])
 
     def test_list_capture_send_go_through_the_agent(self):
         agent = self._connect_agent()

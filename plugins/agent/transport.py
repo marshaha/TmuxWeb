@@ -361,6 +361,42 @@ class AgentTransport(SSHRunner):
             args=command, returncode=int(result.get("returncode", 0)),
             stdout=stdout, stderr=stderr)
 
+    def capture_and_status_many(self, pane_ids, history: int = 40,
+                                status_ids=None, panes: dict | None = None) -> tuple[dict, dict]:
+        """Capture panes and ask their session files in one agent round trip.
+
+        The sweep needs both per host per cycle; sending the two scripts
+        as one batch costs one round trip instead of two. ``status_ids``
+        is the subset with a provider (only those have a session file to
+        ask); omit it and only the capture runs. Returns
+        ``(captures, statuses)``, parsed exactly like :meth:`capture_many`
+        and :meth:`status_many` parse them, so a host answers the same
+        over either transport. A failed capture op raises RuntimeError,
+        like ``capture_many``; a failed status op just yields no statuses,
+        like ``status_many``. AgentUnavailable falls back to the two SSH
+        runs (see :meth:`run_many`); a timeout while connected propagates,
+        never re-run over SSH.
+        """
+        cap_script = self._capture_many_script(pane_ids, history)
+        status_script = self._status_many_script(status_ids) if status_ids else None
+        commands = [script for script in (cap_script, status_script)
+                    if script is not None]
+        if not commands:
+            return {}, {}
+        results = self.run_many(commands, timeout=self.capture_timeout or 15)
+        # run_many returns one CompletedProcess per command, in order.
+        captured = results[0]
+        if captured.returncode != 0 and not captured.stdout:
+            raise RuntimeError(captured.stderr.decode(errors="replace").strip()
+                               or "remote capture failed")
+        captures = self._parse_capture_many_output(
+            captured.stdout.decode(errors="replace"))
+        statuses = {}
+        if status_script is not None:
+            statuses = self._parse_status_many_output(
+                results[1].stdout.decode(errors="replace"))
+        return captures, statuses
+
     def capture_with_pane(self, pane_id: str, history: int = 500) -> tuple[dict, str]:
         """List panes and capture one pane in a single agent round trip.
 
