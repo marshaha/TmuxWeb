@@ -720,6 +720,75 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
         self.assertIn("TMUXWEB_STATUS_ONLY", calls[1])
         self.assertEqual(self.registry.status(self.host_id)["last_transport"], "ssh")
 
+    def test_capture_and_status_many_splits_status_into_chunks(self):
+        """17 status panes must not pay the per-pane loop serially in one op.
+
+        One batch still (one round trip), but the status script is split
+        into parallel ops so the batch no longer waits on a single serial
+        loop: 1 capture op + up to 4 status ops, verdicts merged.
+        """
+        import re
+
+        def handler(op):
+            command = op["command"]
+            listed = re.search(r"for pane in ([^;]+);", command).group(1)
+            panes = re.findall(r"%\d+", listed)
+            if "TMUXWEB_STATUS_ONLY" in command:
+                lines = "".join("\x1f%s idle\n" % pane for pane in panes)
+                return _ok(lines.encode())
+            if "capture-pane" in command:
+                lines = "".join("\x1e%s\nscreen %s\n" % (pane, pane) for pane in panes)
+                return _ok(lines.encode())
+            return _ok(b"")
+
+        agent = self._connect_agent(exec_handler=handler)
+        ids = ["%%%d" % i for i in range(1, 18)]
+        before = len(agent.received)
+        captures, statuses = self._transport().capture_and_status_many(
+            ids, status_ids=ids)
+        self.assertEqual(len(captures), 17)
+        self.assertEqual(len(statuses), 17)
+        self.assertTrue(all(state == "idle" for state in statuses.values()))
+        packets = agent.received[before:]
+        self.assertEqual(len(packets), 1)  # still one round trip
+        ops = packets[0]["ops"]
+        status_ops = [op for op in ops if "TMUXWEB_STATUS_ONLY" in op["command"]]
+        self.assertEqual(len(ops), 1 + len(status_ops))
+        self.assertGreater(len(status_ops), 1)  # chunked, not one serial loop
+        self.assertLessEqual(len(status_ops), 4)
+        asked = []
+        for op in status_ops:
+            listed = re.search(r"for pane in ([^;]+);", op["command"]).group(1)
+            asked.extend(re.findall(r"%\d+", listed))
+        self.assertEqual(sorted(asked), sorted(ids))  # every pane asked exactly once
+
+    def test_capture_and_status_many_keeps_other_status_chunks_when_one_fails(self):
+        """A dead status chunk must not lose the verdicts the other chunks got."""
+        import re
+
+        def handler(op):
+            command = op["command"]
+            listed = re.search(r"for pane in ([^;]+);", command).group(1)
+            panes = re.findall(r"%\d+", listed)
+            if "TMUXWEB_STATUS_ONLY" in command:
+                if "%1" in panes:
+                    return {"ok": False, "error": "tmux died"}
+                lines = "".join("\x1f%s busy\n" % pane for pane in panes)
+                return _ok(lines.encode())
+            if "capture-pane" in command:
+                lines = "".join("\x1e%s\nscreen %s\n" % (pane, pane) for pane in panes)
+                return _ok(lines.encode())
+            return _ok(b"")
+
+        agent = self._connect_agent(exec_handler=handler)
+        ids = ["%%%d" % i for i in range(1, 18)]
+        captures, statuses = self._transport().capture_and_status_many(
+            ids, status_ids=ids)
+        self.assertEqual(len(captures), 17)  # capture survives a dead status chunk
+        self.assertEqual(len(statuses), 12)  # chunk 0 holds %1..%5
+        self.assertNotIn("%1", statuses)
+        self.assertEqual(statuses["%17"], "busy")
+
     def test_capture_many_sends_one_batch_for_many_panes(self):
         # capture_many is a single script, so N panes cost one agent
         # round trip — pin it, so a future refactor cannot silently

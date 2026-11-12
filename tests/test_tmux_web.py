@@ -1836,6 +1836,129 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(RecordingRunner.calls,
                          [("capture_and_status_many", ("%9",), 40, ("%9",))])
 
+    def test_panes_status_answers_from_a_stale_cache_without_waiting_for_the_sweep(self):
+        """过期缓存要立刻回旧状态；只有冷缓存才短等，绝不等整轮 sweep。"""
+        import time
+
+        class SlowTmux(FakeTmux):
+            """抓屏一次睡 3 秒：sweep 本身慢，但 status 不能跟着慢。"""
+
+            def capture_many(self, pane_ids, history=40, panes=None):
+                time.sleep(3.0)
+                return super().capture_many(pane_ids, history, panes)
+
+        client = TestClient(create_app(
+            SlowTmux(),
+            password="unit-test-admin-password",
+            session_secret="test-secret",
+            terminal_factory=FakeTerminalFactory(),
+            share_db=":memory:",
+            remote_store=FakeRemoteStore(),
+            remote_runner_factory=FakeSSHRunner,
+        ))
+        response = client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+
+        # 冷缓存：旧代码要等满 2.0 秒，新代码只短等 0.5 秒
+        started = time.monotonic()
+        first = client.get("/api/panes/status")
+        cold_elapsed = time.monotonic() - started
+        self.assertEqual(first.status_code, 200)
+        self.assertLess(cold_elapsed, 1.5)
+
+        # 等后台 sweep 跑完，把缓存填上
+        states = []
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            states = client.get("/api/panes/status").json()["panes"]
+            if states:
+                break
+            time.sleep(0.2)
+        self.assertTrue(states, "后台 sweep 应该把缓存填上")
+
+        # 再把缓存“推”过期 31 秒：旧代码又要等 2.0 秒，新代码立刻回旧状态
+        real_time = time.time
+
+        def shifted():
+            return real_time() + 31
+
+        with mock.patch("time.time", side_effect=shifted):
+            started = time.monotonic()
+            resp = client.get("/api/panes/status")
+            stale_elapsed = time.monotonic() - started
+        self.assertEqual(resp.status_code, 200)
+        self.assertLess(stale_elapsed, 1.0)
+        self.assertEqual({item["id"] for item in resp.json()["panes"]},
+                         {item["id"] for item in states})
+
+    def test_sweep_backs_off_after_a_slow_sweep(self):
+        """一轮 sweep 越慢，下一轮隔得越久：宁可状态旧一点，也不让 tmux 一直忙。
+
+        缓存 ttl 是 30 秒，但一轮 sweep 结束后至少 60 秒内不再开新轮
+        （慢轮按 2 倍时长再延后），这样 tmux 服务器能空下来响应用户操作。
+        """
+        import time
+
+        class SlowTmux(FakeTmux):
+            """抓屏一次睡 0.5 秒并计数：sweep 的开始次数就是调用次数。"""
+
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def capture_many(self, pane_ids, history=40, panes=None):
+                self.calls += 1
+                time.sleep(0.5)
+                return super().capture_many(pane_ids, history, panes)
+
+        tmux = SlowTmux()
+        client = TestClient(create_app(
+            tmux,
+            password="unit-test-admin-password",
+            session_secret="test-secret",
+            terminal_factory=FakeTerminalFactory(),
+            share_db=":memory:",
+            remote_store=FakeRemoteStore(),
+            remote_runner_factory=FakeSSHRunner,
+        ))
+        response = client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+
+        now = [time.time()]
+
+        def fake_time():
+            return now[0]
+
+        with mock.patch("time.time", side_effect=fake_time):
+            # 第一轮：冷缓存，立刻开扫
+            client.get("/api/panes/status")
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                states = client.get("/api/panes/status").json()["panes"]
+                if states:
+                    break
+                time.sleep(0.2)
+            self.assertTrue(states, "后台 sweep 应该把缓存填上")
+            self.assertEqual(tmux.calls, 1)
+
+            # 缓存过期（31 秒 > ttl 30），但上一轮刚结束 31 秒 < 间隔 60 秒：不开新轮
+            now[0] += 31
+            resp = client.get("/api/panes/status")
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual({item["id"] for item in resp.json()["panes"]},
+                             {item["id"] for item in states})
+            self.assertEqual(tmux.calls, 1)
+
+            # 再过 30 秒（共 61 秒 > 间隔 60 秒）：新一轮必须开起来
+            now[0] += 30
+            client.get("/api/panes/status")
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if tmux.calls > 1:
+                    break
+                time.sleep(0.2)
+            self.assertGreater(tmux.calls, 1)
+
     def test_every_pane_gets_a_stable_short_number(self):
         """多服务器场景：每个窗口一个 #N，和主机/pane id 无关，编号不回收。"""
         # 独立的 home.db：编号是全局的，不能和别的用例共用一张表
