@@ -36,7 +36,7 @@ import threading
 import time
 import uuid
 
-from remote_hosts import ANSI_RE, PANE_ID_RE, SSHRunner
+from remote_hosts import ANSI_RE, PANE_ID_RE, SSHRunner, _status_chunks
 
 LOGGER = logging.getLogger("tmuxweb.agent")
 
@@ -365,36 +365,49 @@ class AgentTransport(SSHRunner):
                                 status_ids=None, panes: dict | None = None) -> tuple[dict, dict]:
         """Capture panes and ask their session files in one agent round trip.
 
-        The sweep needs both per host per cycle; sending the two scripts
-        as one batch costs one round trip instead of two. ``status_ids``
-        is the subset with a provider (only those have a session file to
-        ask); omit it and only the capture runs. Returns
-        ``(captures, statuses)``, parsed exactly like :meth:`capture_many`
-        and :meth:`status_many` parse them, so a host answers the same
-        over either transport. A failed capture op raises RuntimeError,
-        like ``capture_many``; a failed status op just yields no statuses,
-        like ``status_many``. AgentUnavailable falls back to the two SSH
-        runs (see :meth:`run_many`); a timeout while connected propagates,
-        never re-run over SSH.
+        The sweep needs both per host per cycle; sending the scripts as one
+        batch costs one round trip instead of two. ``status_ids`` is the
+        subset with a provider (only those have a session file to ask); omit
+        it and only the capture runs. Returns ``(captures, statuses)``,
+        parsed exactly like :meth:`capture_many` and :meth:`status_many`
+        parse them, so a host answers the same over either transport. A
+        failed capture op raises RuntimeError, like ``capture_many``; a
+        failed status op just yields no statuses, like ``status_many``.
+        AgentUnavailable falls back to the two SSH runs (see :meth:`run_many`);
+        a timeout while connected propagates, never re-run over SSH.
+
+        The status script loops over its panes serially (~0.3s a pane), so a
+        big host's single status op used to be the whole sweep: it is split
+        into up to 4 ops in the same batch and the agent runs them in
+        parallel; a small host still sends exactly one status op.
         """
         cap_script = self._capture_many_script(pane_ids, history)
-        status_script = self._status_many_script(status_ids) if status_ids else None
-        commands = [script for script in (cap_script, status_script)
-                    if script is not None]
+        status_scripts = []
+        if status_ids:
+            for chunk in _status_chunks(list(status_ids)):
+                script = self._status_many_script(chunk)
+                if script is not None:
+                    status_scripts.append(script)
+        commands = ([cap_script] if cap_script is not None else []) + status_scripts
         if not commands:
             return {}, {}
         results = self.run_many(commands, timeout=self.capture_timeout or 15)
         # run_many returns one CompletedProcess per command, in order.
-        captured = results[0]
-        if captured.returncode != 0 and not captured.stdout:
-            raise RuntimeError(captured.stderr.decode(errors="replace").strip()
-                               or "remote capture failed")
-        captures = self._parse_capture_many_output(
-            captured.stdout.decode(errors="replace"))
+        captures: dict = {}
+        if cap_script is not None:
+            captured = results[0]
+            if captured.returncode != 0 and not captured.stdout:
+                raise RuntimeError(captured.stderr.decode(errors="replace").strip()
+                                   or "remote capture failed")
+            captures = self._parse_capture_many_output(
+                captured.stdout.decode(errors="replace"))
+            status_results = results[1:]
+        else:
+            status_results = results
         statuses = {}
-        if status_script is not None:
-            statuses = self._parse_status_many_output(
-                results[1].stdout.decode(errors="replace"))
+        for result in status_results:
+            statuses.update(self._parse_status_many_output(
+                result.stdout.decode(errors="replace")))
         return captures, statuses
 
     def capture_with_pane(self, pane_id: str, history: int = 500) -> tuple[dict, str]:

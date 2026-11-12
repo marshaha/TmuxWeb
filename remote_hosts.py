@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import gzip
 import hashlib
 import hmac
@@ -1321,6 +1322,19 @@ class RemoteHostStore:
         return chain[0] if chain else None
 
 
+def _status_chunks(ids, max_chunks: int = 4, single_up_to: int = 8) -> list:
+    """Split pane ids for parallel status probes.
+
+    Small hosts stay one call (one round trip); a big host is split into
+    contiguous chunks so the serial per-pane loop runs side by side instead
+    of one pane after another. Shared by the SSH and agent transports.
+    """
+    if len(ids) <= single_up_to:
+        return [ids]
+    size = (len(ids) + max_chunks - 1) // max_chunks
+    return [ids[i:i + size] for i in range(0, len(ids), size)]
+
+
 class SSHRunner:
     def __init__(self, host: dict):
         self.host = host
@@ -2281,18 +2295,45 @@ class SSHRunner:
             result[current] = ANSI_RE.sub("", "\n".join(buffer))
         return result
 
-    def status_many(self, pane_ids) -> dict:
-        """Ask each agent pane's session file whether its turn is still running.
-
-        One ssh for the whole host: the transcript script's status-only mode resolves
-        the session file exactly like a transcript read would (same Claude/Kimi
-        disambiguation) and prints nothing but the verdict.
-        """
-        script = self._status_many_script(pane_ids)
+    def _status_many_chunk(self, ids) -> dict:
+        """One ssh call asking the verdict for a few panes; see status_many."""
+        script = self._status_many_script(ids)
         if script is None:
             return {}
         completed = self.run(script, timeout=self.transcript_timeout)
         return self._parse_status_many_output(completed.stdout.decode(errors="replace"))
+
+    def status_many(self, pane_ids) -> dict:
+        """Ask each agent pane's session file whether its turn is still running.
+
+        The transcript script's status-only mode resolves the session file exactly
+        like a transcript read would (same Claude/Kimi disambiguation) and prints
+        nothing but the verdict.
+
+        One host used to pay the per-pane loop serially: ~0.3-0.44s a pane, 7-11s
+        for a 17-26 pane host, which was the whole pane sweep. Split into a few
+        chunks and run them side by side; each chunk is still one ssh call, so a
+        small host still costs exactly one round trip. A chunk that fails only
+        loses its own panes (they stay unknown); the rest still land.
+        """
+        ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))][:80]
+        if not ids:
+            return {}
+        chunks = _status_chunks(ids)
+        if len(chunks) == 1:
+            return self._status_many_chunk(chunks[0])
+
+        def _safe(chunk):
+            try:
+                return self._status_many_chunk(chunk)
+            except Exception:
+                return {}
+
+        result: dict = {}
+        with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+            for partial in pool.map(_safe, chunks):
+                result.update(partial)
+        return result
 
     @staticmethod
     def _status_many_script(pane_ids) -> str | None:

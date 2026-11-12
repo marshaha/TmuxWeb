@@ -1038,6 +1038,56 @@ class RemoteHostTests(unittest.TestCase):
         self.assertIn("TMUXWEB_STATUS_ONLY=1", command)
         self.assertIn("TMUXWEB_STATUS", command)
 
+    def test_status_many_splits_a_big_host_into_parallel_chunks(self):
+        """17 panes on one host must not pay the per-pane loop serially (7s+)."""
+        import re
+        import threading
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+        calls = []
+        lock = threading.Lock()
+
+        def fake_run(command, **kwargs):
+            listed = re.search(r"for pane in ([^;]+);", command).group(1)
+            panes = re.findall(r"%\d+", listed)
+            with lock:
+                calls.append(tuple(panes))
+            lines = "".join("\x1f%s idle\n" % pane for pane in panes)
+            return subprocess.CompletedProcess([], 0, lines.encode(), b"")
+
+        ids = ["%%%d" % i for i in range(1, 18)]
+        with mock.patch.object(runner, "run", side_effect=fake_run):
+            states = runner.status_many(ids)
+        self.assertEqual(len(states), 17)
+        self.assertEqual(set(states), set(ids))
+        self.assertTrue(all(state == "idle" for state in states.values()))
+        self.assertGreater(len(calls), 1)          # chunked, not one serial loop
+        self.assertLessEqual(len(calls), 4)
+        asked = [pane for call in calls for pane in call]
+        self.assertEqual(sorted(asked), sorted(ids))  # every pane asked exactly once
+
+    def test_status_many_keeps_other_chunks_when_one_fails(self):
+        """A dead chunk must not lose the verdicts the other chunks already got."""
+        import re
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+
+        def fake_run(command, **kwargs):
+            listed = re.search(r"for pane in ([^;]+);", command).group(1)
+            panes = re.findall(r"%\d+", listed)
+            if "%1" in panes:
+                raise RuntimeError("ssh hiccup")
+            lines = "".join("\x1f%s busy\n" % pane for pane in panes)
+            return subprocess.CompletedProcess([], 0, lines.encode(), b"")
+
+        ids = ["%%%d" % i for i in range(1, 18)]
+        with mock.patch.object(runner, "run", side_effect=fake_run):
+            states = runner.status_many(ids)
+        # chunk 0 holds %1..%5 (contiguous split); the other 12 panes still land
+        self.assertEqual(len(states), 12)
+        self.assertNotIn("%1", states)
+        self.assertEqual(states["%17"], "busy")
+
     def test_the_remote_attach_records_and_restores_the_window_size(self):
         """A phone-sized attach must not leave the oracle window at 47 columns."""
         host = dict(FAKE_SSH_HOST)

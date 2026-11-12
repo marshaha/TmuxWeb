@@ -1880,6 +1880,11 @@ def create_app(
     pane_state_cache: dict = {"at": 0.0, "states": []}
     pane_state_lock = threading.Lock()
     pane_state_busy = {"flag": False}
+    # The last sweep that finished, for the adaptive interval below.
+    pane_state_last: dict = {"finished_at": 0.0, "duration": 0.0}
+    # The in-flight sweep's completion event: waiters join it instead of each
+    # waiting on a private event that nobody ever sets.
+    pane_state_event: dict = {"event": None}
 
     def _refresh_pane_states() -> None:
         started_at = time.time()
@@ -1888,6 +1893,7 @@ def create_app(
             with pane_state_lock:
                 pane_state_cache.update({"at": time.time(), "states": states})
             elapsed = time.time() - started_at
+            pane_state_last.update({"finished_at": time.time(), "duration": elapsed})
             log = LOGGER.warning if elapsed > 3 else LOGGER.info
             log("pane state sweep: %d panes in %.1fs", len(states), elapsed)
         except Exception:  # noqa: BLE001 - a failed sweep must never kill the poller
@@ -1895,31 +1901,61 @@ def create_app(
         finally:
             pane_state_busy["flag"] = False
 
-    def pane_states_cached(wait: float = 3.0, ttl: float = 30.0) -> list[dict]:
+    def pane_states_cached(wait: float = 3.0, ttl: float = 30.0, stale_ok: bool = False) -> list[dict]:
         """Last known pane states, refreshed once they are older than ``ttl``.
 
         ``wait`` bounds how long a caller blocks for a fresh sweep; a warm cache
         returns at once and a cold one returns whatever is already there after
         the deadline, while the sweep keeps running in the background.
+
+        With ``stale_ok`` a stale but non-empty cache answers at once (the sweep
+        refreshes behind it); only a cold cache waits, up to ``wait``. That is
+        what /api/panes/status wants: the sweep takes seconds on a many-pane
+        host, so waiting for it made every status poll cost the full deadline.
+
+        A sweep also backs off after a slow one: no new sweep starts until at
+        least ``TMUX_WEB_SWEEP_MIN_INTERVAL`` (default 60s) or twice the last
+        sweep's duration (``TMUX_WEB_SWEEP_BACKOFF_FACTOR``, default 2) has
+        passed since the last one finished. A 24s sweep used to re-run 30s
+        later, so the tmux servers never idled and user ops queued behind
+        sweep commands; freshness drops instead — performance first.
         """
         with pane_state_lock:
             fresh = (time.time() - pane_state_cache["at"]) < ttl
             states = pane_state_cache["states"]
+            finished_at = pane_state_last["finished_at"]
+            last_duration = pane_state_last["duration"]
         if fresh:
             return states
-        started = threading.Event()
+        if finished_at:
+            min_interval = max(
+                float(os.environ.get("TMUX_WEB_SWEEP_MIN_INTERVAL", "60")),
+                float(os.environ.get("TMUX_WEB_SWEEP_BACKOFF_FACTOR", "2"))
+                * last_duration)
+            if time.time() - finished_at < min_interval:
+                return states
 
-        def refresh() -> None:
-            _refresh_pane_states()
-            started.set()
+        def refresh(event: threading.Event) -> None:
+            try:
+                _refresh_pane_states()
+            finally:
+                event.set()
 
         with pane_state_lock:
             should_start = not pane_state_busy["flag"]
             if should_start:
                 pane_state_busy["flag"] = True
+                event = threading.Event()
+                pane_state_event["event"] = event
+            else:
+                event = pane_state_event["event"]
         if should_start:
-            threading.Thread(target=refresh, daemon=True).start()
-        started.wait(max(0.0, wait))
+            threading.Thread(target=refresh, args=(event,), daemon=True).start()
+        if stale_ok and states:
+            # Answer from the cache at once; the sweep refreshes behind us.
+            return states
+        if event is not None:
+            event.wait(max(0.0, wait))
         with pane_state_lock:
             return pane_state_cache["states"]
 
@@ -5059,7 +5095,9 @@ def create_app(
     @app.get("/api/panes/status")
     async def pane_states(request: Request):
         require_auth(request)
-        states = await asyncio.to_thread(pane_states_cached, 2.0, 30.0)
+        # Never wait out a whole sweep here: answer from the cache at once when
+        # it holds anything, and only a cold cache waits, briefly.
+        states = await asyncio.to_thread(pane_states_cached, 0.5, 30.0, True)
         return {"panes": [{key: item.get(key) for key in ("id", "provider", "status", "status_source")}
                           for item in states]}
 
