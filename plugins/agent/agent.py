@@ -39,7 +39,7 @@ Protocol (shared with the server-side plugin; do not change unilaterally):
 * v1 op allowlist is just ``"exec"``. An unknown op yields an error
   result; it never breaks the loop.
 
-Standard library only (Python 3.11+). No third-party imports.
+Standard library only (Python 3.9+). No third-party imports.
 
 Usage::
 
@@ -62,6 +62,7 @@ import hashlib
 import json
 import os
 import queue
+import select
 import shutil
 import signal
 import socket
@@ -85,6 +86,31 @@ BACKOFF_CAP = 60.0
 # How many ops of one batch run at once. The batch still returns a
 # single reply, in op order; the pool only overlaps the waiting.
 _BATCH_MAX_WORKERS = 8
+# One fragment of a large outbound message. A fragment is one sendall,
+# so a pong (or a close) queued while a big reply is in flight waits at
+# most one fragment: at the ~50KB/s a relayed tailnet delivers, 16KB
+# costs ~0.3s — far inside the server's 20s ping timeout, where a
+# single 3MB sendall cost the whole transfer and starved pings to death.
+_SEND_FRAGMENT_BYTES = 16384
+# Cap on the socket's send buffer (SO_SNDBUF). Fragmentation alone does
+# not save the pong: the sender can copy fragments into the kernel
+# faster than a slow link drains them, so a pong written between two
+# fragments still queues behind hundreds of KB of reply bytes in the
+# kernel and arrives minutes too late — that is exactly what the
+# slow-link test caught (pong 9.5s late with fragmentation only).
+# Capping the buffer makes the sender pace itself to the drain rate,
+# so a pong never has more than one buffer's worth of reply bytes
+# ahead of it. Linux doubles the value (64KB effective); macOS uses it
+# as-is. Even the smaller end still allows ~160KB/s at a 200ms RTT,
+# three times the ~50KB/s the relayed tailnet actually delivers, so
+# this costs no throughput where the agent runs — and on a fast link
+# the buffer simply stays full and drains at line rate.
+_SEND_BUFFER_BYTES = 32768
+# Per-fragment socket timeout for the sender thread. A slow link must
+# never kill a reply the way the reader's old 5s recv timeout did: a
+# fragment that makes no progress for 30s means the peer is gone, not
+# merely slow. The reader never touches this timeout (see _read_frame).
+_SEND_TIMEOUT = 30.0
 # How many messages run at once (see _MessagePool). The pool exists so
 # one slow message cannot block the others, not to parallelise CPU
 # work: the tmux server itself serialises commands, so more workers
@@ -219,19 +245,216 @@ def _expected_accept(key: str) -> str:
     return base64.b64encode(digest).decode("ascii")
 
 
+class _SendItem:
+    """One queued outbound frame for the sender thread.
+
+    ``kind`` is ``"text"`` (a reply, heartbeat or hello — fragmented
+    when large) or ``"control"`` (a pong or a close frame, always one
+    frame). ``done`` fires when the item was written (or failed), and
+    ``error`` carries the failure for the waiting sender.
+    """
+
+    __slots__ = ("kind", "opcode", "payload", "fin", "done", "error")
+
+    def __init__(self, kind, opcode, payload, fin=True):
+        self.kind = kind
+        self.opcode = opcode
+        self.payload = payload
+        self.fin = fin
+        self.done = threading.Event()
+        self.error = None
+
+
 class WSConnection:
     """A blocking WebSocket connection with a buffered frame reader.
 
-    One instance is used from two threads: a reader thread calls
-    :meth:`read_message`, the main thread calls :meth:`send_text`.
-    Sends are serialised with a lock; the socket itself is full-duplex.
+    One instance is used from several threads: a reader thread calls
+    :meth:`read_message`, message workers and the main loop call
+    :meth:`send_text`, and a dedicated sender thread owns every byte
+    written to the socket. That split is the whole point: on a slow
+    link a big reply used to be one giant ``sendall`` holding the send
+    lock, so the reader could not answer a ping for the whole transfer
+    — the server's ping timeout fired, the reply was abandoned
+    mid-frame (leaving a partial frame that queued every later pong
+    behind it in the TCP send queue), and the connection flapped. Now
+    a large message goes out as 64KB fragments and a pong or close
+    queued mid-transfer is written between two fragments, so the
+    connection survives a transfer of any length; and the socket
+    timeout the sender uses is a generous per-fragment budget, never
+    the reader's short recv timeout. The send buffer is capped as
+    well (see _SEND_BUFFER_BYTES): without that, fragments copied
+    into the kernel faster than a slow link drains them would still
+    queue a pong behind the whole reply.
     """
 
     def __init__(self, sock: socket.socket) -> None:
         self._sock = sock
         self._buf = bytearray()
-        self._send_lock = threading.Lock()
+        # Bound the kernel send queue (see _SEND_BUFFER_BYTES): without
+        # this the sender copies fragments into the kernel faster than
+        # a slow link drains them, and a pong written between two
+        # fragments still queues behind the whole reply. Setting
+        # SO_SNDBUF also locks the size (no autotuning), so the bound
+        # holds for the life of the connection. Best effort: if the
+        # platform refuses it, fragmentation alone still bounds the
+        # sender's busy time per fragment.
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF,
+                            _SEND_BUFFER_BYTES)
+        except OSError as exc:
+            log(f"could not cap the send buffer: {exc}")
+        # Control first, replies second: the sender always drains the
+        # control queue between two fragments of a big reply.
+        self._control_queue: queue.Queue = queue.Queue()
+        self._data_queue: queue.Queue = queue.Queue()
+        # Guards "is the sender still alive?" + enqueue, so a send
+        # can neither slip in after the sender's final drain (and wait
+        # forever) nor race it.
+        self._enqueue_lock = threading.Lock()
+        self._send_error = None
+        self._sender_done = threading.Event()
         self._close_sent = False
+        self._sender_thread = threading.Thread(
+            target=self._sender_loop, name="tmuxweb-agent-send", daemon=True)
+        self._sender_thread.start()
+
+    # -- sender thread --------------------------------------------------
+    def _sender_loop(self) -> None:
+        """Write queued frames until a close is asked or a write fails.
+
+        Runs on its own thread and is the only code that ever writes
+        to the socket, so frames can never interleave and the reader
+        never blocks on a send. A write failure is fatal to the
+        connection: the socket is shut down (the reader learns it from
+        its next read and the daemon reconnects) and every queued item
+        fails, so no send_text waits forever.
+        """
+        try:
+            self._sock.settimeout(_SEND_TIMEOUT)
+            while True:
+                item = self._take_item()
+                if item.kind == "control":
+                    if item.opcode == OP_CLOSE:
+                        self._write_frame(OP_CLOSE, item.payload)
+                        item.done.set()
+                        self._send_error = ConnectionClosed(
+                            1000, "connection closed by request")
+                        return
+                    self._write_frame(item.opcode, item.payload)
+                    item.done.set()
+                    continue
+                try:
+                    self._send_fragmented(item)
+                except Exception as exc:  # noqa: BLE001 - item carries it
+                    item.error = exc
+                    item.done.set()
+                    raise
+                item.done.set()
+        except Exception as exc:  # noqa: BLE001 - sender never dies quietly
+            if self._send_error is None:
+                self._send_error = exc
+        finally:
+            self._sender_done.set()
+            self._fail_queued()
+            self._shutdown_socket()
+
+    def _take_item(self) -> _SendItem:
+        """Next item to send: a queued control frame beats a reply."""
+        while True:
+            try:
+                return self._control_queue.get(timeout=0.1)
+            except queue.Empty:
+                pass
+            try:
+                return self._data_queue.get_nowait()
+            except queue.Empty:
+                continue
+
+    def _drain_control(self) -> bool:
+        """Send every queued control frame now.
+
+        Runs between two fragments of a big reply, which is how a pong
+        gets out while the reply is still in flight. Returns True when
+        a close was asked: the current message is abandoned and the
+        sender exits.
+        """
+        while True:
+            try:
+                item = self._control_queue.get_nowait()
+            except queue.Empty:
+                return False
+            if item.opcode == OP_CLOSE:
+                self._write_frame(OP_CLOSE, item.payload)
+                item.done.set()
+                self._send_error = ConnectionClosed(
+                    1000, "connection closed by request")
+                return True
+            self._write_frame(item.opcode, item.payload)
+            item.done.set()
+
+    def _send_fragmented(self, item: _SendItem) -> None:
+        """Write a text message as 16KB fragments (RFC 6455 section 5.4).
+
+        Control frames may legally sit between two fragments, so a
+        pong queued mid-message is written before the next fragment
+        instead of behind the whole message — and the capped send
+        buffer (see __init__) means it also has at most one buffer's
+        worth of reply bytes ahead of it in the kernel. A fragment
+        that makes no progress for _SEND_TIMEOUT raises and kills the
+        sender (see _sender_loop): a half-sent fragment on a dead
+        connection is better than a hung one, because the daemon
+        reconnects and the server fails the op at once instead of
+        timing it out.
+        """
+        payload = item.payload
+        offset = 0
+        first = True
+        while True:
+            chunk = payload[offset:offset + _SEND_FRAGMENT_BYTES]
+            fin = offset + len(chunk) >= len(payload)
+            self._write_frame(
+                OP_TEXT if first else OP_CONTINUATION, chunk, fin=fin)
+            offset += len(chunk)
+            first = False
+            if fin:
+                return
+            if self._drain_control():
+                raise ConnectionClosed(1000, "close requested mid-message")
+
+    def _write_frame(self, opcode: int, payload: bytes, fin: bool = True) -> None:
+        """One frame onto the socket. Sender thread only: no lock."""
+        self._sock.sendall(encode_frame(payload, opcode=opcode, fin=fin, mask=True))
+
+    def _fail_queued(self) -> None:
+        """Fail every item still queued, so no send_text waits forever."""
+        error = self._send_error
+        if error is None:
+            error = ConnectionClosed(1006, "sender stopped")
+        with self._enqueue_lock:
+            for source in (self._control_queue, self._data_queue):
+                while True:
+                    try:
+                        item = source.get_nowait()
+                    except queue.Empty:
+                        break
+                    item.error = error
+                    item.done.set()
+
+    def _shutdown_socket(self) -> None:
+        """Shutdown + close the socket, ignoring errors. Idempotent."""
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+    def _send_error_text(self) -> str:
+        if self._send_error is None:
+            return "sender stopped"
+        return str(self._send_error)
 
     # -- handshake ------------------------------------------------------
     @classmethod
@@ -316,8 +539,28 @@ class WSConnection:
         return cls(sock)
 
     # -- framing --------------------------------------------------------
+    def _wait_readable(self) -> bool:
+        """True when a recv would return promptly (or the socket died).
+
+        An SSLSocket can hold decrypted bytes ``select`` cannot see,
+        so ask it first; a plain socket goes straight to ``select``.
+        A closed socket raises OSError/ValueError, which the caller
+        turns into ConnectionClosed.
+        """
+        pending = getattr(self._sock, "pending", None)
+        if callable(pending) and pending():
+            return True
+        readable, _, _ = select.select([self._sock], [], [], 5.0)
+        return bool(readable)
+
     def _read_frame(self):
-        """Read one raw frame, reassembling nothing; blocks until it arrives."""
+        """Read one raw frame, reassembling nothing; blocks until it arrives.
+
+        Waits with ``select`` instead of a socket timeout: the sender
+        thread owns the socket timeout (a generous per-fragment send
+        budget), and this thread must never shrink it to a short recv
+        budget — that leak is what used to kill a big reply mid-send.
+        """
         while True:
             parsed = parse_one_frame(bytes(self._buf))
             if parsed is not None:
@@ -327,7 +570,11 @@ class WSConnection:
                     raise WebSocketError("incoming frame exceeds the size limit")
                 return fin, opcode, payload
             try:
-                self._sock.settimeout(5.0)
+                if not self._wait_readable():
+                    continue
+            except (OSError, ValueError) as exc:
+                raise ConnectionClosed(1006, str(exc)) from exc
+            try:
                 chunk = self._sock.recv(65536)
             except socket.timeout:
                 continue
@@ -344,6 +591,8 @@ class WSConnection:
 
         Ping frames are answered with pong inline; pong frames are
         ignored; a close frame is echoed and raises ConnectionClosed.
+        The pong is only *queued* here — the sender thread writes it,
+        so answering a ping never blocks on a reply in flight.
         """
         fragments: list[bytes] = []
         while True:
@@ -388,32 +637,58 @@ class WSConnection:
             raise WebSocketError(f"incoming message is not valid utf-8: {exc}") from exc
 
     def send_frame(self, opcode: int, payload: bytes, fin: bool = True) -> None:
-        with self._send_lock:
-            self._sock.sendall(encode_frame(payload, opcode=opcode, fin=fin, mask=True))
+        """Queue a control frame (pong / close echo). Never blocks.
+
+        The sender thread writes it — between two fragments of a big
+        reply when one is in flight — so answering a ping can never
+        stall behind a reply. A frame queued after the sender died is
+        dropped: the reader learns the connection is gone from its
+        next read, and a pong for a dead connection means nothing.
+        """
+        item = _SendItem("control", opcode, payload, fin)
+        with self._enqueue_lock:
+            if self._sender_done.is_set():
+                return
+            self._control_queue.put(item)
 
     def send_text(self, text: str) -> None:
-        self.send_frame(OP_TEXT, text.encode("utf-8"))
+        """Queue a text message and wait until the sender wrote it all.
+
+        The wait is per-message: the sender thread sends other
+        messages and queued pongs meanwhile, so one slow reply never
+        holds up the connection. Raises ConnectionClosed when the
+        sender thread is gone or the write failed — the caller must
+        answer with an error result instead of dropping the reply
+        (see _send_reply).
+        """
+        item = _SendItem("text", OP_TEXT, text.encode("utf-8"))
+        with self._enqueue_lock:
+            if self._sender_done.is_set():
+                raise ConnectionClosed(1006, self._send_error_text())
+            self._data_queue.put(item)
+        item.done.wait()
+        if item.error is not None:
+            raise ConnectionClosed(1006, str(item.error))
 
     def close(self, code: int = 1000, reason: str = "") -> None:
-        """Best-effort close handshake, then close the socket."""
-        if not self._close_sent:
-            self._close_sent = True
-            try:
-                payload = struct.pack("!H", code) + reason.encode("utf-8")
-                with self._send_lock:
-                    self._sock.settimeout(2.0)
-                    self._sock.sendall(
-                        encode_frame(payload, opcode=OP_CLOSE, mask=True))
-            except Exception:
-                pass
-        try:
-            self._sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            self._sock.close()
-        except OSError:
-            pass
+        """Best-effort close handshake, then close the socket.
+
+        The close frame is queued for the sender thread, so it goes
+        out between two fragments of a big reply like a pong does;
+        when the sender is already gone the socket is closed directly.
+        Never blocks: a close must not wait behind a reply.
+        """
+        if self._close_sent:
+            self._shutdown_socket()
+            return
+        self._close_sent = True
+        payload = struct.pack("!H", code) + reason.encode("utf-8")
+        item = _SendItem("control", OP_CLOSE, payload)
+        with self._enqueue_lock:
+            if self._sender_done.is_set():
+                self._shutdown_socket()
+                return
+            self._control_queue.put(item)
 
 
 def _close_quietly(conn: WSConnection | None) -> None:
@@ -680,8 +955,9 @@ def handle_batch(message: dict, resolver: TmuxResolver) -> dict:
     Batches from different messages may overlap (see _MessagePool):
     a single send sequence still cannot overtake itself, because the
     server only sends its next op after the previous reply arrives.
-    Replies are sent under the connection's _send_lock (see
-    WSConnection.send_text), so they never interleave on the wire.
+    Replies are sent by the connection's sender thread (see
+    WSConnection.send_text), which is the only code that ever writes
+    to the socket, so they never interleave on the wire.
     """
     request_id = message.get("id")
     if not isinstance(request_id, str):
@@ -735,6 +1011,29 @@ def _sleep_interruptible(seconds: float, stop_event: threading.Event | None) -> 
         time.sleep(min(0.1, remaining))
 
 
+def _send_reply(conn: WSConnection, reply: dict) -> None:
+    """Send a computed reply; on failure, answer with an error result.
+
+    A reply whose send fails must never be dropped silently: the old
+    code logged "dropping reply for a message" and moved on, so the
+    server-side op waited out its whole timeout instead of failing at
+    once. The error reply is best effort — when the connection is
+    already gone it fails too, and the server then learns it from the
+    disconnect (which fails the pending op immediately instead of
+    timing it out). Either way the caller gets an answer, not silence.
+    """
+    try:
+        conn.send_text(json.dumps(reply))
+    except Exception as exc:  # noqa: BLE001 - answer, don't drop
+        log(f"reply send failed ({exc!r}); attempting error reply")
+        try:
+            conn.send_text(json.dumps({
+                "id": reply.get("id", ""), "ok": False,
+                "error": f"agent could not send reply: {exc}"}))
+        except Exception as exc2:  # noqa: BLE001 - connection is gone
+            log(f"error reply also failed, connection is gone: {exc2!r}")
+
+
 def _handle_message(conn: WSConnection, text: str, resolver: TmuxResolver) -> None:
     try:
         message = json.loads(text)
@@ -749,8 +1048,7 @@ def _handle_message(conn: WSConnection, text: str, resolver: TmuxResolver) -> No
         log(f"welcome from host {who}")
         return
     if "ops" in message:
-        reply = handle_batch(message, resolver)
-        conn.send_text(json.dumps(reply))
+        _send_reply(conn, handle_batch(message, resolver))
         return
     log(f"ignoring unknown message type: {message.get('type')!r}")
 
@@ -769,7 +1067,8 @@ class _MessagePool:
     disconnect the queued work must go away at once. ``shutdown()``
     drains the queue (not-yet-started items are dropped) and the
     workers exit after their current item; a worker whose connection
-    is already gone just drops its reply. No deadlock is possible
+    is already gone gets its reply answered with an error result
+    (see _send_reply) or learns it from the disconnect. No deadlock is possible
     between the pools: a message worker only ever waits on its own
     op pool (see ``handle_batch``), never on this pool, and op workers
     never touch this pool.
@@ -849,15 +1148,21 @@ def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
 
     # Messages run on the pool (see _MessagePool), so the loop never
     # blocks on a slow batch: the next message is read and dispatched
-    # right away and the heartbeat stays on schedule. Replies are
-    # sent from the workers under the connection's _send_lock (see
+    # right away and the heartbeat stays on schedule. Replies are sent
+    # from the workers through the connection's sender thread (see
     # WSConnection.send_text) and matched to callers by request_id on
     # the server, so arrival order between messages does not matter.
+    # The heartbeat may wait behind a big reply in the sender's queue
+    # (same as it waited on the old send lock); liveness is the
+    # server's ping, not this heartbeat.
     def _dispatch(text: str) -> None:
         try:
             _handle_message(conn, text, resolver)
-        except Exception as exc:  # noqa: BLE001 - socket gone, drop it
-            log(f"dropping reply for a message: {exc!r}")
+        except Exception as exc:  # noqa: BLE001 - a send failure is
+            # answered with an error reply inside _send_reply; anything
+            # reaching here is the batch itself failing, which is logged
+            # and never takes the worker (or the pool) down with it.
+            log(f"message worker failed: {exc!r}")
 
     pool = _MessagePool(_MESSAGE_MAX_WORKERS, _dispatch)
     try:
