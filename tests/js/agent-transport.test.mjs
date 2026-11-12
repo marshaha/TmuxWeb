@@ -154,6 +154,58 @@ test('install and manual install hit the agreed agent endpoints with no token lo
   assert.doesNotMatch(hostsPage, /console\.log/, 'the page must never log (a token must never reach the console)');
 });
 
+test('clicking 安装 agent / 手动安装 hands the host id from data-install-agent / data-manual-install to the installer', async () => {
+  // The rendered install buttons carry data-install-agent / data-manual-install
+  // and NO data-id (only the transport/move buttons have data-id). The list
+  // click handler must read the id from the button's own attribute: reading
+  // dataset.id used to pass undefined, so the request went to
+  // /api/hosts/undefined/agent-install and came back 404 "remote host not found".
+  const start = hostsPage.indexOf("$('list').onclick=async e=>");
+  assert.notEqual(start, -1, 'missing list click handler');
+  const open = hostsPage.indexOf('{', start);
+  let depth = 0;
+  let end = -1;
+  for (let i = open; i < hostsPage.length; i += 1) {
+    if (hostsPage[i] === '{') depth += 1;
+    else if (hostsPage[i] === '}') {
+      depth -= 1;
+      if (!depth) { end = i; break; }
+    }
+  }
+  assert.notEqual(end, -1, 'unbalanced click handler');
+  const handlerSrc = hostsPage.slice(hostsPage.indexOf('async e=>', start), end + 1);
+  const calls = [];
+  const record = (name) => (id) => { calls.push([name, id]); };
+  const makeHandler = new Function(
+    'switchTransport', 'installAgent', 'showManualInstall', 'copyManualCommand',
+    'openEdit', 'moveHost', 'api', 'load', 'confirm',
+    'return (' + handlerSrc + ');',
+  );
+  const handler = makeHandler(
+    record('switch'), record('install'), record('manual'), record('copy'),
+    record('edit'), record('move'),
+    async () => ({}), async () => {}, () => true,
+  );
+  // a fake click target shaped like the real rendered button: closest() only
+  // matches selectors for attributes the button actually carries, and dataset
+  // mirrors those attributes (so dataset.id is undefined here, as in the page)
+  function fakeTarget(attrs) {
+    const dataset = {};
+    for (const [k, v] of Object.entries(attrs)) dataset[k.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = v;
+    const el = { dataset };
+    el.closest = (sel) => {
+      const m = /^\[data-([a-z-]+)\]$/.exec(sel);
+      return m && Object.prototype.hasOwnProperty.call(attrs, m[1]) ? el : null;
+    };
+    return el;
+  }
+  await handler({ target: fakeTarget({ 'install-agent': 'host-42' }) });
+  assert.deepEqual(calls, [['install', 'host-42']], 'install must receive the host id, not undefined');
+  calls.length = 0;
+  await handler({ target: fakeTarget({ 'manual-install': 'host-42' }) });
+  assert.deepEqual(calls, [['manual', 'host-42']], 'manual install must receive the host id, not undefined');
+});
+
 test('add form and edit dialog both carry a transport select', () => {
   assert.ok(hostsPage.includes('<select id="transport"><option value="ssh">SSH</option><option value="agent">Agent</option></select>'), 'add form transport select defaults to SSH');
   assert.ok(hostsPage.includes('id="transport-hint"'), 'add form must hint that agent install happens after save');
