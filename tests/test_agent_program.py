@@ -57,12 +57,20 @@ class _MiniConn:
 
     def read_frame(self):
         """One frame (unmasking client frames), or None on clean EOF."""
+        parsed = self.read_frame_full()
+        if parsed is None:
+            return None
+        _, opcode, payload = parsed
+        return opcode, payload
+
+    def read_frame_full(self):
+        """One frame as ``(fin, opcode, payload)``, or None on clean EOF."""
         while True:
             parsed = agent_program.parse_one_frame(bytes(self.buf))
             if parsed is not None:
-                _, opcode, payload, consumed = parsed
+                fin, opcode, payload, consumed = parsed
                 del self.buf[:consumed]
-                return opcode, payload
+                return fin, opcode, payload
             chunk = self.sock.recv(65536)
             if not chunk:
                 return None
@@ -136,6 +144,36 @@ def _handshake_101(conn: _MiniConn) -> str:
         "\r\n"
     ).encode("ascii"))
     return request
+
+
+class _PacedReader:
+    """Reads WebSocket frames off a socket at ~``rate_bps``.
+
+    The agent's send is throttled by the server's slow reads plus a tiny
+    receive buffer — what a relayed tailnet looks like to the sender:
+    the kernel buffers cannot absorb a whole big reply, so every send
+    waits on the peer draining. ``read_frame`` returns one frame as
+    ``(fin, opcode, payload)``, or None on EOF.
+    """
+
+    def __init__(self, conn, rate_bps=50 * 1024, chunk=8192):
+        self.conn = conn
+        self.rate_bps = rate_bps
+        self.chunk = chunk
+        self.buf = bytearray()
+
+    def read_frame(self):
+        while True:
+            parsed = agent_program.parse_one_frame(bytes(self.buf))
+            if parsed is not None:
+                fin, opcode, payload, consumed = parsed
+                del self.buf[:consumed]
+                return fin, opcode, payload
+            data = self.conn.sock.recv(self.chunk)
+            if not data:
+                return None
+            self.buf += data
+            time.sleep(len(data) / self.rate_bps)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +339,123 @@ class WSConnectionTests(unittest.TestCase):
             agent_program.WSConnection.connect("http://127.0.0.1:1/agent")
         with self.assertRaises(agent_program.WebSocketError):
             agent_program.WSConnection.connect("ws:///agent")
+
+
+# ---------------------------------------------------------------------------
+# The sender thread: a big reply must not stall the connection
+# ---------------------------------------------------------------------------
+
+class FragmentationTests(unittest.TestCase):
+    """A large send goes out as bounded fragments, never one giant frame.
+
+    One giant ``sendall`` is what lets a slow peer stall the connection
+    for the whole send: the reader's pong blocks on the send lock, the
+    server's ping timeout fires, and the reply is abandoned mid-frame
+    (see the slow-link daemon test below). Fragments bound each send to
+    16KB, and the capped send buffer bounds what the kernel can hold
+    ahead of a pong, so a pong can always interleave between two of them.
+    """
+
+    def test_large_send_is_fragmented_into_bounded_frames(self):
+        message = b"y" * 200000
+        frames = []
+        done = threading.Event()
+
+        def handler(conn):
+            _handshake_101(conn)
+            total = 0
+            while total < len(message):
+                frame = conn.read_frame_full()
+                if frame is None:
+                    break
+                fin, opcode, payload = frame
+                frames.append((fin, opcode, payload))
+                total += len(payload)
+            done.set()
+
+        with _MiniWS(handler) as server:
+            ws = agent_program.WSConnection.connect(
+                f"ws://127.0.0.1:{server.port}/ws/agent")
+            try:
+                ws.send_text(message.decode("ascii"))
+            finally:
+                ws.close()
+        self.assertTrue(done.wait(timeout=10))
+        self.assertGreater(len(frames), 1)
+        for fin, opcode, payload in frames:
+            self.assertLessEqual(len(payload), 16384)
+        self.assertEqual(frames[0][1], agent_program.OP_TEXT)
+        self.assertFalse(frames[0][0])
+        for fin, opcode, _ in frames[1:-1]:
+            self.assertEqual(opcode, agent_program.OP_CONTINUATION)
+            self.assertFalse(fin)
+        self.assertEqual(frames[-1][1], agent_program.OP_CONTINUATION)
+        self.assertTrue(frames[-1][0])
+        self.assertEqual(b"".join(p for _, _, p in frames), message)
+
+    def test_sender_thread_exists_while_connected_and_exits_on_close(self):
+        def _senders():
+            return [t for t in threading.enumerate()
+                    if t.name == "tmuxweb-agent-send"]
+
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+
+        with _MiniWS(handler) as server:
+            ws = agent_program.WSConnection.connect(
+                f"ws://127.0.0.1:{server.port}/ws/agent")
+            try:
+                ws.send_text("{}")
+                self.assertEqual(len(_senders()), 1)
+            finally:
+                ws.close()
+            deadline = time.monotonic() + 5
+            while _senders() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(_senders(), [])
+
+
+class SendReplyTests(unittest.TestCase):
+    """A reply whose send fails is answered with an error, never dropped.
+
+    The old ``_dispatch`` logged "dropping reply for a message" and moved
+    on, so the server-side op timed out instead of failing at once.
+    """
+
+    class _FlakyConn:
+        def __init__(self, failures=1):
+            self.failures = failures
+            self.sent = []
+
+        def send_text(self, text):
+            if self.failures > 0:
+                self.failures -= 1
+                raise agent_program.ConnectionClosed(1006, "boom")
+            self.sent.append(json.loads(text))
+
+    def test_failed_reply_send_attempts_an_error_reply(self):
+        conn = self._FlakyConn(failures=1)
+        reply = {"id": "r1", "ok": True, "results": [{"ok": True}]}
+        agent_program._send_reply(conn, reply)
+        self.assertEqual(len(conn.sent), 1)
+        error = conn.sent[0]
+        self.assertEqual(error["id"], "r1")
+        self.assertEqual(error["ok"], False)
+        self.assertIn("boom", error["error"])
+
+    def test_error_reply_failure_does_not_raise(self):
+        conn = self._FlakyConn(failures=10)
+        reply = {"id": "r2", "ok": True, "results": []}
+        agent_program._send_reply(conn, reply)  # must not raise
+        self.assertEqual(conn.sent, [])
+
+    def test_successful_reply_sends_nothing_else(self):
+        conn = self._FlakyConn(failures=0)
+        reply = {"id": "r3", "ok": True, "results": []}
+        agent_program._send_reply(conn, reply)
+        self.assertEqual(conn.sent, [reply])
 
 
 # ---------------------------------------------------------------------------
@@ -1183,6 +1338,80 @@ class ConcurrentDaemonTests(unittest.TestCase):
             remaining = [t for t in threading.enumerate()
                          if t.name.startswith("tmuxweb-agent-msg")]
         self.assertEqual(remaining, [])
+
+    def test_big_reply_does_not_starve_pings(self):
+        # A 300KB stdout (~400KB reply) over a ~50KB/s link takes ~8s
+        # to send. A ping sent 1s into the transfer must be answered
+        # within 4s, and the reply must still arrive intact: on the old
+        # single-sendall loop the reader blocks on the send lock for
+        # the whole transfer, so the pong only arrives once the send
+        # finally finishes (~8s), and the reply itself can die at the
+        # 5s socket timeout the reader's recv loop sets on the shared
+        # socket. The tiny receive buffer plus the paced reads are what
+        # make the link slow: without them the kernel absorbs the whole
+        # reply in one burst and nothing can starve.
+        events = {}
+
+        def handler(conn):
+            _handshake_101(conn)
+            conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+            opcode, payload = conn.read_frame()
+            self.assertEqual(json.loads(payload.decode("utf-8"))["type"],
+                             "hello")
+            conn.send_text(json.dumps({"id": "big-1", "ops": [
+                {"op": "exec",
+                 "command": "python3 -c \"import sys; "
+                            "sys.stdout.write('x'*300000)\"",
+                 "timeout": 30}]}))
+            sent_at = time.monotonic()
+            ping_sent: list[float] = []
+
+            def _send_ping():
+                conn.send_frame(b"ping-slow",
+                                opcode=agent_program.OP_PING)
+                ping_sent.append(time.monotonic())
+
+            threading.Timer(1.0, _send_ping).start()
+            reader = _PacedReader(conn)
+            pong_at = None
+            reply_parts: list[bytes] = []
+            reply_done = None
+            deadline = sent_at + 30
+            while time.monotonic() < deadline:
+                frame = reader.read_frame()
+                if frame is None:
+                    break
+                fin, opcode, payload = frame
+                if opcode == agent_program.OP_PONG:
+                    pong_at = time.monotonic()
+                elif opcode == agent_program.OP_CLOSE:
+                    events["close"] = True
+                    break
+                elif opcode in (agent_program.OP_TEXT,
+                                agent_program.OP_CONTINUATION):
+                    reply_parts.append(payload)
+                    if fin:
+                        reply_done = time.monotonic()
+                if reply_done is not None and pong_at is not None:
+                    break
+            if reply_parts:
+                events["reply"] = json.loads(
+                    b"".join(reply_parts).decode("utf-8"))
+            events["ping_sent"] = ping_sent[0] if ping_sent else None
+            events["pong_at"] = pong_at
+            conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+
+        code = self._run_daemon(handler)
+        self.assertEqual(code, 3)
+        self.assertNotIn("close", events)
+        self.assertIsNotNone(events.get("ping_sent"))
+        self.assertIsNotNone(events.get("pong_at"))
+        self.assertLess(events["pong_at"] - events["ping_sent"], 4.0)
+        reply = events["reply"]
+        self.assertEqual(reply["id"], "big-1")
+        self.assertTrue(reply["ok"])
+        out = base64.b64decode(reply["results"][0]["stdout_b64"])
+        self.assertEqual(out, b"x" * 300000)
 
 
 if __name__ == "__main__":
