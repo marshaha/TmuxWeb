@@ -28,8 +28,6 @@ const transportOf = new Function(grab(hostsPage, 'transportOf') + 'return transp
 globalThis.transportOf = transportOf;
 const formatTime = new Function(grab(hostsPage, 'formatTime') + 'return formatTime;')();
 globalThis.formatTime = formatTime;
-const agentWsUrl = new Function(grab(hostsPage, 'agentWsUrl') + 'return agentWsUrl;')();
-globalThis.agentWsUrl = agentWsUrl;
 const transportLabel = new Function(grab(hostsPage, 'transportLabel') + 'return transportLabel;')();
 const agentStatusText = new Function(grab(hostsPage, 'agentStatusText') + 'return agentStatusText;')();
 const lastTransportText = new Function(grab(hostsPage, 'lastTransportText') + 'return lastTransportText;')();
@@ -82,23 +80,15 @@ test('agentInstallLabel shows 重新安装 only while the agent is online', () =
   assert.equal(agentInstallLabel({}), '安装 agent');
 });
 
-test('agentWsUrl derives ws/wss from the page origin', () => {
-  assert.equal(agentWsUrl('https://tmux.122990.xyz'), 'wss://tmux.122990.xyz');
-  assert.equal(agentWsUrl('http://10.0.0.8:8787'), 'ws://10.0.0.8:8787');
-  assert.equal(agentWsUrl('https://example.com:8443'), 'wss://example.com:8443');
-  assert.equal(agentWsUrl('ws://already.example'), 'ws://already.example');
-});
-
-test('manualInstallCommand splices the origin, wss server and token into the exact command', () => {
+test('manualInstallCommand splices the tailnet server, program URL and token into the exact command', () => {
   assert.equal(
-    manualInstallCommand('https://tmux.122990.xyz', 'TOKEN123'),
-    'curl -fsSL https://tmux.122990.xyz/agent/agent.py -o ~/.tmuxweb-agent/agent.py && python3 ~/.tmuxweb-agent/agent.py install --server wss://tmux.122990.xyz/ws/agent --token TOKEN123');
-  assert.equal(
-    manualInstallCommand('http://10.0.0.8:8787', 'abc'),
-    'curl -fsSL http://10.0.0.8:8787/agent/agent.py -o ~/.tmuxweb-agent/agent.py && python3 ~/.tmuxweb-agent/agent.py install --server ws://10.0.0.8:8787/ws/agent --token abc');
-  const cmd = manualInstallCommand('https://example.com', 'tok-9');
+    manualInstallCommand('ws://100.123.123.3:8787/ws/agent', 'http://100.123.123.3:8787/agent/agent.py', 'TOKEN123'),
+    'curl -fsSL http://100.123.123.3:8787/agent/agent.py -o ~/.tmuxweb-agent/agent.py && python3 ~/.tmuxweb-agent/agent.py install --server ws://100.123.123.3:8787/ws/agent --token TOKEN123');
+  const cmd = manualInstallCommand('ws://100.123.123.3:8787/ws/agent', 'http://100.123.123.3:8787/agent/agent.py', 'tok-9');
   assert.equal(cmd.match(/tok-9/g).length, 1, 'token appears exactly once, in --token');
-  assert.ok(cmd.includes('--server wss://example.com/ws/agent'));
+  assert.ok(cmd.includes('--server ws://100.123.123.3:8787/ws/agent'));
+  assert.ok(!cmd.includes('tmux.122990.xyz'), 'no public domain in the install command');
+  assert.ok(!cmd.includes('wss://'), 'the tailnet link is plain ws, not wss');
 });
 
 test('transportSwitchPayload keeps the host fields and only changes transport', () => {
@@ -164,7 +154,8 @@ test('install and manual install hit the agreed agent endpoints with no token lo
   assert.notEqual(manualAt, -1, 'missing showManualInstall');
   const manualBody = hostsPage.slice(manualAt, hostsPage.indexOf('async function copyManualCommand(', manualAt));
   assert.ok(manualBody.includes("'/api/hosts/'+id+'/agent-token'"), 'manual install posts /api/hosts/{id}/agent-token');
-  assert.ok(manualBody.includes('manualInstallCommand(location.origin,d.token)'), 'command is built from the live origin and the one-time token');
+  assert.ok(manualBody.includes('manualInstallCommand(d.server,d.program_url,d.token)'), 'command is built from the server-issued tailnet addresses and the one-time token');
+  assert.doesNotMatch(manualBody, /location\.origin/, 'the install command must never be derived from the page origin');
   assert.ok(manualBody.includes('panel.hidden=false'), 'command is shown in the row panel');
   assert.doesNotMatch(hostsPage, /console\.log/, 'the page must never log (a token must never reach the console)');
 });

@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugins" / "age
 
 import websockets  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 import remote_hosts  # noqa: E402
 import transport as agent_transport  # noqa: E402
@@ -392,6 +393,10 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
             auth_type="agent", credential="", host_key="", fingerprint="")
         self.plugin = self.app.state.plugins.loaded["agent"]
         self.registry = self.plugin.registry
+        # The tests pretend this host's Tailscale IPv4 is fixed, so install
+        # and token issue always resolve a tailnet address; the no-tailnet
+        # tests unset it (and mock discovery) per test.
+        self.plugin.tailscale_ip = "100.123.123.5"
         self._hello_timeout = self.plugin.hello_timeout
         self._agents = []
         FakeSSHRunner.run_calls.clear()
@@ -667,7 +672,9 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
         self.assertFalse(any(token in command for command in commands))
         self.assertFalse(any(token.encode() in data
                               for _, data in FakeSSHRunner.upload_calls))
-        self.assertTrue(any("wss://testserver/ws/agent" in command for command in commands))
+        self.assertTrue(any("ws://100.123.123.5:8787/ws/agent" in command for command in commands))
+        self.assertFalse(any("testserver" in command for command in commands))
+        self.assertFalse(any("wss://" in command for command in commands))
         self.assertTrue(any("install" in command and "--token-file" in command
                             for command in commands))
         self.assertEqual(FakeSSHRunner.upload_calls[0][0],
@@ -699,6 +706,94 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
         self.assertEqual(response.status_code, 503, response.text)
         # the host stays on ssh: a failed install never flips the transport
         self.assertEqual(self.store.get_host(self.host2["id"])["transport"], "ssh")
+
+    # -- tailnet-only policy ---------------------------------------------------
+    def _plugin_module(self):
+        return sys.modules["tmuxweb_plugin_agent"]
+
+    def test_peer_allowed_matrix(self):
+        module = self._plugin_module()
+        allowed = [
+            "100.123.123.5", "100.64.0.1", "100.127.255.255",  # tailnet CIDR
+            "127.0.0.1", "127.9.8.7", "::1",                   # loopback
+            "::ffff:100.123.123.5",                             # mapped tailnet
+        ]
+        for host in allowed:
+            self.assertTrue(module._peer_allowed(host), host)
+        denied = [
+            "8.8.8.8", "1.1.1.1",                               # public
+            "192.168.1.5", "10.0.0.8", "172.16.0.1",            # private LAN, not tailnet
+            "100.128.0.1",                                      # just outside 100.64/10
+            "::ffff:8.8.8.8",                                   # mapped public
+            None, "", "testclient", "tmux.122990.xyz",           # unparseable
+        ]
+        for host in denied:
+            self.assertFalse(module._peer_allowed(host), host)
+
+    def test_peer_allowed_custom_cidr_and_invalid_cidr(self):
+        module = self._plugin_module()
+        self.assertTrue(module._peer_allowed("10.0.0.8", "10.0.0.0/8"))
+        self.assertFalse(module._peer_allowed("100.123.123.5", "10.0.0.0/8"))
+        # junk CIDR falls back to the Tailscale default instead of denying all
+        self.assertTrue(module._peer_allowed("100.123.123.5", "not-a-cidr"))
+        self.assertFalse(module._peer_allowed("8.8.8.8", "not-a-cidr"))
+
+    def test_tailscale_ipv4_override_and_discovery(self):
+        module = self._plugin_module()
+        self.assertEqual(module._tailscale_ipv4("100.123.123.5"), "100.123.123.5")
+        with self.assertRaises(ValueError):
+            module._tailscale_ipv4("192.168.1.5")     # LAN, not tailnet
+        with self.assertRaises(ValueError):
+            module._tailscale_ipv4("not-an-ip")
+        with self.assertRaises(ValueError):
+            module._tailscale_ipv4("8.8.8.8")         # public, not tailnet
+        with mock.patch.object(module.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(
+                args=["tailscale", "ip", "-4"], returncode=0,
+                stdout="100.123.123.9\n", stderr="")
+            self.assertEqual(module._tailscale_ipv4(), "100.123.123.9")
+        with mock.patch.object(module.subprocess, "run",
+                               side_effect=FileNotFoundError("no tailscale")):
+            self.assertIsNone(module._tailscale_ipv4())
+
+    def test_token_response_carries_tailnet_urls(self):
+        response = self.client.post("/api/hosts/%s/agent-token" % self.host_id)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["server"], "ws://100.123.123.5:8787/ws/agent")
+        self.assertEqual(body["program_url"],
+                         "http://100.123.123.5:8787/agent/agent.py")
+        self.assertNotIn("testserver", response.text)
+        self.assertNotIn("wss://", response.text)
+
+    def test_token_issue_fails_without_tailnet_and_keeps_old_token(self):
+        module = self._plugin_module()
+        old_token = self._issue_token()
+        with mock.patch.object(module, "_tailscale_ipv4", return_value=None):
+            response = self.client.post("/api/hosts/%s/agent-token" % self.host_id)
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertIn("Tailscale", response.json()["detail"])
+        # the failed issue did not rotate the old token away
+        agent = self._connect_agent(token=old_token)
+        self.assertEqual(agent.welcome["host_id"], self.host_id)
+
+    def test_install_fails_without_tailnet(self):
+        module = self._plugin_module()
+        with mock.patch.object(module, "_tailscale_ipv4", return_value=None):
+            with mock.patch.object(
+                    module, "_ssh_runner_factory",
+                    side_effect=AssertionError("install must fail before SSH")):
+                response = self.client.post("/api/hosts/%s/agent-install" % self.host_id)
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertIn("Tailscale", response.json()["detail"])
+        self.assertEqual(self.store.get_host(self.host_id)["transport"], "agent")
+
+    def test_non_tailnet_peer_gets_4403(self):
+        # TestClient's peer is "testclient", not an IP: unparseable, denied.
+        with self.assertRaises(WebSocketDisconnect) as caught:
+            with self.client.websocket_connect("/ws/agent"):
+                pass
+        self.assertEqual(caught.exception.code, 4403)
 
     # -- host endpoints and the public program -----------------------------------
     def test_hosts_endpoints_carry_the_transport_field(self):
