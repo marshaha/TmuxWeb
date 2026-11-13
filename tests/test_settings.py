@@ -267,6 +267,9 @@ class SettingsPageWiringTests(unittest.TestCase):
         for marker in ('id="child-name"', 'id="child-key"', 'id="child-prefer"',
                        'id="child-add"', 'id="child-list"', "/api/fed/nodes"):
             self.assertIn(marker, page, marker)
+        # 子节点卡片上的 测试 / 删除 / 改线路 必须绑在 #child-list 上，
+        # 之前挂在 SSH 列表的 #list 上，点了一点反应都没有
+        self.assertIn('$("child-list").onclick', page)
 
     def test_every_page_with_a_settings_button_loads_it(self):
         for path in ("/", "/grid"):

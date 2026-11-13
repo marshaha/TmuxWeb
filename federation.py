@@ -132,6 +132,37 @@ class FedGrants:
                  "created_at": row["created_at"], "expires_at": row["expires_at"],
                  "revoked": row["revoked_at"] is not None} for row in rows]
 
+    def update(self, token_id: str, scopes=None, panes=None, ttl=None, label=None) -> dict:
+        """改一把已经签出去的 key：权限 / 范围 / 到期（ttl=0 永久，None 表示保持不变）。"""
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM fed_tokens WHERE id=?", (token_id,)).fetchone()
+            if row is None:
+                raise KeyError(token_id)
+            granted = json.loads(row["scopes"] or "[]") if scopes is None else \
+                [scope for scope in scopes if scope in SCOPES]
+            if "view" not in granted:
+                raise FederationError("view is required: without it the node has nothing to read")
+            new_panes = json.loads(row["panes"] or '"all"') if panes is None else panes
+            if ttl is None:
+                expires = row["expires_at"]
+            else:
+                ttl = int(ttl)
+                expires = None if ttl <= 0 else time.time() + max(300, min(ttl, MAX_TTL))
+            new_label = (row["label"] or "") if label is None else (label or "")[:64]
+            self.connection.execute(
+                "UPDATE fed_tokens SET scopes=?,panes=?,expires_at=?,label=? WHERE id=?",
+                (json.dumps(granted), json.dumps(new_panes), expires, new_label, token_id))
+            self.connection.commit()
+        return {"id": token_id, "label": new_label, "scopes": granted, "panes": new_panes,
+                "expires_at": expires}
+
+    def purge(self, token_id: str) -> bool:
+        """删掉这条记录（吊销只标记，这条才是从列表里清掉）。"""
+        with self.lock:
+            cursor = self.connection.execute("DELETE FROM fed_tokens WHERE id=?", (token_id,))
+            self.connection.commit()
+        return cursor.rowcount > 0
+
     def revoke(self, token_id: str) -> bool:
         with self.lock:
             cursor = self.connection.execute(

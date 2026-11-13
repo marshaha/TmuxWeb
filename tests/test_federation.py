@@ -303,6 +303,41 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("files", labels)
 
 
+class KeyEditingTests(unittest.TestCase):
+    """已经签出去的 key 要能改权限和到期，也要能整条删掉。"""
+
+    def setUp(self):
+        self.client, self.store, self.grants = make_client()
+        self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        self.client.post("/api/fed/policy", json={"input": True, "files": True, "admin": True})
+        self.issued = self.client.post("/api/fed/tokens",
+                                       json={"label": "robo", "scopes": ["view"], "ttl": 600}).json()
+
+    def test_scopes_and_expiry_can_be_changed_after_the_fact(self):
+        changed = self.client.patch(f"/api/fed/tokens/{self.issued['id']}",
+                                    json={"scopes": ["view", "files"], "ttl": 0})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(changed.json()["scopes"], ["view", "files"])
+        self.assertIsNone(changed.json()["expires_at"])
+        # 令牌本身不变，权限立刻生效：现在能列文件了
+        headers = {"Authorization": f"Bearer {self.issued['token']}"}
+        self.assertEqual(self.client.get("/api/fed/files?path=/tmp", headers=headers).status_code, 200)
+
+    def test_editing_cannot_hand_out_a_capability_the_machine_has_off(self):
+        self.client.post("/api/fed/policy", json={"files": False})
+        refused = self.client.patch(f"/api/fed/tokens/{self.issued['id']}",
+                                    json={"scopes": ["view", "files"]})
+        self.assertEqual(refused.status_code, 422)
+        self.assertIn("没开放", refused.text)
+
+    def test_deleting_the_record_kills_and_forgets_the_key(self):
+        gone = self.client.delete(f"/api/fed/tokens/{self.issued['id']}?purge=1")
+        self.assertEqual(gone.status_code, 200, gone.text)
+        self.assertEqual(self.client.get("/api/fed/tokens").json()["tokens"], [])
+        headers = {"Authorization": f"Bearer {self.issued['token']}"}
+        self.assertEqual(self.client.get("/api/fed/panes", headers=headers).status_code, 401)
+
+
 class AdminScopeTests(unittest.TestCase):
     def setUp(self):
         self.client, self.store, self.grants = make_client()

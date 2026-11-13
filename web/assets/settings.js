@@ -80,7 +80,10 @@
   .ts-key-value{margin:6px 0 0;padding:7px 9px;border:1px dashed var(--line,#dddcd5);border-radius:9px;
     background:var(--card);color:inherit;font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;
     overflow-wrap:anywhere;word-break:break-all;user-select:all}
+  .ts-key{flex-wrap:wrap}
+  .ts-key-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;margin-left:auto}
   .ts-key .ts-btn{flex:none}
+  .ts-key form{width:100%}
   .ts-field select{height:36px;padding:0 8px;border:1px solid var(--line,#dddcd5);border-radius:9px;
     background:var(--card);color:inherit;font:13px inherit;outline:none}
   .ts-field select:focus{border-color:var(--accent,#c96442)}
@@ -801,6 +804,49 @@
     return (scopes || []).map(scope => SCOPE_NAMES[scope] || scope).join(' + ');
   }
 
+  // 正在编辑的那把 key（点「编辑」后原地展开表单）
+  let editingKey = null;
+  let policyState = { input: false, files: false, admin: false };
+
+  const SCOPE_CHOICES = [
+    ['view', '只能看（屏幕 + 对话）'],
+    ['view,input', '看 + 发消息/按键'],
+    ['view,files', '看 + 文件读写'],
+    ['view,input,files', '看 + 发消息 + 文件读写'],
+    ['view,admin', '看 + 管理会话'],
+    ['view,input,files,admin', '全都给'],
+  ];
+
+  function scopeChoicesHtml(current) {
+    const value = (current || ['view']).join(',');
+    return SCOPE_CHOICES.map(([choice, label]) => {
+      const blocked = choice.split(',').some(scope => scope !== 'view' && !policyState[scope]);
+      return `<option value="${choice}"${choice === value ? ' selected' : ''}`
+        + `${blocked ? ' disabled' : ''}>${label}${blocked ? '（本机没开放）' : ''}</option>`;
+    }).join('');
+  }
+
+  function keyEditorHtml(key) {
+    const picked = key.panes !== 'all';
+    const paneText = Array.isArray(key.panes) ? key.panes.join(', ') : '';
+    return `<div class="ts-key"><div class="ts-key-main">`
+      + `<div class="ts-key-name">编辑 ${esc(key.label || '未命名')}</div>`
+      + `<label class="ts-field">权限<select id="ts-key-scopes">${scopeChoicesHtml(key.scopes)}</select></label>`
+      + `<label class="ts-field">有效期<select id="ts-key-ttl">`
+      + '<option value="">保持不变（' + esc(fmtWhen(key.expires_at)) + '）</option>'
+      + '<option value="3600">1 小时</option><option value="86400">1 天</option>'
+      + '<option value="604800">7 天</option><option value="2592000">30 天</option>'
+      + '<option value="0">永久</option></select></label>'
+      + `<label class="ts-field">范围<select id="ts-key-range">`
+      + `<option value="all"${picked ? '' : ' selected'}>全部窗格</option>`
+      + `<option value="pick"${picked ? ' selected' : ''}>只给这几个</option></select></label>`
+      + `<label class="ts-field" id="ts-key-picks"${picked ? '' : ' hidden'}>编号（逗号分隔）`
+      + `<input id="ts-key-panes" value="${esc(paneText)}" autocomplete="off"></label>`
+      + `<div class="ts-btns"><button class="ts-btn primary" type="button" data-save="${esc(key.id)}">保存</button>`
+      + `<button class="ts-btn" type="button" data-cancel="1">取消</button></div>`
+      + '</div></div>';
+  }
+
   async function loadChildKeys() {
     const box = $('ts-child-keys');
     const counter = $('ts-child-count');
@@ -810,17 +856,44 @@
       counter.textContent = keys.filter(key => !key.revoked).length
         ? `${keys.filter(key => !key.revoked).length} 个有效` : '';
       box.innerHTML = keys.length ? keys.map(key => {
+        if (editingKey === key.id) return keyEditorHtml(key);
         const range = key.panes === 'all' ? '全部窗格' : `指定 ${(key.panes || []).join(' ')}`;
         const when = key.revoked ? '已吊销' : `到期 ${fmtWhen(key.expires_at)}`;
+        const actions = key.revoked
+          ? `<button class="ts-btn danger" type="button" data-forget="${esc(key.id)}">删除</button>`
+          : `<button class="ts-btn" type="button" data-edit="${esc(key.id)}">编辑</button>`
+            + `<button class="ts-btn danger" type="button" data-revoke="${esc(key.id)}">吊销</button>`
+            + `<button class="ts-btn danger" type="button" data-forget="${esc(key.id)}">删除</button>`;
         return '<div class="ts-key"><div class="ts-key-main">'
           + `<div class="ts-key-name">${esc(key.label || '未命名')}</div>`
           + `<div class="ts-key-meta">${esc(scopeText(key.scopes))} · ${esc(range)} · ${esc(when)}</div></div>`
-          + (key.revoked ? '' : `<button class="ts-btn danger" type="button" data-revoke="${esc(key.id)}">吊销</button>`)
-          + '</div>';
+          + `<div class="ts-key-actions">${actions}</div></div>`;
       }).join('') : '<p class="ts-hint">还没生成过 auth key。</p>';
     } catch (error) {
       counter.textContent = '';
       box.innerHTML = `<p class="ts-state bad">读取失败：${esc(error.message)}</p>`;
+    }
+  }
+
+  async function saveKeyEdits(id) {
+    const out = $('ts-child-state');
+    const scopes = $('ts-key-scopes').value.split(',').filter(Boolean);
+    const ttl = $('ts-key-ttl').value;
+    const picked = $('ts-key-range').value === 'pick';
+    const panes = picked ? paneList($('ts-key-panes').value) : 'all';
+    if (picked && !panes.length) { note(out, '写一下要共享哪几个窗格', 'bad'); return; }
+    const body = { scopes, panes };
+    if (ttl !== '') body.ttl = Number(ttl);
+    note(out, '正在保存…');
+    try {
+      await api(`/api/fed/tokens/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      editingKey = null;
+      note(out, '已更新（立即生效）', 'good');
+      loadChildKeys();
+    } catch (error) {
+      note(out, error.message, 'bad');
     }
   }
 
@@ -858,6 +931,7 @@
   async function loadChildPolicy() {
     try {
       const data = await api('/api/fed/policy');
+      policyState = data.allow;
       for (const box of document.querySelectorAll('[data-policy]')) {
         box.checked = !!data.allow[box.dataset.policy];
       }
@@ -990,16 +1064,51 @@
       box.addEventListener('change', () => saveChildPolicy());
     }
     $('ts-child-keys').addEventListener('click', async event => {
-      const button = event.target.closest('[data-revoke]');
-      if (!button) return;
-      button.disabled = true;
-      try {
-        await api(`/api/fed/tokens/${button.dataset.revoke}`, { method: 'DELETE' });
-        note($('ts-child-state'), '已吊销，那台控制台下次请求就会被拒', 'good');
+      const out = $('ts-child-state');
+      const edit = event.target.closest('[data-edit]');
+      if (edit) {
+        editingKey = edit.dataset.edit;
         loadChildKeys();
-      } catch (error) {
-        button.disabled = false;
-        note($('ts-child-state'), error.message, 'bad');
+        return;
+      }
+      const cancel = event.target.closest('[data-cancel]');
+      if (cancel) {
+        editingKey = null;
+        loadChildKeys();
+        return;
+      }
+      const save = event.target.closest('[data-save]');
+      if (save) { saveKeyEdits(save.dataset.save); return; }
+      const revoke = event.target.closest('[data-revoke]');
+      if (revoke) {
+        revoke.disabled = true;
+        try {
+          await api(`/api/fed/tokens/${revoke.dataset.revoke}`, { method: 'DELETE' });
+          note(out, '已吊销，那台控制台下次请求就会被拒', 'good');
+          loadChildKeys();
+        } catch (error) {
+          revoke.disabled = false;
+          note(out, error.message, 'bad');
+        }
+        return;
+      }
+      const forget = event.target.closest('[data-forget]');
+      if (forget) {
+        if (!confirm('删除这条 auth key 记录？（对方会立刻失效，记录也不再显示）')) return;
+        forget.disabled = true;
+        try {
+          await api(`/api/fed/tokens/${forget.dataset.forget}?purge=1`, { method: 'DELETE' });
+          note(out, '已删除', 'good');
+          loadChildKeys();
+        } catch (error) {
+          forget.disabled = false;
+          note(out, error.message, 'bad');
+        }
+      }
+    });
+    $('ts-child-keys').addEventListener('change', event => {
+      if (event.target.id === 'ts-key-range') {
+        $('ts-key-picks').hidden = event.target.value !== 'pick';
       }
     });
     $('ts-sidebar-memory').addEventListener('click', () => toggleSidebarMemory());

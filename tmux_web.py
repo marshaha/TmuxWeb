@@ -1010,6 +1010,14 @@ class FedNodeRequest(BaseModel):
     prefer: str = Field(default="direct", pattern="^(direct|public)$")   # 先走哪条线路
 
 
+class FedTokenUpdate(BaseModel):
+    """改一把已经签出去的 auth key；没给的字段保持不变。"""
+    label: str | None = Field(default=None, max_length=64)
+    scopes: list[str] | None = None
+    panes: object | None = None
+    ttl: int | None = Field(default=None, ge=0, le=60 * 60 * 24 * 30)
+
+
 class FedFileRequest(BaseModel):
     """文件操作：路径 + 可选的新名字 / 递归标记。"""
     path: str = Field(min_length=1, max_length=4096)
@@ -2904,9 +2912,34 @@ def create_app(
         require_auth(request)
         return {"tokens": await asyncio.to_thread(fed_grants.listing)}
 
-    @app.delete("/api/fed/tokens/{token_id}")
-    async def revoke_fed_token(request: Request, token_id: str):
+    @app.patch("/api/fed/tokens/{token_id}")
+    async def update_fed_token(request: Request, token_id: str, payload: FedTokenUpdate):
+        """改权限 / 范围 / 到期。政策没开放的能力仍然给不了。"""
         require_auth(request)
+        if payload.scopes is not None:
+            allowed = await asyncio.to_thread(fed_policy.read)
+            blocked = [scope for scope in payload.scopes
+                       if scope != "view" and not allowed.get(scope, False)]
+            if blocked:
+                names = "、".join(federation.FedPolicy.FLAGS.get(scope, scope) for scope in blocked)
+                raise HTTPException(status_code=422, detail=f"本机还没开放：{names}")
+        try:
+            return await asyncio.to_thread(
+                fed_grants.update, token_id, payload.scopes, payload.panes, payload.ttl,
+                payload.label)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="no such token") from exc
+        except federation.FederationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.delete("/api/fed/tokens/{token_id}")
+    async def revoke_fed_token(request: Request, token_id: str, purge: int = 0):
+        """默认只是吊销（记录留着）；purge=1 才从列表里删掉。"""
+        require_auth(request)
+        if purge:
+            if not await asyncio.to_thread(fed_grants.purge, token_id):
+                raise HTTPException(status_code=404, detail="no such token")
+            return {"purged": True, "id": token_id}
         if not await asyncio.to_thread(fed_grants.revoke, token_id):
             raise HTTPException(status_code=404, detail="no such token")
         return {"revoked": True, "id": token_id}
