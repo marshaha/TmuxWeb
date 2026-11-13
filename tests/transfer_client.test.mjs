@@ -164,6 +164,29 @@ test('页面本来就在直连源站上时不再改道', async () => {
   assert.equal(await transfer.downloadHref(original), original);
 });
 
+test('本机没存过线路时，按账号里的偏好来（旧 transfer=off 不再把下载压在 CF）', async () => {
+  const {transfer, store} = load({
+    fetch: async url => {
+      if (url.endsWith('/api/prefs')) {
+        return {ok: true, status: 200, json: async () => ({prefs: {transfer: 'on'}})};
+      }
+      if (url.endsWith('/api/system/addresses')) {
+        return {ok: true, status: 200, json: async () => ({addresses: [
+          {url: 'https://robo.neko-chroma.ts.net', kind: 'tailnet', transfer: true}]})};
+      }
+      if (url.endsWith('/t/ping')) return {ok: true, status: 200, json: async () => ({tmuxweb: true})};
+      if (url.endsWith('/api/transfer/ticket')) {
+        return {ok: true, status: 200, json: async () => ({token: 'acct.tok', expires: 1})};
+      }
+      throw new Error('unexpected ' + url);
+    },
+  });
+  store.set('tmuxweb.transfer.direct', 'off');           // 旧版本留下的开关
+  const href = await transfer.downloadHref('/api/panes/%2524/files/download?path=/srv/a.bin');
+  assert.match(href, /^https:\/\/robo\.neko-chroma\.ts\.net\/t\/download\?t=/);
+  assert.equal(store.get('tmuxweb.transfer.route'), 'ts');
+});
+
 test('切到 CF 再切回 TS，不能因为"没探到"把 TS 挡掉 5 分钟', async () => {
   const {transfer} = load({
     fetch: async url => {

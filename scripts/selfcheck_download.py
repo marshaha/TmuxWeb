@@ -129,6 +129,16 @@ def main() -> int:
     report["origin"] = origin["url"]
     check("源站是 MagicDNS 名字", is_magicdns(origin["url"]), origin["url"])
 
+    # 浏览器为什么可能不理这条源站：账号偏好被设成 off，或者页面根本没加载到新代码
+    prefs = json_request("GET", "/api/prefs").get("prefs") or {}
+    check("账号偏好没把下载压在 CF 上", prefs.get("transfer") != "off",
+          f"transfer={prefs.get('transfer','(未设置)')}")
+    status, bundle, _ = request("GET", BASE + "/assets/console.bundle.js")
+    text = bundle.decode(errors="replace")
+    check("页面加载的 bundle 里有线路逻辑",
+          status == 200 and "tmuxweb.transfer.route" in text and "syncPrefsOnce" in text,
+          f"{status} · {len(bundle)} 字节")
+
     # 找一个真实 pane，写一个临时文件当下载目标
     panes = json_request("GET", "/api/panes").get("panes") or []
     if not panes:

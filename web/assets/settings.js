@@ -622,18 +622,28 @@
 
   async function loadTransferPref() {
     let on = true;
-    try { on = localStorage.getItem(TRANSFER_KEY) !== 'off'; } catch {}
+    try {
+      const route = localStorage.getItem(ROUTE_KEY);
+      on = route ? route !== 'cf' : localStorage.getItem(TRANSFER_KEY) !== 'off';
+    } catch {}
     paintTransferDirect(on);
     try {
       const data = await api('/api/prefs');
       const stored = (data.prefs || {}).transfer;
       if (stored === 'on' || stored === 'off') {
         on = stored === 'on';
-        try { localStorage.setItem(TRANSFER_KEY, on ? 'on' : 'off'); } catch {}
+        try {
+          localStorage.setItem(TRANSFER_KEY, on ? 'on' : 'off');
+          if (!localStorage.getItem(ROUTE_KEY)) {
+            localStorage.setItem(ROUTE_KEY, on ? 'ts' : 'cf');
+          }
+        } catch {}
         paintTransferDirect(on);
       }
     } catch { /* 离线：用本地镜像 */ }
   }
+
+  const ROUTE_KEY = 'tmuxweb.transfer.route';
 
   async function toggleTransferDirect() {
     const toggle = $('ts-transfer-direct');
@@ -641,6 +651,8 @@
     const next = toggle.getAttribute('aria-checked') !== 'true';
     paintTransferDirect(next);
     try { localStorage.setItem(TRANSFER_KEY, next ? 'on' : 'off'); } catch {}
+    // 顶栏的「线路」按钮读的是这一条：关掉 = 走当前页面（CF），打开就回到 TS
+    try { localStorage.setItem(ROUTE_KEY, next ? 'ts' : 'cf'); } catch {}
     try {
       await api('/api/prefs', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },

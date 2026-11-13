@@ -62,18 +62,9 @@
     }
   }
 
+  // 旧版只有一个开/关（tmuxweb.transfer.direct）。现在只有"线路"这一个概念：
+  // off 等价于 cf。旧键留着只为读出用户上一次的选择。
   const DIRECT_KEY = 'tmuxweb.transfer.direct';
-
-  // 默认开（和以前一样）：本机/SSH 主机的下载改走局域网或 Tailscale；
-  // 想一律走当前页面（CF），在 设置 › 直连地址 › 文件下载走直连源站 关掉。
-  // 子节点的 pane 不看这个开关，直接按子节点自己的线路走。
-  function directEnabled() {
-    try {
-      return localStorage.getItem(DIRECT_KEY) !== 'off';
-    } catch (_error) {
-      return true;
-    }
-  }
 
   const ROUTE_KEY = 'tmuxweb.transfer.route';
 
@@ -81,10 +72,32 @@
   function routePref() {
     try {
       const value = localStorage.getItem(ROUTE_KEY);
-      return value === 'lan' || value === 'cf' ? value : 'ts';
+      if (value === 'lan' || value === 'cf' || value === 'ts') return value;
+      // 还没有线路偏好：老版本那个开关说了算（off = 走当前页面）
+      return localStorage.getItem(DIRECT_KEY) === 'off' ? 'cf' : 'ts';
     } catch (_error) {
       return 'ts';
     }
+  }
+
+  let prefsSynced = false;
+
+  // 线路跟账号走：本机还没存过线路时，把账号里的偏好搬下来。
+  // 否则一个旧浏览器里残留的 transfer=off 会一直把下载压在 CF 上，界面上还看不出来。
+  async function syncPrefsOnce() {
+    if (prefsSynced) return;
+    prefsSynced = true;
+    try {
+      if (localStorage.getItem(ROUTE_KEY)) return;
+      const response = await fetch('/api/prefs', {credentials: 'same-origin'});
+      if (!response.ok) return;
+      const data = await response.json();
+      const stored = (data.prefs || {}).transfer;
+      if (stored !== 'on' && stored !== 'off') return;
+      localStorage.setItem(ROUTE_KEY, stored === 'off' ? 'cf' : 'ts');
+      // 顶栏那个按钮是初始化时画的，线路被纠正后要让它跟着改
+      try { window.dispatchEvent(new CustomEvent('tmux-route-change')); } catch (_error) {}
+    } catch (_error) { /* 离线：按本机已有的判断 */ }
   }
 
   function setRoutePref(value) {
@@ -105,7 +118,6 @@
   }
 
   async function origins() {
-    if (!directEnabled()) return [];
     const wanted = routePref();
     if (wanted === 'cf') return [];          // 明确走当前页面（CF）：不探测、不改道
     // 只考虑 https 的直连源站：https 页面对 http 的 fetch 和下载都会被浏览器拦。
@@ -130,8 +142,9 @@
   let verifiedAt = 0;
 
   async function pick() {
-    // 明确选了 CF / 关了直连：直接不改道，也别记"没探到"，否则会把 5 分钟内的 ts 一起挡掉
-    if (!directEnabled() || routePref() === 'cf') return null;
+    // 明确选了 CF：直接不改道，也别记"没探到"，否则会把 5 分钟内的 ts 一起挡掉
+    await syncPrefsOnce();
+    if (routePref() === 'cf') return null;
     const cached = readCache();
     const stale = cached && cachedRoute !== null && cachedRoute !== routePref();
     if (cached && stale) forget();          // 换了线路：记住的旧源站不算数
