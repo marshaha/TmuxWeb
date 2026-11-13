@@ -1880,6 +1880,12 @@ def create_app(
                     continue
                 if host_id == "localhost":
                     transport = tmux
+                elif fed_node(host_id) is not None:
+                    # 子节点也是"一台主机"：它没有 SSH 凭据，走联邦 transport
+                    try:
+                        transport = fed_transport(host_id)
+                    except (federation.FederationError, KeyError, RuntimeError, OSError):
+                        continue
                 else:
                     try:
                         transport = runner_for(remote_hosts.get_host(host_id, include_credential=True))

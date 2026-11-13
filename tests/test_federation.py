@@ -266,6 +266,35 @@ def federation_app(backend, store, grants, policy=None):
     )
 
 
+class PaneStatusSweepTests(unittest.TestCase):
+    """子节点的 pane 也要进状态扫描，否则侧栏「最近」里的点永远是灰的。"""
+
+    def test_child_panes_are_part_of_the_status_sweep(self):
+        client, store, _ = make_client()
+        client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        node = store.add("oracle", "or", "http://node.invalid", "", "fed_x.y")
+
+        def fake_get(self, path, timeout=None):
+            if path == "/api/fed/ping":
+                return {"tmuxweb": True, "host": "child", "addresses": []}
+            if path.endswith("/api/fed/panes"):
+                return {"panes": [{"id": "%12", "number": 12, "session": "work",
+                                   "window": 1, "window_name": "api", "path": "/srv"}]}
+            if "/capture" in path:
+                return {"content": "$ ls\nfile.txt\n$ \n"}
+            raise AssertionError(path)
+
+        original = federation.FedClient._get
+        federation.FedClient._get = fake_get
+        try:
+            client.get("/api/hosts")                      # 让快照里有这个子节点
+            payload = client.get("/api/panes/status").json()
+        finally:
+            federation.FedClient._get = original
+        ids = {pane["id"] for pane in payload["panes"]}
+        self.assertIn(f'{node["id"]}~%12', ids)
+
+
 class WriteScopeTests(unittest.TestCase):
     """写操作要 input 作用域，文件要 files；没有就 403，不是悄悄不做。"""
 

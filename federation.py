@@ -17,7 +17,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import concurrent.futures
 import json
+import logging
 import os
 import re
 import secrets
@@ -27,6 +29,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+LOGGER = logging.getLogger(__name__)
 
 TOKEN_PREFIX = "fed_"
 
@@ -660,13 +664,31 @@ class FedTransport:
                      visible_only: bool = False) -> str:
         return self.capture(pane_id, history=history, pane=pane)
 
+    def _capture_all(self, pane_ids, history: int) -> dict:
+        """并发抓屏：子节点是 HTTP 一跳一跳抓的，串行 26 个 pane 要 8 秒，扫一轮状态就废了。"""
+        wanted = list(pane_ids)
+        if not wanted:
+            return {}
+        workers = max(1, min(8, len(wanted)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(self.capture, pane_id, history): pane_id for pane_id in wanted}
+            texts = {}
+            for future in concurrent.futures.as_completed(futures):
+                pane_id = futures[future]
+                try:
+                    texts[pane_id] = future.result()
+                except Exception:                        # 单个 pane 失败不该毁掉整轮
+                    LOGGER.debug("federated capture failed for %s", pane_id, exc_info=True)
+                    texts[pane_id] = ""
+        return texts
+
     def capture_and_status_many(self, pane_ids, history: int = 40, status_ids=None,
                                 panes=None) -> tuple[dict, dict]:
         """sweep 期望 (texts, states)；联邦侧没有状态扫描，返回空的状态表。"""
-        return ({pane_id: self.capture(pane_id, history) for pane_id in pane_ids}, {})
+        return (self._capture_all(pane_ids, history), {})
 
     def capture_many(self, pane_ids, history: int = 40, panes=None) -> dict:
-        return {pane_id: self.capture(pane_id, history) for pane_id in pane_ids}
+        return self._capture_all(pane_ids, history)
 
     def transcript(self, pane_id: str, limit: int = 200, refresh: bool = False,
                    pane: dict | None = None) -> dict:
