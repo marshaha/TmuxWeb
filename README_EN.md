@@ -510,6 +510,7 @@ Two steps in the UI:
                      → 生成 auth key
     parent (local):  设置 › 添加子节点 → name it `oracle`, paste that auth key
                      route preference: direct (tailnet/LAN) or Cloudflare, switchable any time
+                     (file bytes always prefer the direct address; one 测试 records it)
 
 The key carries the address you reach the child at, so the parent never asks for one:
 
@@ -520,11 +521,10 @@ Both sides keep their own `#N` numbering, so child panes show as `oracle#12` (an
 `<host_id>~%N`, so URL encoding, relay and MCP need no changes. `GET /api/fed/ping` needs no auth —
 it answers "is this thing a TmuxWeb?".
 
-The auth key carries the permissions you pick: `view` (screen + transcript), `view+input` (send
-messages and keys — that is your keyboard), `view+files` (list, download, upload, rename, delete,
-zip), `view+admin` (create/close sessions, open the terminal). The child also keeps a master switch:
-three checkboxes in settings, all off by default — while one is off even an already issued key is
-refused. The parent needs no special mode: a child node is just another host (chat, file panel,
+Three checkboxes in settings *are* the permissions: send messages/keys, file access, session
+management + terminal (view is always included). A tick means both "this machine allows it" and "this
+key gets it"; unticking one immediately refuses keys already handed out. Issued keys can be edited
+(scopes, lifetime including permanent, pane range) or revoked/deleted at any time. The parent needs no special mode: a child node is just another host (chat, file panel,
 terminal), and every request is checked by the child against the granted scopes and pane whitelist.
 Details and the endpoint table: [docs/federation.md](docs/federation.md) (Chinese).
 

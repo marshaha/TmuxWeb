@@ -142,23 +142,14 @@
       <div class="ts-panel" id="ts-child-panel" hidden>
         <p class="ts-hint">把本机的窗格交给另一个控制台。生成一串 auth key 给它：能做什么、能看哪些窗格、多久失效，都由这里决定，随时可以吊销。
           「发消息」等于把你的键盘交给对方，「文件读写」等于把整台机器的文件给它看和改 —— 只给信得过的控制台。</p>
-        <p class="ts-hint">本机允许外部做哪些事：关掉之后，连已经签出去的 auth key 也立刻失效。</p>
+        <p class="ts-hint">本机允许外部做哪些事 —— 勾上就同时是「允许」和「签给这把 key 的权限」；取消勾选后，
+          连已经签出去的 auth key 也立刻失效。「只能看」永远都有。</p>
         <div class="ts-scopes">
           <label><input type="checkbox" data-policy="input"> 发消息 / 按键</label>
           <label><input type="checkbox" data-policy="files"> 文件读写</label>
           <label><input type="checkbox" data-policy="admin"> 管理会话 + 终端</label>
         </div>
         <p class="ts-state" id="ts-child-policy-state" role="status"></p>
-        <label class="ts-field">权限
-          <select id="ts-child-scopes" aria-label="auth key 权限">
-            <option value="view" selected>只能看（屏幕 + 对话）</option>
-            <option value="view,input">看 + 发消息/按键</option>
-            <option value="view,files">看 + 文件读写</option>
-            <option value="view,input,files">看 + 发消息 + 文件读写</option>
-            <option value="view,admin">看 + 管理会话（建/杀会话、开终端）</option>
-            <option value="view,input,files,admin">全都给（键盘 + 文件 + 会话）</option>
-          </select>
-        </label>
         <label class="ts-field">有效期
           <select id="ts-child-ttl" aria-label="auth key 有效期">
             <option value="3600">1 小时</option>
@@ -795,6 +786,15 @@
       + ` ${pad(when.getHours())}:${pad(when.getMinutes())}`;
   }
 
+  // 勾选 = 权限：view 永远有，其余看勾没勾
+  function policyScopes() {
+    const scopes = ['view'];
+    for (const name of ['input', 'files', 'admin']) {
+      if (policyState[name]) scopes.push(name);
+    }
+    return scopes;
+  }
+
   function paneList(text) {
     return (text || '').split(/[\s,，、]+/).filter(Boolean)
       .map(item => item.replace(/^[#%]/, '%'));
@@ -808,21 +808,15 @@
   let editingKey = null;
   let policyState = { input: false, files: false, admin: false };
 
-  const SCOPE_CHOICES = [
-    ['view', '只能看（屏幕 + 对话）'],
-    ['view,input', '看 + 发消息/按键'],
-    ['view,files', '看 + 文件读写'],
-    ['view,input,files', '看 + 发消息 + 文件读写'],
-    ['view,admin', '看 + 管理会话'],
-    ['view,input,files,admin', '全都给'],
-  ];
+  const SCOPE_LABELS = { input: '发消息 / 按键', files: '文件读写', admin: '管理会话 + 终端' };
 
-  function scopeChoicesHtml(current) {
-    const value = (current || ['view']).join(',');
-    return SCOPE_CHOICES.map(([choice, label]) => {
-      const blocked = choice.split(',').some(scope => scope !== 'view' && !policyState[scope]);
-      return `<option value="${choice}"${choice === value ? ' selected' : ''}`
-        + `${blocked ? ' disabled' : ''}>${label}${blocked ? '（本机没开放）' : ''}</option>`;
+  function scopeChecksHtml(current) {
+    const granted = new Set(current || ['view']);
+    return Object.entries(SCOPE_LABELS).map(([scope, label]) => {
+      const blocked = !policyState[scope];
+      return `<label><input type="checkbox" data-key-scope="${scope}"`
+        + `${granted.has(scope) ? ' checked' : ''}${blocked ? ' disabled' : ''}> ${label}`
+        + `${blocked ? '（本机没开放）' : ''}</label>`;
     }).join('');
   }
 
@@ -831,7 +825,7 @@
     const paneText = Array.isArray(key.panes) ? key.panes.join(', ') : '';
     return `<div class="ts-key"><div class="ts-key-main">`
       + `<div class="ts-key-name">编辑 ${esc(key.label || '未命名')}</div>`
-      + `<label class="ts-field">权限<select id="ts-key-scopes">${scopeChoicesHtml(key.scopes)}</select></label>`
+      + `<div class="ts-scopes" id="ts-key-scopes">${scopeChecksHtml(key.scopes)}</div>`
       + `<label class="ts-field">有效期<select id="ts-key-ttl">`
       + '<option value="">保持不变（' + esc(fmtWhen(key.expires_at)) + '）</option>'
       + '<option value="3600">1 小时</option><option value="86400">1 天</option>'
@@ -877,7 +871,8 @@
 
   async function saveKeyEdits(id) {
     const out = $('ts-child-state');
-    const scopes = $('ts-key-scopes').value.split(',').filter(Boolean);
+    const scopes = ['view', ...[...document.querySelectorAll('[data-key-scope]')]
+      .filter(box => box.checked).map(box => box.dataset.keyScope)];
     const ttl = $('ts-key-ttl').value;
     const picked = $('ts-key-range').value === 'pick';
     const panes = picked ? paneList($('ts-key-panes').value) : 'all';
@@ -900,7 +895,7 @@
   async function createChildKey() {
     const out = $('ts-child-state');
     const issued = $('ts-child-issued');
-    const scopes = $('ts-child-scopes').value.split(',').filter(Boolean);
+    const scopes = policyScopes();
     const ttl = Number($('ts-child-ttl').value);
     const picked = $('ts-child-range').value === 'pick';
     const panes = picked ? paneList($('ts-child-panes').value) : 'all';
@@ -935,19 +930,8 @@
       for (const box of document.querySelectorAll('[data-policy]')) {
         box.checked = !!data.allow[box.dataset.policy];
       }
-      applyScopeAvailability(data.allow);
     } catch (error) {
       note($('ts-child-policy-state'), `读取失败：${error.message}`, 'bad');
-    }
-  }
-
-  function applyScopeAvailability(allow) {
-    const select = $('ts-child-scopes');
-    if (!select) return;
-    for (const option of [...select.options]) {
-      const blocked = option.value.split(',').some(scope => scope !== 'view' && !allow[scope]);
-      option.disabled = blocked;
-      if (blocked && select.value === option.value) select.value = 'view';
     }
   }
 
@@ -961,7 +945,8 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(flags),
       });
-      applyScopeAvailability(data.allow);
+      // 记住新政策：紧接着「生成 auth key」就是按这三个勾给权限的
+      policyState = data.allow;
       note(out, '已保存（立刻生效，已签出的 key 也受这个限制）', 'good');
     } catch (error) {
       note(out, error.message, 'bad');

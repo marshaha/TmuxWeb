@@ -340,6 +340,22 @@ class FederationStore:
         node.pop("token", None)
         return node
 
+    def set_addresses(self, host_id: str, base_url: str, fallback_url: str) -> dict:
+        """记下发回来的地址（父节点从 ping 里学到直连地址时用）。"""
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
+            if row is None:
+                raise KeyError(host_id)
+            self.connection.execute(
+                "UPDATE fed_nodes SET base_url=?, fallback_url=? WHERE id=?",
+                ((base_url or "").rstrip("/"), (fallback_url or "").rstrip("/"), host_id))
+            self.connection.commit()
+            row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
+        node = dict(row)
+        node["enabled"] = bool(node["enabled"])
+        node.pop("token", None)
+        return node
+
     def remove(self, host_id: str) -> bool:
         with self.lock:
             cursor = self.connection.execute("DELETE FROM fed_nodes WHERE id=?", (host_id,))
@@ -493,6 +509,8 @@ class FedTransport:
 
     read_only = False
 
+    _panes_shared: dict[str, tuple[float, list[dict]]] = {}
+
     def __init__(self, node: dict, client: FedClient | None = None):
         self.node = node
         self.prefix = str(node.get("prefix") or "")
@@ -507,6 +525,12 @@ class FedTransport:
         now = time.time()
         if self._panes_cache and now - self._panes_cache[0] < 5:
             return [dict(pane) for pane in self._panes_cache[1]]
+        # 每个请求都会新建一个 FedTransport，所以缓存要按节点放在类上，
+        # 否则每次 validate_pane 都要去问一次对端的窗格列表
+        shared = FedTransport._panes_shared.get(self.host_id)
+        if shared and now - shared[0] < 5:
+            self._panes_cache = shared
+            return [dict(pane) for pane in shared[1]]
         found = []
         for pane in self.client.panes():
             entry = dict(pane)
@@ -520,6 +544,7 @@ class FedTransport:
             entry["id"] = f"{self.host_id}~{raw_pane}"
             found.append(entry)
         self._panes_cache = (now, found)
+        FedTransport._panes_shared[self.host_id] = self._panes_cache
         return [dict(pane) for pane in found]
 
     def validate_pane(self, pane_id: str) -> dict:
@@ -579,17 +604,25 @@ class FedTransport:
         return self.client.close_session(name)
 
     # -- 文件：子节点的文件是主机级的，和 SSH 主机一样 ---------------------
+    def transfer_client(self) -> FedClient:
+        """文件传输用的客户端；地址顺序没变化时复用同一个实例。"""
+        base = self.node.get("base_url") or ""
+        fallback = self.node.get("fallback_url") or ""
+        if is_private_url(base) or not is_private_url(fallback):
+            return self.client
+        return client_for(self.node, transfer=True)
+
     def list_files(self, directory: str, show_hidden: bool = False, limit: int = 2000) -> dict:
-        return self.client.files(directory, show_hidden, limit)
+        return self.transfer_client().files(directory, show_hidden, limit)
 
     def file_size(self, path: str) -> int | None:
         try:
-            return int(self.client.stat(path).get("size") or 0)
+            return int(self.transfer_client().stat(path).get("size") or 0)
         except FederationError:
             return None
 
     def download_file(self, path: str, max_bytes: int) -> bytes:
-        payload = self.client.download(path)
+        payload = self.transfer_client().download(path)
         if len(payload) > max_bytes:
             raise FederationError(f"文件超过上限（{len(payload)} > {max_bytes} 字节）")
         return payload
@@ -623,17 +656,18 @@ class FedTransport:
     def find_suffix(self, base: str, relative: str, max_depth: int = 4, limit: int = 5) -> list[str]:
         return []
 
-    def stream_file(self, path: str, max_bytes: int, chunk: int = 65536,
+    def stream_file(self, path: str, max_bytes: int, chunk: int = 262144,
                     idle_timeout: float = 90.0):
         """按块把对端的文件转发出去：慢链路也不会被"总时长"误判成失败。"""
         query = urllib.parse.urlencode({"path": path})
         errors = []
-        for base in self.client._urls():
+        client = self.transfer_client()
+        for base in client._urls():
             request = urllib.request.Request(base + f"/api/fed/files/download?{query}")
-            request.add_header("Authorization", f"Bearer {self.client.token}")
+            request.add_header("Authorization", f"Bearer {client.token}")
             request.add_header("User-Agent", USER_AGENT)
             try:
-                response = urllib.request.urlopen(request, timeout=idle_timeout)
+                response = urllib.request.urlopen(request, timeout=max(idle_timeout, 60))
             except urllib.error.HTTPError as exc:
                 errors.append(f"{base}: HTTP {exc.code}")
                 if exc.code in (401, 403, 404):
@@ -717,6 +751,21 @@ class FedTerminalSession:
                 pass
 
 
-def client_for(node: dict) -> FedClient:
-    return FedClient(node.get("base_url") or "", node.get("fallback_url") or "",
-                     node.get("token") or "")
+def is_private_url(url: str) -> bool:
+    """tailnet（100.64/10）或局域网地址：只有这种才值得为文件传输优先。"""
+    host = urllib.parse.urlparse(url or "").hostname or ""
+    if not host:
+        return False
+    if host.startswith("100."):
+        return True
+    return host.startswith(("10.", "192.168.", "127.", "localhost")) or \
+        any(host.startswith(f"172.{n}.") for n in range(16, 32))
+
+
+def client_for(node: dict, transfer: bool = False) -> FedClient:
+    """`transfer=True` 时把直连地址排到前面：文件字节别绕两跳 Cloudflare。"""
+    base = node.get("base_url") or ""
+    fallback = node.get("fallback_url") or ""
+    if transfer and not is_private_url(base) and is_private_url(fallback):
+        base, fallback = fallback, base
+    return FedClient(base, fallback, node.get("token") or "")

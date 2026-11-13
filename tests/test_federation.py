@@ -379,6 +379,23 @@ class AdminScopeTests(unittest.TestCase):
         self.assertEqual(sorted(archive.namelist()), ["a.txt", "b.txt"])
 
 
+class RouteChoiceTests(unittest.TestCase):
+    def test_a_private_address_is_recognised(self):
+        self.assertTrue(federation.is_private_url("http://100.123.123.17:8787"))
+        self.assertTrue(federation.is_private_url("http://10.0.0.9:8787"))
+        self.assertTrue(federation.is_private_url("http://172.20.1.2:8787"))
+        self.assertTrue(federation.is_private_url("http://127.0.0.1:8787"))
+        self.assertFalse(federation.is_private_url("https://ddr.167990.xyz"))
+
+    def test_file_transfers_prefer_the_private_address_even_when_cf_is_the_default(self):
+        node = {"id": "a1", "prefix": "ddr", "token": "t",
+                "base_url": "https://ddr.167990.xyz", "fallback_url": "http://100.123.123.17:8787"}
+        transport = federation.FedTransport(node)
+        self.assertEqual(transport.transfer_client().base_url, "http://100.123.123.17:8787")
+        # 普通请求（聊天/capture）仍然按用户选的那条来
+        self.assertEqual(transport.client.base_url, "https://ddr.167990.xyz")
+
+
 class TransportWriteTests(unittest.TestCase):
     """父节点这边：路径要还原成对端的编号，调用要落到 /api/fed/... 上。"""
 
@@ -480,10 +497,9 @@ class EndpointTests(unittest.TestCase):
         finally:
             federation.FedClient._get = original
 
-        # 解析走快照，只有校验 + capture 各一次 HTTP（解析额外再列一遍就说明它在循环里发了请求）
-        self.assertEqual(len(after_resolve), 2, f"解析阶段不该多列一次 pane：{after_resolve}")
-        self.assertTrue(after_resolve[0].startswith("/api/fed/panes"))
-        self.assertIn("%2512/capture", after_resolve[1])
+        # 解析走 hosts 快照 + 共享的 pane 缓存，所以这一步只剩 capture 自己的一次请求
+        self.assertEqual(len(after_resolve), 1, f"解析阶段不该再列一次 pane：{after_resolve}")
+        self.assertIn("%2512/capture", after_resolve[0])
         self.assertTrue(node_id)
 
     def test_adding_a_node_from_name_and_auth_key_probes_it(self):
@@ -542,9 +558,11 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(flipped.json()["fallback_url"], "http://100.123.123.17:8787")
 
     def test_asking_for_cloudflare_first_keeps_the_public_address(self):
-        """选了 CF 优先就别自作聪明改成直连。"""
+        """选了 CF 优先：base 保持公网地址，直连只作为备用（大文件传输会用到）。"""
         def fake_get(client, path, timeout=None):
-            raise AssertionError("不该去问对方的地址")
+            if path == "/api/fed/ping":
+                return {"tmuxweb": True, "host": "ddr", "addresses": []}
+            raise AssertionError(path)
 
         original = federation.FedClient._get
         federation.FedClient._get = fake_get
@@ -556,6 +574,47 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(added.status_code, 201, added.text)
         self.assertEqual(added.json()["base_url"], "https://ddr.167990.xyz")
         self.assertEqual(added.json()["prefer"], "public")
+
+    def test_choosing_cloudflare_still_records_the_direct_address_as_a_spare(self):
+        def fake_get(client, path, timeout=None):
+            if path == "/api/fed/ping":
+                return {"tmuxweb": True, "host": "ddr",
+                        "addresses": [{"url": "http://100.123.123.17:8787", "kind": "tailnet"}]}
+            raise AssertionError(path)
+
+        original = federation.FedClient._get
+        federation.FedClient._get = fake_get
+        try:
+            added = self.client.post("/api/fed/nodes", json={
+                "label": "ddr", "token": "fed_a.b@https://ddr.167990.xyz", "prefer": "public"})
+        finally:
+            federation.FedClient._get = original
+        self.assertEqual(added.status_code, 201, added.text)
+        self.assertEqual(added.json()["base_url"], "https://ddr.167990.xyz")
+        self.assertEqual(added.json()["fallback_url"], "http://100.123.123.17:8787")
+
+    def test_a_probe_backfills_the_direct_address_on_an_old_node(self):
+        # 模拟一条"只记了 CF 地址"的旧节点：直接写库，不走 add 的探测
+        node_id = self.store.add("ddr", "ddr", "https://ddr.167990.xyz", "", "fed_a.b")["id"]
+
+        def fake_get(client, path, timeout=None):
+            if path == "/api/fed/ping":
+                return {"tmuxweb": True, "host": "ddr",
+                        "addresses": [{"url": "http://100.123.123.17:8787", "kind": "tailnet"}]}
+            if path.startswith("/api/fed/panes"):
+                return {"panes": []}
+            raise AssertionError(path)
+
+        original = federation.FedClient._get
+        federation.FedClient._get = fake_get
+        try:
+            probed = self.client.post(f"/api/fed/nodes/{node_id}/probe")
+        finally:
+            federation.FedClient._get = original
+        self.assertEqual(probed.status_code, 200, probed.text)
+        self.assertEqual(probed.json()["learned"], "http://100.123.123.17:8787")
+        stored = self.client.get("/api/fed/nodes").json()["nodes"][0]
+        self.assertIn("100.123.123.17", stored["fallback_url"])
 
     def test_a_typed_address_wins_and_the_one_in_the_key_becomes_the_spare(self):
         added = self.client.post("/api/fed/nodes", json={

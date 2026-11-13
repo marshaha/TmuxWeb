@@ -2567,8 +2567,11 @@ def create_app(
         grants = require_fed(request, "view")
         found = []
         snapshot = hosts_snapshot["value"]
-        if snapshot and (time.time() - hosts_snapshot["at"]) < hosts_snapshot["ttl"]:
-            # 刚被 /api/hosts 探过：直接用，别让一个联邦读者把整台机的 SSH 都拉一遍
+        if snapshot:
+            # 有快照就用快照，哪怕旧一点：一个联邦读者不该触发整台机的 SSH 探测
+            # （7 台主机就是 3 秒多，父节点每个请求都等它）。过期了就在后台刷一次。
+            if (time.time() - hosts_snapshot["at"]) >= hosts_snapshot["ttl"]:
+                asyncio.get_running_loop().run_in_executor(None, relay_hosts, False)
             groups = [(host.get("id"), host.get("name") or host.get("id"), host.get("panes") or [])
                       for host in snapshot.get("hosts") or [] if host.get("kind") != "fed"]
         else:
@@ -2957,7 +2960,7 @@ def create_app(
         base_url = payload.base_url or address
         # 两边都给地址时都要留着：填了内网地址就走直连，key 里带的（可能是 CF 域名）当备用
         fallback_url = payload.fallback_url or (address if base_url != address else "")
-        if payload.prefer == "direct" and not payload.base_url and base_url.startswith("https://"):
+        if not payload.base_url and base_url.startswith("https://"):
             # 只有公网地址：问一句对方有没有内网/tailnet 地址。Cloudflare 会把慢链路和
             # 非浏览器 UA 挡在外面（Error 1010），能直连就别绕。
             try:
@@ -2972,7 +2975,11 @@ def create_app(
                  if entry.get("url") and entry.get("kind") in ("tailnet", "lan")),
                 key=lambda entry: 0 if entry["kind"] == "tailnet" else 1)
             if candidates:
-                base_url, fallback_url = candidates[0]["url"], base_url
+                if payload.prefer == "public":
+                    # 想走 CF 就保持 base 是公网地址，但把直连记成备用 —— 大文件传输会优先用它
+                    fallback_url = candidates[0]["url"]
+                else:
+                    base_url, fallback_url = candidates[0]["url"], base_url
         if not token:
             raise HTTPException(status_code=422, detail="还差 auth key")
         try:
@@ -3010,8 +3017,21 @@ def create_app(
             count = len(await asyncio.to_thread(lambda: transport.client.panes(timeout=6)))
         except (federation.FederationError, RuntimeError, OSError, ValueError):
             count = None
+        learned = ""
+        direct = next((entry.get("url") for entry in info.get("addresses") or []
+                       if entry.get("kind") == "tailnet" and entry.get("url")), "")
+        known = {node.get("base_url"), node.get("fallback_url")}
+        if direct and direct not in known:
+            # 之前只记了 CF 地址：把直连补进备用位，文件传输就不必绕两跳 Cloudflare
+            base = node.get("base_url") or direct
+            fallback = node.get("fallback_url") or (direct if direct != base else "")
+            try:
+                await asyncio.to_thread(fed_nodes.set_addresses, node_id, base, fallback or direct)
+                learned = direct
+            except KeyError:
+                pass
         return {"ok": True, "host": info.get("host"), "panes": count,
-                "prefix": node.get("prefix")}
+                "prefix": node.get("prefix"), "learned": learned}
 
     @app.delete("/api/fed/nodes/{node_id}")
     async def remove_fed_node(request: Request, node_id: str):

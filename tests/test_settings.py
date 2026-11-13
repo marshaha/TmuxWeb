@@ -245,7 +245,7 @@ class SettingsPageWiringTests(unittest.TestCase):
         self.assertIn('id="ts-import-file" type="file"', script)
         self.assertIn("未选择文件", script)
         # 子节点：生成 auth key（权限 / 有效期含永久 / 范围）与添加子节点（名字 + auth key）
-        for marker in ('id="ts-child-toggle"', 'id="ts-child-panel"', 'id="ts-child-scopes"',
+        for marker in ('id="ts-child-toggle"', 'id="ts-child-panel"',
                        'id="ts-child-ttl"', '<option value="0">永久</option>',
                        'id="ts-child-range"', 'id="ts-child-create"',
                        'data-policy="input"', 'data-policy="files"', 'data-policy="admin"',
@@ -254,8 +254,10 @@ class SettingsPageWiringTests(unittest.TestCase):
         # 添加子节点搬到 /hosts（和服务器管理合并），设置里不该再有它
         self.assertNotIn('id="ts-node-toggle"', script)
         self.assertIn("子节点和服务器管理", script)
-        # 政策：本机决定允不允许，勾选即保存
+        # 政策：勾选既是"本机允许"也是"签给这把 key 的权限"，不再有第二个权限下拉
         self.assertIn("/api/fed/policy", script)
+        self.assertNotIn('id="ts-child-scopes"', script, "权限下拉是重复的，已经去掉")
+        self.assertIn("function policyScopes()", script)
         self.assertIn("/api/fed/tokens", script)
         self.assertIn("/api/fed/policy", script)
         # key 后面带上"本机被访问到的地址"，父节点只填名字 + 一串就够

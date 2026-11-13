@@ -64,7 +64,8 @@ async function addChildNode(){
     out.textContent=`已添加 ${node.prefix}，正在测试连接…`;
     try{
       const r=await api(`/api/fed/nodes/${node.id}/probe`,{method:'POST'});
-      out.textContent=`通了：${r.host||node.base_url} · ${r.panes===null?'窗格列表还没准备好':r.panes+' 个窗格'}（编号 ${node.prefix}#N）`;
+      out.textContent=`通了：${r.host||node.base_url} · ${r.panes===null?'窗格列表还没准备好':r.panes+' 个窗格'}（编号 ${node.prefix}#N）`
+        +(r.learned?`；直连 ${r.learned}`:'');
     }catch(error){out.textContent=`已添加，但现在连不上：${error.message}`}
     $('child-name').value='';$('child-key').value='';$('child-url').value='';
     await loadChildNodes();
@@ -78,7 +79,8 @@ async function handleChildAction(action,id,to){
     if(action==='probe'){
       out.textContent='正在测试…';
       const r=await api(`/api/fed/nodes/${id}/probe`,{method:'POST'});
-      out.textContent=`通了：${r.host} · ${r.panes===null?'窗格列表还没准备好':r.panes+' 个窗格'}`;
+      out.textContent=`通了：${r.host} · ${r.panes===null?'窗格列表还没准备好':r.panes+' 个窗格'}`
+        +(r.learned?`（记下直连地址 ${r.learned}，大文件走它）`:'');
     }else if(action==='prefer'){
       const node=await api(`/api/fed/nodes/${id}/prefer`,{method:'POST',
         headers:{'Content-Type':'application/json'},body:JSON.stringify({prefer:to})});
