@@ -438,12 +438,15 @@ class TmuxWebTests(unittest.TestCase):
         self.login()
         patcher, _ = self._patch_addresses()
         with patcher:
+            # 地址列表现在是缓存的（云主机上 ip/tailscale 子进程能跑 6 秒）；换 mock 时要清掉
+            tmux_web.ADDRESS_CACHE.update({"at": 0.0, "value": []})
             first = self.client.get("/api/system/addresses").json()
         self.assertFalse([a for a in first["addresses"] if a["url"].startswith("https://")],
                          first["addresses"])
 
         patcher, _ = self._patch_addresses(serve="https://robo.neko-chroma.ts.net (tailnet only)\n")
         with patcher:
+            tmux_web.ADDRESS_CACHE.update({"at": 0.0, "value": []})
             second = self.client.get("/api/system/addresses").json()
         https = [a["url"] for a in second["addresses"] if a["url"].startswith("https://")]
         self.assertEqual(["https://robo.neko-chroma.ts.net"], https)

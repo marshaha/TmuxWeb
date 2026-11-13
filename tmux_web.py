@@ -85,6 +85,10 @@ def safe_next_url(value: str, default: str = "/") -> str:
     return candidate
 
 
+# 本机地址列表 + 缓存：ip/tailscale 子进程在云主机上能跑 6 秒，不能每次请求都问一遍
+ADDRESS_CACHE: dict = {"at": 0.0, "value": []}
+ADDRESS_TTL = 60.0
+
 COOKIE_NAME = "tmux_web_session"
 THEME_COOKIE = "tmux_theme"      # readable by scripts: pages paint in the account's theme before any fetch
 SHARE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,47}$")
@@ -2254,6 +2258,8 @@ def create_app(
         return cached["name"] if False else _tailnet_name["name"]
 
     def tailscale_serve_active() -> bool:
+        # 只在 local_addresses 里被调用，而后者已经整段缓存（见 cached_addresses），
+        # 所以这里保持无状态：单测各自 mock 的时候不会互相污染。
         import subprocess as sp
         try:
             out = sp.run(["tailscale", "serve", "status"], capture_output=True, text=True,
@@ -2322,11 +2328,19 @@ def create_app(
             item["transfer"] = item["url"].startswith("https://") and item["kind"] != "public"
         return found
 
+    def cached_addresses(force: bool = False) -> list[dict]:
+        """本机地址不会经常变，但每次都去跑 ip/tailscale 子进程会拖慢整页（云主机上能到 6 秒）。"""
+        if not force and ADDRESS_CACHE["value"] and (time.time() - ADDRESS_CACHE["at"]) < ADDRESS_TTL:
+            return copy.deepcopy(ADDRESS_CACHE["value"])
+        value = local_addresses()
+        ADDRESS_CACHE.update({"at": time.time(), "value": value})
+        return copy.deepcopy(value)
+
     @app.get("/api/system/addresses")
     async def system_addresses(request: Request):
         """Direct entries for this install; the UI shows them in 设置 › 直连."""
         require_auth(request)
-        entries = await asyncio.to_thread(local_addresses)
+        entries = await asyncio.to_thread(cached_addresses)
         host = request.headers.get("host", "")
         current = next((item for item in entries
                         if urllib.parse.urlparse(item["url"]).netloc == host), None)
@@ -2529,8 +2543,12 @@ def create_app(
 
         只列地址，不含任何凭据：父节点拿到之后就优先走直连，绕开 Cloudflare。
         """
+        entries = ADDRESS_CACHE["value"]
+        if not entries:
+            # 冷缓存：先回一句，让后台把地址算好，别让一次探测等 6 秒的子进程
+            asyncio.get_running_loop().run_in_executor(None, lambda: cached_addresses(True))
         try:
-            entries = await asyncio.to_thread(local_addresses)
+            entries = entries or []
         except Exception:                                  # 拿不到地址不影响探测
             entries = []
         return {"tmuxweb": True, "host": socket.gethostname(), "version": "1",
