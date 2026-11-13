@@ -1436,6 +1436,7 @@ def create_app(
     remote_runner_factory=None,
     fed_store=None,
     fed_tokens=None,
+    policy_store=None,
     password_db: str | None = None,
     plugins_dir: str | None = None,
     plugins: str | None = None,
@@ -1519,6 +1520,7 @@ def create_app(
         fed_db = ":memory:"
     fed_nodes = fed_store or federation.FederationStore(fed_db)
     fed_grants = fed_tokens or federation.FedGrants(fed_db)
+    fed_policy = policy_store or federation.FedPolicy(fed_db)
     # Set after the plugins load (below): the agent plugin may offer a
     # runner factory and a per-host status provider. A closure, so routes
     # defined above this line still read the reassigned value at call time.
@@ -2513,7 +2515,12 @@ def create_app(
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         if scope not in grants["scopes"]:
             raise HTTPException(status_code=403,
-                                detail=f"这个联邦令牌没有 {scope} 权限（现有：{' '.join(grants['scopes'])}）")
+                                detail=f"这个 auth key 没有 {scope} 权限（现有：{' '.join(grants['scopes'])}）")
+        # 钥匙允许 + 本机政策允许，才能真的动手
+        if not fed_policy.allows(scope):
+            raise HTTPException(status_code=403,
+                                detail=f"子节点没有开放「{federation.FedPolicy.FLAGS.get(scope, scope)}」"
+                                       "（在对方设置 › 子节点：让别人接入 里打开）")
         return grants
 
     @app.get("/api/fed/ping")
@@ -2722,10 +2729,151 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"path": str(removed)}
 
+    @app.get("/api/fed/policy")
+    async def get_fed_policy(request: Request):
+        require_auth(request)
+        return {"allow": await asyncio.to_thread(fed_policy.read),
+                "labels": federation.FedPolicy.FLAGS}
+
+    @app.post("/api/fed/policy")
+    async def set_fed_policy(request: Request, payload: dict):
+        """本机管：允许外部做哪些操作。关掉之后连已经签出去的 key 也立刻失效。"""
+        require_auth(request)
+        flags = {name: bool(payload.get(name)) for name in federation.FedPolicy.FLAGS
+                 if name in payload}
+        return {"allow": await asyncio.to_thread(fed_policy.write, flags),
+                "labels": federation.FedPolicy.FLAGS}
+
+    @app.post("/api/fed/sessions", status_code=201)
+    async def fed_create_session(request: Request, payload: dict):
+        """在两个作用域都允许时，替父节点建一个分离的 tmux 会话。"""
+        require_fed(request, "admin")
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name is required")
+        command = payload.get("command") or None
+        if command is not None and not isinstance(command, list):
+            raise HTTPException(status_code=422, detail="command must be a list")
+        try:
+            created = await asyncio.to_thread(
+                tmux.create_session, name, str(payload.get("path") or ""), command,
+                bool(payload.get("create_dir", True)), bool(payload.get("keep_open", True)))
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"created": created, "session": name}
+
+    @app.post("/api/fed/sessions/close")
+    async def fed_close_session(request: Request, payload: dict):
+        require_fed(request, "admin")
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name is required")
+        try:
+            killed = await asyncio.to_thread(tmux.kill_session, name)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"closed": killed, "session": name}
+
+    @app.post("/api/fed/panes/{pane_id}/close")
+    async def fed_close_pane(request: Request, pane_id: str):
+        grants = require_fed(request, "admin")
+        actual = fed_pane_or_403(grants, pane_id)
+        try:
+            killed = await asyncio.to_thread(tmux.kill_pane, actual)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"closed": killed, "pane": actual}
+
+    @app.post("/api/fed/files/zip")
+    async def fed_zip(request: Request, payload: dict):
+        """打包下载：父节点拿一个 zip 走一次请求。"""
+        require_fed(request, "files")
+        paths = payload.get("paths") or []
+        if not isinstance(paths, list) or not paths:
+            raise HTTPException(status_code=422, detail="paths is required")
+        if len(paths) > 200:
+            raise HTTPException(status_code=422, detail="一次最多打包 200 个文件")
+        try:
+            resolved = [fed_abs_path(str(item)) for item in paths]
+            base = fed_abs_path(str(payload.get("base") or "")) if payload.get("base") else None
+            archive = await asyncio.to_thread(
+                file_browser.zip_paths, resolved, base,
+                federation.ZIP_MAX_BYTES, federation.ZIP_MAX_FILES)
+        except (OSError, ValueError, file_browser.FileBrowserError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return Response(content=archive, media_type="application/zip",
+                        headers={"Content-Disposition": "attachment; filename*=UTF-8''tmuxweb.zip",
+                                 "X-Content-Type-Options": "nosniff"})
+
+    @app.websocket("/api/fed/ws/terminal/{pane_id}")
+    async def fed_terminal_socket(websocket: WebSocket, pane_id: str, token: str = "",
+                                  cols: int = 100, rows: int = 30):
+        """把某个窗格的终端原样借给父节点（需要 admin，且本机政策要允许）。"""
+        try:
+            grants = fed_grants.verify(token)
+        except federation.FederationError:
+            await websocket.close(code=4401)
+            return
+        if "admin" not in grants["scopes"] or not fed_policy.allows("admin"):
+            await websocket.close(code=4403)
+            return
+        try:
+            actual = resolve_pane_ref(pane_id)
+            if not federation.pane_allowed(grants, actual):
+                await websocket.close(code=4403)
+                return
+            await asyncio.to_thread(pane_or_404, actual)
+        except (HTTPException, ValueError):
+            await websocket.close(code=4404)
+            return
+        await websocket.accept()
+        session = make_terminal(actual, cols, rows)
+
+        async def pump_output():
+            while True:
+                data = await session.read()
+                if not data:
+                    return
+                await websocket.send_bytes(data)
+
+        async def pump_input():
+            try:
+                while True:
+                    message = json.loads(await websocket.receive_text())
+                    if message.get("type") == "input" and isinstance(message.get("data"), str):
+                        await session.write(message["data"].encode())
+                    elif message.get("type") == "resize":
+                        await session.resize(int(message.get("cols", 100)),
+                                             int(message.get("rows", 30)))
+            except (WebSocketDisconnect, json.JSONDecodeError, ValueError):
+                return
+
+        tasks = [asyncio.create_task(pump_output()), asyncio.create_task(pump_input())]
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=900, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.shield(session.close())
+
     @app.post("/api/fed/tokens", status_code=201)
     async def create_fed_token(request: Request, payload: FedTokenRequest):
         """本机登录态才能签发；明文令牌只在这里出现一次。"""
         require_auth(request)
+        allowed = await asyncio.to_thread(fed_policy.read)
+        blocked = [scope for scope in payload.scopes
+                   if scope != "view" and not allowed.get(scope, False)]
+        if blocked:
+            names = "、".join(federation.FedPolicy.FLAGS.get(scope, scope) for scope in blocked)
+            raise HTTPException(status_code=422,
+                                detail=f"本机还没开放：{names}（先把政策开关打开）")
         try:
             issued = await asyncio.to_thread(fed_grants.issue, payload.label, payload.scopes,
                                              payload.panes, payload.ttl)
@@ -3617,6 +3765,8 @@ def create_app(
         require_auth(request)
         if payload.host in ("", "localhost"):
             transport, host_id = tmux, "localhost"
+        elif fed_node(payload.host):
+            transport, host_id = fed_transport(payload.host), payload.host
         else:
             try:
                 host = remote_hosts.get_host(payload.host, include_credential=True)
@@ -3625,6 +3775,9 @@ def create_app(
             transport, host_id = runner_for(host), payload.host
         command = None
         if (payload.agent or "").strip():
+            if fed_node(host_id):
+                raise HTTPException(status_code=422,
+                                    detail="子节点上还不能直接选 agent：先建空会话，再在对端里启动")
             installed = {item["name"]: item for item in await agents_for(host_id)}
             wanted = (payload.agent or "").strip().lower()
             if wanted not in installed:
@@ -3695,6 +3848,8 @@ def create_app(
         require_auth(request)
         if host in ("", "localhost"):
             transport, host_id = tmux, "localhost"
+        elif fed_node(host):
+            transport, host_id = fed_transport(host), host
         else:
             try:
                 record = remote_hosts.get_host(host, include_credential=True)
@@ -5670,6 +5825,15 @@ def create_app(
         await websocket.accept()
         if host_id == "localhost":
             session = make_terminal(actual_pane_id, cols, rows)
+        elif fed_node(host_id):
+            # 子节点的终端：把它的 WS 当成 PTY 用（对端还要 admin 作用域 + 政策允许）
+            try:
+                node = await asyncio.to_thread(fed_nodes.get_node, host_id, True)
+                session = federation.FedTerminalSession(node, actual_pane_id, cols, rows)
+                await session.connect()
+            except (KeyError, federation.FederationError, OSError, ValueError):
+                await websocket.close(code=4503)
+                return
         else:
             try:
                 host = remote_hosts.get_host(host_id, include_credential=True)

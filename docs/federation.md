@@ -19,7 +19,7 @@
 
 | 选项 | 说明 |
 |---|---|
-| 权限 | `只能看`（屏幕 + 对话）、`看 + 发消息/按键`（等于把你键盘交给对方）、`看 + 文件读写`、两者都要。`管理会话` 还没开放 |
+| 权限 | `只能看` / `看 + 发消息/按键` / `看 + 文件读写` / `看 + 管理会话`。发按键等于把键盘交出去，管理会话还包括开终端 |
 | 有效期 | 1 小时 / 1 天 / 7 天 / 30 天 / **永久**（永久不会自己失效，只有吊销能收回） |
 | 范围 | 全部窗格，或只给几个（写 `#12, #14` 或 `%12 %14` 都行） |
 
@@ -72,6 +72,11 @@ fed_<id>.<secret>@https://ddr.167990.xyz
 | GET | `/api/fed/files/download` \| `/raw` | 下载 / 内联预览 |
 | PUT | `/api/fed/files/upload` | `dir` / `name` / `offset` / `total`，body 是字节 |
 | POST | `/api/fed/files/rename` \| `/delete` | 改名 / 删除 |
+| POST | `/api/fed/files/zip` | `{"paths","base"}` → zip 字节 |
+| POST | `/api/fed/sessions` \| `/sessions/close` | 建 / 关会话 → 需要 `admin` |
+| POST | `/api/fed/panes/{id}/close` | 关窗格 → 需要 `admin` |
+| WS | `/api/fed/ws/terminal/{id}?token=…` | 终端（PTY）→ 需要 `admin` |
+| GET/POST | `/api/fed/policy` | 本机总闸（管理界面用，需登录态） |
 | POST | `/api/fed/tokens` | `{"label","scopes","panes","ttl"}`；`ttl=0` 是永久 |
 | GET | `/api/fed/tokens` | 列表（不含明文） |
 | DELETE | `/api/fed/tokens/{id}` | 立即吊销 |
@@ -86,20 +91,31 @@ fed_<id>.<secret>@https://ddr.167990.xyz
 | POST | `/api/fed/nodes/{id}/prefer` | `{"prefer":"direct"\|"public"}`，换首选线路 |
 | DELETE | `/api/fed/nodes/{id}` | 删除这个子节点 |
 
-## 五、现在能做什么 / 还不能做什么
+## 五、现在能做什么
 
-**能**：侧栏列出子节点的窗格（带前缀）、看 capture、读 transcript、`/api/panes/<node~%N>/…`
-走同一套接口、MCP `read_agent` 可用（`handle` 就是 `oracle#12`）。
+| 作用域 | 能做到 |
+|---|---|
+| `view` | 侧栏列出窗格（带前缀）、看 capture（可见屏）、读 transcript、`/api/panes/<node~%N>/…` 走同一套接口、MCP `read_agent`（`handle` 就是 `oracle#12`） |
+| `input` | 聊天里发消息、发单个按键（Enter / Esc / C-c / 方向键 …）、点交互菜单卡片 —— 等于在对端键盘上打字 |
+| `files` | 文件面板列目录、下载（流式）、上传（含分块续传）、改名、删除、打包下载 |
+| `admin` | 建 tmux 会话、关窗格 / 关会话、**开终端**（PTY 经 WS 借用对端的窗格） |
 
-**还不能**：发消息 / 按键（`input`）、文件读写（`files`）、建会话杀窗格（`admin`）。
-`FedTransport` 对写操作直接抛错（"这个节点是只读接进来的"），不会悄悄失败。
+父节点这边**不用为子节点改任何用法**：它就是一台主机。聊天、文件面板、`/term?pane=<node~%N>`
+全都照旧，底层走 `/api/fed/*`；每个请求都带着 auth key，对端逐条校验作用域、窗格白名单和本机政策。
 
-## 六、下一阶段（按顺序）
+终端经 Cloudflare 走 WS 会多一层延迟，交互多的话把该子节点设成「直连优先」。
 
-1. `input`：`/api/fed/panes/{id}/input|key` + `FedTransport.send/send_key`，作用域校验。
-2. `files`：list / raw / download / upload 代理（经 CF 时分块，单请求别超过 100 秒）。
-3. `admin`：建会话 / 杀窗格，默认不给。
-4. 终端（WS）不要走 CF：延迟翻倍，要么强制直连，要么继续用 capture 轮询。
+## 六、本机政策（这台机器允不允许）
+
+设置 › 子节点：让别人接入 顶部有三个勾：
+
+    □ 发消息 / 按键
+    □ 文件读写
+    □ 管理会话 + 终端
+
+默认**全关**。关着的时候，连已经签出去的 auth key 也会被拒（403 `子节点没有开放…`）——
+auth key 里的 scopes 是"这把钥匙想干什么"，这里才是"这台机器允不允许"。勾上立刻生效，
+不需要重新签发；签新 key 时也不允许勾选没打开的能力。
 
 ## 七、注意
 

@@ -209,7 +209,7 @@ class SettingsPageWiringTests(unittest.TestCase):
 
     def test_the_panel_offers_server_and_share_management(self):
         script = self.client.get("/assets/settings.js").text
-        self.assertIn('<a class="ts-row ts-link" href="/hosts"><span>服务器管理</span>', script)
+        self.assertIn('<a class="ts-row ts-link" href="/hosts"><span>子节点和服务器管理</span>', script)
         self.assertIn('<a class="ts-row ts-link" href="/shares"><span>分享管理</span>', script)
         self.assertIn(".ts-row.ts-link{text-decoration:none}", script)
         # both target pages exist
@@ -237,7 +237,7 @@ class SettingsPageWiringTests(unittest.TestCase):
         # one section with two tabs, not two separate rows
         # 子节点(让别人接入) / 添加子节点 / 修改密码 / 直连地址 / 导入导出 / 插件 / 主题 / 交互菜单卡片
         # —— every one of them starts collapsed
-        self.assertEqual(script.count('class="ts-row"'), 8, '新增两栏子节点面板')
+        self.assertEqual(script.count('class="ts-row"'), 7, '子节点面板加进来、添加子节点搬走')
         self.assertIn("/api/system/addresses", script)
         self.assertIn('id="ts-direct-panel"', script)
         self.assertIn("data-ts-tab=\"export\"", script)
@@ -248,17 +248,25 @@ class SettingsPageWiringTests(unittest.TestCase):
         for marker in ('id="ts-child-toggle"', 'id="ts-child-panel"', 'id="ts-child-scopes"',
                        'id="ts-child-ttl"', '<option value="0">永久</option>',
                        'id="ts-child-range"', 'id="ts-child-create"',
-                       'id="ts-node-toggle"', 'id="ts-node-panel"', 'id="ts-node-label"',
-                       'id="ts-node-key"', 'id="ts-node-add"', 'id="ts-node-prefer"'):
+                       'data-policy="input"', 'data-policy="files"', 'data-policy="admin"',
+                       'id="ts-child-policy-state"'):
             self.assertIn(marker, script, marker)
-        # 线路优先：直连 / Cloudflare 可选，每行能一键换
-        self.assertIn('<option value="public">Cloudflare', script)
-        self.assertIn("data-prefer=", script)
-        self.assertIn("/prefer", script)
+        # 添加子节点搬到 /hosts（和服务器管理合并），设置里不该再有它
+        self.assertNotIn('id="ts-node-toggle"', script)
+        self.assertIn("子节点和服务器管理", script)
+        # 政策：本机决定允不允许，勾选即保存
+        self.assertIn("/api/fed/policy", script)
         self.assertIn("/api/fed/tokens", script)
-        self.assertIn("/api/fed/nodes", script)
+        self.assertIn("/api/fed/policy", script)
         # key 后面带上"本机被访问到的地址"，父节点只填名字 + 一串就够
         self.assertIn("made.token}@${location.origin}", script)
+
+    def test_the_hosts_page_owns_child_node_management(self):
+        page = self.client.get("/hosts").text
+        self.assertIn("子节点和服务器管理", page)
+        for marker in ('id="child-name"', 'id="child-key"', 'id="child-prefer"',
+                       'id="child-add"', 'id="child-list"', "/api/fed/nodes"):
+            self.assertIn(marker, page, marker)
 
     def test_every_page_with_a_settings_button_loads_it(self):
         for path in ("/", "/grid"):

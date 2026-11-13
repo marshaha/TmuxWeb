@@ -14,6 +14,7 @@ pane 引用、编号、URL 编码全都不用改；显示时再加 ``ddr#12`` �
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -36,6 +37,10 @@ PREFIX_RE = re.compile(r"^[a-z][a-z0-9]{1,15}$")
 SCOPES = ("view", "input", "files", "admin")
 DEFAULT_SCOPES = ("view",)
 MAX_TTL = 60 * 60 * 24 * 30
+
+# 打包下载的硬上限（子节点执行，父节点只转发）
+ZIP_MAX_BYTES = 128 * 1024 * 1024
+ZIP_MAX_FILES = 1000
 
 
 class FederationError(Exception):
@@ -149,6 +154,47 @@ def parse_auth_key(text: str) -> tuple[str, str]:
         if url.startswith(("http://", "https://")):
             return token.strip(), url
     return raw, ""
+
+
+class FedPolicy:
+    """子节点自己管的开关：允许外部做哪些操作（和具体某把 key 的作用域无关）。
+
+    令牌里的 scopes 是"这把钥匙想干什么"，这里是"这台机器允不允许这类事"。两边都通过才执行，
+    所以管理员关掉「发按键」之后，已经签出去的钥匙也立刻失效。
+    """
+
+    FLAGS = {"input": "允许外部发消息/按键", "files": "允许外部读写文件",
+             "admin": "允许外部管理会话（建/杀窗格、开终端）"}
+
+    def __init__(self, path: str):
+        self.lock = threading.Lock()
+        self.connection = _connect(path)
+        with self.lock:
+            self.connection.execute(
+                "CREATE TABLE IF NOT EXISTS fed_policy(name TEXT PRIMARY KEY, value INTEGER)")
+            self.connection.commit()
+
+    def read(self) -> dict:
+        with self.lock:
+            rows = self.connection.execute("SELECT name,value FROM fed_policy").fetchall()
+        stored = {row["name"]: bool(row["value"]) for row in rows}
+        # 默认：只开 view。写操作要管理员显式打开
+        return {name: stored.get(name, False) for name in self.FLAGS}
+
+    def allows(self, scope: str) -> bool:
+        return scope == "view" or bool(self.read().get(scope, False))
+
+    def write(self, flags: dict) -> dict:
+        with self.lock:
+            for name in self.FLAGS:
+                if name not in flags:
+                    continue
+                self.connection.execute(
+                    "INSERT INTO fed_policy(name,value) VALUES (?,?)"
+                    " ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+                    (name, 1 if flags[name] else 0))
+            self.connection.commit()
+        return self.read()
 
 
 def pane_allowed(grants: dict, pane_id: str) -> bool:
@@ -367,6 +413,34 @@ class FedClient:
         return self._call("POST", "/api/fed/files/delete", body,
                           {"Content-Type": "application/json"}, timeout=60)
 
+    def zip(self, paths: list[str], base: str = "") -> bytes:
+        body = json.dumps({"paths": list(paths), "base": base}).encode()
+        return self._call("POST", "/api/fed/files/zip", body,
+                          {"Content-Type": "application/json"}, timeout=180, raw=True)
+
+    def create_session(self, name: str, path: str = "", command: list[str] | None = None,
+                       create_dir: bool = True, keep_open: bool = True) -> dict:
+        body = json.dumps({"name": name, "path": path, "command": command or [],
+                           "create_dir": bool(create_dir), "keep_open": bool(keep_open)}).encode()
+        return self._call("POST", "/api/fed/sessions", body,
+                          {"Content-Type": "application/json"}, timeout=60)
+
+    def close_pane(self, pane_id: str) -> dict:
+        return self._call("POST", f"/api/fed/panes/{urllib.parse.quote(pane_id, safe='')}/close",
+                          b"", {"Content-Type": "application/json"}, timeout=30)
+
+    def close_session(self, name: str) -> dict:
+        body = json.dumps({"name": name}).encode()
+        return self._call("POST", "/api/fed/sessions/close", body,
+                          {"Content-Type": "application/json"}, timeout=30)
+
+    def terminal_url(self, pane_id: str, cols: int, rows: int) -> str:
+        """给终端用的 WS 地址（令牌放 query：WS 客户端不方便带自定义头）。"""
+        query = urllib.parse.urlencode({"token": self.token, "cols": int(cols), "rows": int(rows)})
+        base = (self.base_url or self.fallback_url).replace("https://", "wss://").replace(
+            "http://", "ws://")
+        return f"{base}/api/fed/ws/terminal/{urllib.parse.quote(pane_id, safe='')}?{query}"
+
     def ping(self) -> dict:
         return self._get("/api/fed/ping", timeout=3)
 
@@ -462,13 +536,16 @@ class FedTransport:
             self.send_key(pane_id, key)
         return {"status": "sent", "keys": list(keys)}
 
-    # 管理会话（admin）留给后面的阶段：它能在对端开新会话、杀窗格，破坏性太强
-    def _needs_admin(self, *_args, **_kwargs):
-        raise FederationError("子节点还不支持管理会话（建/杀窗格），只能在它本机操作")
+    # 管理会话（admin）：建会话、杀窗格。对端自己还会再查一次政策开关。
+    def create_session(self, name: str, path: str = "", command: list[str] | None = None,
+                       create_dir: bool = True, keep_open: bool = True) -> dict:
+        return self.client.create_session(name, path, command, create_dir, keep_open)
 
-    kill_pane = _needs_admin
-    kill_session = _needs_admin
-    create_session = _needs_admin
+    def kill_pane(self, pane_id: str) -> dict:
+        return self.client.close_pane(self.raw_pane(pane_id))
+
+    def kill_session(self, name: str) -> dict:
+        return self.client.close_session(name)
 
     # -- 文件：子节点的文件是主机级的，和 SSH 主机一样 ---------------------
     def list_files(self, directory: str, show_hidden: bool = False, limit: int = 2000) -> dict:
@@ -505,7 +582,12 @@ class FedTransport:
         return str(self.client.delete(path, recursive).get("path") or "")
 
     def zip_files(self, paths, base: str, max_bytes: int, max_files: int) -> bytes:
-        raise FederationError("子节点暂不支持打包下载（文件可以逐个下载）")
+        if len(paths) > max_files:
+            raise FederationError(f"一次最多打包 {max_files} 个文件")
+        payload = self.client.zip(list(paths), base)
+        if len(payload) > max_bytes:
+            raise FederationError(f"打包结果超过上限（{len(payload)} > {max_bytes} 字节）")
+        return payload
 
     def find_suffix(self, base: str, relative: str, max_depth: int = 4, limit: int = 5) -> list[str]:
         return []
@@ -546,6 +628,62 @@ class FedTransport:
     def raw_pane(self, pane_id: str) -> str:
         """`<node>~%12` → `%12`：对端只认自己的编号。"""
         return pane_id.split("~", 1)[1] if "~" in pane_id else pane_id
+
+
+class FedTerminalSession:
+    """父节点侧：把子节点的终端（WS）包成和本地 PTY 一样的 read/write/resize/close。
+
+    PTY 走 Cloudflare 时延迟会翻倍，所以终端只在真的需要敲命令时才用；日常聊天仍然走 capture。
+    """
+
+    def __init__(self, node: dict, pane_id: str, cols: int = 100, rows: int = 30):
+        self.client = client_for(node)
+        self.pane_id = pane_id
+        self.cols = cols
+        self.rows = rows
+        self.connection = None
+        self.queue: asyncio.Queue | None = None
+        self.reader = None
+
+    async def connect(self) -> None:
+        import websockets                      # requirements 里已经有（uvicorn 的 WS 实现）
+        self.queue = asyncio.Queue()
+        self.connection = await websockets.connect(
+            self.client.terminal_url(self.pane_id, self.cols, self.rows),
+            max_size=None, open_timeout=15, ping_interval=20)
+        self.reader = asyncio.create_task(self._pump())
+
+    async def _pump(self) -> None:
+        try:
+            async for message in self.connection:
+                payload = message if isinstance(message, (bytes, bytearray)) else str(message).encode()
+                await self.queue.put(bytes(payload))
+        except Exception:                      # 对端断开就是流结束
+            pass
+        finally:
+            await self.queue.put(b"")
+
+    async def read(self) -> bytes:
+        return await self.queue.get()
+
+    async def write(self, data: bytes) -> None:
+        if self.connection:
+            await self.connection.send(json.dumps(
+                {"type": "input", "data": data.decode("utf-8", "replace")}))
+
+    async def resize(self, cols: int, rows: int) -> None:
+        self.cols, self.rows = cols, rows
+        if self.connection:
+            await self.connection.send(json.dumps({"type": "resize", "cols": cols, "rows": rows}))
+
+    async def close(self) -> None:
+        if self.reader:
+            self.reader.cancel()
+        if self.connection:
+            try:
+                await self.connection.close()
+            except Exception:
+                pass
 
 
 def client_for(node: dict) -> FedClient:

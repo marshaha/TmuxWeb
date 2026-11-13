@@ -521,10 +521,12 @@ Both sides keep their own `#N` numbering, so child panes show as `oracle#12` (an
 it answers "is this thing a TmuxWeb?".
 
 The auth key carries the permissions you pick: `view` (screen + transcript), `view+input` (send
-messages and keys — that is your keyboard), `view+files` (list, download, upload, rename, delete).
-The parent needs no special mode: a child node is just another host. Every request is checked by the
-child against the granted scopes and the pane whitelist. Session management (`admin`) is not wired
-yet. Details and the endpoint table: [docs/federation.md](docs/federation.md) (Chinese).
+messages and keys — that is your keyboard), `view+files` (list, download, upload, rename, delete,
+zip), `view+admin` (create/close sessions, open the terminal). The child also keeps a master switch:
+three checkboxes in settings, all off by default — while one is off even an already issued key is
+refused. The parent needs no special mode: a child node is just another host (chat, file panel,
+terminal), and every request is checked by the child against the granted scopes and pane whitelist.
+Details and the endpoint table: [docs/federation.md](docs/federation.md) (Chinese).
 
 ## Requirements
 

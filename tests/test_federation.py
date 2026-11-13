@@ -16,6 +16,10 @@ def memory_stores():
     return federation.FederationStore(":memory:"), federation.FedGrants(":memory:")
 
 
+def memory_policy():
+    return federation.FedPolicy(":memory:")
+
+
 class GrantTests(unittest.TestCase):
     def setUp(self):
         self.grants = federation.FedGrants(":memory:")
@@ -182,18 +186,19 @@ class TransportTests(unittest.TestCase):
 
 def make_client():
     store, grants = memory_stores()
+    policy = memory_policy()
     backend = FakeTmux()
-    client = TestClient(federation_app(backend, store, grants))
+    client = TestClient(federation_app(backend, store, grants, policy))
     return client, store, grants
 
 
-def federation_app(backend, store, grants):
+def federation_app(backend, store, grants, policy=None):
     from tmux_web import create_app
     return create_app(
         backend, password="unit-test-admin-password", session_secret="test-secret",
         terminal_factory=FakeTerminalFactory(), share_db=":memory:",
         remote_store=FakeRemoteStore(), remote_runner_factory=FakeSSHRunner,
-        fed_store=store, fed_tokens=grants,
+        fed_store=store, fed_tokens=grants, policy_store=policy or memory_policy(),
     )
 
 
@@ -203,6 +208,8 @@ class WriteScopeTests(unittest.TestCase):
     def setUp(self):
         self.client, self.store, self.grants = make_client()
         self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        # 本机政策默认只开 view（和真实默认一致），这些用例先把要用的能力打开
+        self.client.post("/api/fed/policy", json={"input": True, "files": True, "admin": True})
         listing = self.client.get("/api/fed/panes",
                                   headers=self.headers(["view"])).json()
         self.pane = listing["panes"][0]["id"]
@@ -259,6 +266,82 @@ class WriteScopeTests(unittest.TestCase):
             dropped = self.client.post("/api/fed/files/delete",
                                        json={"path": f"{folder}/x.txt"}, headers=files)
             self.assertEqual(dropped.status_code, 200, dropped.text)
+
+
+class PolicyTests(unittest.TestCase):
+    """权限由子节点自己管：关掉之后，连已经签出去的 key 也立刻失效。"""
+
+    def setUp(self):
+        self.client, self.store, self.grants = make_client()
+        self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+
+    def test_writes_are_off_until_this_machine_allows_them(self):
+        policy = self.client.get("/api/fed/policy").json()
+        self.assertEqual(policy["allow"], {"input": False, "files": False, "admin": False})
+
+        refused = self.client.post("/api/fed/tokens", json={"label": "x", "scopes": ["view", "input"]})
+        self.assertEqual(refused.status_code, 422)
+        self.assertIn("发消息", refused.text)
+
+        self.client.post("/api/fed/policy", json={"input": True})
+        self.assertTrue(self.client.get("/api/fed/policy").json()["allow"]["input"])
+        issued = self.client.post("/api/fed/tokens", json={"label": "x", "scopes": ["view", "input"]})
+        self.assertEqual(issued.status_code, 201, issued.text)
+
+        # 关掉之后：这把 key 立刻失效（401/403 都算拒绝，命中 403）
+        self.client.post("/api/fed/policy", json={"input": False})
+        headers = {"Authorization": f"Bearer {issued.json()['token']}"}
+        pane = self.client.get("/api/fed/panes", headers=headers).json()["panes"][0]["id"]
+        blocked = self.client.post(f"/api/fed/panes/{pane}/input",
+                                   json={"text": "ls", "submit": True}, headers=headers)
+        self.assertEqual(blocked.status_code, 403)
+        self.assertIn("没有开放", blocked.text)
+
+    def test_the_parent_facing_list_hides_nothing_but_flags_are_readable(self):
+        self.client.post("/api/fed/policy", json={"files": True})
+        labels = self.client.get("/api/fed/policy").json()["labels"]
+        self.assertIn("files", labels)
+
+
+class AdminScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.client, self.store, self.grants = make_client()
+        self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        self.client.post("/api/fed/policy", json={"admin": True, "files": True})
+
+    def headers(self, scopes):
+        issued = self.client.post("/api/fed/tokens", json={"label": "t", "scopes": scopes}).json()
+        return {"Authorization": f"Bearer {issued['token']}"}
+
+    def test_creating_and_closing_a_session_needs_admin(self):
+        view_only = self.headers(["view"])
+        self.assertEqual(self.client.post("/api/fed/sessions", json={"name": "fed-x"},
+                                          headers=view_only).status_code, 403)
+
+        admin = self.headers(["view", "admin"])
+        created = self.client.post("/api/fed/sessions", json={"name": "fed-x", "path": "/tmp"},
+                                   headers=admin)
+        self.assertEqual(created.status_code, 201, created.text)
+
+        panes = self.client.get("/api/fed/panes", headers=admin).json()["panes"]
+        self.assertTrue(panes)
+        closed = self.client.post(f"/api/fed/panes/{panes[0]['id']}/close", headers=admin)
+        self.assertEqual(closed.status_code, 200, closed.text)
+
+    def test_zip_returns_a_readable_archive(self):
+        import io, tempfile, zipfile, os
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("a.txt", "b.txt"):
+                with open(os.path.join(folder, name), "w") as handle:
+                    handle.write(name)
+            files = self.headers(["view", "files"])
+            answer = self.client.post("/api/fed/files/zip",
+                                      json={"paths": [os.path.join(folder, "a.txt"),
+                                                      os.path.join(folder, "b.txt")],
+                                            "base": folder}, headers=files)
+        self.assertEqual(answer.status_code, 200, answer.text)
+        archive = zipfile.ZipFile(io.BytesIO(answer.content))
+        self.assertEqual(sorted(archive.namelist()), ["a.txt", "b.txt"])
 
 
 class TransportWriteTests(unittest.TestCase):
