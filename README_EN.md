@@ -497,6 +497,33 @@ HTTP endpoints (`Authorization: Bearer $TMUX_WEB_API_TOKEN`):
 Protocol: TmuxWeb embeds a one-time marker and asks the target agent to print
 `TMUXWEB_REPLY_<token>: "<json string>"` as its last line, then polls local or remote capture every 0.8s until it matches or the request times out (504 returns the pane tail). A busy pane is refused with 409 unless `force=true`.
 
+## Federation: treat another TmuxWeb as one more host
+
+Not the same as the relay above: the relay lets *other* processes ask this instance. Federation
+lets this instance **remember another TmuxWeb** and show its panes as one more host in the sidebar
+(one-way, read-only to start). The visible range and the permissions are decided by the **serving**
+side when it issues a token — the client cannot widen them.
+
+```bash
+# on oracle (logged in): issue a read-only token
+POST /api/fed/tokens {"label":"robo","scopes":["view"],"panes":"all","ttl":86400}
+→ {"token":"fed_<id>.<secret>", ...}
+
+# on robo: remember that node
+POST /api/fed/nodes {"label":"oracle","prefix":"ddr",
+                     "base_url":"http://100.123.123.10:8787",
+                     "fallback_url":"https://ddr.167990.xyz",
+                     "token":"fed_…"}
+```
+
+Both sides keep their own `#N` numbering, so federated panes show as `ddr#12` (and accept
+`ddr:12` / `ddr/12`); internally the id is `<node_id>~%12`, the same shape as an SSH host's
+`<host_id>~%N`, so URL encoding, relay and MCP need no changes. `GET /api/fed/ping` needs no auth —
+it answers "is this thing a TmuxWeb?".
+
+Phase one is read-only: list panes, capture (visible screen), transcript. Keys, files and session
+management are not wired yet. See [docs/federation.md](docs/federation.md) (Chinese).
+
 ## Requirements
 
 - Linux or macOS
