@@ -58,13 +58,14 @@
 
   const DIRECT_KEY = 'tmuxweb.transfer.direct';
 
-  // 默认走当前页面（通常就是 CF）；想省 CF 流量/在局域网里更快，可以在
-  // 设置 › 直连地址 › 文件下载走直连源站 打开
+  // 默认开（和以前一样）：本机/SSH 主机的下载改走局域网或 Tailscale；
+  // 想一律走当前页面（CF），在 设置 › 直连地址 › 文件下载走直连源站 关掉。
+  // 子节点的 pane 不看这个开关，直接按子节点自己的线路走。
   function directEnabled() {
     try {
-      return localStorage.getItem(DIRECT_KEY) === 'on';
+      return localStorage.getItem(DIRECT_KEY) !== 'off';
     } catch (_error) {
-      return false;
+      return true;
     }
   }
 
@@ -123,12 +124,20 @@
     return response.json();
   }
 
+  // 子节点的 pane 编号是 `<node_id>~%12`：它的字节按子节点自己的线路走
+  // （先它存的域名，域名不通再试它的内网/tailnet 地址），不该被改道到本机的直连源站
+  function isFederatedPane(pane) {
+    const text = String(pane || '');
+    return text.includes('~') || /%7e/i.test(text) || /%257e/i.test(text);
+  }
+
   // 普通下载链接 → 直连源站上的票据链接（拿不到就原样返回）
   async function downloadHref(href) {
     let parsed;
     try { parsed = new URL(href, location.href); } catch (_error) { return href; }
     const match = parsed.pathname.match(/^\/api\/panes\/([^/]+)\/files\/download$/);
     if (!match || !parsed.searchParams.get('path')) return href;
+    if (isFederatedPane(decodeURIComponent(match[1]))) return href;
     const origin = await pick();
     if (!origin) return href;
     try {
@@ -145,6 +154,7 @@
 
   // 上传：返回 {prefix, ticket} 让 uploads.js 把块发到直连源站；null 表示保持原样
   async function uploadRoute(options) {
+    if (isFederatedPane(options && options.pane)) return null;
     const origin = await pick();
     if (!origin) return null;
     try {

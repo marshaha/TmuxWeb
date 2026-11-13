@@ -198,12 +198,13 @@
         <div class="ts-row ts-static">
           <span>文件下载走直连源站</span>
           <span class="ts-tail">
-            <button class="ts-switch" type="button" role="switch" id="ts-transfer-direct" aria-checked="false"
+            <button class="ts-switch" type="button" role="switch" id="ts-transfer-direct" aria-checked="true"
               title="下载文件时把字节改走局域网 / Tailscale 源站" aria-label="文件下载走直连源站"></button>
           </span>
         </div>
-        <p class="ts-hint" id="ts-transfer-hint">默认关闭：下载一律走当前页面（通常是 Cloudflare）由它转发。
-          打开后下载会先探测一次直连地址，把字节改走局域网 / Tailscale（不经 CF，也没有 100MB 请求上限）。</p>
+        <p class="ts-hint" id="ts-transfer-hint">只管本机 / SSH 主机的下载：开着时下载会先探测一次直连地址，
+          把字节改走局域网 / Tailscale；关掉就一律走当前页面（通常是 Cloudflare）。
+          子节点的 pane 不受这个开关影响 —— 它按子节点自己的线路走（先域名，域名不通再试它的内网地址）。</p>
         <div class="ts-btns"><button class="ts-btn" type="button" id="ts-direct-forget">清除记住的直连源站</button></div>
         <p class="ts-state" id="ts-direct-state" role="status"></p>
         <div id="ts-direct-list"></div>
@@ -620,7 +621,7 @@
   }
 
   async function loadTransferPref() {
-    let on = false;
+    let on = true;
     try { on = localStorage.getItem(TRANSFER_KEY) !== 'off'; } catch {}
     paintTransferDirect(on);
     try {

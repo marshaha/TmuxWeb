@@ -171,17 +171,31 @@ test('forget() 清掉记住的源站', async () => {
   assert.equal(store.has('tmuxweb.transfer.origin'), false);
 });
 
-test('默认不走直连：下载交给当前页面（通常是 CF）', async () => {
+test('子节点的 pane 不改道：按子节点自己的线路走（先域名，再它的内网地址）', async () => {
+  const pane = 'a1b2c3d4e5f60718~%12';
+  const original = `/api/panes/${encodeURIComponent(pane)}/files/download?path=/srv/a.bin`;
   const {transfer, calls} = load({
-    direct: false,
+    fetch: async () => { throw new Error('不该为子节点探测本机直连源站'); },
+  });
+  assert.equal(await transfer.downloadHref(original), original);
+  assert.equal(await transfer.uploadRoute({pane, dir: '/srv', name: 'a.bin', size: 10}), null);
+  assert.equal(calls.length, 0, '既不探测也不改道');
+});
+
+test('本机 / SSH 主机默认仍然改走直连', async () => {
+  const {transfer} = load({
     fetch: async url => {
-      if (String(url).startsWith('/api/transfer/ticket')) {
-        return {ok: true, json: async () => ({token: 'abc.def'})};
+      if (url.endsWith('/api/system/addresses')) {
+        return {ok: true, status: 200, json: async () => ({addresses: [
+          {url: 'https://robo.example.ts.net', kind: 'tailnet', transfer: true}]})};
       }
-      throw new Error('不该探测直连源站: ' + url);
+      if (url.endsWith('/t/ping')) return {ok: true, status: 200, json: async () => ({tmuxweb: true})};
+      if (url.endsWith('/api/transfer/ticket')) {
+        return {ok: true, status: 200, json: async () => ({token: 'abc.def', expires: 1})};
+      }
+      throw new Error('unexpected ' + url);
     },
   });
   const href = await transfer.downloadHref('/api/panes/%2524/files/download?path=/srv/a.bin');
-  assert.equal(href, '/api/panes/%2524/files/download?path=/srv/a.bin');
-  assert.ok(!calls.some(call => String(call.url).includes('/t/ping')), '关了就不该再探测');
+  assert.equal(href, 'https://robo.example.ts.net/t/download?t=abc.def');
 });
