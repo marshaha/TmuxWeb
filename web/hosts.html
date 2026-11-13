@@ -30,21 +30,62 @@ function fillJumpSelects(){const options=hosts.map(h=>`<option value="${esc(h.id
   const add=$('jump-host');if(add&&add.dataset.filled!==String(hosts.length)){const keep=add.value;add.innerHTML=direct+options;add.value=keep;add.dataset.filled=String(hosts.length);}
   const edit=$('edit-jump-host');if(edit){const self=editing?editing.id:'';edit.innerHTML=direct+hosts.filter(h=>h.id!==self).map(h=>`<option value="${esc(h.id)}">${esc(h.name)} · ${esc(h.hostname)}</option>`).join('');}
 }
+function routeLabel(url){
+  const host=(url||'').replace(/^https?:\/\//,'').split(/[:/]/)[0];
+  if(!host) return '—';
+  if(/^(100\.|10\.|127\.|192\.168\.|localhost)/.test(host)) return '直连';
+  return 'Cloudflare';
+}
+
+async function editChildAddresses(id){
+  const out=$('child-status');
+  let nodes=[];
+  try{ nodes=(await api('/api/fed/nodes',{cache:'no-store'})).nodes||[]; }catch(error){ out.textContent=error.message; return; }
+  const node=nodes.find(item=>item.id===id);
+  if(!node) return;
+  out.innerHTML='';
+  const box=document.createElement('div');
+  box.className='child-card';
+  box.style.marginTop='10px';
+  box.innerHTML=`<div class="host-main" style="width:100%">
+    <div class="host-title">改地址 · ${esc(node.prefix)}</div>
+    <label class="field full">优先地址（先试这条）
+      <input id="child-edit-base" value="${esc(node.base_url||'')}" placeholder="https://ddr.167990.xyz 或 http://100.x.x.x:8787"></label>
+    <label class="field full">备用地址（优先那条连不上才用，可留空）
+      <input id="child-edit-fallback" value="${esc(node.fallback_url||'')}" placeholder="http://100.123.123.17:8787"></label>
+    <div class="row-actions" style="justify-content:flex-end">
+      <button type="button" id="child-edit-save">保存</button>
+      <button type="button" id="child-edit-cancel">取消</button>
+    </div></div>`;
+  out.appendChild(box);
+  $('child-edit-cancel').onclick=()=>{ box.remove(); out.textContent=''; };
+  $('child-edit-save').onclick=async()=>{
+    try{
+      const saved=await api(`/api/fed/nodes/${id}/addresses`,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({base_url:$('child-edit-base').value.trim(),fallback_url:$('child-edit-fallback').value.trim()})});
+      out.textContent=`已保存：现在走 ${routeLabel(saved.base_url)}（${saved.base_url}）`;
+      await loadChildNodes();
+    }catch(error){ out.textContent=error.message; }
+  };
+}
+
 async function loadChildNodes(){
   const box=$('child-list');
   try{
     const d=await api('/api/fed/nodes',{cache:'no-store'});
     box.innerHTML=d.nodes.length?d.nodes.map(node=>{
       const prefer=node.prefer==='public'?'Cloudflare 优先':'直连优先';
+      const route=routeLabel(node.base_url);
       const flip=node.prefer==='public'?'direct':'public';
       const flipLabel=node.prefer==='public'?'改直连优先':'改 CF 优先';
       const spare=node.base_url&&node.fallback_url?`（备用 ${esc(node.fallback_url)}）`:'';
       return `<article class="child-card"><div class="host-main">`
         +`<div class="host-title">${esc(node.label||node.prefix)} <span class="meta">前缀 ${esc(node.prefix)}</span></div>`
-        +`<div class="child-meta">${esc(prefer)} · ${esc(node.base_url||node.fallback_url||'—')}${esc(spare)}</div></div>`
+        +`<div class="child-meta">${esc(prefer)} · 现在走 ${esc(route)}：${esc(node.base_url||node.fallback_url||'—')}${esc(spare)}</div></div>`
         +`<div class="row-actions">`
         +(node.base_url&&node.fallback_url
           ?`<button type="button" data-child="prefer" data-id="${esc(node.id)}" data-to="${flip}">${flipLabel}</button>`:'')
+        +`<button type="button" data-child="edit" data-id="${esc(node.id)}">改地址</button>`
         +`<button type="button" data-child="probe" data-id="${esc(node.id)}">测试</button>`
         +`<button type="button" class="danger" data-child="drop" data-id="${esc(node.id)}">删除</button>`
         +`</div></article>`;
@@ -76,6 +117,7 @@ async function addChildNode(){
 async function handleChildAction(action,id,to){
   const out=$('child-status');
   try{
+    if(action==='edit'){ await editChildAddresses(id); return; }
     if(action==='probe'){
       out.textContent='正在测试…';
       const r=await api(`/api/fed/nodes/${id}/probe`,{method:'POST'});

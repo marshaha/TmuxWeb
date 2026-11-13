@@ -1025,6 +1025,12 @@ class FedFileRequest(BaseModel):
     recursive: bool = False
 
 
+class FedNodeAddresses(BaseModel):
+    """直接改子节点的两条地址（顺序就是优先级）。"""
+    base_url: str = Field(default="", max_length=400)
+    fallback_url: str = Field(default="", max_length=400)
+
+
 class FedPreferRequest(BaseModel):
     """先走哪条线路。"""
     prefer: str = Field(default="direct", pattern="^(direct|public)$")
@@ -2224,11 +2230,12 @@ def create_app(
             raise HTTPException(status_code=400, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="expected an object of preferences")
-        allowed = {"theme", "sidebar", "preview", "prompt_card"}
+        allowed = {"theme", "sidebar", "preview", "prompt_card", "transfer"}
         # preview = 侧栏悬停预览的延迟（off 关闭；1/2/3 秒）
         # prompt_card = 聊天里的 agent 交互菜单卡片（实验性，默认 off）
+        # transfer = 下载文件时要不要把字节改走直连源站（off 就一律走当前页面/CF）
         choices = {"sidebar": {"pane", "none"}, "preview": {"off", "1", "2", "3"},
-                   "prompt_card": {"off", "on"}}
+                   "prompt_card": {"off", "on"}, "transfer": {"off", "on"}}
         saved = home.get_prefs()
         for key, value in payload.items():
             if key not in allowed:
@@ -2998,6 +3005,23 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="no such node") from exc
         return node
+
+    @app.post("/api/fed/nodes/{node_id}/addresses")
+    async def set_fed_addresses(request: Request, node_id: str, payload: FedNodeAddresses):
+        require_auth(request)
+        base = (payload.base_url or "").strip().rstrip("/")
+        fallback = (payload.fallback_url or "").strip().rstrip("/")
+        if not base and not fallback:
+            raise HTTPException(status_code=422, detail="至少给一个地址")
+        if not base:
+            base, fallback = fallback, ""
+        for url in (base, fallback):
+            if url and not url.startswith(("http://", "https://")):
+                raise HTTPException(status_code=422, detail="地址要以 http:// 或 https:// 开头")
+        try:
+            return await asyncio.to_thread(fed_nodes.set_addresses, node_id, base, fallback)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="no such node") from exc
 
     @app.post("/api/fed/nodes/{node_id}/probe")
     async def probe_fed_node(request: Request, node_id: str):

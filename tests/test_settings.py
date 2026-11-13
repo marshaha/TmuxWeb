@@ -240,6 +240,9 @@ class SettingsPageWiringTests(unittest.TestCase):
         self.assertEqual(script.count('class="ts-row"'), 7, '子节点面板加进来、添加子节点搬走')
         self.assertIn("/api/system/addresses", script)
         self.assertIn('id="ts-direct-panel"', script)
+        # 下载线路可以自己选：默认走当前页面（CF），想走直连再打开
+        self.assertIn('id="ts-transfer-direct"', script)
+        self.assertIn("tmuxweb.transfer.direct", script)
         self.assertIn("data-ts-tab=\"export\"", script)
         self.assertIn("data-ts-tab=\"import\"", script)
         self.assertIn('id="ts-import-file" type="file"', script)

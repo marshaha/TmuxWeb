@@ -194,7 +194,16 @@
         <span>直连地址</span><span class="ts-caret" aria-hidden="true"></span>
       </button>
       <div class="ts-panel" id="ts-direct-panel" hidden>
-        <p class="ts-hint" id="ts-direct-hint">同一局域网或 Tailscale 里可以直接连服务器，传输不经过 Cloudflare（没有 100MB / 100 秒限制）。</p>
+        <p class="ts-hint" id="ts-direct-hint">同一局域网或 Tailscale 里可以直接连服务器，传输不经过 Cloudflare（没有 100MB / 125 秒限制）。</p>
+        <div class="ts-row ts-static">
+          <span>文件下载走直连源站</span>
+          <span class="ts-tail">
+            <button class="ts-switch" type="button" role="switch" id="ts-transfer-direct" aria-checked="false"
+              title="下载文件时把字节改走局域网 / Tailscale 源站" aria-label="文件下载走直连源站"></button>
+          </span>
+        </div>
+        <p class="ts-hint" id="ts-transfer-hint">默认关闭：下载一律走当前页面（通常是 Cloudflare）由它转发。
+          打开后下载会先探测一次直连地址，把字节改走局域网 / Tailscale（不经 CF，也没有 100MB 请求上限）。</p>
         <div class="ts-btns"><button class="ts-btn" type="button" id="ts-direct-forget">清除记住的直连源站</button></div>
         <p class="ts-state" id="ts-direct-state" role="status"></p>
         <div id="ts-direct-list"></div>
@@ -596,6 +605,51 @@
     if (select) select.value = PREVIEW_VALUES.has(value) ? value : '2';
   }
 
+  const TRANSFER_KEY = 'tmuxweb.transfer.direct';
+
+  function paintTransferDirect(on) {
+    const toggle = $('ts-transfer-direct');
+    if (!toggle) return;
+    toggle.setAttribute('aria-checked', on ? 'true' : 'false');
+    const hint = $('ts-transfer-hint');
+    if (hint) {
+      hint.textContent = on
+        ? '开着：下载会先探测一次直连地址，然后把字节改走它（浏览器 → 本机直连，不经 CF）。'
+        : '关掉：下载一律走当前页面（通常是 Cloudflare），由 CF 转发到本机。';
+    }
+  }
+
+  async function loadTransferPref() {
+    let on = false;
+    try { on = localStorage.getItem(TRANSFER_KEY) !== 'off'; } catch {}
+    paintTransferDirect(on);
+    try {
+      const data = await api('/api/prefs');
+      const stored = (data.prefs || {}).transfer;
+      if (stored === 'on' || stored === 'off') {
+        on = stored === 'on';
+        try { localStorage.setItem(TRANSFER_KEY, on ? 'on' : 'off'); } catch {}
+        paintTransferDirect(on);
+      }
+    } catch { /* 离线：用本地镜像 */ }
+  }
+
+  async function toggleTransferDirect() {
+    const toggle = $('ts-transfer-direct');
+    if (!toggle) return;
+    const next = toggle.getAttribute('aria-checked') !== 'true';
+    paintTransferDirect(next);
+    try { localStorage.setItem(TRANSFER_KEY, next ? 'on' : 'off'); } catch {}
+    try {
+      await api('/api/prefs', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transfer: next ? 'on' : 'off' }),
+      });
+    } catch {
+      note($('ts-direct-state'), '保存到账号失败，已记在本浏览器', 'bad');
+    }
+  }
+
   async function loadPreviewPref() {
     let stored = '2';
     try { stored = localStorage.getItem(PREVIEW_KEY) || '2'; } catch {}
@@ -969,6 +1023,7 @@
     loadPreviewPref();
     loadPlugins();          // fills the row's counter; the list itself stays collapsed
     loadDirectEntries();
+    loadTransferPref();
     loadChildKeys();
     loadChildPolicy();
     // Chrome/Firefox auto-focus the first control, Safari draws its blue ring on it: park the focus on
@@ -1096,6 +1151,7 @@
         $('ts-key-picks').hidden = event.target.value !== 'pick';
       }
     });
+    $('ts-transfer-direct').addEventListener('click', () => toggleTransferDirect());
     $('ts-sidebar-memory').addEventListener('click', () => toggleSidebarMemory());
     $('ts-preview-delay').addEventListener('change', event => savePreviewDelay(event.target.value));
   for (const button of document.querySelectorAll('[data-ts-prompt]')) {

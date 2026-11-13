@@ -591,6 +591,22 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(added.json()["base_url"], "https://ddr.167990.xyz")
         self.assertEqual(added.json()["fallback_url"], "http://100.123.123.17:8787")
 
+    def test_the_two_addresses_can_be_replaced_by_hand(self):
+        added = self.client.post("/api/fed/nodes", json={
+            "label": "old", "token": "fed_a.b@https://ddr.167990.xyz"}).json()
+        saved = self.client.post(f"/api/fed/nodes/{added['id']}/addresses", json={
+            "base_url": "http://100.123.123.17:8787/", "fallback_url": " https://ddr.167990.xyz "})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["base_url"], "http://100.123.123.17:8787")
+        self.assertEqual(saved.json()["fallback_url"], "https://ddr.167990.xyz")
+        # 只给一个地址也行，顺序以 base 为准
+        only = self.client.post(f"/api/fed/nodes/{added['id']}/addresses",
+                                json={"base_url": "", "fallback_url": "https://ddr.167990.xyz"})
+        self.assertEqual(only.json()["base_url"], "https://ddr.167990.xyz")
+        self.assertEqual(only.json()["fallback_url"], "")
+        self.assertEqual(self.client.post(f"/api/fed/nodes/{added['id']}/addresses",
+                                          json={"base_url": "ftp://x"}).status_code, 422)
+
     def test_a_probe_backfills_the_direct_address_on_an_old_node(self):
         # 模拟一条"只记了 CF 地址"的旧节点：直接写库，不走 add 的探测
         node_id = self.store.add("ddr", "ddr", "https://ddr.167990.xyz", "", "fed_a.b")["id"]

@@ -17,6 +17,8 @@ const source = readFileSync(join(here, '..', 'web', 'assets', 'transfer.js'), 'u
 
 function load(options = {}) {
   const store = new Map();
+  // 「下载走直连源站」默认是关的（走 CF）；要测直连改道就得先打开它
+  if (options.direct !== false) store.set('tmuxweb.transfer.direct', 'on');
   const calls = [];
   const href = options.pageOrigin || 'https://chat.example.com';
   const window = {location: {href: href + '/?pane=%2528', origin: href}};
@@ -167,4 +169,19 @@ test('forget() 清掉记住的源站', async () => {
   store.set('tmuxweb.transfer.origin', JSON.stringify({origin: 'https://gone.example', at: Date.now()}));
   transfer.forget();
   assert.equal(store.has('tmuxweb.transfer.origin'), false);
+});
+
+test('默认不走直连：下载交给当前页面（通常是 CF）', async () => {
+  const {transfer, calls} = load({
+    direct: false,
+    fetch: async url => {
+      if (String(url).startsWith('/api/transfer/ticket')) {
+        return {ok: true, json: async () => ({token: 'abc.def'})};
+      }
+      throw new Error('不该探测直连源站: ' + url);
+    },
+  });
+  const href = await transfer.downloadHref('/api/panes/%2524/files/download?path=/srv/a.bin');
+  assert.equal(href, '/api/panes/%2524/files/download?path=/srv/a.bin');
+  assert.ok(!calls.some(call => String(call.url).includes('/t/ping')), '关了就不该再探测');
 });

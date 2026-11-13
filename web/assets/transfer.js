@@ -56,7 +56,20 @@
     }
   }
 
+  const DIRECT_KEY = 'tmuxweb.transfer.direct';
+
+  // 默认走当前页面（通常就是 CF）；想省 CF 流量/在局域网里更快，可以在
+  // 设置 › 直连地址 › 文件下载走直连源站 打开
+  function directEnabled() {
+    try {
+      return localStorage.getItem(DIRECT_KEY) === 'on';
+    } catch (_error) {
+      return false;
+    }
+  }
+
   async function origins() {
+    if (!directEnabled()) return [];
     // 只考虑 https 的直连源站：https 页面对 http 的 fetch 和下载都会被浏览器拦。
     try {
       const response = await fetch('/api/system/addresses', {credentials: 'same-origin'});
