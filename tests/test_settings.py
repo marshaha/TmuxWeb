@@ -249,8 +249,12 @@ class SettingsPageWiringTests(unittest.TestCase):
                        'id="ts-child-ttl"', '<option value="0">永久</option>',
                        'id="ts-child-range"', 'id="ts-child-create"',
                        'id="ts-node-toggle"', 'id="ts-node-panel"', 'id="ts-node-label"',
-                       'id="ts-node-key"', 'id="ts-node-add"'):
+                       'id="ts-node-key"', 'id="ts-node-add"', 'id="ts-node-prefer"'):
             self.assertIn(marker, script, marker)
+        # 线路优先：直连 / Cloudflare 可选，每行能一键换
+        self.assertIn('<option value="public">Cloudflare', script)
+        self.assertIn("data-prefer=", script)
+        self.assertIn("/prefer", script)
         self.assertIn("/api/fed/tokens", script)
         self.assertIn("/api/fed/nodes", script)
         # key 后面带上"本机被访问到的地址"，父节点只填名字 + 一串就够

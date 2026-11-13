@@ -115,6 +115,22 @@ class PermanentTests(unittest.TestCase):
         self.assertGreater(issued["expires_at"], 0)
 
 
+class PreferTests(unittest.TestCase):
+    def test_switching_the_preferred_route_swaps_the_two_addresses(self):
+        store, _ = memory_stores()
+        node = store.add("oracle", "", "http://100.123.123.17:8787", "https://ddr.167990.xyz", "fed_x.y")
+        self.assertEqual((node["base_url"], node["fallback_url"], node["prefer"]),
+                         ("http://100.123.123.17:8787", "https://ddr.167990.xyz", "direct"))
+
+        swapped = store.set_prefer(node["id"], "public")
+        self.assertEqual((swapped["base_url"], swapped["fallback_url"], swapped["prefer"]),
+                         ("https://ddr.167990.xyz", "http://100.123.123.17:8787", "public"))
+        # 再切回来就是原样，且不带 token
+        back = store.set_prefer(node["id"], "direct")
+        self.assertEqual(back["base_url"], "http://100.123.123.17:8787")
+        self.assertNotIn("token", back)
+
+
 class AuthKeyTests(unittest.TestCase):
     def test_an_auth_key_can_carry_the_address_after_the_at_sign(self):
         self.assertEqual(federation.parse_auth_key("fed_a.b@https://ddr.167990.xyz/"),
@@ -298,6 +314,31 @@ class EndpointTests(unittest.TestCase):
         # tailnet 优先：云主机的 NAT 内网地址往往连不通，挑错它每次都要先等超时
         self.assertEqual(added.json()["base_url"], "http://100.123.123.17:8787")
         self.assertEqual(added.json()["fallback_url"], "https://ddr.167990.xyz")
+
+    def test_the_route_preference_can_be_flipped_from_the_panel(self):
+        added = self.client.post("/api/fed/nodes", json={
+            "label": "ddr", "token": "fed_a.b@https://ddr.167990.xyz",
+            "base_url": "http://100.123.123.17:8787"}).json()
+        flipped = self.client.post(f"/api/fed/nodes/{added['id']}/prefer", json={"prefer": "public"})
+        self.assertEqual(flipped.status_code, 200, flipped.text)
+        self.assertEqual(flipped.json()["base_url"], "https://ddr.167990.xyz")
+        self.assertEqual(flipped.json()["fallback_url"], "http://100.123.123.17:8787")
+
+    def test_asking_for_cloudflare_first_keeps_the_public_address(self):
+        """选了 CF 优先就别自作聪明改成直连。"""
+        def fake_get(client, path, timeout=None):
+            raise AssertionError("不该去问对方的地址")
+
+        original = federation.FedClient._get
+        federation.FedClient._get = fake_get
+        try:
+            added = self.client.post("/api/fed/nodes", json={
+                "label": "ddr", "token": "fed_a.b@https://ddr.167990.xyz", "prefer": "public"})
+        finally:
+            federation.FedClient._get = original
+        self.assertEqual(added.status_code, 201, added.text)
+        self.assertEqual(added.json()["base_url"], "https://ddr.167990.xyz")
+        self.assertEqual(added.json()["prefer"], "public")
 
     def test_a_typed_address_wins_and_the_one_in_the_key_becomes_the_spare(self):
         added = self.client.post("/api/fed/nodes", json={

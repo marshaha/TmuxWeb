@@ -437,6 +437,7 @@ HTTP 接口（`Authorization: Bearer $TMUX_WEB_API_TOKEN`）：
 
     子节点 oracle：设置 › 子节点：让别人接入 → 选权限 / 有效期（可以永久）/ 范围 → 生成 auth key
     父节点 localhost：设置 › 添加子节点 → 名字填 oracle、粘上那串 auth key
+                     先走哪条线路可选：直连（tailnet/局域网）或 Cloudflare，随时一键换
 
 auth key 长这样，`@` 后面是"本机被访问到的地址"，所以父节点不用再问地址：
 

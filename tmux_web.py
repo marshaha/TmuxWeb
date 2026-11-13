@@ -1003,6 +1003,12 @@ class FedNodeRequest(BaseModel):
     base_url: str = Field(default="", max_length=400)
     fallback_url: str = Field(default="", max_length=400)
     token: str = Field(default="", max_length=400)
+    prefer: str = Field(default="direct", pattern="^(direct|public)$")   # 先走哪条线路
+
+
+class FedPreferRequest(BaseModel):
+    """先走哪条线路。"""
+    prefer: str = Field(default="direct", pattern="^(direct|public)$")
 
 
 class ShareCreateRequest(BaseModel):
@@ -2611,7 +2617,7 @@ def create_app(
         base_url = payload.base_url or address
         # 两边都给地址时都要留着：填了内网地址就走直连，key 里带的（可能是 CF 域名）当备用
         fallback_url = payload.fallback_url or (address if base_url != address else "")
-        if not payload.base_url and base_url.startswith("https://"):
+        if payload.prefer == "direct" and not payload.base_url and base_url.startswith("https://"):
             # 只有公网地址：问一句对方有没有内网/tailnet 地址。Cloudflare 会把慢链路和
             # 非浏览器 UA 挡在外面（Error 1010），能直连就别绕。
             try:
@@ -2631,9 +2637,19 @@ def create_app(
             raise HTTPException(status_code=422, detail="还差 auth key")
         try:
             node = await asyncio.to_thread(fed_nodes.add, payload.label, payload.prefix,
-                                           base_url, fallback_url, token)
+                                           base_url, fallback_url, token, payload.prefer)
         except federation.FederationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return node
+
+    @app.post("/api/fed/nodes/{node_id}/prefer")
+    async def prefer_fed_node(request: Request, node_id: str, payload: FedPreferRequest):
+        """换首选线路：直连（tailnet/局域网） ↔ Cloudflare。只是换两条地址的顺序。"""
+        require_auth(request)
+        try:
+            node = await asyncio.to_thread(fed_nodes.set_prefer, node_id, payload.prefer)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="no such node") from exc
         return node
 
     @app.post("/api/fed/nodes/{node_id}/probe")

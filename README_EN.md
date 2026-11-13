@@ -509,6 +509,7 @@ Two steps in the UI:
     child (oracle):  设置 › 子节点：让别人接入 → pick permissions / lifetime (permanent allowed) / range
                      → 生成 auth key
     parent (local):  设置 › 添加子节点 → name it `oracle`, paste that auth key
+                     route preference: direct (tailnet/LAN) or Cloudflare, switchable any time
 
 The key carries the address you reach the child at, so the parent never asks for one:
 

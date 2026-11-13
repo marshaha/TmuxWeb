@@ -181,6 +181,12 @@
         <label class="ts-field">名字<input id="ts-node-label" placeholder="oracle" maxlength="16" autocomplete="off" spellcheck="false"></label>
         <label class="ts-field">auth key<input id="ts-node-key" placeholder="fed_…（对方生成的那一串）" autocomplete="off" spellcheck="false"></label>
         <label class="ts-field">地址（key 里没带地址时才要填）<input id="ts-node-url" placeholder="http://100.123.123.17:8787" autocomplete="off" spellcheck="false"></label>
+        <label class="ts-field">先走哪条线路
+          <select id="ts-node-prefer" aria-label="优先线路">
+            <option value="direct" selected>直连（tailnet / 局域网，最快）</option>
+            <option value="public">Cloudflare（公网域名，哪儿都能连）</option>
+          </select>
+        </label>
         <div class="ts-btns"><button class="ts-btn primary" type="button" id="ts-node-add">添加子节点</button></div>
         <p class="ts-state" id="ts-node-state" role="status"></p>
         <div class="ts-keys" id="ts-node-list"></div>
@@ -871,9 +877,15 @@
       box.innerHTML = nodes.length ? nodes.map(node => {
         const address = node.base_url || node.fallback_url || '—';
         const spare = node.base_url && node.fallback_url ? `（备用 ${node.fallback_url}）` : '';
+        const prefer = node.prefer === 'public' ? 'Cloudflare 优先' : '直连优先';
+        const flip = node.prefer === 'public' ? 'direct' : 'public';
+        const flipLabel = node.prefer === 'public' ? '改直连优先' : '改 CF 优先';
         return '<div class="ts-key"><div class="ts-key-main">'
           + `<div class="ts-key-name">${esc(node.label || node.prefix)} <span class="ts-key-meta">前缀 ${esc(node.prefix)}</span></div>`
-          + `<div class="ts-key-meta">${esc(address)}${esc(spare)}</div></div>`
+          + `<div class="ts-key-meta">${esc(prefer)} · ${esc(address)}${esc(spare)}</div></div>`
+          + (node.base_url && node.fallback_url
+              ? `<button class="ts-btn" type="button" data-prefer="${esc(node.id)}" data-to="${flip}">${flipLabel}</button>`
+              : '')
           + `<button class="ts-btn" type="button" data-probe="${esc(node.id)}">测试</button>`
           + `<button class="ts-btn danger" type="button" data-drop="${esc(node.id)}">删除</button></div>`;
       }).join('') : '<p class="ts-hint">还没有子节点。</p>';
@@ -895,7 +907,8 @@
     try {
       const node = await api('/api/fed/nodes', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: name, token: key, base_url: address }),
+        body: JSON.stringify({ label: name, token: key, base_url: address,
+                               prefer: $('ts-node-prefer').value }),
       });
       note(out, `已添加 ${node.prefix}，正在测试连接…`);
       try {
@@ -1034,6 +1047,23 @@
       }
     });
     $('ts-node-list').addEventListener('click', async event => {
+      const flip = event.target.closest('[data-prefer]');
+      if (flip) {
+        flip.disabled = true;
+        try {
+          const node = await api(`/api/fed/nodes/${flip.dataset.prefer}/prefer`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prefer: flip.dataset.to }),
+          });
+          note($('ts-node-state'), `已换成${node.prefer === 'public' ? ' Cloudflare ' : '直连'}优先：`
+            + `${node.base_url}`, 'good');
+          loadChildNodes();
+        } catch (error) {
+          flip.disabled = false;
+          note($('ts-node-state'), error.message, 'bad');
+        }
+        return;
+      }
       const probe = event.target.closest('[data-probe]');
       if (probe) { probeChildNode(probe.dataset.probe); return; }
       const drop = event.target.closest('[data-drop]');

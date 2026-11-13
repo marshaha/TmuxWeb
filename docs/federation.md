@@ -38,6 +38,10 @@ fed_<id>.<secret>@https://ddr.167990.xyz
 
 - 名字就是编号前缀：`oracle` → 侧栏显示 `oracle#12`。名字要能用：2–16 位小写字母/数字，以字母开头。
 - auth key 带了 `@地址` 就直接用；没带（比如手写 curl）才需要填「地址」。
+- **先走哪条线路**：`直连`（tailnet / 局域网，最快）或 `Cloudflare`（公网域名，哪儿都能连）。
+  默认直连；选直连但只知道公网地址时，父节点会问一句子节点有没有内网地址并自动改用直连。
+  列表里每行都有「改 CF 优先 / 改直连优先」，一键换 —— 只是把两条地址的顺序调过来，
+  另一条永远是备用。
 - 添加后立刻 ping 一次并报结果：`通了：ddr · 85 个窗格`；连不上就把原因写在黄/红字里。
 - 列表里「测试」随时重探；「删除」只删这边的记录 —— 想彻底断开，去子节点那边吊销 auth key。
 
@@ -73,6 +77,7 @@ fed_<id>.<secret>@https://ddr.167990.xyz
 | POST | `/api/fed/nodes` | `{"label","token","base_url","fallback_url"}`；`token` 可以带 `@地址` |
 | GET | `/api/fed/nodes` | 列表（不含 auth key） |
 | POST | `/api/fed/nodes/{id}/probe` | 现场 ping + 数窗格 |
+| POST | `/api/fed/nodes/{id}/prefer` | `{"prefer":"direct"\|"public"}`，换首选线路 |
 | DELETE | `/api/fed/nodes/{id}` | 删除这个子节点 |
 
 ## 五、现在能做什么 / 还不能做什么

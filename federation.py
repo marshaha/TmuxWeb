@@ -174,14 +174,18 @@ class FederationStore:
             self.connection.execute(
                 "CREATE TABLE IF NOT EXISTS fed_nodes("
                 " id TEXT PRIMARY KEY, label TEXT, prefix TEXT UNIQUE, base_url TEXT,"
-                " fallback_url TEXT, token TEXT, enabled INTEGER, created_at REAL)"
+                " fallback_url TEXT, token TEXT, enabled INTEGER, created_at REAL,"
+                " prefer TEXT DEFAULT 'direct')"
             )
+            columns = {row[1] for row in self.connection.execute("PRAGMA table_info(fed_nodes)")}
+            if "prefer" not in columns:                 # 老库补列：直连优先，和之前的行为一致
+                self.connection.execute("ALTER TABLE fed_nodes ADD COLUMN prefer TEXT DEFAULT 'direct'")
             self.connection.commit()
 
     def listing(self) -> list[dict]:
         with self.lock:
             rows = self.connection.execute(
-                "SELECT id,label,prefix,base_url,fallback_url,enabled,created_at"
+                "SELECT id,label,prefix,base_url,fallback_url,enabled,created_at,prefer"
                 " FROM fed_nodes ORDER BY created_at").fetchall()
         return [dict(row) | {"enabled": bool(row["enabled"])} for row in rows]
 
@@ -206,7 +210,8 @@ class FederationStore:
         node["enabled"] = bool(node["enabled"])
         return node
 
-    def add(self, label: str, prefix: str, base_url: str, fallback_url: str, token: str) -> dict:
+    def add(self, label: str, prefix: str, base_url: str, fallback_url: str, token: str,
+            prefer: str = "direct") -> dict:
         # 界面上只填"名字 + auth key"，前缀就从名字里取（oracle → oracle）
         prefix = re.sub(r"[^a-z0-9]+", "", (prefix or label or "").strip().lower())[:16]
         if not PREFIX_RE.fullmatch(prefix):
@@ -216,20 +221,47 @@ class FederationStore:
         if not base and not fallback:
             raise FederationError("base_url or fallback_url is required")
         salt = secrets.token_hex(8)
+        prefer = "public" if prefer == "public" else "direct"
+        if prefer == "public" and fallback and not base:
+            base, fallback = fallback, base          # 只有一条地址时不影响
         record = {"id": salt, "label": (label or prefix)[:64], "prefix": prefix,
                   "base_url": base, "fallback_url": fallback,
-                  "token": (token or "").strip(), "enabled": 1, "created_at": time.time()}
+                  "token": (token or "").strip(), "enabled": 1, "created_at": time.time(),
+                  "prefer": prefer}
         try:
             with self.lock:
                 self.connection.execute(
-                    "INSERT INTO fed_nodes(id,label,prefix,base_url,fallback_url,token,enabled,created_at)"
-                    " VALUES (:id,:label,:prefix,:base_url,:fallback_url,:token,:enabled,:created_at)",
-                    record)
+                    "INSERT INTO fed_nodes(id,label,prefix,base_url,fallback_url,token,enabled,"
+                    "created_at,prefer)"
+                    " VALUES (:id,:label,:prefix,:base_url,:fallback_url,:token,:enabled,"
+                    ":created_at,:prefer)", record)
                 self.connection.commit()
         except sqlite3.IntegrityError as exc:
             raise FederationError(f"prefix already used: {prefix}") from exc
         record.pop("token")
         return record | {"enabled": True}
+
+    def set_prefer(self, host_id: str, prefer: str) -> dict:
+        """`direct` / `public`：把首选线路换到 base_url 上（FedClient 永远先试它）。"""
+        prefer = "public" if prefer == "public" else "direct"
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
+            if row is None:
+                raise KeyError(host_id)
+            current = (row["prefer"] or "direct")
+            base, fallback = row["base_url"] or "", row["fallback_url"] or ""
+            if prefer != current and base and fallback:
+                base, fallback = fallback, base
+            self.connection.execute(
+                "UPDATE fed_nodes SET base_url=?, fallback_url=?, prefer=? WHERE id=?",
+                (base, fallback, prefer, host_id))
+            self.connection.commit()
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
+        node = dict(row)
+        node["enabled"] = bool(node["enabled"])
+        node.pop("token", None)
+        return node
 
     def remove(self, host_id: str) -> bool:
         with self.lock:
