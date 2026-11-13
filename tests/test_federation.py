@@ -295,7 +295,8 @@ class EndpointTests(unittest.TestCase):
         finally:
             federation.FedClient._get = original
         self.assertEqual(added.status_code, 201, added.text)
-        self.assertEqual(added.json()["base_url"], "http://10.0.0.9:8787")
+        # tailnet 优先：云主机的 NAT 内网地址往往连不通，挑错它每次都要先等超时
+        self.assertEqual(added.json()["base_url"], "http://100.123.123.17:8787")
         self.assertEqual(added.json()["fallback_url"], "https://ddr.167990.xyz")
 
     def test_a_typed_address_wins_and_the_one_in_the_key_becomes_the_spare(self):

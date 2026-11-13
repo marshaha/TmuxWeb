@@ -2619,10 +2619,14 @@ def create_app(
                     federation.FedClient(base_url, "", token, timeout=6).ping)
             except (federation.FederationError, RuntimeError, OSError, ValueError):
                 info = {}
-            for entry in info.get("addresses") or []:
-                if entry.get("kind") in ("tailnet", "lan") and entry.get("url"):
-                    base_url, fallback_url = entry["url"], base_url
-                    break
+            # tailnet 优先于局域网：云主机上常有一个连不通的 NAT 内网地址（10.0.2.x），
+            # 挑错它会让每次请求都先等一次超时
+            candidates = sorted(
+                (entry for entry in info.get("addresses") or []
+                 if entry.get("url") and entry.get("kind") in ("tailnet", "lan")),
+                key=lambda entry: 0 if entry["kind"] == "tailnet" else 1)
+            if candidates:
+                base_url, fallback_url = candidates[0]["url"], base_url
         if not token:
             raise HTTPException(status_code=422, detail="还差 auth key")
         try:
