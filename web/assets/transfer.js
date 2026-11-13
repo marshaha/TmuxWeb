@@ -73,15 +73,23 @@
   }
 
   const MISS_TTL = 5 * 60 * 1000;
+  const CACHE_TRUST = 60 * 1000;      // 记住的源站，确认过一次之后 60 秒内不再探测
+  let verifiedAt = 0;
 
   async function pick() {
     const cached = readCache();
-    if (cached) return cached;
+    if (cached) {
+      // 记住的源站不能盲信：换了网络（离开 tailnet）、证书过期、隧道关掉，
+      // 那个地址就变成"点了下载什么都不发生"——页面不报错，文件永远不来。
+      if (Date.now() - verifiedAt < CACHE_TRUST) return cached;
+      if (await probe(cached)) { verifiedAt = Date.now(); return cached; }
+      forget();                       // 连不上了：清掉，回去走页面自己的地址
+    }
     if (missAt && Date.now() - missAt < MISS_TTL) return null;   // 没内网入口时别每次下载都探
     if (pending) return pending;
     pending = (async () => {
       for (const origin of await origins()) {
-        if (await probe(origin)) { writeCache(origin); missAt = 0; return origin; }
+        if (await probe(origin)) { writeCache(origin); verifiedAt = Date.now(); missAt = 0; return origin; }
       }
       missAt = Date.now();
       return null;

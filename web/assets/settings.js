@@ -134,6 +134,8 @@
       </button>
       <div class="ts-panel" id="ts-direct-panel" hidden>
         <p class="ts-hint" id="ts-direct-hint">同一局域网或 Tailscale 里可以直接连服务器，传输不经过 Cloudflare（没有 100MB / 100 秒限制）。</p>
+        <div class="ts-btns"><button class="ts-btn" type="button" id="ts-direct-forget">清除记住的直连源站</button></div>
+        <p class="ts-state" id="ts-direct-state" role="status"></p>
         <div id="ts-direct-list"></div>
       </div>
     </section>
@@ -674,6 +676,16 @@
   }
 
   async function loadDirectEntries() {
+    // 换了网络（离开 tailnet / 隧道关了）时，浏览器里记住的直连源站会让"点下载没反应"，
+    // 这里给一颗手动清除的按钮，不用等人跑去清 localStorage
+    const forgetButton = $('ts-direct-forget');
+    if (forgetButton) {
+      forgetButton.onclick = () => {
+        try { if (window.TmuxTransfer && TmuxTransfer.forget) TmuxTransfer.forget(); } catch {}
+        try { localStorage.removeItem('tmuxweb.transfer.origin'); } catch {}
+        note($('ts-direct-state'), '已清除，下次下载重新探测', 'ok');
+      };
+    }
     const list = $('ts-direct-list');
     const hint = $('ts-direct-hint');
     if (!list) return;

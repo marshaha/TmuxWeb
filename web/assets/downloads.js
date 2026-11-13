@@ -24,6 +24,12 @@
     link.href = href;
     link.rel = 'noopener';
     link.setAttribute('download', '');
+    // 直连源站的地址是另一个 origin；如果它其实连不上（换了网络、证书过期），
+    // 浏览器会把当前页面导航过去、然后白屏 —— 用户看到的是"点了下载没反应，控制台也没了"。
+    // 放到新标签里，最坏情况只是一个打不开的标签页，控制台还留着。
+    try {
+      if (new URL(href, location.href).origin !== location.origin) link.target = '_blank';
+    } catch (_error) { /* 相对地址：留在当前页 */ }
     document.body.appendChild(link);
     link.click();
     link.remove();

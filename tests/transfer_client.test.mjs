@@ -67,7 +67,23 @@ test('探测通过后记住源站，并把下载链接改写到它上面', async
   assert.equal(JSON.parse(ticketCall.init.body).direction, 'down');
 });
 
-test('记得的源站第二次不再探测', async () => {
+test('记得的源站连不上了就清掉，下载回落到页面自己的地址', async () => {
+  // 真踩过：手机上点了"下载"完全没反应 —— localStorage 里记着 tailnet 的源站，
+  // 人已经不在那个网络里，下载被送到一个够不到的地址，页面也不报错。
+  const {transfer, calls, store} = load({
+    fetch: async url => {
+      if (url.endsWith('/api/system/addresses')) return json({addresses: []});
+      throw new TypeError('Failed to fetch');       // /t/ping 也连不上
+    },
+  });
+  store.set('tmuxweb.transfer.origin', JSON.stringify({origin: 'https://stale.example', at: Date.now()}));
+  const original = '/api/panes/%2524/files/download?path=/srv/a.bin';
+  assert.equal(await transfer.downloadHref(original), original, '要原样回落');
+  assert.equal(store.get('tmuxweb.transfer.origin'), undefined, '死掉的源站要从缓存里删掉');
+  assert.ok(calls.some(call => call.url === 'https://stale.example/t/ping'), '先确认再决定');
+});
+
+test('记得的源站确认还能连上就直接用（不再查地址列表）', async () => {
   const {transfer, calls, store} = load({
     fetch: async url => {
       if (url.endsWith('/t/ping')) return json({tmuxweb: true});
@@ -79,7 +95,10 @@ test('记得的源站第二次不再探测', async () => {
   store.set('tmuxweb.transfer.origin', JSON.stringify({origin: 'https://cached.example', at: Date.now()}));
   const href = await transfer.downloadHref('/api/panes/%2524/files/download?path=/srv/a.bin');
   assert.equal(href, 'https://cached.example/t/download?t=x.y');
-  assert.equal(calls.filter(call => call.url.endsWith('/t/ping')).length, 0);
+  assert.equal(calls.filter(call => call.url === 'https://cached.example/t/ping').length, 1,
+    '只探记住的那个源站');
+  assert.equal(calls.filter(call => call.url.endsWith('/api/system/addresses')).length, 0,
+    '确认可用就不必再拉地址列表');
 });
 
 test('探测不通就原样返回，下载不受影响', async () => {
