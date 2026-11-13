@@ -510,7 +510,8 @@ Two steps in the UI:
                      → 生成 auth key
     parent (local):  设置 › 添加子节点 → name it `oracle`, paste that auth key
                      route preference: direct (tailnet/LAN) or Cloudflare, switchable any time
-                     (file bytes always prefer the direct address; one 测试 records it)
+                     (chat, capture and files all follow it; 测试 only records a
+                     spare address, used when the preferred one fails)
 
 The key carries the address you reach the child at, so the parent never asks for one:
 

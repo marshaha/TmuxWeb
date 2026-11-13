@@ -380,20 +380,18 @@ class AdminScopeTests(unittest.TestCase):
 
 
 class RouteChoiceTests(unittest.TestCase):
-    def test_a_private_address_is_recognised(self):
-        self.assertTrue(federation.is_private_url("http://100.123.123.17:8787"))
-        self.assertTrue(federation.is_private_url("http://10.0.0.9:8787"))
-        self.assertTrue(federation.is_private_url("http://172.20.1.2:8787"))
-        self.assertTrue(federation.is_private_url("http://127.0.0.1:8787"))
-        self.assertFalse(federation.is_private_url("https://ddr.167990.xyz"))
-
-    def test_file_transfers_prefer_the_private_address_even_when_cf_is_the_default(self):
+    def test_files_use_the_same_route_the_user_picked(self):
+        """用户说 CF 可能比 tailnet 快 —— 那就别自作聪明，文件和其它请求走同一条。"""
         node = {"id": "a1", "prefix": "ddr", "token": "t",
                 "base_url": "https://ddr.167990.xyz", "fallback_url": "http://100.123.123.17:8787"}
         transport = federation.FedTransport(node)
-        self.assertEqual(transport.transfer_client().base_url, "http://100.123.123.17:8787")
-        # 普通请求（聊天/capture）仍然按用户选的那条来
-        self.assertEqual(transport.client.base_url, "https://ddr.167990.xyz")
+        calls = []
+        transport.client = type("Stub", (), {
+            "files": lambda self, path, hidden, limit: calls.append(self.base_url) or {"entries": []},
+            "base_url": "https://ddr.167990.xyz",
+        })()
+        transport.list_files("/srv", False, 100)
+        self.assertEqual(calls, ["https://ddr.167990.xyz"])
 
 
 class TransportWriteTests(unittest.TestCase):
