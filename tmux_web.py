@@ -105,6 +105,7 @@ WEB_DIR = BASE_DIR / "web"
 # bundle URL). theme.js stays separate: it must run synchronously before
 # first paint. The order below is the order the tags used to load in.
 CONSOLE_BUNDLE_SOURCES = (
+    ("assets", "pane-cache.js"),
     ("assets", "uploads.js"),
     ("assets", "composer-files.js"),
     ("assets", "path-links.js"),
