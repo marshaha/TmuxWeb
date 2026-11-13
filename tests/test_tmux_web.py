@@ -1989,7 +1989,9 @@ class TmuxWebTests(unittest.TestCase):
         page = self.client.get("/").text
         self.assertIn('class="session-num" id="selected-number"', page)
         self.assertIn("$('selected-number')", page)
-        self.assertIn("num.textContent=p.number?`#${p.number}`", page)
+        # 编号统一走 paneLabel()：联邦节点显示 ddr#12，本机仍是 #12
+        self.assertIn("function paneLabel(pane)", page)
+        self.assertIn("num.textContent=p.number?paneLabel(p):''", page)
         self.assertIn(".session-num{flex:none", page)
 
         grid = self.client.get("/grid").text
@@ -2009,7 +2011,7 @@ class TmuxWebTests(unittest.TestCase):
         # 控制台的浏览器/PWA 标题
         # 标题优先用「最近 / 收藏」里的名字（钉子区的 #6），没有才用 pane 标题
         self.assertIn("const shownTitle=customName||p.title||p.target;", page)
-        self.assertIn("document.title=p.number?`#${p.number} · ${shownTitle} · Tmux Chat`", page)
+        self.assertIn("document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`", page)
 
         # 多窗口：只有一个窗口或最大化时窗口标题带 #N，删空回到「多窗口」
         grid = self.client.get("/grid").text
@@ -2046,7 +2048,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn('class="pane-num"', page)
         self.assertIn("/^#?\\d{1,5}$/.test(wanted.trim())", page)
         self.assertIn("state.panes.find(p=>p.number===number)", page)
-        self.assertIn("${p.number?`#${p.number}`:'—'}", page)
+        self.assertIn("${paneLabel(p)}", page, "侧栏编号也走 paneLabel（联邦显示 ddr#12）")
         recents = self.client.get("/assets/recents.js").text
         self.assertIn("entry.number ? '#' + entry.number", recents)
         # 「最近」的行也带同一个编号
