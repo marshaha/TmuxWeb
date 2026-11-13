@@ -13,6 +13,7 @@ import fcntl
 import re
 import secrets
 import shlex
+import socket
 import urllib.parse
 import signal
 import struct
@@ -21,6 +22,7 @@ import termios
 import sqlite3
 
 from auth_store import PasswordStore
+import federation
 from plugin_api import PluginError, PluginManager, PluginServices, install_routes
 import time
 import threading
@@ -985,6 +987,23 @@ class ExecRequest(BaseModel):
     max_output: int = Field(default=200_000, ge=1000, le=2_000_000)
 
 
+class FedTokenRequest(BaseModel):
+    """被集成端签发的只读/受限令牌。"""
+    label: str = Field(default="", max_length=64)
+    scopes: list[str] = Field(default_factory=lambda: ["view"])
+    panes: object = "all"                 # "all" | ["%12"] | {"favorite": true}
+    ttl: int = Field(default=86400, ge=300, le=60 * 60 * 24 * 30)
+
+
+class FedNodeRequest(BaseModel):
+    """客户端记住的一个联邦节点。"""
+    label: str = Field(default="", max_length=64)
+    prefix: str = Field(min_length=2, max_length=16)
+    base_url: str = Field(default="", max_length=400)
+    fallback_url: str = Field(default="", max_length=400)
+    token: str = Field(default="", max_length=400)
+
+
 class ShareCreateRequest(BaseModel):
     pane_id: str
     slug: str = Field(min_length=3, max_length=48)
@@ -1401,6 +1420,8 @@ def create_app(
     home_db: str | None = None,
     remote_store=None,
     remote_runner_factory=None,
+    fed_store=None,
+    fed_tokens=None,
     password_db: str | None = None,
     plugins_dir: str | None = None,
     plugins: str | None = None,
@@ -1476,6 +1497,10 @@ def create_app(
         os.environ.get("TMUX_WEB_HOST_KEY", str(BASE_DIR / ".remote_hosts.key")),
     )
     make_remote_runner = remote_runner_factory or SSHRunner
+    # 联邦：fed_nodes = 我们拉谁的 pane；fed_tokens = 我们发出去的令牌
+    fed_db = os.environ.get("TMUX_WEB_FED_DB", str(BASE_DIR / "federation.db"))
+    fed_nodes = fed_store or federation.FederationStore(fed_db)
+    fed_grants = fed_tokens or federation.FedGrants(fed_db)
     # Set after the plugins load (below): the agent plugin may offer a
     # runner factory and a per-host status provider. A closure, so routes
     # defined above this line still read the reassigned value at call time.
@@ -1630,11 +1655,60 @@ def create_app(
                                 detail=f"没有 #{number} 这个窗口（编号按首次出现分配，不会回收）")
         return pane_id
 
+    FED_REF_RE = re.compile(r"^([a-z][a-z0-9]{1,15})\s*[#:/]\s*(\d{1,5})$")
+
+    def resolve_fed_ref(text: str) -> str | None:
+        """`ddr#12` → `<node_id>~%12`；对端编号由对端自己维护。"""
+        match = FED_REF_RE.match((text or "").strip().lower())
+        if not match:
+            return None
+        node = fed_nodes.by_prefix(match.group(1))
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"没有叫 {match.group(1)} 的联邦节点")
+        wanted = int(match.group(2))
+        # 只查已有的 hosts 快照：这里是同步函数，在事件循环里发 HTTP 去问自己会死锁
+        # （对端如果是本进程，它要等同一个循环来回应）。快照由侧栏每 20 秒刷新。
+        for host in (hosts_snapshot["value"] or {}).get("hosts") or []:
+            if host.get("kind") != "fed" or host.get("prefix") != match.group(1):
+                continue
+            if host.get("status") != "online":
+                raise HTTPException(status_code=503,
+                                    detail=f"{match.group(1)} 现在连不上：{host.get('error') or 'offline'}")
+            for pane in host.get("panes") or []:
+                if int(pane.get("number") or 0) == wanted:
+                    return pane["id"]
+            raise HTTPException(status_code=404, detail=f"{match.group(1)}#{wanted} 不存在")
+        raise HTTPException(status_code=404,
+                            detail=f"还没有 {match.group(1)} 的 pane 列表（打开控制台让它刷新一次）")
+
     def resolve_pane_ref(pane_ref: str) -> str:
-        """`#12` / `12` 解析成真正的 pane 引用，其他写法原样返回。"""
+        """`#12` / `12` / `ddr#12` 解析成真正的 pane 引用，其他写法原样返回。"""
         text = str(pane_ref or "").strip()
+        federated = resolve_fed_ref(text)
+        if federated:
+            return federated
         match = PANE_NUMBER_RE.match(text)
         return pane_ref_for(int(match.group(1))) if match else text
+
+    def fed_node(host_id: str) -> dict | None:
+        """host_id 是联邦节点就返回它（含令牌），否则 None。"""
+        if not host_id or host_id == "localhost":
+            return None
+        try:
+            return fed_nodes.get_node(host_id, include_token=True)
+        except KeyError:
+            return None
+
+    def fed_prefix_of(host_id: str) -> str:
+        """`<node_id>` → `ddr`；不是联邦节点就是空串。"""
+        node = fed_node(host_id)
+        return str((node or {}).get("prefix") or "")
+
+    def fed_transport(host_id: str):
+        node = fed_node(host_id)
+        if node is None:
+            return None
+        return federation.FedTransport(node)
 
     def pane_or_404(pane_id: str) -> dict:
         pane_id = resolve_pane_ref(pane_id)
@@ -1643,6 +1717,12 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="invalid pane reference") from exc
         if host_id != "localhost":
+            federated = fed_transport(host_id)
+            if federated is not None:
+                try:
+                    return federated.validate_pane(actual_pane_id)
+                except (federation.FederationError, RuntimeError) as exc:
+                    raise HTTPException(status_code=404, detail=str(exc)) from exc
             try:
                 host = remote_hosts.get_host(host_id, include_credential=True)
                 panes = runner_for(host).list_panes()
@@ -1672,6 +1752,9 @@ def create_app(
             raise HTTPException(status_code=404, detail="invalid pane reference") from exc
         if host_id == "localhost":
             return tmux, pane_id
+        federated = fed_transport(host_id)
+        if federated is not None:
+            return federated, pane_id
         try:
             host = remote_hosts.get_host(host_id, include_credential=True)
         except KeyError as exc:
@@ -1708,8 +1791,13 @@ def create_app(
                 return runner, pane_id, pane, host.get("name") or host_id
         raise HTTPException(status_code=404, detail="remote pane not found")
 
-    def relay_hosts() -> list[tuple[str, str, object, list[dict]]]:
-        """Every reachable transport plus its panes, for relay/status discovery."""
+    def relay_hosts(include_fed: bool = True) -> list[tuple[str, str, object, list[dict]]]:
+        """Every reachable transport plus its panes, for relay/status discovery.
+
+        ``include_fed=False`` 用在"对外共享"的地方：我们只再分享自己拥有的主机，
+        不把借来的联邦节点转手出去 —— 而且自指节点（把自己当节点加进来）会因此
+        变成无限递归。
+        """
         found: list[tuple[str, str, object, list[dict]]] = []
         try:
             found.append(("localhost", "localhost", tmux, tmux.list_panes()))
@@ -1721,6 +1809,16 @@ def create_app(
                 runner = runner_for(credentialed)
                 found.append((remote["id"], remote.get("name") or remote["id"], runner, runner.list_panes()))
             except (KeyError, RuntimeError, OSError):
+                continue
+        for node in (fed_nodes.listing() if include_fed else []):
+            if not node.get("enabled", True):
+                continue
+            try:
+                full = fed_nodes.get_node(node["id"], include_token=True)
+                federated = federation.FedTransport(full)
+                found.append((node["id"], node.get("label") or node["prefix"], federated,
+                              federated.list_panes()))
+            except (KeyError, federation.FederationError, RuntimeError, OSError):
                 continue
         return found
 
@@ -2386,6 +2484,130 @@ def create_app(
             status = 404 if "没有这个主机" in str(exc) else 400
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
+    # ---- 联邦（被集成端）：签发令牌、把共享的 pane 只读地给出去 -------------
+    def require_fed(request: Request, scope: str) -> dict:
+        header = (request.headers.get("authorization") or "").strip()
+        token = header[7:].strip() if header.lower().startswith("bearer ") else \
+            (request.headers.get("x-tmuxweb-token") or "").strip()
+        try:
+            grants = fed_grants.verify(token)
+        except federation.FederationError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        if scope not in grants["scopes"]:
+            raise HTTPException(status_code=403,
+                                detail=f"这个联邦令牌没有 {scope} 权限（现有：{' '.join(grants['scopes'])}）")
+        return grants
+
+    @app.get("/api/fed/ping")
+    async def fed_ping():
+        """不鉴权：只回答"我是 TmuxWeb"，给客户端做连通性探测。"""
+        return {"tmuxweb": True, "host": socket.gethostname(), "version": "1"}
+
+    @app.get("/api/fed/panes")
+    async def fed_panes(request: Request):
+        grants = require_fed(request, "view")
+        found = []
+        snapshot = hosts_snapshot["value"]
+        if snapshot and (time.time() - hosts_snapshot["at"]) < hosts_snapshot["ttl"]:
+            # 刚被 /api/hosts 探过：直接用，别让一个联邦读者把整台机的 SSH 都拉一遍
+            groups = [(host.get("id"), host.get("name") or host.get("id"), host.get("panes") or [])
+                      for host in snapshot.get("hosts") or [] if host.get("kind") != "fed"]
+        else:
+            groups = [(host_id, host_name, panes) for host_id, host_name, _transport, panes
+                      in await asyncio.to_thread(relay_hosts, False)]
+        for host_id, host_name, panes in groups:
+            for pane in panes:
+                pane_id = pane.get("pane_id") or pane.get("id") or ""
+                if not pane_id or not federation.pane_allowed(grants, pane_id):
+                    continue
+                found.append({
+                    "id": pane_id, "number": None, "host": host_name,
+                    "session": pane.get("session"), "window": pane.get("window_name") or "",
+                    "index": pane.get("index"), "title": pane.get("title"),
+                    "command": pane.get("command"), "path": pane.get("path"),
+                    "active": pane.get("active"), "provider": pane.get("provider"),
+                })
+        numbers = await asyncio.to_thread(home.ensure_numbers, [item["id"] for item in found])
+        for item in found:
+            item["number"] = numbers.get(item["id"])
+        return {"panes": found, "node": socket.gethostname(),
+                "scopes": grants["scopes"]}
+
+    @app.get("/api/fed/panes/{pane_id}/capture")
+    async def fed_capture(request: Request, pane_id: str, history: int = 80):
+        grants = require_fed(request, "view")
+        actual = resolve_pane_ref(pane_id)
+        if not federation.pane_allowed(grants, actual):
+            raise HTTPException(status_code=403, detail="这个 pane 没有共享出去")
+        transport, actual_id = pane_transport(actual)
+        try:
+            content = await asyncio.to_thread(transport.capture, actual_id, max(20, min(history, 500)),
+                                              visible_only=True)
+        except (TmuxError, RuntimeError, OSError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"pane": actual, "content": content}
+
+    @app.get("/api/fed/panes/{pane_id}/transcript")
+    async def fed_transcript(request: Request, pane_id: str, limit: int = 200):
+        grants = require_fed(request, "view")
+        actual = resolve_pane_ref(pane_id)
+        if not federation.pane_allowed(grants, actual):
+            raise HTTPException(status_code=403, detail="这个 pane 没有共享出去")
+        transport, actual_id = pane_transport(actual)
+        pane = await asyncio.to_thread(pane_or_404, actual)
+        try:
+            payload = await asyncio.to_thread(transport.transcript, actual_id,
+                                              max(1, min(limit, 1000)), False, pane)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return payload
+
+    @app.post("/api/fed/tokens", status_code=201)
+    async def create_fed_token(request: Request, payload: FedTokenRequest):
+        """本机登录态才能签发；明文令牌只在这里出现一次。"""
+        require_auth(request)
+        try:
+            issued = await asyncio.to_thread(fed_grants.issue, payload.label, payload.scopes,
+                                             payload.panes, payload.ttl)
+        except federation.FederationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return issued
+
+    @app.get("/api/fed/tokens")
+    async def list_fed_tokens(request: Request):
+        require_auth(request)
+        return {"tokens": await asyncio.to_thread(fed_grants.listing)}
+
+    @app.delete("/api/fed/tokens/{token_id}")
+    async def revoke_fed_token(request: Request, token_id: str):
+        require_auth(request)
+        if not await asyncio.to_thread(fed_grants.revoke, token_id):
+            raise HTTPException(status_code=404, detail="no such token")
+        return {"revoked": True, "id": token_id}
+
+    # ---- 联邦（集成端）：记住要拉哪些节点 ---------------------------------
+    @app.get("/api/fed/nodes")
+    async def list_fed_nodes(request: Request):
+        require_auth(request)
+        return {"nodes": await asyncio.to_thread(fed_nodes.listing)}
+
+    @app.post("/api/fed/nodes", status_code=201)
+    async def add_fed_node(request: Request, payload: FedNodeRequest):
+        require_auth(request)
+        try:
+            node = await asyncio.to_thread(fed_nodes.add, payload.label, payload.prefix,
+                                           payload.base_url, payload.fallback_url, payload.token)
+        except federation.FederationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return node
+
+    @app.delete("/api/fed/nodes/{node_id}")
+    async def remove_fed_node(request: Request, node_id: str):
+        require_auth(request)
+        if not await asyncio.to_thread(fed_nodes.remove, node_id):
+            raise HTTPException(status_code=404, detail="no such node")
+        return {"removed": True, "id": node_id}
+
     @app.post("/api/shares", status_code=201)
     async def create_share(request: Request, payload: ShareCreateRequest):
         require_auth(request)
@@ -2830,7 +3052,7 @@ def create_app(
         """
         hosts = payload.get("hosts") if isinstance(payload, dict) else payload
         pane_ids = [pane.get("id") for host in hosts for pane in (host.get("panes") or [])
-                    if pane.get("id")]
+                    if pane.get("id") and host.get("kind") != "fed"]
         numbers = home.ensure_numbers(pane_ids)
         for host in hosts:
             for pane in host.get("panes") or []:
@@ -2892,6 +3114,34 @@ def create_app(
         # Concurrently, so the slowest host sets the latency instead of the sum.
         await asyncio.gather(*(load_remote(public) for public in public_hosts))
         hosts.extend(public_hosts)
+
+        fed_public = []
+        for node in fed_nodes.listing():
+            if not node.get("enabled", True):
+                continue
+            fed_public.append({"id": node["id"], "name": node.get("label") or node["prefix"],
+                               "kind": "fed", "prefix": node.get("prefix"),
+                               "url": node.get("base_url") or node.get("fallback_url"),
+                               "status": "offline", "panes": []})
+
+        async def load_fed(public: dict) -> None:
+            node = await asyncio.to_thread(fed_nodes.get_node, public["id"], True)
+            federated = federation.FedTransport(node)
+            try:
+                panes = await asyncio.to_thread(federated.list_panes)
+            except (federation.FederationError, RuntimeError, OSError) as exc:
+                public["error"] = str(exc)
+                return
+            public["panes"] = [pane | {"prefix": node.get("prefix")} for pane in panes]
+            public["status"] = "online"
+
+        await asyncio.gather(*(load_fed(item) for item in fed_public))
+        for host in fed_public:
+            for pane in host.get("panes") or []:
+                # 编号沿用对端的，只有前缀区分；本机号段不参与
+                pane["number"] = pane.get("number")
+                pane["prefix"] = host.get("prefix")
+        hosts.extend(fed_public)
         payload = {"hosts": number_panes(hosts)}      # 短编号：跨主机唯一的 #N
         hosts_snapshot["value"] = payload
         hosts_snapshot["at"] = time.time()
@@ -2998,7 +3248,10 @@ def create_app(
                 {
                     "target": peer["id"],
                     "number": numbers.get(peer["id"]),
-                    "handle": f"#{numbers.get(peer['id'])}" if numbers.get(peer["id"]) else peer["id"],
+                    # 联邦 pane 的编号要带前缀：ddr#12（两边各自的 #N 会撞号）
+                    "handle": (f"{fed_prefix_of(peer.get('host_id') or '')}#{numbers.get(peer['id'])}"
+                               if numbers.get(peer["id"]) and fed_prefix_of(peer.get("host_id") or "")
+                               else (f"#{numbers.get(peer['id'])}" if numbers.get(peer["id"]) else peer["id"])),
                     "host": peer.get("host_name") or peer.get("host_id"),
                     "session": (peer.get("target") or "").split(":")[0],
                     "window": peer.get("target"),
