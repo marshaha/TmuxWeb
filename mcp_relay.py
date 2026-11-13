@@ -68,7 +68,8 @@ class RelayTools:
                 "target": peer["id"],
                 # 短编号：跨主机统一，人/agent 之间可以直接说 "#12"
                 "number": peer.get("number"),
-                "handle": f"#{peer['number']}" if peer.get("number") else peer["id"],
+                # 服务端给的 handle 已经带联邦前缀（ddr#12）；没有就退回 #N
+                "handle": peer.get("handle") or (f"#{peer['number']}" if peer.get("number") else peer["id"]),
                 "host": peer.get("host_name") or peer.get("host_id"),
                 "session": (peer.get("target") or "").split(":")[0],
                 "window": peer.get("target"),
