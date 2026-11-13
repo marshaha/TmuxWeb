@@ -1737,6 +1737,13 @@ class TmuxWebTests(unittest.TestCase):
             self.assertEqual(client.get("/api/panes", headers={
                 "Authorization": "Bearer relay-token-value"}).status_code, 200)
 
+    def test_choosing_a_pane_closes_the_drawer_with_its_scrim(self):
+        """手机上那层灰色遮罩 = .drawer-backdrop.show 没被清掉；选 pane 必须整块收掉。"""
+        html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
+        # 选 pane 时曾经只摘了 open、留下 .drawer-backdrop.show —— 手机上就是一层灰罩
+        self.assertNotIn("$('sidebar').classList.remove('open');}", html)
+        self.assertIn("closeSidebar();}", html)
+
     def test_the_sidebar_always_opens_on_the_session_list(self):
         """The file panel is an action, not a remembered preference: it used to be
         restored from localStorage, so a chat opened from the board or the grid could

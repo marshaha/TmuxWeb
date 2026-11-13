@@ -225,7 +225,18 @@
     $('reload')?.addEventListener('click', () => { loadHosts(); toast('已刷新'); });
     $('side-collapse')?.addEventListener('click', () => syncCollapsed(true));
     $('side-open')?.addEventListener('click', () => syncCollapsed(false));
-    $('drawer-backdrop')?.addEventListener('click', () => syncCollapsed(true));
+    // 灰底被点到 = "关闭抽屉"。在手机上没有 collapse 这回事，只 syncCollapsed 会把
+    // 遮罩留在原地（抽屉其实已经滑走了），要显式收掉。
+    $('drawer-backdrop')?.addEventListener('click', () => {
+      const sidebar = $('sidebar');
+      if (sidebar && sidebar.classList.contains('open')) {
+        sidebar.classList.remove('open');
+        $('drawer-backdrop').classList.remove('show');
+        return;
+      }
+      $('drawer-backdrop').classList.remove('show');
+      syncCollapsed(true);
+    });
 
     // drag the edge to resize, double-click to reset — same as the console
     const handle = $('side-resizer'), sidebar = $('sidebar');

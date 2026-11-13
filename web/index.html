@@ -1326,7 +1326,9 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       if(remembered&&remembered.open){state.filesMode=true;openFiles(remembered.path||null);}
       else {state.filesMode=false;syncFilesPanel();}
     }else if(state.filesMode){openFiles(null);}
-    $('sidebar').classList.remove('open');}
+    // 选完 pane 要把抽屉「连同那层灰底」一起关掉：只 remove('open') 会留下
+    // .drawer-backdrop.show，手机上就是一层灰色遮罩，得再点一下才消失
+    closeSidebar();}
   function transcriptSignature(d){const messages=d.messages||[];return `${d.mtime}|${messages.length}|${messages.length?messages[messages.length-1].id:''}`;}
   function mergeIncrementalMessages(existing,incoming,sinceId){
     // 增量只在锚点仍是本地列表尾时才能接上；对不上（切 pane/加载更早消息/会话轮换）
