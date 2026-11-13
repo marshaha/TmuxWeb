@@ -3,6 +3,9 @@
 # tmux closes a session as soon as its pane process ends, so without this every unexpected exit
 # looks like "the session vanished" with no evidence left behind.
 set -u
+
+# 2026-11-09: fd exhaustion (164x EMFILE at 1024 soft limit) - raise soft nofile
+ulimit -n 65536
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$PWD
 LOGDIR="$ROOT/logs"
