@@ -427,30 +427,27 @@ HTTP 接口（`Authorization: Bearer $TMUX_WEB_API_TOKEN`）：
 中继协议：TmuxWeb 在问题里嵌入一次性标记，要求目标 agent 在回答最后一行输出
 `TMUXWEB_REPLY_<token>: "<JSON 字符串>"`，然后按 0.8 秒轮询远端/本地 capture 直到命中或超时（504 会带 pane 尾部内容，便于判断）。目标 pane 正忙时默认拒绝（409），需要 `force=true` 显式覆盖。
 
-## 联邦：把另一台 TmuxWeb 当一台主机接进来
+## 子节点：把另一台 TmuxWeb 接进来
 
-和"跨服务器中继"不同：中继是**别的进程**来问这一台；联邦是这一台去**记住另一台 TmuxWeb**，
-把它的 pane 当成本机的一台主机显示在侧栏（单向、只读起步）。可见范围和权限由**被集成端**
-签发令牌时裁剪，客户端没办法自己放宽。
+和"跨服务器中继"不同：中继是**别的进程**来问这一台；子节点是这一台去**记住另一台 TmuxWeb**，
+把它的窗格当成一台主机显示在侧栏（单向、只读起步）。谁能看什么、能做什么、多久失效，都由
+**子节点**签发 auth key 时决定，父节点自己放宽不了。
 
-```bash
-# 在 oracle 上（登录态）：签一个只读令牌
-POST /api/fed/tokens {"label":"robo","scopes":["view"],"panes":"all","ttl":86400}
-→ {"token":"fed_<id>.<secret>", ...}
+界面两步：
 
-# 在 robo 上：记住这个节点
-POST /api/fed/nodes {"label":"oracle","prefix":"ddr",
-                     "base_url":"http://100.123.123.10:8787",
-                     "fallback_url":"https://ddr.167990.xyz",
-                     "token":"fed_…"}
-```
+    子节点 oracle：设置 › 子节点：让别人接入 → 选权限 / 有效期（可以永久）/ 范围 → 生成 auth key
+    父节点 localhost：设置 › 添加子节点 → 名字填 oracle、粘上那串 auth key
 
-两边各自的 `#N` 会撞号，所以联邦 pane 显示成 `ddr#12`（也接受 `ddr:12` / `ddr/12`）；
+auth key 长这样，`@` 后面是"本机被访问到的地址"，所以父节点不用再问地址：
+
+    fed_<id>.<secret>@https://ddr.167990.xyz
+
+两边各自的 `#N` 会撞号，所以子节点的窗格显示成 `oracle#12`（也接受 `oracle:12` / `oracle/12`）；
 内部 id 是 `<node_id>~%12`，和 SSH 主机的 `<host_id>~%N` 同形状，URL 编码、中继、MCP 都不用改。
 `GET /api/fed/ping` 不需要鉴权，用来探测"对面是不是 TmuxWeb"。
 
-第一阶段只开放读：列 pane、看 capture（可见屏）、读 transcript；发键、文件、建会话还没接。
-细节见 [docs/federation.md](docs/federation.md)。
+第一阶段只开放读：列窗格、看 capture（可见屏）、读 transcript；发键、文件、建会话还没接
+（设置里那几项写着"未开放"）。细节和接口表见 [docs/federation.md](docs/federation.md)。
 
 ## 环境要求
 
