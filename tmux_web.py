@@ -1036,6 +1036,11 @@ class FedPreferRequest(BaseModel):
     prefer: str = Field(default="direct", pattern="^(direct|public)$")
 
 
+class FedRouteRequest(BaseModel):
+    """把某一类地址提到最前面：tailnet / lan / public。"""
+    kind: str = Field(default="tailnet", pattern="^(tailnet|lan|public)$")
+
+
 class ShareCreateRequest(BaseModel):
     pane_id: str
     slug: str = Field(min_length=3, max_length=48)
@@ -3006,6 +3011,16 @@ def create_app(
             raise HTTPException(status_code=404, detail="no such node") from exc
         return node
 
+    @app.post("/api/fed/nodes/{node_id}/route")
+    async def route_fed_node(request: Request, node_id: str, payload: FedRouteRequest):
+        require_auth(request)
+        try:
+            return await asyncio.to_thread(fed_nodes.set_route, node_id, payload.kind)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="no such node") from exc
+        except federation.FederationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.post("/api/fed/nodes/{node_id}/addresses")
     async def set_fed_addresses(request: Request, node_id: str, payload: FedNodeAddresses):
         require_auth(request)
@@ -3019,9 +3034,12 @@ def create_app(
             if url and not url.startswith(("http://", "https://")):
                 raise HTTPException(status_code=422, detail="地址要以 http:// 或 https:// 开头")
         try:
-            return await asyncio.to_thread(fed_nodes.set_addresses, node_id, base, fallback)
+            return await asyncio.to_thread(fed_nodes.set_addresses, node_id,
+                                           [{"url": base}, {"url": fallback}])
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="no such node") from exc
+        except federation.FederationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/fed/nodes/{node_id}/probe")
     async def probe_fed_node(request: Request, node_id: str):
@@ -3041,17 +3059,18 @@ def create_app(
             count = len(await asyncio.to_thread(lambda: transport.client.panes(timeout=6)))
         except (federation.FederationError, RuntimeError, OSError, ValueError):
             count = None
+        # 把对方报上来的地址全记下来（tailnet / 局域网 / 域名各一条），
+        # 站点上就能按 TS → 局域网 → CF 排序切换，而不是只留最后一条
+        advertised = [{"url": entry.get("url"), "kind": entry.get("kind")}
+                      for entry in info.get("addresses") or [] if entry.get("url")]
+        known = [{"url": entry["url"], "kind": entry["kind"]}
+                 for entry in node.get("addresses") or [] if entry.get("url")]
+        merged = federation.order_addresses(known + advertised)
         learned = ""
-        direct = next((entry.get("url") for entry in info.get("addresses") or []
-                       if entry.get("kind") == "tailnet" and entry.get("url")), "")
-        known = {node.get("base_url"), node.get("fallback_url")}
-        if direct and direct not in known:
-            # 之前只记了 CF 地址：把直连补进备用位，文件传输就不必绕两跳 Cloudflare
-            base = node.get("base_url") or direct
-            fallback = node.get("fallback_url") or (direct if direct != base else "")
+        if merged and [item["url"] for item in merged] != [item["url"] for item in known]:
             try:
-                await asyncio.to_thread(fed_nodes.set_addresses, node_id, base, fallback or direct)
-                learned = direct
+                saved = await asyncio.to_thread(fed_nodes.set_addresses, node_id, merged)
+                learned = saved.get("base_url") or ""
             except KeyError:
                 pass
         return {"ok": True, "host": info.get("host"), "panes": count,

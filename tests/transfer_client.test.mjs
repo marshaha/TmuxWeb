@@ -106,7 +106,7 @@ test('记得的源站确认还能连上就直接用（不再查地址列表）',
 test('探测不通就原样返回，下载不受影响', async () => {
   const {transfer} = load({
     fetch: async url => {
-      if (url.endsWith('/api/system/addresses')) return json({addresses: [{url: 'https://robo.example.ts.net', transfer: true}]});
+      if (url.endsWith('/api/system/addresses')) return json({addresses: [{url: 'https://robo.example.ts.net', kind: 'tailnet', transfer: true}]});
       throw new TypeError('Failed to fetch');
     },
   });
@@ -118,7 +118,7 @@ test('拿不到票据也回落，绝不抛给调用方', async () => {
   const {transfer} = load({
     fetch: async url => {
       if (url.endsWith('/t/ping')) return json({tmuxweb: true});
-      if (url.endsWith('/api/system/addresses')) return json({addresses: [{url: 'https://robo.example.ts.net', transfer: true}]});
+      if (url.endsWith('/api/system/addresses')) return json({addresses: [{url: 'https://robo.example.ts.net', kind: 'tailnet', transfer: true}]});
       return {ok: false, status: 403, json: async () => ({detail: 'nope'})};
     },
   });
@@ -137,7 +137,7 @@ test('不是下载接口的链接一律不动', async () => {
 test('上传：探测通过后给 uploads.js 一个带票据的前缀', async () => {
   const {transfer} = load({
     fetch: async url => {
-      if (url.endsWith('/api/system/addresses')) return json({addresses: [{url: 'https://robo.example.ts.net', transfer: true}]});
+      if (url.endsWith('/api/system/addresses')) return json({addresses: [{url: 'https://robo.example.ts.net', kind: 'tailnet', transfer: true}]});
       if (url.endsWith('/t/ping')) return json({tmuxweb: true});
       if (url.endsWith('/api/transfer/ticket')) return json({token: 'up.tok'});
       throw new Error('unexpected ' + url);
@@ -171,15 +171,57 @@ test('forget() 清掉记住的源站', async () => {
   assert.equal(store.has('tmuxweb.transfer.origin'), false);
 });
 
-test('子节点的 pane 不改道：按子节点自己的线路走（先域名，再它的内网地址）', async () => {
+test('子节点的 pane 也能改道：MagicDNS 名字排在 100.x 和局域网前面', async () => {
   const pane = 'a1b2c3d4e5f60718~%12';
-  const original = `/api/panes/${encodeURIComponent(pane)}/files/download?path=/srv/a.bin`;
-  const {transfer, calls} = load({
-    fetch: async () => { throw new Error('不该为子节点探测本机直连源站'); },
+  const {transfer} = load({
+    fetch: async url => {
+      if (url.endsWith('/api/system/addresses')) {
+        return {ok: true, status: 200, json: async () => ({addresses: [
+          {url: 'https://robo.neko-chroma.ts.net', kind: 'tailnet', transfer: true},
+          {url: 'http://100.123.123.3:8787', kind: 'tailnet', transfer: true},
+          {url: 'http://10.168.236.31:8787', kind: 'lan', transfer: true},
+        ]})};
+      }
+      if (url.endsWith('/t/ping')) return {ok: true, status: 200, json: async () => ({tmuxweb: true})};
+      if (url.endsWith('/api/transfer/ticket')) {
+        return {ok: true, status: 200, json: async () => ({token: 'abc.def', expires: 1})};
+      }
+      throw new Error('unexpected ' + url);
+    },
   });
-  assert.equal(await transfer.downloadHref(original), original);
-  assert.equal(await transfer.uploadRoute({pane, dir: '/srv', name: 'a.bin', size: 10}), null);
-  assert.equal(calls.length, 0, '既不探测也不改道');
+  const href = `/api/panes/${encodeURIComponent(pane)}/files/download?path=/srv/a.bin`;
+  assert.equal(await transfer.downloadHref(href),
+    'https://robo.neko-chroma.ts.net/t/download?t=abc.def');
+});
+
+test('线路选 CF 时完全不探测、不改道', async () => {
+  const {transfer, calls} = load({});
+  transfer.setRoutePref('cf');
+  const href = '/api/panes/%2524/files/download?path=/srv/a.bin';
+  assert.equal(await transfer.downloadHref(href), href);
+  assert.equal(await transfer.uploadRoute({pane: '%24', dir: '/srv', name: 'a.bin', size: 4}), null);
+  assert.equal(calls.length, 0);
+});
+
+test('线路选局域网时只用局域网地址', async () => {
+  const {transfer} = load({
+    fetch: async url => {
+      if (url.endsWith('/api/system/addresses')) {
+        return {ok: true, status: 200, json: async () => ({addresses: [
+          {url: 'https://robo.neko-chroma.ts.net', kind: 'tailnet', transfer: true},
+          {url: 'http://10.168.236.31:8787', kind: 'lan', transfer: true},
+        ]})};
+      }
+      if (url.endsWith('/t/ping')) return {ok: true, status: 200, json: async () => ({tmuxweb: true})};
+      if (url.endsWith('/api/transfer/ticket')) {
+        return {ok: true, status: 200, json: async () => ({token: 'zzz.yyy', expires: 1})};
+      }
+      throw new Error('unexpected ' + url);
+    },
+  });
+  transfer.setRoutePref('lan');
+  const href = await transfer.downloadHref('/api/panes/%2524/files/download?path=/srv/a.bin');
+  assert.equal(href, 'http://10.168.236.31:8787/t/download?t=zzz.yyy');
 });
 
 test('本机 / SSH 主机默认仍然改走直连', async () => {

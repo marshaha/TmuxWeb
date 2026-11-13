@@ -69,8 +69,39 @@
     }
   }
 
+  const ROUTE_KEY = 'tmuxweb.transfer.route';
+
+  // 下载“浏览器 → 本机”这一跳走哪条：ts（tailnet，默认）/ lan（局域网）/ cf（当前页面）
+  function routePref() {
+    try {
+      const value = localStorage.getItem(ROUTE_KEY);
+      return value === 'lan' || value === 'cf' ? value : 'ts';
+    } catch (_error) {
+      return 'ts';
+    }
+  }
+
+  function setRoutePref(value) {
+    const next = value === 'lan' || value === 'cf' ? value : 'ts';
+    try { localStorage.setItem(ROUTE_KEY, next); } catch (_error) {}
+    return next;
+  }
+
+  // 同一条线路内部也有先后：tailnet 的 MagicDNS（https 名字）最先，
+  // 其次是 tailnet 的 100.x，最后才是局域网地址
+  function rankOf(item) {
+    const isTailnet = item.kind === 'tailnet';
+    const isHttps = String(item.url).startsWith('https://');
+    if (isTailnet && isHttps) return 0;
+    if (isTailnet) return 1;
+    if (item.kind === 'lan') return 2;
+    return 3;
+  }
+
   async function origins() {
     if (!directEnabled()) return [];
+    const wanted = routePref();
+    if (wanted === 'cf') return [];          // 明确走当前页面（CF）：不探测、不改道
     // 只考虑 https 的直连源站：https 页面对 http 的 fetch 和下载都会被浏览器拦。
     try {
       const response = await fetch('/api/system/addresses', {credentials: 'same-origin'});
@@ -80,6 +111,8 @@
       // 同源传输本来就是直连，别白白多签一张票据
       return (data.addresses || [])
         .filter(item => item.transfer && item.url !== location.origin)
+        .filter(item => (wanted === 'lan' ? item.kind === 'lan' : item.kind === 'tailnet'))
+        .sort((left, right) => rankOf(left) - rankOf(right))
         .map(item => item.url);
     } catch (_error) {
       return [];
@@ -137,7 +170,6 @@
     try { parsed = new URL(href, location.href); } catch (_error) { return href; }
     const match = parsed.pathname.match(/^\/api\/panes\/([^/]+)\/files\/download$/);
     if (!match || !parsed.searchParams.get('path')) return href;
-    if (isFederatedPane(decodeURIComponent(match[1]))) return href;
     const origin = await pick();
     if (!origin) return href;
     try {
@@ -154,7 +186,6 @@
 
   // 上传：返回 {prefix, ticket} 让 uploads.js 把块发到直连源站；null 表示保持原样
   async function uploadRoute(options) {
-    if (isFederatedPane(options && options.pane)) return null;
     const origin = await pick();
     if (!origin) return null;
     try {
@@ -168,5 +199,6 @@
     }
   }
 
-  window.TmuxTransfer = {downloadHref, uploadRoute, pick, forget, probe};
+  window.TmuxTransfer = {downloadHref, uploadRoute, pick, forget, probe,
+                         routePref, setRoutePref};
 })();

@@ -228,6 +228,36 @@ class FedPolicy:
         return self.read()
 
 
+ADDRESS_ORDER = ("tailnet", "lan", "public")
+
+
+def address_kind(url: str) -> str:
+    """把一条地址归类：tailnet(100.64/10) / lan / public。"""
+    host = urllib.parse.urlparse(url or "").hostname or ""
+    if not host:
+        return "public"
+    if host.startswith("100."):
+        return "tailnet"
+    if host.startswith(("10.", "192.168.", "127.", "localhost")):
+        return "lan"
+    if any(host.startswith(f"172.{n}.") for n in range(16, 32)):
+        return "lan"
+    return "public"
+
+
+def order_addresses(entries: list[dict]) -> list[dict]:
+    """去重 + 按 tailnet → lan → public 排序（同种类保持原顺序）。"""
+    seen, unique = set(), []
+    for entry in entries:
+        url = (entry.get("url") or "").rstrip("/")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        unique.append({"url": url, "kind": entry.get("kind") or address_kind(url)})
+    ranked = {kind: index for index, kind in enumerate(ADDRESS_ORDER)}
+    return sorted(unique, key=lambda entry: ranked.get(entry["kind"], len(ADDRESS_ORDER)))
+
+
 def pane_allowed(grants: dict, pane_id: str) -> bool:
     """Is this pane inside the range the token owner shared?"""
     allowed = grants.get("panes", "all")
@@ -252,27 +282,62 @@ class FederationStore:
                 "CREATE TABLE IF NOT EXISTS fed_nodes("
                 " id TEXT PRIMARY KEY, label TEXT, prefix TEXT UNIQUE, base_url TEXT,"
                 " fallback_url TEXT, token TEXT, enabled INTEGER, created_at REAL,"
-                " prefer TEXT DEFAULT 'direct')"
+                " prefer TEXT DEFAULT 'direct', addresses TEXT)"
             )
             columns = {row[1] for row in self.connection.execute("PRAGMA table_info(fed_nodes)")}
+            if "addresses" not in columns:              # 有序地址表：[{"url","kind"}]
+                self.connection.execute("ALTER TABLE fed_nodes ADD COLUMN addresses TEXT")
             if "prefer" not in columns:                 # 老库补列：直连优先，和之前的行为一致
                 self.connection.execute("ALTER TABLE fed_nodes ADD COLUMN prefer TEXT DEFAULT 'direct'")
             self.connection.commit()
 
+    @staticmethod
+    def _entries(row) -> list[dict]:
+        """有序地址表；老记录（只有 base/fallback）在这里现算一份。"""
+        try:
+            stored = json.loads(row["addresses"] or "[]")
+        except (TypeError, ValueError):
+            stored = []
+        if not stored:                       # 老记录：把 base / fallback 当成两格
+            stored = [{"url": row["base_url"] or ""}, {"url": row["fallback_url"] or ""}]
+        # 存下来的顺序就是真顺序（用户点了"这类优先"之后不能被自动排序改回去）
+        seen, entries = set(), []
+        for entry in stored:
+            url = (entry.get("url") or "").rstrip("/")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            entries.append({"url": url, "kind": entry.get("kind") or address_kind(url)})
+        return entries
+
+    def _decorate(self, row) -> dict:
+        node = dict(row)
+        node["enabled"] = bool(node["enabled"])
+        entries = self._entries(row)
+        node["addresses"] = entries
+        node["routes"] = [entry["kind"] for entry in entries]
+        # 兼容老读者：base/fallback 就是排序后的前两条
+        node["base_url"] = entries[0]["url"] if entries else ""
+        node["fallback_url"] = entries[1]["url"] if len(entries) > 1 else ""
+        return node
+
     def listing(self) -> list[dict]:
         with self.lock:
             rows = self.connection.execute(
-                "SELECT id,label,prefix,base_url,fallback_url,enabled,created_at,prefer"
-                " FROM fed_nodes ORDER BY created_at").fetchall()
-        return [dict(row) | {"enabled": bool(row["enabled"])} for row in rows]
+                "SELECT * FROM fed_nodes ORDER BY created_at").fetchall()
+        nodes = []
+        for row in rows:
+            node = self._decorate(row)
+            node.pop("token", None)              # 令牌只存哈希，列表里连哈希也不给
+            nodes.append(node)
+        return nodes
 
     def get_node(self, host_id: str, include_token: bool = False) -> dict:
         with self.lock:
             row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
         if row is None:
             raise KeyError(host_id)
-        node = dict(row)
-        node["enabled"] = bool(node["enabled"])
+        node = self._decorate(row)
         if not include_token:
             node.pop("token", None)
         return node
@@ -283,9 +348,7 @@ class FederationStore:
                 "SELECT * FROM fed_nodes WHERE prefix=?", ((prefix or "").lower(),)).fetchone()
         if row is None:
             return None
-        node = dict(row)
-        node["enabled"] = bool(node["enabled"])
-        return node
+        return self._decorate(row)
 
     def add(self, label: str, prefix: str, base_url: str, fallback_url: str, token: str,
             prefer: str = "direct") -> dict:
@@ -299,60 +362,95 @@ class FederationStore:
             raise FederationError("base_url or fallback_url is required")
         salt = secrets.token_hex(8)
         prefer = "public" if prefer == "public" else "direct"
-        if prefer == "public" and fallback and not base:
-            base, fallback = fallback, base          # 只有一条地址时不影响
+        entries = order_addresses([{"url": base}, {"url": fallback}])
+        if prefer == "public":
+            entries = sorted(entries, key=lambda entry: 0 if entry["kind"] == "public" else 1)
+        base = entries[0]["url"] if entries else ""
+        fallback = entries[1]["url"] if len(entries) > 1 else ""
         record = {"id": salt, "label": (label or prefix)[:64], "prefix": prefix,
                   "base_url": base, "fallback_url": fallback,
                   "token": (token or "").strip(), "enabled": 1, "created_at": time.time(),
-                  "prefer": prefer}
+                  "prefer": prefer, "addresses": json.dumps(entries, ensure_ascii=False)}
         try:
             with self.lock:
                 self.connection.execute(
                     "INSERT INTO fed_nodes(id,label,prefix,base_url,fallback_url,token,enabled,"
-                    "created_at,prefer)"
+                    "created_at,prefer,addresses)"
                     " VALUES (:id,:label,:prefix,:base_url,:fallback_url,:token,:enabled,"
-                    ":created_at,:prefer)", record)
+                    ":created_at,:prefer,:addresses)", record)
                 self.connection.commit()
         except sqlite3.IntegrityError as exc:
             raise FederationError(f"prefix already used: {prefix}") from exc
         record.pop("token")
-        return record | {"enabled": True}
-
-    def set_prefer(self, host_id: str, prefer: str) -> dict:
-        """`direct` / `public`：把首选线路换到 base_url 上（FedClient 永远先试它）。"""
-        prefer = "public" if prefer == "public" else "direct"
-        with self.lock:
-            row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
-            if row is None:
-                raise KeyError(host_id)
-            current = (row["prefer"] or "direct")
-            base, fallback = row["base_url"] or "", row["fallback_url"] or ""
-            if prefer != current and base and fallback:
-                base, fallback = fallback, base
-            self.connection.execute(
-                "UPDATE fed_nodes SET base_url=?, fallback_url=?, prefer=? WHERE id=?",
-                (base, fallback, prefer, host_id))
-            self.connection.commit()
-        with self.lock:
-            row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
-        node = dict(row)
-        node["enabled"] = bool(node["enabled"])
+        fresh = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (salt,)).fetchone()
+        node = self._decorate(fresh)
         node.pop("token", None)
         return node
 
-    def set_addresses(self, host_id: str, base_url: str, fallback_url: str) -> dict:
-        """记下发回来的地址（父节点从 ping 里学到直连地址时用）。"""
+    def set_prefer(self, host_id: str, prefer: str) -> dict:
+        """旧接口：direct = tailnet/局域网优先，public = 域名优先。"""
+        if prefer == "public":
+            return self.set_route(host_id, "public")
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
+        if row is None:
+            raise KeyError(host_id)
+        for kind in ("tailnet", "lan"):
+            if any(entry["kind"] == kind for entry in self._entries(row)):
+                return self.set_route(host_id, kind)
+        return self.set_route(host_id, "public")
+
+    def set_addresses(self, host_id: str, entries) -> dict:
+        """整份地址表替换掉。`entries` 可以是 [{"url","kind"}] 也可以是几个网址字符串。"""
+        cleaned = []
+        for entry in entries if isinstance(entries, (list, tuple)) else [entries]:
+            if isinstance(entry, dict):
+                cleaned.append({"url": entry.get("url") or "", "kind": entry.get("kind") or ""})
+            else:
+                cleaned.append({"url": str(entry or "")})
+        ordered, seen = [], set()
+        for entry in cleaned:
+            url = (entry["url"] or "").strip().rstrip("/")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            ordered.append({"url": url, "kind": entry.get("kind") or address_kind(url)})
+        if not ordered:
+            raise FederationError("至少给一个地址")
         with self.lock:
             row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
             if row is None:
                 raise KeyError(host_id)
             self.connection.execute(
-                "UPDATE fed_nodes SET base_url=?, fallback_url=? WHERE id=?",
-                ((base_url or "").rstrip("/"), (fallback_url or "").rstrip("/"), host_id))
+                "UPDATE fed_nodes SET base_url=?, fallback_url=?, addresses=? WHERE id=?",
+                (ordered[0]["url"], ordered[1]["url"] if len(ordered) > 1 else "",
+                 json.dumps(ordered, ensure_ascii=False), host_id))
             self.connection.commit()
             row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
-        node = dict(row)
-        node["enabled"] = bool(node["enabled"])
+        node = self._decorate(row)
+        node.pop("token", None)
+        return node
+
+    def set_route(self, host_id: str, kind: str) -> dict:
+        """把某一类地址提到最前面（tailnet / lan / public）。"""
+        if kind not in ADDRESS_ORDER:
+            raise FederationError("kind must be one of " + ", ".join(ADDRESS_ORDER))
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
+            if row is None:
+                raise KeyError(host_id)
+            entries = self._entries(row)
+            if not any(entry["kind"] == kind for entry in entries):
+                raise FederationError(f"这个节点没有 {kind} 地址")
+            entries.sort(key=lambda entry: 0 if entry["kind"] == kind else 1)
+            prefer = "public" if kind == "public" else "direct"
+            self.connection.execute(
+                "UPDATE fed_nodes SET base_url=?, fallback_url=?, addresses=?, prefer=? WHERE id=?",
+                (entries[0]["url"], entries[1]["url"] if len(entries) > 1 else "",
+                 json.dumps(entries, ensure_ascii=False), prefer, host_id))
+            self.connection.commit()
+            row = self.connection.execute("SELECT * FROM fed_nodes WHERE id=?", (host_id,)).fetchone()
+        node = self._decorate(row)
         node.pop("token", None)
         return node
 

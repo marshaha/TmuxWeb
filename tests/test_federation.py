@@ -135,6 +135,65 @@ class PreferTests(unittest.TestCase):
         self.assertNotIn("token", back)
 
 
+class ThreeRouteTests(unittest.TestCase):
+    """TS / 局域网 / CF 三条地址：顺序由地址种类决定，可以随时切。"""
+
+    def test_a_new_node_sorts_tailnet_then_lan_then_domain(self):
+        store, _ = memory_stores()
+        # add 时不排序会被排序：直连优先，tailnet 排在最前
+        node = store.add("oracle", "", "https://ddr.167990.xyz", "http://100.123.123.17:8787", "fed_x.y")
+        self.assertEqual(node["base_url"], "http://100.123.123.17:8787")
+        self.assertEqual(node["routes"], ["tailnet", "public"])
+
+    def test_three_addresses_keep_the_order_they_were_given(self):
+        store, _ = memory_stores()
+        node = store.add("oracle", "", "https://ddr.167990.xyz", "", "fed_x.y")
+        saved = store.set_addresses(node["id"], [
+            "https://ddr.167990.xyz",
+            "http://10.0.2.12:8787",
+            "http://100.123.123.17:8787",
+        ])
+        # 手填的顺序就是真顺序（页面上点了哪个就存哪个）
+        self.assertEqual([entry["kind"] for entry in saved["addresses"]],
+                         ["public", "lan", "tailnet"])
+        self.assertEqual(saved["base_url"], "https://ddr.167990.xyz")
+
+        # 想换回 tailnet 优先，点一下就行
+        moved = store.set_route(node["id"], "tailnet")
+        self.assertEqual(moved["base_url"], "http://100.123.123.17:8787")
+        self.assertEqual(len(moved["addresses"]), 3, "换顺序不该丢地址")
+
+    def test_asking_for_the_domain_first_moves_it_up_without_losing_the_others(self):
+        store, _ = memory_stores()
+        node = store.add("oracle", "", "http://100.123.123.17:8787", "https://ddr.167990.xyz", "fed_x.y")
+        store.set_addresses(node["id"], [
+            {"url": "http://100.123.123.17:8787"},
+            {"url": "http://10.0.2.12:8787"},
+            {"url": "https://ddr.167990.xyz"},
+        ])
+        moved = store.set_route(node["id"], "public")
+        self.assertEqual(moved["base_url"], "https://ddr.167990.xyz")
+        self.assertEqual(moved["prefer"], "public")
+        self.assertEqual(len(moved["addresses"]), 3)
+
+        back = store.set_route(node["id"], "lan")
+        self.assertEqual(back["base_url"], "http://10.0.2.12:8787")
+
+    def test_a_route_the_node_does_not_have_is_refused(self):
+        store, _ = memory_stores()
+        node = store.add("oracle", "", "https://ddr.167990.xyz", "", "fed_x.y")
+        with self.assertRaises(federation.FederationError):
+            store.set_route(node["id"], "tailnet")
+
+    def test_an_old_record_with_only_two_addresses_still_reports_routes(self):
+        store, _ = memory_stores()
+        node = store.add("oracle", "", "https://ddr.167990.xyz", "http://100.1.2.3:8787", "fed_x.y")
+        store.connection.execute("UPDATE fed_nodes SET addresses=NULL WHERE id=?", (node["id"],))
+        store.connection.commit()
+        again = store.get_node(node["id"])
+        self.assertEqual([entry["kind"] for entry in again["addresses"]], ["tailnet", "public"])
+
+
 class AuthKeyTests(unittest.TestCase):
     def test_an_auth_key_can_carry_the_address_after_the_at_sign(self):
         self.assertEqual(federation.parse_auth_key("fed_a.b@https://ddr.167990.xyz/"),
@@ -159,6 +218,11 @@ class StoreTests(unittest.TestCase):
             store.add("again", "ddr", "http://elsewhere", "", "fed_x.y")
         with self.assertRaises(federation.FederationError):
             store.add("bad", "DDR", "http://elsewhere", "", "fed_x.y")
+
+    def test_adding_a_node_does_not_echo_its_token(self):
+        store, _ = memory_stores()
+        node = store.add("oracle", "", "https://ddr.167990.xyz", "", "fed_x.y", )
+        self.assertNotIn("token", node)
 
     def test_the_token_is_not_returned_by_listing(self):
         store, _ = memory_stores()
@@ -628,7 +692,10 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(probed.status_code, 200, probed.text)
         self.assertEqual(probed.json()["learned"], "http://100.123.123.17:8787")
         stored = self.client.get("/api/fed/nodes").json()["nodes"][0]
-        self.assertIn("100.123.123.17", stored["fallback_url"])
+        # 学到的直连地址直接排到最前面，域名降成备用 —— 不用再绕 CF
+        self.assertEqual(stored["base_url"], "http://100.123.123.17:8787")
+        self.assertEqual(stored["fallback_url"], "https://ddr.167990.xyz")
+        self.assertEqual([entry["kind"] for entry in stored["addresses"]], ["tailnet", "public"])
 
     def test_a_typed_address_wins_and_the_one_in_the_key_becomes_the_spare(self):
         added = self.client.post("/api/fed/nodes", json={
