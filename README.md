@@ -441,7 +441,7 @@ HTTP 接口（`Authorization: Bearer $TMUX_WEB_API_TOKEN`）：
 
     子节点 oracle：设置 › 子节点：让别人接入 → 选权限 / 有效期（可以永久）/ 范围 → 生成 auth key
     父节点 localhost：设置 › 添加子节点 → 名字填 oracle、粘上那串 auth key
-                     先走哪条线路可选：直连（tailnet/局域网）或 Cloudflare，随时一键换
+                     先走哪条线路可选：默认直连优先（tailnet → 局域网 → 域名），随时一键换
     （聊天、capture、文件都按这一个顺序走；点一次「测试」会把对端的 tailnet 地址记进备用位，
       只在优先线路连不上时才用）
     节点上还能「改地址」：优先 / 备用两条随你填，改完立刻生效
