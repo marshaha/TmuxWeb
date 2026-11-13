@@ -235,14 +235,26 @@ class SettingsPageWiringTests(unittest.TestCase):
                        "导出密码至少 6 位", "密码不对，或者文件被改过"):
             self.assertIn(marker, script)
         # one section with two tabs, not two separate rows
-        # 修改密码 / 直连地址 / 导入导出 / 插件 / 主题 —— every one of them starts collapsed
-        self.assertEqual(script.count('class="ts-row"'), 6, '新增交互菜单卡片开关')
+        # 子节点(让别人接入) / 添加子节点 / 修改密码 / 直连地址 / 导入导出 / 插件 / 主题 / 交互菜单卡片
+        # —— every one of them starts collapsed
+        self.assertEqual(script.count('class="ts-row"'), 8, '新增两栏子节点面板')
         self.assertIn("/api/system/addresses", script)
         self.assertIn('id="ts-direct-panel"', script)
         self.assertIn("data-ts-tab=\"export\"", script)
         self.assertIn("data-ts-tab=\"import\"", script)
         self.assertIn('id="ts-import-file" type="file"', script)
         self.assertIn("未选择文件", script)
+        # 子节点：生成 auth key（权限 / 有效期含永久 / 范围）与添加子节点（名字 + auth key）
+        for marker in ('id="ts-child-toggle"', 'id="ts-child-panel"', 'id="ts-child-scopes"',
+                       'id="ts-child-ttl"', '<option value="0">永久</option>',
+                       'id="ts-child-range"', 'id="ts-child-create"',
+                       'id="ts-node-toggle"', 'id="ts-node-panel"', 'id="ts-node-label"',
+                       'id="ts-node-key"', 'id="ts-node-add"'):
+            self.assertIn(marker, script, marker)
+        self.assertIn("/api/fed/tokens", script)
+        self.assertIn("/api/fed/nodes", script)
+        # key 后面带上"本机被访问到的地址"，父节点只填名字 + 一串就够
+        self.assertIn("made.token}@${location.origin}", script)
 
     def test_every_page_with_a_settings_button_loads_it(self):
         for path in ("/", "/grid"):

@@ -70,6 +70,21 @@
     border-radius:10px;background:var(--surface2)}
   .ts-file-name{color:var(--muted,#73716b);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ts-file-name.picked{color:inherit}
+  /* 子节点：共享出去的 auth key / 已接入的节点 */
+  .ts-keys{display:flex;flex-direction:column;gap:8px;padding:6px 0 2px}
+  .ts-key{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--line,#dddcd5);
+    border-radius:10px;background:var(--surface2);flex:none}
+  .ts-key-main{flex:1;min-width:0}
+  .ts-key-name{font-weight:650;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ts-key-meta{margin-top:2px;color:var(--muted,#73716b);font-size:11.5px;line-height:1.5;overflow-wrap:anywhere}
+  .ts-key-value{margin:6px 0 0;padding:7px 9px;border:1px dashed var(--line,#dddcd5);border-radius:9px;
+    background:var(--card);color:inherit;font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;
+    overflow-wrap:anywhere;word-break:break-all;user-select:all}
+  .ts-key .ts-btn{flex:none}
+  .ts-field select{height:36px;padding:0 8px;border:1px solid var(--line,#dddcd5);border-radius:9px;
+    background:var(--card);color:inherit;font:13px inherit;outline:none}
+  .ts-field select:focus{border-color:var(--accent,#c96442)}
+  .ts-field select:disabled{opacity:.55}
   /* plugin manager */
   .ts-plugins{display:flex;flex-direction:column;gap:8px;padding:10px 0 4px}
   .ts-tail{display:flex;align-items:center;gap:8px}
@@ -101,7 +116,9 @@
     .ts-row{padding:13px 0 11px}
     .ts-tabs button{height:32px}
     .ts-btn{height:38px;padding:0 14px;font-size:13px}
-    .ts-field input{height:42px;font-size:16px}
+    .ts-field input,.ts-field select{height:42px;font-size:16px}
+    .ts-key{padding:11px 12px}
+    .ts-key .ts-btn{height:34px}
   }
   `;
 
@@ -112,6 +129,62 @@
     <section class="ts-block">
       <a class="ts-row ts-link" href="/hosts"><span>服务器管理</span><span class="ts-go" aria-hidden="true"></span></a>
       <a class="ts-row ts-link" href="/shares"><span>分享管理</span><span class="ts-go" aria-hidden="true"></span></a>
+    </section>
+
+    <section class="ts-block">
+      <button class="ts-row" type="button" id="ts-child-toggle" aria-expanded="false" aria-controls="ts-child-panel">
+        <span>子节点：让别人接入</span>
+        <span class="ts-tail"><span class="ts-hint" id="ts-child-count"></span><span class="ts-caret" aria-hidden="true"></span></span>
+      </button>
+      <div class="ts-panel" id="ts-child-panel" hidden>
+        <p class="ts-hint">把本机的窗格交给另一个控制台看。生成一串 auth key 给它：能做什么、能看哪些窗格、多久失效，都由这里决定，随时可以吊销。</p>
+        <label class="ts-field">权限
+          <select id="ts-child-scopes" aria-label="auth key 权限">
+            <option value="view" selected>只能看（屏幕 + 对话）</option>
+            <option value="view,input" disabled>看 + 发按键（未开放）</option>
+            <option value="view,files" disabled>看 + 文件读写（未开放）</option>
+            <option value="view,admin" disabled>看 + 管理会话（未开放）</option>
+          </select>
+        </label>
+        <label class="ts-field">有效期
+          <select id="ts-child-ttl" aria-label="auth key 有效期">
+            <option value="3600">1 小时</option>
+            <option value="86400" selected>1 天</option>
+            <option value="604800">7 天</option>
+            <option value="2592000">30 天</option>
+            <option value="0">永久</option>
+          </select>
+        </label>
+        <label class="ts-field">范围
+          <select id="ts-child-range" aria-label="共享哪些窗格">
+            <option value="all" selected>全部窗格</option>
+            <option value="pick">只给这几个</option>
+          </select>
+        </label>
+        <label class="ts-field" id="ts-child-picks" hidden>窗格编号（逗号分隔，写 #12 或 %12 都行）
+          <input id="ts-child-panes" placeholder="#12, #14" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="ts-btns"><button class="ts-btn primary" type="button" id="ts-child-create">生成 auth key</button></div>
+        <p class="ts-state" id="ts-child-state" role="status"></p>
+        <div id="ts-child-issued"></div>
+        <div class="ts-keys" id="ts-child-keys"></div>
+      </div>
+    </section>
+
+    <section class="ts-block">
+      <button class="ts-row" type="button" id="ts-node-toggle" aria-expanded="false" aria-controls="ts-node-panel">
+        <span>添加子节点</span>
+        <span class="ts-tail"><span class="ts-hint" id="ts-node-count"></span><span class="ts-caret" aria-hidden="true"></span></span>
+      </button>
+      <div class="ts-panel" id="ts-node-panel" hidden>
+        <p class="ts-hint">把另一台控制台当子节点接进来：它的窗格会出现在侧栏，编号带前缀（oracle#12），只读。在对方的「子节点：让别人接入」里生成 auth key，回来填名字、粘上去就行。</p>
+        <label class="ts-field">名字<input id="ts-node-label" placeholder="oracle" maxlength="16" autocomplete="off" spellcheck="false"></label>
+        <label class="ts-field">auth key<input id="ts-node-key" placeholder="fed_…（对方生成的那一串）" autocomplete="off" spellcheck="false"></label>
+        <label class="ts-field">地址（key 里没带地址时才要填）<input id="ts-node-url" placeholder="http://100.123.123.17:8787" autocomplete="off" spellcheck="false"></label>
+        <div class="ts-btns"><button class="ts-btn primary" type="button" id="ts-node-add">添加子节点</button></div>
+        <p class="ts-state" id="ts-node-state" role="status"></p>
+        <div class="ts-keys" id="ts-node-list"></div>
+      </div>
     </section>
 
     <section class="ts-block">
@@ -714,6 +787,147 @@
     }
   }
 
+  // ---- 子节点：本级签发的 auth key，以及接入的子节点 ----------------------
+  const SCOPE_NAMES = { view: '只能看', input: '发按键', files: '文件读写', admin: '管理会话' };
+
+  function fmtWhen(stamp) {
+    if (stamp === null || stamp === undefined) return '永久';
+    const when = new Date(stamp * 1000);
+    const pad = number => String(number).padStart(2, '0');
+    return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`
+      + ` ${pad(when.getHours())}:${pad(when.getMinutes())}`;
+  }
+
+  function paneList(text) {
+    return (text || '').split(/[\s,，、]+/).filter(Boolean)
+      .map(item => item.replace(/^[#%]/, '%'));
+  }
+
+  function scopeText(scopes) {
+    return (scopes || []).map(scope => SCOPE_NAMES[scope] || scope).join(' + ');
+  }
+
+  async function loadChildKeys() {
+    const box = $('ts-child-keys');
+    const counter = $('ts-child-count');
+    try {
+      const data = await api('/api/fed/tokens');
+      const keys = data.tokens || [];
+      counter.textContent = keys.filter(key => !key.revoked).length
+        ? `${keys.filter(key => !key.revoked).length} 个有效` : '';
+      box.innerHTML = keys.length ? keys.map(key => {
+        const range = key.panes === 'all' ? '全部窗格' : `指定 ${(key.panes || []).join(' ')}`;
+        const when = key.revoked ? '已吊销' : `到期 ${fmtWhen(key.expires_at)}`;
+        return '<div class="ts-key"><div class="ts-key-main">'
+          + `<div class="ts-key-name">${esc(key.label || '未命名')}</div>`
+          + `<div class="ts-key-meta">${esc(scopeText(key.scopes))} · ${esc(range)} · ${esc(when)}</div></div>`
+          + (key.revoked ? '' : `<button class="ts-btn danger" type="button" data-revoke="${esc(key.id)}">吊销</button>`)
+          + '</div>';
+      }).join('') : '<p class="ts-hint">还没生成过 auth key。</p>';
+    } catch (error) {
+      counter.textContent = '';
+      box.innerHTML = `<p class="ts-state bad">读取失败：${esc(error.message)}</p>`;
+    }
+  }
+
+  async function createChildKey() {
+    const out = $('ts-child-state');
+    const issued = $('ts-child-issued');
+    const scopes = $('ts-child-scopes').value.split(',').filter(Boolean);
+    const ttl = Number($('ts-child-ttl').value);
+    const picked = $('ts-child-range').value === 'pick';
+    const panes = picked ? paneList($('ts-child-panes').value) : 'all';
+    if (picked && !panes.length) { note(out, '写一下要共享哪几个窗格，比如 #12', 'bad'); return; }
+    $('ts-child-create').disabled = true;
+    note(out, '正在生成…');
+    try {
+      const made = await api('/api/fed/tokens', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: '控制台', scopes, panes, ttl }),
+      });
+      // 把"本机是怎么被访问到的"接在 key 后面，父节点只填名字 + 这一串就够
+      const full = `${made.token}@${location.origin}`;
+      issued.innerHTML = '<div class="ts-key"><div class="ts-key-main">'
+        + '<div class="ts-key-name">新 auth key（只显示这一次）</div>'
+        + `<div class="ts-key-meta">到期 ${esc(fmtWhen(made.expires_at))} · 复制到对方的「添加子节点」</div>`
+        + `<div class="ts-key-value">${esc(full)}</div></div>`
+        + `<button class="ts-btn" type="button" data-copy="${esc(full)}">复制</button></div>`;
+      note(out, '已生成。关掉面板就看不到了，需要时重新生成或吊销。', 'good');
+      loadChildKeys();
+    } catch (error) {
+      note(out, error.message, 'bad');
+    } finally {
+      $('ts-child-create').disabled = false;
+    }
+  }
+
+  async function loadChildNodes() {
+    const box = $('ts-node-list');
+    const counter = $('ts-node-count');
+    try {
+      const data = await api('/api/fed/nodes');
+      const nodes = data.nodes || [];
+      counter.textContent = nodes.length ? `${nodes.length} 个` : '';
+      box.innerHTML = nodes.length ? nodes.map(node => {
+        const address = node.base_url || node.fallback_url || '—';
+        const spare = node.base_url && node.fallback_url ? `（备用 ${node.fallback_url}）` : '';
+        return '<div class="ts-key"><div class="ts-key-main">'
+          + `<div class="ts-key-name">${esc(node.label || node.prefix)} <span class="ts-key-meta">前缀 ${esc(node.prefix)}</span></div>`
+          + `<div class="ts-key-meta">${esc(address)}${esc(spare)}</div></div>`
+          + `<button class="ts-btn" type="button" data-probe="${esc(node.id)}">测试</button>`
+          + `<button class="ts-btn danger" type="button" data-drop="${esc(node.id)}">删除</button></div>`;
+      }).join('') : '<p class="ts-hint">还没有子节点。</p>';
+    } catch (error) {
+      counter.textContent = '';
+      box.innerHTML = `<p class="ts-state bad">读取失败：${esc(error.message)}</p>`;
+    }
+  }
+
+  async function addChildNode() {
+    const out = $('ts-node-state');
+    const name = $('ts-node-label').value.trim();
+    const key = $('ts-node-key').value.trim();
+    const address = $('ts-node-url').value.trim();
+    if (!name) { note(out, '先给它起个名字，比如 oracle', 'bad'); return; }
+    if (!key) { note(out, '把对方生成的 auth key 粘进来', 'bad'); return; }
+    $('ts-node-add').disabled = true;
+    note(out, '正在添加…');
+    try {
+      const node = await api('/api/fed/nodes', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: name, token: key, base_url: address }),
+      });
+      note(out, `已添加 ${node.prefix}，正在测试连接…`);
+      try {
+        const result = await api(`/api/fed/nodes/${node.id}/probe`, { method: 'POST' });
+        const counted = result.panes === null || result.panes === undefined
+          ? '窗格列表还没准备好' : `${result.panes} 个窗格`;
+        note(out, `通了：${result.host || node.base_url} · ${counted}（编号 ${node.prefix}#N）`, 'good');
+      } catch (error) {
+        note(out, `已添加，但现在连不上：${error.message}`, 'bad');
+      }
+      $('ts-node-label').value = '';
+      $('ts-node-key').value = '';
+      $('ts-node-url').value = '';
+      loadChildNodes();
+    } catch (error) {
+      note(out, error.message, 'bad');
+    } finally {
+      $('ts-node-add').disabled = false;
+    }
+  }
+
+  async function probeChildNode(id) {
+    const out = $('ts-node-state');
+    note(out, '正在测试…');
+    try {
+      const result = await api(`/api/fed/nodes/${id}/probe`, { method: 'POST' });
+      note(out, `通了：${result.host} · ${result.panes === null ? '窗格列表还没准备好' : `${result.panes} 个窗格`}`, 'good');
+    } catch (error) {
+      note(out, `连不上：${error.message}`, 'bad');
+    }
+  }
+
   async function open() {
     if (!dialog) return;
     sections.forEach(([id]) => toggleSection(id, false));
@@ -729,6 +943,8 @@
     loadPreviewPref();
     loadPlugins();          // fills the row's counter; the list itself stays collapsed
     loadDirectEntries();
+    loadChildKeys();
+    loadChildNodes();
     // Chrome/Firefox auto-focus the first control, Safari draws its blue ring on it: park the focus on
     // the dialog instead, so opening 设置 never comes with a highlighted row
     for (const element of dialog.querySelectorAll('.ts-row, .ts-btn, a, button, input')) {
@@ -768,7 +984,8 @@
     dialog = $('ts-dialog');
     dialog.querySelector('h2').id = 'ts-title';
 
-    sections = [['ts-pw-toggle', 'ts-pw-panel'], ['ts-direct-toggle', 'ts-direct-panel'],
+    sections = [['ts-child-toggle', 'ts-child-panel'], ['ts-node-toggle', 'ts-node-panel'],
+                ['ts-pw-toggle', 'ts-pw-panel'], ['ts-direct-toggle', 'ts-direct-panel'],
                 ['ts-io-toggle', 'ts-io-panel'],
                 ['ts-plugin-toggle', 'ts-plugin-panel'], ['ts-theme-toggle', 'ts-theme-panel']];
     for (const [toggleId] of sections) $(toggleId).onclick = () => {
@@ -796,6 +1013,39 @@
         navigator.clipboard.writeText(text).then(done).catch(legacyCopy);
       } else {
         legacyCopy();
+      }
+    });
+    $('ts-child-range').addEventListener('change', event => {
+      $('ts-child-picks').hidden = event.target.value !== 'pick';
+    });
+    $('ts-child-create').addEventListener('click', () => createChildKey());
+    $('ts-node-add').addEventListener('click', () => addChildNode());
+    $('ts-child-keys').addEventListener('click', async event => {
+      const button = event.target.closest('[data-revoke]');
+      if (!button) return;
+      button.disabled = true;
+      try {
+        await api(`/api/fed/tokens/${button.dataset.revoke}`, { method: 'DELETE' });
+        note($('ts-child-state'), '已吊销，那台控制台下次请求就会被拒', 'good');
+        loadChildKeys();
+      } catch (error) {
+        button.disabled = false;
+        note($('ts-child-state'), error.message, 'bad');
+      }
+    });
+    $('ts-node-list').addEventListener('click', async event => {
+      const probe = event.target.closest('[data-probe]');
+      if (probe) { probeChildNode(probe.dataset.probe); return; }
+      const drop = event.target.closest('[data-drop]');
+      if (!drop) return;
+      drop.disabled = true;
+      try {
+        await api(`/api/fed/nodes/${drop.dataset.drop}`, { method: 'DELETE' });
+        note($('ts-node-state'), '已删除这个子节点（对方的 auth key 还在，想彻底断开就去对方那边吊销）', 'good');
+        loadChildNodes();
+      } catch (error) {
+        drop.disabled = false;
+        note($('ts-node-state'), error.message, 'bad');
       }
     });
     $('ts-sidebar-memory').addEventListener('click', () => toggleSidebarMemory());
