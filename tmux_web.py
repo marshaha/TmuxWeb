@@ -1006,6 +1006,13 @@ class FedNodeRequest(BaseModel):
     prefer: str = Field(default="direct", pattern="^(direct|public)$")   # 先走哪条线路
 
 
+class FedFileRequest(BaseModel):
+    """文件操作：路径 + 可选的新名字 / 递归标记。"""
+    path: str = Field(min_length=1, max_length=4096)
+    new_name: str = Field(default="", max_length=255)
+    recursive: bool = False
+
+
 class FedPreferRequest(BaseModel):
     """先走哪条线路。"""
     prefer: str = Field(default="direct", pattern="^(direct|public)$")
@@ -2580,6 +2587,140 @@ def create_app(
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return payload
+
+    # ---- 子节点的读写：发按键（input 作用域）和文件（files 作用域）-----------
+    FED_FILE_LIMIT = 512 * 1024 * 1024
+
+    def fed_abs_path(value: str) -> str:
+        try:
+            return str(file_browser.resolve_path(value, os.path.expanduser("~")))
+        except file_browser.FileBrowserError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def fed_pane_or_403(grants: dict, pane_id: str) -> str:
+        actual = resolve_pane_ref(pane_id)
+        if not federation.pane_allowed(grants, actual):
+            raise HTTPException(status_code=403, detail="这个窗格没有共享出去")
+        return actual
+
+    @app.post("/api/fed/panes/{pane_id}/input")
+    async def fed_input(request: Request, pane_id: str, payload: InputRequest):
+        """往共享出去的窗格里送一段文字（等价于父节点在聊天里发消息）。"""
+        grants = require_fed(request, "input")
+        actual = fed_pane_or_403(grants, pane_id)
+        pane = await asyncio.to_thread(pane_or_404, actual)
+        transport, actual_id = pane_transport(actual)
+        try:
+            submitted = await asyncio.to_thread(transport.send, actual_id, payload.text,
+                                                payload.submit, pane)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"status": "sent", "pane": actual, "submitted": submitted is not False}
+
+    @app.post("/api/fed/panes/{pane_id}/key")
+    async def fed_key(request: Request, pane_id: str, payload: KeyRequest):
+        grants = require_fed(request, "input")
+        if payload.key not in ALLOWED_KEYS:
+            raise HTTPException(status_code=422, detail="unsupported key")
+        actual = fed_pane_or_403(grants, pane_id)
+        pane = await asyncio.to_thread(pane_or_404, actual)
+        transport, actual_id = pane_transport(actual)
+        try:
+            await asyncio.to_thread(transport.send_key, actual_id, payload.key, pane=pane)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"status": "sent", "pane": actual, "key": payload.key}
+
+    @app.get("/api/fed/files")
+    async def fed_files(request: Request, path: str = "", hidden: int = 0, limit: int = 2000):
+        """列一个目录。子节点的文件是主机级的（和 SSH 主机一样），不跟窗格绑定。"""
+        require_fed(request, "files")
+        directory = fed_abs_path(path or "~")
+        try:
+            data = await asyncio.to_thread(file_browser.list_directory, directory,
+                                           bool(hidden), max(1, min(limit, 5000)))
+        except (OSError, ValueError, file_browser.FileBrowserError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return data
+
+    @app.get("/api/fed/files/stat")
+    async def fed_stat(request: Request, path: str):
+        require_fed(request, "files")
+        target = Path(fed_abs_path(path))
+        try:
+            info = target.stat()
+        except OSError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"path": str(target), "size": info.st_size, "mtime": info.st_mtime,
+                "is_dir": target.is_dir()}
+
+    @app.get("/api/fed/files/raw")
+    @app.get("/api/fed/files/download")
+    async def fed_send_file(request: Request, path: str, inline: int = 0):
+        grants = require_fed(request, "files")
+        target = Path(fed_abs_path(path))
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="没有这个文件")
+        size = target.stat().st_size
+        if size > FED_FILE_LIMIT:
+            raise HTTPException(status_code=413,
+                                detail=f"文件 {size} 字节，超过单次 {FED_FILE_LIMIT} 字节的上限")
+        disposition = "inline" if (inline or request.url.path.endswith("/raw")) else "attachment"
+        name = target.name or "file"
+        return FileResponse(
+            str(target),
+            media_type=mimetypes.guess_type(name)[0] or "application/octet-stream",
+            headers={
+                "Content-Disposition": f"{disposition}; filename*=UTF-8''" + quote(name, safe=""),
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+                "X-TmuxWeb-Scopes": " ".join(grants["scopes"]),
+            })
+
+    @app.put("/api/fed/files/upload")
+    async def fed_upload(request: Request, dir: str = "", name: str = "", offset: int = 0,
+                         total: int = 0):
+        require_fed(request, "files")
+        if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+            raise HTTPException(status_code=422, detail="invalid file name")
+        body = await request.body()
+        if len(body) > 16 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="分块上限 16MB")
+        directory = fed_abs_path(dir or "~")
+        target = Path(directory) / name
+        try:
+            Path(directory).mkdir(parents=True, exist_ok=True)
+            if total and total > 0:
+                with open(target, "r+b" if target.exists() else "wb") as handle:
+                    handle.seek(offset)
+                    handle.write(body)
+                written = target.stat().st_size
+                if written < total:
+                    return {"status": "partial", "path": str(target), "offset": written,
+                            "size": total}
+                return {"status": "uploaded", "path": str(target), "size": written}
+            target.write_bytes(body)
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"status": "uploaded", "path": str(target), "size": target.stat().st_size}
+
+    @app.post("/api/fed/files/rename")
+    async def fed_rename(request: Request, payload: FedFileRequest):
+        require_fed(request, "files")
+        try:
+            moved = file_browser.rename_path(payload.path, payload.new_name)
+        except (OSError, ValueError, file_browser.FileBrowserError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"path": str(moved)}
+
+    @app.post("/api/fed/files/delete")
+    async def fed_delete(request: Request, payload: FedFileRequest):
+        require_fed(request, "files")
+        try:
+            removed = file_browser.remove_path(payload.path, payload.recursive)
+        except (OSError, ValueError, file_browser.FileBrowserError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"path": str(removed)}
 
     @app.post("/api/fed/tokens", status_code=201)
     async def create_fed_token(request: Request, payload: FedTokenRequest):

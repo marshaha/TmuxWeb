@@ -197,6 +197,105 @@ def federation_app(backend, store, grants):
     )
 
 
+class WriteScopeTests(unittest.TestCase):
+    """写操作要 input 作用域，文件要 files；没有就 403，不是悄悄不做。"""
+
+    def setUp(self):
+        self.client, self.store, self.grants = make_client()
+        self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        listing = self.client.get("/api/fed/panes",
+                                  headers=self.headers(["view"])).json()
+        self.pane = listing["panes"][0]["id"]
+
+    def headers(self, scopes):
+        issued = self.client.post("/api/fed/tokens",
+                                  json={"label": "t", "scopes": scopes}).json()
+        return {"Authorization": f"Bearer {issued['token']}"}
+
+    def test_sending_text_needs_the_input_scope(self):
+        view_only = self.headers(["view"])
+        refused = self.client.post(f"/api/fed/panes/{self.pane}/input",
+                                   json={"text": "ls", "submit": True}, headers=view_only)
+        self.assertEqual(refused.status_code, 403)
+        self.assertIn("input", refused.text)
+
+        allowed = self.client.post(f"/api/fed/panes/{self.pane}/input",
+                                   json={"text": "ls", "submit": True},
+                                   headers=self.headers(["view", "input"]))
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        self.assertTrue(allowed.json()["submitted"])
+
+    def test_only_known_keys_are_accepted(self):
+        headers = self.headers(["view", "input"])
+        self.assertEqual(self.client.post(f"/api/fed/panes/{self.pane}/key",
+                                          json={"key": "Escape"}, headers=headers).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/fed/panes/{self.pane}/key",
+                                          json={"key": "rm -rf"}, headers=headers).status_code, 422)
+
+    def test_files_need_the_files_scope_and_round_trip(self):
+        view_only = self.headers(["view"])
+        self.assertEqual(self.client.get("/api/fed/files?path=/tmp", headers=view_only).status_code, 403)
+
+        files = self.headers(["view", "files"])
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as folder:
+            written = self.client.put(f"/api/fed/files/upload?dir={folder}&name=hello.txt",
+                                      content=b"hello federation", headers=files)
+            self.assertEqual(written.status_code, 200, written.text)
+            self.assertEqual(os.path.getsize(os.path.join(folder, "hello.txt")), len(b"hello federation"))
+
+            listed = self.client.get(f"/api/fed/files?path={folder}", headers=files).json()
+            self.assertIn("hello.txt", [entry["name"] for entry in listed["entries"]])
+
+            got = self.client.get(f"/api/fed/files/download?path={folder}/hello.txt", headers=files)
+            self.assertEqual(got.content, b"hello federation")
+
+            renamed = self.client.post("/api/fed/files/rename",
+                                       json={"path": f"{folder}/hello.txt", "new_name": "x.txt"},
+                                       headers=files)
+            self.assertEqual(renamed.status_code, 200, renamed.text)
+            self.assertTrue(os.path.exists(os.path.join(folder, "x.txt")))
+
+            dropped = self.client.post("/api/fed/files/delete",
+                                       json={"path": f"{folder}/x.txt"}, headers=files)
+            self.assertEqual(dropped.status_code, 200, dropped.text)
+
+
+class TransportWriteTests(unittest.TestCase):
+    """父节点这边：路径要还原成对端的编号，调用要落到 /api/fed/... 上。"""
+
+    def node(self):
+        return {"id": "a1b2c3d4e5f60718", "prefix": "ddr", "base_url": "http://node", "token": "t"}
+
+    def test_a_prefixed_pane_id_is_stripped_before_talking_to_the_child(self):
+        transport = federation.FedTransport(self.node())
+        seen = []
+        transport.client = type("Stub", (), {
+            "input": lambda self, pane, text, submit: seen.append((pane, text, submit)) or {"submitted": True},
+            "key": lambda self, pane, key: seen.append((pane, key)) or {"status": "sent"},
+        })()
+        self.assertTrue(transport.send("a1b2c3d4e5f60718~%12", "hi", True))
+        transport.send_key("a1b2c3d4e5f60718~%12", "Escape")
+        self.assertEqual(seen, [("%12", "hi", True), ("%12", "Escape")])
+
+    def test_file_helpers_route_through_the_child_api(self):
+        transport = federation.FedTransport(self.node())
+        calls = []
+        transport.client = type("Stub", (), {
+            "files": lambda self, path, hidden, limit: calls.append(("list", path)) or {"entries": []},
+            "stat": lambda self, path: {"size": 42},
+            "download": lambda self, path: b"bytes",
+            "upload": lambda self, directory, name, data, offset=0, total=0: calls.append(("put", directory, name)) or {"size": len(data)},
+            "rename": lambda self, path, name: {"path": path},
+            "delete": lambda self, path, recursive=False: {"path": path},
+        })()
+        transport.list_files("/srv", False, 100)
+        self.assertEqual(transport.file_size("/srv/a"), 42)
+        self.assertEqual(transport.download_file("/srv/a", 1000), b"bytes")
+        transport.upload_file("/srv/a.txt", b"abc")
+        self.assertEqual(calls, [("list", "/srv"), ("put", "/srv", "a.txt")])
+
+
 class EndpointTests(unittest.TestCase):
     def setUp(self):
         self.client, self.store, self.grants = make_client()

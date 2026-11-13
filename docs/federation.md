@@ -7,7 +7,7 @@
 ```
 子节点 oracle (ddr.167990.xyz)                父节点 localhost / robo
   设置 › 子节点：让别人接入                     设置 › 添加子节点
-    · 权限（目前只有"只能看"）                    · 名字：oracle
+    · 权限（只能看 / +发按键 / +文件）             · 名字：oracle
     · 有效期（1 小时 … 永久）                     · auth key：粘贴那一串
     · 范围（全部 / 指定编号）                     → 侧栏多一组 oracle#12
     → 生成一串 auth key，列表里随时吊销
@@ -19,7 +19,7 @@
 
 | 选项 | 说明 |
 |---|---|
-| 权限 | 目前只有「只能看」：屏幕 capture + 对话 transcript。发按键 / 文件读写 / 管理会话标着「未开放」 |
+| 权限 | `只能看`（屏幕 + 对话）、`看 + 发消息/按键`（等于把你键盘交给对方）、`看 + 文件读写`、两者都要。`管理会话` 还没开放 |
 | 有效期 | 1 小时 / 1 天 / 7 天 / 30 天 / **永久**（永久不会自己失效，只有吊销能收回） |
 | 范围 | 全部窗格，或只给几个（写 `#12, #14` 或 `%12 %14` 都行） |
 
@@ -66,6 +66,12 @@ fed_<id>.<secret>@https://ddr.167990.xyz
 | GET | `/api/fed/panes` | 按 auth key 的 panes 白名单裁剪 |
 | GET | `/api/fed/panes/{id}/capture` | 可见屏（`history` 20–500） |
 | GET | `/api/fed/panes/{id}/transcript` | 对话视图（`limit` 1–1000） |
+| POST | `/api/fed/panes/{id}/input` | `{"text","submit"}` → 需要 `input` |
+| POST | `/api/fed/panes/{id}/key` | `{"key":"Escape"}` → 需要 `input`，只认白名单键 |
+| GET | `/api/fed/files` | 列目录（`path` / `hidden` / `limit`）→ 需要 `files` |
+| GET | `/api/fed/files/download` \| `/raw` | 下载 / 内联预览 |
+| PUT | `/api/fed/files/upload` | `dir` / `name` / `offset` / `total`，body 是字节 |
+| POST | `/api/fed/files/rename` \| `/delete` | 改名 / 删除 |
 | POST | `/api/fed/tokens` | `{"label","scopes","panes","ttl"}`；`ttl=0` 是永久 |
 | GET | `/api/fed/tokens` | 列表（不含明文） |
 | DELETE | `/api/fed/tokens/{id}` | 立即吊销 |

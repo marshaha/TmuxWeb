@@ -520,9 +520,11 @@ Both sides keep their own `#N` numbering, so child panes show as `oracle#12` (an
 `<host_id>~%N`, so URL encoding, relay and MCP need no changes. `GET /api/fed/ping` needs no auth —
 it answers "is this thing a TmuxWeb?".
 
-Phase one is read-only: list panes, capture (visible screen), transcript. Keys, files and session
-management are not wired yet (the panel labels them 未开放). Details and the endpoint table:
-[docs/federation.md](docs/federation.md) (Chinese).
+The auth key carries the permissions you pick: `view` (screen + transcript), `view+input` (send
+messages and keys — that is your keyboard), `view+files` (list, download, upload, rename, delete).
+The parent needs no special mode: a child node is just another host. Every request is checked by the
+child against the granted scopes and the pane whitelist. Session management (`admin`) is not wired
+yet. Details and the endpoint table: [docs/federation.md](docs/federation.md) (Chinese).
 
 ## Requirements
 

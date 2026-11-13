@@ -137,12 +137,14 @@
         <span class="ts-tail"><span class="ts-hint" id="ts-child-count"></span><span class="ts-caret" aria-hidden="true"></span></span>
       </button>
       <div class="ts-panel" id="ts-child-panel" hidden>
-        <p class="ts-hint">把本机的窗格交给另一个控制台看。生成一串 auth key 给它：能做什么、能看哪些窗格、多久失效，都由这里决定，随时可以吊销。</p>
+        <p class="ts-hint">把本机的窗格交给另一个控制台。生成一串 auth key 给它：能做什么、能看哪些窗格、多久失效，都由这里决定，随时可以吊销。
+          「发消息」等于把你的键盘交给对方，「文件读写」等于把整台机器的文件给它看和改 —— 只给信得过的控制台。</p>
         <label class="ts-field">权限
           <select id="ts-child-scopes" aria-label="auth key 权限">
             <option value="view" selected>只能看（屏幕 + 对话）</option>
-            <option value="view,input" disabled>看 + 发按键（未开放）</option>
-            <option value="view,files" disabled>看 + 文件读写（未开放）</option>
+            <option value="view,input">看 + 发消息/按键</option>
+            <option value="view,files">看 + 文件读写</option>
+            <option value="view,input,files">看 + 发消息 + 文件读写</option>
             <option value="view,admin" disabled>看 + 管理会话（未开放）</option>
           </select>
         </label>

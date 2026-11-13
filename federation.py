@@ -303,6 +303,70 @@ class FedClient:
                 errors.append(f"{base}: {exc}")
         raise FederationError("; ".join(errors) or "node has no address")
 
+    def _call(self, method: str, path: str, data: bytes | None = None,
+              headers: dict | None = None, timeout: float | None = None, raw: bool = False):
+        errors = []
+        for base in self._urls():
+            request = urllib.request.Request(base + path, method=method, data=data)
+            request.add_header("Authorization", f"Bearer {self.token}")
+            request.add_header("User-Agent", USER_AGENT)
+            for name, value in (headers or {}).items():
+                request.add_header(name, value)
+            try:
+                with urllib.request.urlopen(request, timeout=timeout or self.timeout) as response:
+                    payload = response.read()
+                    if raw:
+                        return payload
+                    return json.loads(payload.decode("utf-8", "replace") or "{}")
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", "replace")[:200]
+                if "1010" in detail:
+                    detail += "（Cloudflare 把这类请求当成机器人封了：换成 tailnet/局域网地址直连，或让对面放行）"
+                errors.append(f"{base}: HTTP {exc.code} {detail}")
+                if exc.code in (401, 403):
+                    break
+            except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                errors.append(f"{base}: {exc}")
+        raise FederationError("; ".join(errors) or "node has no address")
+
+    def input(self, pane_id: str, text: str, submit: bool = True) -> dict:
+        body = json.dumps({"text": text, "submit": bool(submit)}).encode()
+        return self._call("POST", f"/api/fed/panes/{urllib.parse.quote(pane_id, safe='')}/input",
+                          body, {"Content-Type": "application/json"})
+
+    def key(self, pane_id: str, key: str) -> dict:
+        body = json.dumps({"key": key}).encode()
+        return self._call("POST", f"/api/fed/panes/{urllib.parse.quote(pane_id, safe='')}/key",
+                          body, {"Content-Type": "application/json"})
+
+    def files(self, path: str = "", hidden: bool = False, limit: int = 2000) -> dict:
+        query = urllib.parse.urlencode({"path": path, "hidden": int(bool(hidden)), "limit": int(limit)})
+        return self._call("GET", f"/api/fed/files?{query}", timeout=20)
+
+    def stat(self, path: str) -> dict:
+        return self._call("GET", "/api/fed/files/stat?" + urllib.parse.urlencode({"path": path}),
+                          timeout=20)
+
+    def download(self, path: str) -> bytes:
+        return self._call("GET", "/api/fed/files/download?" + urllib.parse.urlencode({"path": path}),
+                          timeout=60, raw=True)
+
+    def upload(self, directory: str, name: str, data: bytes, offset: int = 0, total: int = 0) -> dict:
+        query = urllib.parse.urlencode({"dir": directory, "name": name,
+                                        "offset": int(offset), "total": int(total)})
+        return self._call("PUT", f"/api/fed/files/upload?{query}", data,
+                          {"Content-Type": "application/octet-stream"}, timeout=120)
+
+    def rename(self, path: str, new_name: str) -> dict:
+        body = json.dumps({"path": path, "new_name": new_name}).encode()
+        return self._call("POST", "/api/fed/files/rename", body,
+                          {"Content-Type": "application/json"}, timeout=30)
+
+    def delete(self, path: str, recursive: bool = False) -> dict:
+        body = json.dumps({"path": path, "recursive": bool(recursive)}).encode()
+        return self._call("POST", "/api/fed/files/delete", body,
+                          {"Content-Type": "application/json"}, timeout=60)
+
     def ping(self) -> dict:
         return self._get("/api/fed/ping", timeout=3)
 
@@ -322,7 +386,7 @@ class FedClient:
 class FedTransport:
     """Looks like a host transport, so panes/capture/transcript need no special cases."""
 
-    read_only = True
+    read_only = False
 
     def __init__(self, node: dict, client: FedClient | None = None):
         self.node = node
@@ -385,15 +449,103 @@ class FedTransport:
     def probe_agents(self) -> list[dict]:
         return []
 
-    # -- 写操作：第一阶段明确拒绝，而不是悄悄失败 -------------------------
-    def _read_only(self, *_args, **_kwargs):
-        raise FederationError("这个节点是只读接进来的（第一阶段的联邦只开放 view）")
+    # -- 写操作：等价于在对端敲键盘（需要 input 作用域，对端自己校验）-------
+    def send(self, pane_id: str, text: str, submit: bool = True, pane: dict | None = None) -> bool:
+        payload = self.client.input(self.raw_pane(pane_id), text, submit)
+        return payload.get("submitted", True)
 
-    send = _read_only
-    send_key = _read_only
-    send_keys = _read_only
-    kill_pane = _read_only
-    kill_session = _read_only
+    def send_key(self, pane_id: str, key: str, pane: dict | None = None) -> dict:
+        return self.client.key(self.raw_pane(pane_id), key)
+
+    def send_keys(self, pane_id: str, keys) -> dict:
+        for key in keys:
+            self.send_key(pane_id, key)
+        return {"status": "sent", "keys": list(keys)}
+
+    # 管理会话（admin）留给后面的阶段：它能在对端开新会话、杀窗格，破坏性太强
+    def _needs_admin(self, *_args, **_kwargs):
+        raise FederationError("子节点还不支持管理会话（建/杀窗格），只能在它本机操作")
+
+    kill_pane = _needs_admin
+    kill_session = _needs_admin
+    create_session = _needs_admin
+
+    # -- 文件：子节点的文件是主机级的，和 SSH 主机一样 ---------------------
+    def list_files(self, directory: str, show_hidden: bool = False, limit: int = 2000) -> dict:
+        return self.client.files(directory, show_hidden, limit)
+
+    def file_size(self, path: str) -> int | None:
+        try:
+            return int(self.client.stat(path).get("size") or 0)
+        except FederationError:
+            return None
+
+    def download_file(self, path: str, max_bytes: int) -> bytes:
+        payload = self.client.download(path)
+        if len(payload) > max_bytes:
+            raise FederationError(f"文件超过上限（{len(payload)} > {max_bytes} 字节）")
+        return payload
+
+    def upload_chunk(self, part: str, data: bytes, offset: int) -> int:
+        directory, name = os.path.split(part)
+        answer = self.client.upload(directory or "/tmp", name, data, offset=offset)
+        return int(answer.get("offset") or answer.get("size") or 0)
+
+    def finish_upload(self, part: str, path: str) -> None:
+        self.client.rename(part, os.path.basename(path))
+
+    def upload_file(self, path: str, data: bytes) -> None:
+        directory, name = os.path.split(path)
+        self.client.upload(directory or "/tmp", name, data)
+
+    def rename_path(self, path: str, new_name: str) -> str:
+        return str(self.client.rename(path, new_name).get("path") or "")
+
+    def delete_path(self, path: str, recursive: bool = False) -> str:
+        return str(self.client.delete(path, recursive).get("path") or "")
+
+    def zip_files(self, paths, base: str, max_bytes: int, max_files: int) -> bytes:
+        raise FederationError("子节点暂不支持打包下载（文件可以逐个下载）")
+
+    def find_suffix(self, base: str, relative: str, max_depth: int = 4, limit: int = 5) -> list[str]:
+        return []
+
+    def stream_file(self, path: str, max_bytes: int, chunk: int = 65536,
+                    idle_timeout: float = 90.0):
+        """按块把对端的文件转发出去：慢链路也不会被"总时长"误判成失败。"""
+        query = urllib.parse.urlencode({"path": path})
+        errors = []
+        for base in self.client._urls():
+            request = urllib.request.Request(base + f"/api/fed/files/download?{query}")
+            request.add_header("Authorization", f"Bearer {self.client.token}")
+            request.add_header("User-Agent", USER_AGENT)
+            try:
+                response = urllib.request.urlopen(request, timeout=idle_timeout)
+            except urllib.error.HTTPError as exc:
+                errors.append(f"{base}: HTTP {exc.code}")
+                if exc.code in (401, 403, 404):
+                    break
+                continue
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                errors.append(f"{base}: {exc}")
+                continue
+            sent = 0
+            with response:
+                while True:
+                    piece = response.read(chunk)
+                    if not piece:
+                        return
+                    sent += len(piece)
+                    if sent > max_bytes:
+                        raise FederationError(f"文件超过上限（> {max_bytes} 字节）")
+                    yield piece
+            return
+        raise FederationError("; ".join(errors) or "node has no address")
+
+    # -- 内部 -------------------------------------------------------------
+    def raw_pane(self, pane_id: str) -> str:
+        """`<node>~%12` → `%12`：对端只认自己的编号。"""
+        return pane_id.split("~", 1)[1] if "~" in pane_id else pane_id
 
 
 def client_for(node: dict) -> FedClient:
