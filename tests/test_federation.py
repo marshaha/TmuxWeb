@@ -47,6 +47,57 @@ class GrantTests(unittest.TestCase):
         self.assertFalse(federation.pane_allowed(favs, "%8"))
 
 
+class UserAgentTests(unittest.TestCase):
+    def test_requests_identify_themselves_so_cloudflare_does_not_ban_them(self):
+        """CF 的浏览器完整性检查封 python-urllib（Error 1010），必须自带 UA。"""
+        import io
+        import urllib.request
+
+        seen = []
+
+        class Reply(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *info):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            seen.append(request)
+            return Reply(b'{"tmuxweb":true,"host":"ddr"}')
+
+        original = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            client = federation.FedClient("https://ddr.example", "", "fed_a.b")
+            self.assertTrue(client.ping()["tmuxweb"])
+        finally:
+            urllib.request.urlopen = original
+        self.assertEqual(seen[0].get_header("User-agent"), federation.USER_AGENT)
+        self.assertNotIn("urllib", (seen[0].get_header("User-agent") or "").lower())
+
+    def test_a_1010_block_explains_itself(self):
+        import urllib.error
+        import urllib.request
+
+        def blocked(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {},
+                                         io_body(b'{"title":"Error 1010: Access denied","status":403}'))
+
+        def io_body(payload):
+            import io
+            return io.BytesIO(payload)
+
+        original = urllib.request.urlopen
+        urllib.request.urlopen = blocked
+        try:
+            with self.assertRaises(federation.FederationError) as caught:
+                federation.FedClient("https://ddr.example", "", "fed_a.b").ping()
+        finally:
+            urllib.request.urlopen = original
+        self.assertIn("Cloudflare", str(caught.exception))
+
+
 class PermanentTests(unittest.TestCase):
     def test_ttl_zero_is_permanent_and_only_revocation_stops_it(self):
         grants = federation.FedGrants(":memory:")
@@ -226,6 +277,34 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(probed.status_code, 200, probed.text)
         self.assertEqual(probed.json()["panes"], 1)
         self.assertEqual(probed.json()["host"], "ddr")
+
+    def test_a_public_only_key_is_rewritten_to_the_direct_address_when_the_node_offers_one(self):
+        """key 里只有 CF 域名时，问一句对方的内网地址：能直连就别绕 Cloudflare。"""
+        def fake_get(client, path, timeout=None):
+            if path == "/api/fed/ping":
+                return {"tmuxweb": True, "host": "ddr",
+                        "addresses": [{"url": "http://10.0.0.9:8787", "kind": "lan"},
+                                      {"url": "http://100.123.123.17:8787", "kind": "tailnet"}]}
+            raise AssertionError(path)
+
+        original = federation.FedClient._get
+        federation.FedClient._get = fake_get
+        try:
+            added = self.client.post("/api/fed/nodes", json={
+                "label": "ddr", "token": "fed_a.b@https://ddr.167990.xyz"})
+        finally:
+            federation.FedClient._get = original
+        self.assertEqual(added.status_code, 201, added.text)
+        self.assertEqual(added.json()["base_url"], "http://10.0.0.9:8787")
+        self.assertEqual(added.json()["fallback_url"], "https://ddr.167990.xyz")
+
+    def test_a_typed_address_wins_and_the_one_in_the_key_becomes_the_spare(self):
+        added = self.client.post("/api/fed/nodes", json={
+            "label": "oracle", "token": "fed_a.b@https://ddr.167990.xyz",
+            "base_url": "http://100.123.123.17:8787"})
+        self.assertEqual(added.status_code, 201, added.text)
+        self.assertEqual(added.json()["base_url"], "http://100.123.123.17:8787")
+        self.assertEqual(added.json()["fallback_url"], "https://ddr.167990.xyz")
 
     def test_a_node_without_an_auth_key_is_refused(self):
         refused = self.client.post("/api/fed/nodes", json={"label": "oracle"})

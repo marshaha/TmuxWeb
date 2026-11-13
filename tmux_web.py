@@ -14,6 +14,7 @@ import re
 import secrets
 import shlex
 import socket
+import sys
 import urllib.parse
 import signal
 import struct
@@ -1499,6 +1500,10 @@ def create_app(
     make_remote_runner = remote_runner_factory or SSHRunner
     # 联邦：fed_nodes = 我们拉谁的 pane；fed_tokens = 我们发出去的令牌
     fed_db = os.environ.get("TMUX_WEB_FED_DB", str(BASE_DIR / "federation.db"))
+    # 测试进程里默认用内存库：federation.db 装的是用户真实接入的子节点，一次测试跑不该
+    # 读到它（会让搜索/中继结果多出几台机器），更不该写它。要测真实的库就显式传 fed_store。
+    if "unittest" in sys.modules and fed_db != ":memory:":
+        fed_db = ":memory:"
     fed_nodes = fed_store or federation.FederationStore(fed_db)
     fed_grants = fed_tokens or federation.FedGrants(fed_db)
     # Set after the plugins load (below): the agent plugin may offer a
@@ -2500,8 +2505,16 @@ def create_app(
 
     @app.get("/api/fed/ping")
     async def fed_ping():
-        """不鉴权：只回答"我是 TmuxWeb"，给客户端做连通性探测。"""
-        return {"tmuxweb": True, "host": socket.gethostname(), "version": "1"}
+        """不鉴权：回答"我是 TmuxWeb"，顺手给出可以直连的地址（内网/tailnet）。
+
+        只列地址，不含任何凭据：父节点拿到之后就优先走直连，绕开 Cloudflare。
+        """
+        try:
+            entries = await asyncio.to_thread(local_addresses)
+        except Exception:                                  # 拿不到地址不影响探测
+            entries = []
+        return {"tmuxweb": True, "host": socket.gethostname(), "version": "1",
+                "addresses": [{"url": item["url"], "kind": item["kind"]} for item in entries]}
 
     @app.get("/api/fed/panes")
     async def fed_panes(request: Request):
@@ -2596,11 +2609,25 @@ def create_app(
         require_auth(request)
         token, address = federation.parse_auth_key(payload.token)
         base_url = payload.base_url or address
+        # 两边都给地址时都要留着：填了内网地址就走直连，key 里带的（可能是 CF 域名）当备用
+        fallback_url = payload.fallback_url or (address if base_url != address else "")
+        if not payload.base_url and base_url.startswith("https://"):
+            # 只有公网地址：问一句对方有没有内网/tailnet 地址。Cloudflare 会把慢链路和
+            # 非浏览器 UA 挡在外面（Error 1010），能直连就别绕。
+            try:
+                info = await asyncio.to_thread(
+                    federation.FedClient(base_url, "", token, timeout=6).ping)
+            except (federation.FederationError, RuntimeError, OSError, ValueError):
+                info = {}
+            for entry in info.get("addresses") or []:
+                if entry.get("kind") in ("tailnet", "lan") and entry.get("url"):
+                    base_url, fallback_url = entry["url"], base_url
+                    break
         if not token:
             raise HTTPException(status_code=422, detail="还差 auth key")
         try:
             node = await asyncio.to_thread(fed_nodes.add, payload.label, payload.prefix,
-                                           base_url, payload.fallback_url, token)
+                                           base_url, fallback_url, token)
         except federation.FederationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return node

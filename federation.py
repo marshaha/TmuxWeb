@@ -28,6 +28,10 @@ import urllib.parse
 import urllib.request
 
 TOKEN_PREFIX = "fed_"
+
+# Cloudflare 的"浏览器完整性检查"会直接封掉 python 默认的 User-Agent（Error 1010），
+# 所以每个联邦请求都带一个说清自己是谁的 UA —— 实测它能过，python-urllib 不能。
+USER_AGENT = "TmuxWeb-Federation/1.0 (+https://github.com/marshaha/TmuxWeb)"
 PREFIX_RE = re.compile(r"^[a-z][a-z0-9]{1,15}$")
 SCOPES = ("view", "input", "files", "admin")
 DEFAULT_SCOPES = ("view",)
@@ -252,11 +256,14 @@ class FedClient:
             request = urllib.request.Request(base + path, method="GET")
             request.add_header("Authorization", f"Bearer {self.token}")
             request.add_header("Accept", "application/json")
+            request.add_header("User-Agent", USER_AGENT)
             try:
                 with urllib.request.urlopen(request, timeout=timeout or self.timeout) as response:
                     return json.loads(response.read().decode("utf-8", "replace") or "{}")
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", "replace")[:200]
+                if "1010" in detail:
+                    detail += "（Cloudflare 把这类请求当成机器人封了：换成 tailnet/局域网地址直连，或让对面放行）"
                 errors.append(f"{base}: HTTP {exc.code} {detail}")
                 if exc.code in (401, 403):
                     break            # 令牌不对，换地址也白搭
