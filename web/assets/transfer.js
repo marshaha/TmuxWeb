@@ -20,19 +20,25 @@
   let pending = null;                // 探测进行中，避免并发重复探测
   let missAt = 0;                    // 上次"没有可用直连"的时间：5 分钟内不再试
 
+  let cachedRoute = null;
+
   function readCache() {
     try {
       const raw = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
       if (!raw || !raw.origin || Date.now() - raw.at > STORE_TTL) return null;
+      cachedRoute = raw.route || null;
       return raw.origin;
     } catch (_error) { return null; }
   }
 
-  function writeCache(origin) {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify({origin, at: Date.now()})); } catch (_error) {}
+  function writeCache(origin, route) {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({origin, at: Date.now(), route: route || null}));
+    } catch (_error) {}
   }
 
   function forget() {
+    cachedRoute = null;
     try { localStorage.removeItem(STORE_KEY); } catch (_error) {}
     pending = null;
     missAt = 0;
@@ -124,8 +130,12 @@
   let verifiedAt = 0;
 
   async function pick() {
+    // 明确选了 CF / 关了直连：直接不改道，也别记"没探到"，否则会把 5 分钟内的 ts 一起挡掉
+    if (!directEnabled() || routePref() === 'cf') return null;
     const cached = readCache();
-    if (cached) {
+    const stale = cached && cachedRoute !== null && cachedRoute !== routePref();
+    if (cached && stale) forget();          // 换了线路：记住的旧源站不算数
+    if (cached && !stale) {
       // 记住的源站不能盲信：换了网络（离开 tailnet）、证书过期、隧道关掉，
       // 那个地址就变成"点了下载什么都不发生"——页面不报错，文件永远不来。
       if (Date.now() - verifiedAt < CACHE_TRUST) return cached;
@@ -135,8 +145,11 @@
     if (missAt && Date.now() - missAt < MISS_TTL) return null;   // 没内网入口时别每次下载都探
     if (pending) return pending;
     pending = (async () => {
+      const chosenRoute = routePref();
       for (const origin of await origins()) {
-        if (await probe(origin)) { writeCache(origin); verifiedAt = Date.now(); missAt = 0; return origin; }
+        if (await probe(origin)) {
+          writeCache(origin, chosenRoute); verifiedAt = Date.now(); missAt = 0; return origin;
+        }
       }
       missAt = Date.now();
       return null;

@@ -164,6 +164,47 @@ test('页面本来就在直连源站上时不再改道', async () => {
   assert.equal(await transfer.downloadHref(original), original);
 });
 
+test('切到 CF 再切回 TS，不能因为"没探到"把 TS 挡掉 5 分钟', async () => {
+  const {transfer} = load({
+    fetch: async url => {
+      if (url.endsWith('/api/system/addresses')) {
+        return {ok: true, status: 200, json: async () => ({addresses: [
+          {url: 'https://robo.neko-chroma.ts.net', kind: 'tailnet', transfer: true}]})};
+      }
+      if (url.endsWith('/t/ping')) return {ok: true, status: 200, json: async () => ({tmuxweb: true})};
+      if (url.endsWith('/api/transfer/ticket')) {
+        return {ok: true, status: 200, json: async () => ({token: 'back.tok', expires: 1})};
+      }
+      throw new Error('unexpected ' + url);
+    },
+  });
+  transfer.setRoutePref('cf');
+  assert.equal(await transfer.pick(), null);
+  transfer.setRoutePref('ts');
+  assert.equal(await transfer.pick(), 'https://robo.neko-chroma.ts.net');
+});
+
+test('换了线路，记住的旧源站立刻作废', async () => {
+  // 以前记住的是 CF：换成 TS 后必须重新探测，不能拿旧源站凑数
+  const {transfer, store} = load({
+    fetch: async url => {
+      if (url.endsWith('/api/system/addresses')) {
+        return {ok: true, status: 200, json: async () => ({addresses: [
+          {url: 'https://robo.neko-chroma.ts.net', kind: 'tailnet', transfer: true}]})};
+      }
+      if (url.endsWith('/t/ping')) return {ok: true, status: 200, json: async () => ({tmuxweb: true})};
+      if (url.endsWith('/api/transfer/ticket')) {
+        return {ok: true, status: 200, json: async () => ({token: 'ts.tok', expires: 1})};
+      }
+      throw new Error('unexpected ' + url);
+    },
+  });
+  store.set('tmuxweb.transfer.origin', JSON.stringify({
+    origin: 'https://tmux.122990.xyz', at: Date.now(), route: 'cf'}));
+  const href = await transfer.downloadHref('/api/panes/%2524/files/download?path=/srv/a.bin');
+  assert.equal(href, 'https://robo.neko-chroma.ts.net/t/download?t=ts.tok');
+});
+
 test('forget() 清掉记住的源站', async () => {
   const {transfer, store} = load({fetch: async () => json({addresses: []})});
   store.set('tmuxweb.transfer.origin', JSON.stringify({origin: 'https://gone.example', at: Date.now()}));
