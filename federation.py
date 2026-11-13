@@ -75,7 +75,9 @@ class FedGrants:
             raise FederationError("scopes must contain at least one of " + ", ".join(SCOPES))
         if "view" not in granted:
             raise FederationError("view is required: without it the node has nothing to read")
-        ttl = max(300, min(int(ttl or 86400), MAX_TTL))
+        ttl = int(ttl or 0)
+        # ttl=0 就是永久：不发到期时间，只能靠吊销收回（用户要的"可以永久"）
+        expires_at = None if ttl <= 0 else time.time() + max(300, min(ttl, MAX_TTL))
         token_id = secrets.token_hex(8)
         secret = secrets.token_urlsafe(24)
         token = f"{TOKEN_PREFIX}{token_id}.{secret}"
@@ -85,11 +87,11 @@ class FedGrants:
                 "INSERT INTO fed_tokens(id,label,secret_hash,scopes,panes,created_at,expires_at,revoked_at)"
                 " VALUES (?,?,?,?,?,?,?,NULL)",
                 (token_id, (label or "")[:64], hash_secret(secret), json.dumps(granted),
-                 json.dumps(panes if panes is not None else "all"), now, now + ttl),
+                 json.dumps(panes if panes is not None else "all"), now, expires_at),
             )
             self.connection.commit()
         return {"id": token_id, "token": token, "scopes": granted, "panes": panes,
-                "label": label, "expires_at": now + ttl}
+                "label": label, "expires_at": expires_at}
 
     def verify(self, token: str) -> dict:
         """token → grants; raises FederationError when unknown, revoked or expired."""
@@ -103,7 +105,7 @@ class FedGrants:
             raise FederationError("unknown federation token")
         if row["revoked_at"] is not None:
             raise FederationError("federation token revoked")
-        if row["expires_at"] <= time.time():
+        if row["expires_at"] is not None and row["expires_at"] <= time.time():
             raise FederationError("federation token expired")
         return {"id": row["id"], "label": row["label"] or "",
                 "scopes": json.loads(row["scopes"] or "[]"),
@@ -128,6 +130,21 @@ class FedGrants:
                 (time.time(), token_id))
             self.connection.commit()
         return cursor.rowcount > 0
+
+
+def parse_auth_key(text: str) -> tuple[str, str]:
+    """`fed_x.y@https://host` → (token, url)。
+
+    界面上只需要粘一串 auth key：子节点生成时把"它被你怎么访问到的地址"接在 `@` 后面，
+    父节点就不用再问地址。只写令牌（不带 @）也照收，地址另外填。
+    """
+    raw = (text or "").strip()
+    if "@" in raw:
+        token, _, url = raw.rpartition("@")
+        url = url.strip().rstrip("/")
+        if url.startswith(("http://", "https://")):
+            return token.strip(), url
+    return raw, ""
 
 
 def pane_allowed(grants: dict, pane_id: str) -> bool:
@@ -186,9 +203,10 @@ class FederationStore:
         return node
 
     def add(self, label: str, prefix: str, base_url: str, fallback_url: str, token: str) -> dict:
-        prefix = (prefix or "").strip().lower()
+        # 界面上只填"名字 + auth key"，前缀就从名字里取（oracle → oracle）
+        prefix = re.sub(r"[^a-z0-9]+", "", (prefix or label or "").strip().lower())[:16]
         if not PREFIX_RE.fullmatch(prefix):
-            raise FederationError("prefix must be 2-16 lowercase letters/digits, starting with a letter")
+            raise FederationError("名字要能当编号前缀用：2-16 位小写字母/数字，以字母开头（比如 oracle）")
         base = (base_url or "").strip().rstrip("/")
         fallback = (fallback_url or "").strip().rstrip("/")
         if not base and not fallback:

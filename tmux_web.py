@@ -988,17 +988,17 @@ class ExecRequest(BaseModel):
 
 
 class FedTokenRequest(BaseModel):
-    """被集成端签发的只读/受限令牌。"""
+    """子节点签发的 auth key。ttl=0 表示永久（只能靠吊销收回）。"""
     label: str = Field(default="", max_length=64)
     scopes: list[str] = Field(default_factory=lambda: ["view"])
     panes: object = "all"                 # "all" | ["%12"] | {"favorite": true}
-    ttl: int = Field(default=86400, ge=300, le=60 * 60 * 24 * 30)
+    ttl: int = Field(default=86400, ge=0, le=60 * 60 * 24 * 30)
 
 
 class FedNodeRequest(BaseModel):
-    """客户端记住的一个联邦节点。"""
+    """父节点记住的一个子节点：名字 + auth key（key 可带 @地址）+ 可选备用地址。"""
     label: str = Field(default="", max_length=64)
-    prefix: str = Field(min_length=2, max_length=16)
+    prefix: str = Field(default="", max_length=16)      # 留空就从名字派生
     base_url: str = Field(default="", max_length=400)
     fallback_url: str = Field(default="", max_length=400)
     token: str = Field(default="", max_length=400)
@@ -2594,12 +2594,37 @@ def create_app(
     @app.post("/api/fed/nodes", status_code=201)
     async def add_fed_node(request: Request, payload: FedNodeRequest):
         require_auth(request)
+        token, address = federation.parse_auth_key(payload.token)
+        base_url = payload.base_url or address
+        if not token:
+            raise HTTPException(status_code=422, detail="还差 auth key")
         try:
             node = await asyncio.to_thread(fed_nodes.add, payload.label, payload.prefix,
-                                           payload.base_url, payload.fallback_url, payload.token)
+                                           base_url, payload.fallback_url, token)
         except federation.FederationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return node
+
+    @app.post("/api/fed/nodes/{node_id}/probe")
+    async def probe_fed_node(request: Request, node_id: str):
+        """"测试"按钮：现问对方一句，别让用户猜在线状态。"""
+        require_auth(request)
+        try:
+            node = await asyncio.to_thread(fed_nodes.get_node, node_id, True)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="no such node") from exc
+        transport = federation.FedTransport(node)
+        try:
+            info = await asyncio.to_thread(transport.client.ping)
+        except (federation.FederationError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # ping 是"通不通"；窗格数量只是附加信息，对方正在等它自己的 SSH 探测时别让按钮转 20 秒
+        try:
+            count = len(await asyncio.to_thread(lambda: transport.client.panes(timeout=6)))
+        except (federation.FederationError, RuntimeError, OSError, ValueError):
+            count = None
+        return {"ok": True, "host": info.get("host"), "panes": count,
+                "prefix": node.get("prefix")}
 
     @app.delete("/api/fed/nodes/{node_id}")
     async def remove_fed_node(request: Request, node_id: str):

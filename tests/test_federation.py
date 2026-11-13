@@ -47,6 +47,39 @@ class GrantTests(unittest.TestCase):
         self.assertFalse(federation.pane_allowed(favs, "%8"))
 
 
+class PermanentTests(unittest.TestCase):
+    def test_ttl_zero_is_permanent_and_only_revocation_stops_it(self):
+        grants = federation.FedGrants(":memory:")
+        issued = grants.issue("robo", ["view"], "all", 0)
+        self.assertIsNone(issued["expires_at"])
+        self.assertEqual(grants.listing()[0]["expires_at"], None)
+        self.assertEqual(grants.verify(issued["token"])["scopes"], ["view"])
+        grants.revoke(issued["id"])
+        with self.assertRaises(federation.FederationError):
+            grants.verify(issued["token"])
+
+    def test_an_expiring_token_still_expires(self):
+        grants = federation.FedGrants(":memory:")
+        issued = grants.issue("robo", ["view"], "all", 300)
+        self.assertGreater(issued["expires_at"], 0)
+
+
+class AuthKeyTests(unittest.TestCase):
+    def test_an_auth_key_can_carry_the_address_after_the_at_sign(self):
+        self.assertEqual(federation.parse_auth_key("fed_a.b@https://ddr.167990.xyz/"),
+                         ("fed_a.b", "https://ddr.167990.xyz"))
+        self.assertEqual(federation.parse_auth_key("  fed_a.b  "), ("fed_a.b", ""))
+        # 不是地址就别拆：令牌里本来没有 @ 之外的花样
+        self.assertEqual(federation.parse_auth_key("fed_a.b@nonsense"), ("fed_a.b@nonsense", ""))
+
+    def test_the_prefix_comes_from_the_name(self):
+        store, _ = memory_stores()
+        node = store.add("Oracle", "", "http://node", "", "fed_x.y")
+        self.assertEqual(node["prefix"], "oracle")
+        with self.assertRaises(federation.FederationError):
+            store.add("中文名", "", "http://node", "", "fed_x.y")
+
+
 class StoreTests(unittest.TestCase):
     def test_prefixes_are_unique_and_lowercase(self):
         store, _ = memory_stores()
@@ -168,6 +201,35 @@ class EndpointTests(unittest.TestCase):
         self.assertTrue(after_resolve[0].startswith("/api/fed/panes"))
         self.assertIn("%2512/capture", after_resolve[1])
         self.assertTrue(node_id)
+
+    def test_adding_a_node_from_name_and_auth_key_probes_it(self):
+        """界面上只填名字 + auth key：key 里的地址要能被用上，probe 给个明确结论。"""
+        added = self.client.post("/api/fed/nodes", json={
+            "label": "oracle", "token": "fed_a.b@http://node.invalid"})
+        self.assertEqual(added.status_code, 201, added.text)
+        self.assertEqual(added.json()["prefix"], "oracle")
+        self.assertEqual(added.json()["base_url"], "http://node.invalid")
+
+        def fake_get(client, path, timeout=None):
+            if path == "/api/fed/ping":
+                return {"tmuxweb": True, "host": "ddr"}
+            if path.startswith("/api/fed/panes"):
+                return {"panes": [{"id": "%12", "number": 12}]}
+            raise AssertionError(path)
+
+        original = federation.FedClient._get
+        federation.FedClient._get = fake_get
+        try:
+            probed = self.client.post(f"/api/fed/nodes/{added.json()['id']}/probe")
+        finally:
+            federation.FedClient._get = original
+        self.assertEqual(probed.status_code, 200, probed.text)
+        self.assertEqual(probed.json()["panes"], 1)
+        self.assertEqual(probed.json()["host"], "ddr")
+
+    def test_a_node_without_an_auth_key_is_refused(self):
+        refused = self.client.post("/api/fed/nodes", json={"label": "oracle"})
+        self.assertEqual(refused.status_code, 422)
 
     def test_an_unknown_prefix_says_so(self):
         missing = self.client.get("/api/panes/nope%2312/capture")
