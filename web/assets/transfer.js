@@ -170,13 +170,6 @@
     return response.json();
   }
 
-  // 子节点的 pane 编号是 `<node_id>~%12`：它的字节按子节点自己的线路走
-  // （先它存的域名，域名不通再试它的内网/tailnet 地址），不该被改道到本机的直连源站
-  function isFederatedPane(pane) {
-    const text = String(pane || '');
-    return text.includes('~') || /%7e/i.test(text) || /%257e/i.test(text);
-  }
-
   // 普通下载链接 → 直连源站上的票据链接（拿不到就原样返回）
   async function downloadHref(href) {
     let parsed;
@@ -197,6 +190,24 @@
     }
   }
 
+  // 打包下载：签一张 zip 票据，返回直连源站上的地址；拿不到就 null（调用方走原来的 blob 路径）
+  async function zipHref(info) {
+    const origin = await pick();
+    if (!origin) return null;
+    try {
+      const grant = await ticket({
+        pane: info.pane,
+        path: info.base || '',
+        direction: 'zip',
+        paths: info.paths || [],
+      });
+      if (!grant || !grant.token) return null;
+      return origin + '/t/zip?t=' + encodeURIComponent(grant.token);
+    } catch (_error) {
+      return null;
+    }
+  }
+
   // 上传：返回 {prefix, ticket} 让 uploads.js 把块发到直连源站；null 表示保持原样
   async function uploadRoute(options) {
     const origin = await pick();
@@ -212,6 +223,6 @@
     }
   }
 
-  window.TmuxTransfer = {downloadHref, uploadRoute, pick, forget, probe,
+  window.TmuxTransfer = {downloadHref, zipHref, uploadRoute, pick, forget, probe,
                          routePref, setRoutePref};
 })();

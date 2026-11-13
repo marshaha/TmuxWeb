@@ -256,6 +256,9 @@ busy/idle/offline 变；点一下就切过去，切过去的会话会自动顶�
 
 ## 设置面板
 
+想确认下载真的走了 TS：`./.venv/bin/python scripts/selfcheck_download.py`（会真的拉字节校验，
+包括 zip；`--json` 给脚本看）。
+
 下载走哪条线路：聊天 / 终端顶栏左上角有 `TS / 局域网 / CF` 按钮，点一下就换（默认 TS：
 Tailscale MagicDNS 名字 → 100.x → 局域网）。2960 子节点也一样，它的三条地址在 `/hosts` 上
 点小格子切换，两份设置各自独立 —— 浏览器到本机一跳、本机到子节点一跳，最快的往往不是同一种。

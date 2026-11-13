@@ -3312,6 +3312,43 @@ class TmuxWebTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(Path(directory, "many.bin").stat().st_size, total)
 
+    def test_a_zip_ticket_streams_the_archive_without_the_session_cookie(self):
+        """打包下载也要能走直连：票据里带 pane + 基准目录 + 选中列表。"""
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "a.txt").write_text("aaa")
+            Path(directory, "b.txt").write_text("bbb")
+            self.tmux.panes[0]["path"] = directory
+            grant = self.client.post("/api/transfer/ticket",
+                                     json={"pane": "%4", "path": directory, "direction": "zip",
+                                           "paths": [str(Path(directory, "a.txt")),
+                                                     str(Path(directory, "b.txt"))]}).json()
+            self.assertTrue(grant.get("token"))
+            stranger = TestClient(self.client.app)
+            response = stranger.get(f"/t/zip?t={grant['token']}")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.headers["content-type"], "application/zip")
+            self.assertIn("attachment", response.headers["content-disposition"])
+            self.assertTrue(response.content.startswith(b"PK"))
+
+    def test_a_download_ticket_is_not_a_zip_ticket(self):
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory, "a.txt")
+            target.write_text("aaa")
+            self.tmux.panes[0]["path"] = directory
+            grant = self.client.post("/api/transfer/ticket",
+                                     json={"pane": "%4", "path": str(target),
+                                           "direction": "down"}).json()
+            response = self.client.get(f"/t/zip?t={grant['token']}")
+            self.assertEqual(response.status_code, 403)
+
+    def test_a_zip_ticket_needs_paths(self):
+        self.login()
+        response = self.client.post("/api/transfer/ticket",
+                                    json={"pane": "%4", "path": "/tmp", "direction": "zip"})
+        self.assertEqual(response.status_code, 422)
+
     def test_a_download_ticket_cannot_be_used_to_upload(self):
         self.login()
         with tempfile.TemporaryDirectory() as directory:

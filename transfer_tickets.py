@@ -34,7 +34,7 @@ DEFAULT_TTL = 600                  # 10 分钟：足够传完，短到泄露了�
 DOWNLOAD_USES = 8                  # 浏览器会重试、会 Range
 UPLOAD_USES_PER_CHUNK = 2          # 每块一次，再留一次重试
 
-_DIRECTIONS = {"up", "down"}
+_DIRECTIONS = {"up", "down", "zip"}
 
 
 class TicketError(Exception):
@@ -57,8 +57,8 @@ def _sign(secret: bytes, body: str) -> str:
 
 def mint(secret: bytes, *, pane: str, path: str, direction: str,
          max_bytes: int = 0, name: str = "", ttl: int = DEFAULT_TTL,
-         uses: int = 0) -> dict[str, Any]:
-    """Mint a ticket for one pane path; returns token + expiry."""
+         uses: int = 0, paths: list[str] | None = None) -> dict[str, Any]:
+    """Mint a ticket for one pane path (or a zip of several); returns token + expiry."""
     if direction not in _DIRECTIONS:
         raise ValueError(f"unknown direction: {direction}")
     if not pane or not path:
@@ -79,6 +79,12 @@ def mint(secret: bytes, *, pane: str, path: str, direction: str,
         "u": int(uses),
         "i": secrets.token_urlsafe(9),
     }
+    if direction == "zip":
+        # 打包下载：pane + 基准目录(f) + 选中列表(z)；一次一张（zip 会重复下载就重复生成）
+        wanted = [str(item) for item in (paths or []) if str(item).strip()]
+        if not wanted:
+            raise ValueError("paths is required for a zip ticket")
+        payload["z"] = wanted[:1000]
     body = _encode(payload)
     return {"token": f"{body}.{_sign(secret, body)}", "expires": payload["e"],
             "direction": direction, "pane": pane, "path": path}

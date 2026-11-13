@@ -967,10 +967,11 @@ class TransferTicketRequest(BaseModel):
     """请求一张直连传输票据（走直连源站时替代 cookie 鉴权）。"""
 
     pane: str
-    path: str
-    direction: str = "down"        # down | up
+    path: str = ""                 # zip 时可以空，基准目录放在 base 里更清楚
+    direction: str = "down"        # down | up | zip
     size: int = 0                  # 上传时给总字节数，票据据此限制
     name: str = ""
+    paths: list[str] = []          # direction=zip：要打包的路径
 
 
 class FileRenameRequest(BaseModel):
@@ -5007,23 +5008,22 @@ def create_app(
             raise HTTPException(status_code=422, detail="path is required")
         return await download_response(pane_id, path)
 
-    @app.post("/api/panes/{pane_id}/files/zip")
-    async def zip_pane_files(request: Request, pane_id: str, payload: ZipRequest):
-        require_auth(request)
-        wanted = [item for item in (payload.paths or []) if item.strip()]
+    async def zip_response(pane_id: str, wanted: list[str], base: str = "") -> Response:
+        """把选中的路径打成一个 zip；普通路由和票据路由 (/t/zip) 共用。"""
+        wanted = [item for item in wanted if item and item.strip()]
         if not wanted:
             raise HTTPException(status_code=422, detail="select at least one file")
         if len(wanted) > 1000:
             raise HTTPException(status_code=422, detail="too many paths selected")
         try:
             transport, _actual, pane = await file_target(pane_id)
-            base = payload.base or pane.get("path") or "."
-            blob = await asyncio.to_thread(transport.zip_files, wanted, base, zip_limit, zip_max_files)
+            directory = base or pane.get("path") or "."
+            blob = await asyncio.to_thread(transport.zip_files, wanted, directory, zip_limit, zip_max_files)
         except HTTPException:
             raise
         except (TmuxError, RuntimeError, OSError, ValueError, file_browser.FileBrowserError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        name = (os.path.basename(str(base).rstrip("/")) or "files") + ".zip"
+        name = (os.path.basename(str(directory).rstrip("/")) or "files") + ".zip"
         return Response(
             content=blob,
             media_type="application/zip",
@@ -5033,6 +5033,11 @@ def create_app(
                 "Cache-Control": "no-store",
             },
         )
+
+    @app.post("/api/panes/{pane_id}/files/zip")
+    async def zip_pane_files(request: Request, pane_id: str, payload: ZipRequest):
+        require_auth(request)
+        return await zip_response(pane_id, list(payload.paths or []), payload.base or "")
 
     async def upload_response(pane_id: str, name: str, dir: str, offset: int, total: int,
                             token: str, body: bytes):
@@ -5116,22 +5121,31 @@ def create_app(
         """给直连源站签一张传输票据；只有已登录的控制台会话能签。"""
         require_auth(request)
         direction = (payload.direction or "down").strip().lower()
-        if direction not in {"down", "up"}:
-            raise HTTPException(status_code=422, detail="direction must be up or down")
-        if not payload.pane or not payload.path:
+        if direction not in {"down", "up", "zip"}:
+            raise HTTPException(status_code=422, detail="direction must be down, up or zip")
+        if not payload.pane or (direction != "zip" and not payload.path):
             raise HTTPException(status_code=422, detail="pane and path are required")
+        if direction == "zip" and not (payload.paths or []):
+            raise HTTPException(status_code=422, detail="paths is required for a zip")
         if direction == "up" and payload.size <= 0:
             raise HTTPException(status_code=422, detail="size is required for an upload")
         if payload.size > upload_limit:
             raise HTTPException(status_code=413,
                                 detail=f"file exceeds the upload limit of {upload_limit} bytes")
         ticket = transfer_tickets.mint(
-            transfer_secret, pane=payload.pane, path=payload.path, direction=direction,
+            transfer_secret, pane=payload.pane, path=payload.path or "", direction=direction,
             max_bytes=int(payload.size), name=payload.name,
             # 上传不限次数：块大小是自适应的，事先估出来的块数一定不准
             uses=-1 if direction == "up" else 0,
+            paths=list(payload.paths or []),
         )
         return ticket
+
+    @app.get("/t/zip")
+    async def transfer_zip(t: str = ""):
+        """打包下载走直连源站：票据里带着 pane / 基准目录 / 选中列表。"""
+        payload = ticket_or_403(t, "zip")
+        return await zip_response(payload["p"], list(payload.get("z") or []), payload.get("f") or "")
 
     @app.get("/t/download")
     async def transfer_download(t: str = ""):
