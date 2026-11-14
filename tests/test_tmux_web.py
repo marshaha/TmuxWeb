@@ -88,6 +88,28 @@ class FakeTmux(TmuxBackend):
         alive = any(item["session"] == session for item in self.panes)
         return {"pane": pane_id, "session": session, "session_alive": alive}
 
+    def rename_session(self, session, name):
+        try:
+            new_name = normalize_session_name(name)
+        except ValueError as exc:
+            raise TmuxError(str(exc)) from exc
+        current = session
+        if str(session).startswith("%"):
+            current = next(p["session"] for p in self.panes if p["id"] == session)
+        self.renamed_sessions = getattr(self, "renamed_sessions", [])
+        self.renamed_sessions.append((current, new_name))
+        for pane in self.panes:
+            if pane["session"] == current:
+                pane["session"] = new_name
+        return {"session": new_name, "old": current}
+
+    def rename_window(self, pane_id, name):
+        if not any(pane["id"] == pane_id for pane in self.panes):
+            raise TmuxError("no such pane: %s" % pane_id)
+        self.renamed_windows = getattr(self, "renamed_windows", [])
+        self.renamed_windows.append((pane_id, name))
+        return {"pane": pane_id, "window": name}
+
     def kill_session(self, name):
         try:
             name = normalize_session_name(name)
@@ -281,6 +303,14 @@ class FakeSSHRunner:
     def kill_pane(self, pane_id):
         FakeSSHRunner.killed_pane = pane_id
         return {"pane": pane_id, "session": "remote", "session_alive": True}
+
+    def rename_session(self, session, name):
+        FakeSSHRunner.renamed = (session, name)
+        return {"session": name, "old": session}
+
+    def rename_window(self, pane_id, name):
+        FakeSSHRunner.renamed_window = (pane_id, name)
+        return {"pane": pane_id, "window": name}
 
     def kill_session(self, name):
         FakeSSHRunner.killed = name
@@ -1743,6 +1773,25 @@ class TmuxWebTests(unittest.TestCase):
         self.assertNotIn('id="load-card"', html, "加载不该再弹浮层")
         self.assertIn("子节点加载中", html)
         self.assertIn("loadingActive()", html)
+
+    def test_a_session_and_a_window_can_be_renamed(self):
+        self.login()
+        response = self.client.post("/api/sessions/rename",
+                                    json={"host": "localhost", "session": "codex", "name": "codex2"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["session"], "codex2")
+        self.assertIn(("codex", "codex2"), self.tmux.renamed_sessions)
+
+        window = self.client.post("/api/panes/%254/rename", json={"name": "my api"})
+        self.assertEqual(window.status_code, 200, window.text)
+        self.assertEqual(window.json()["window"], "my api")
+        self.assertIn(("%4", "my api"), self.tmux.renamed_windows)
+
+    def test_a_bad_session_name_is_rejected(self):
+        self.login()
+        response = self.client.post("/api/sessions/rename",
+                                    json={"host": "localhost", "session": "work", "name": "bad name!"})
+        self.assertEqual(response.status_code, 422)
 
     def test_choosing_a_pane_closes_the_drawer_with_its_scrim(self):
         """手机上那层灰色遮罩 = .drawer-backdrop.show 没被清掉；选 pane 必须整块收掉。"""

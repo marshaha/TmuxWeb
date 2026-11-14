@@ -3,6 +3,7 @@
 这里不碰真实网络：要么直接测 store/transport，要么把 ``FedClient._get`` 换成
 固定返回值 —— 断言的是"权限和编号"，不是 HTTP 细节。
 """
+import json
 import os
 import unittest
 
@@ -264,6 +265,59 @@ def federation_app(backend, store, grants, policy=None):
         remote_store=FakeRemoteStore(), remote_runner_factory=FakeSSHRunner,
         fed_store=store, fed_tokens=grants, policy_store=policy or memory_policy(),
     )
+
+
+class RenameTests(unittest.TestCase):
+    """父子两边都能改会话名 / 窗口名，且要 admin 作用域。"""
+
+    def test_the_child_renames_a_session_with_an_admin_key(self):
+        client, _store, grants = make_client()
+        client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        client.post("/api/fed/policy", json={"admin": True})   # 本机政策也得放开
+        issued = grants.issue("robo", ["view", "admin"], "all", 600)
+        headers = {"Authorization": f"Bearer {issued['token']}"}
+        response = client.post("/api/fed/sessions/rename",
+                               headers=headers,
+                               json={"session": "codex", "name": "codex2"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["session"], "codex2")
+
+        window = client.post("/api/fed/panes/%254/rename", headers=headers, json={"name": "my api"})
+        self.assertEqual(window.status_code, 200, window.text)
+        self.assertEqual(window.json()["window"], "my api")
+
+    def test_rename_needs_the_admin_scope(self):
+        client, _store, grants = make_client()
+        issued = grants.issue("robo", ["view", "files"], "all", 600)
+        headers = {"Authorization": f"Bearer {issued['token']}"}
+        response = client.post("/api/fed/sessions/rename", headers=headers,
+                               json={"session": "codex", "name": "codex2"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_the_parent_routes_a_rename_to_the_child(self):
+        client, store, _ = make_client()
+        client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        node = store.add("oracle", "or", "http://node.invalid", "", "fed_x.y")
+        calls = []
+
+        def fake_call(self, method, path, body=None, headers=None, timeout=None):
+            calls.append((method, path, json.loads(body or b"{}")))
+            if path.endswith("/rename"):
+                return {"session": "codex2", "window": "my api"}
+            raise AssertionError(path)
+
+        original = federation.FedClient._call
+        federation.FedClient._call = fake_call
+        try:
+            session = client.post("/api/sessions/rename",
+                                  json={"host": node["id"], "session": "codex", "name": "codex2"})
+            window = client.post(f"/api/panes/{node['id']}~%254/rename", json={"name": "my api"})
+        finally:
+            federation.FedClient._call = original
+        self.assertEqual(session.status_code, 200, session.text)
+        self.assertEqual(window.status_code, 200, window.text)
+        self.assertIn(("POST", "/api/fed/sessions/rename", {"session": "codex", "name": "codex2"}), calls)
+        self.assertIn(("POST", "/api/fed/panes/%254/rename", {"name": "my api"}), calls)
 
 
 class PaneStatusSweepTests(unittest.TestCase):

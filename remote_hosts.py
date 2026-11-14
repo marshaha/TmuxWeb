@@ -54,6 +54,15 @@ def normalize_session_name(name: str) -> str:
         raise ValueError("session name must not contain ':'")
     return cleaned
 
+def normalize_window_name(name: str) -> str:
+    """窗口名可以带空格；控制字符和冒号会打乱 `#S:#W` 的显示，统一收拾掉。"""
+    text = "".join(character for character in str(name or "") if character.isprintable())
+    text = " ".join(text.replace(":", "：").split())
+    if not text:
+        raise ValueError("窗口名不能为空")
+    return text[:64]
+
+
 PANE_ID_RE = re.compile(r"^%[0-9]+$")
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 # tmux escapes control characters in ``-F`` output when the client locale is
@@ -1692,6 +1701,41 @@ class SSHRunner:
         if session:
             alive = self.run(f"{tmux} has-session -t {shlex.quote(session)}", timeout=15).returncode == 0
         return {"pane": pane_id, "session": session, "session_alive": alive}
+
+    def rename_session(self, session: str, name: str) -> dict:
+        """远端会话改名；`session` 也可以是会话里的 pane id。"""
+        new_name = normalize_session_name(name)
+        tmux = "${TMUX_BIN:-tmux}"
+        current = session
+        if str(session).startswith("%"):
+            if not PANE_ID_RE.fullmatch(session):
+                raise ValueError("invalid pane id")
+            current = self.run(f"{tmux} display-message -p -t {shlex.quote(session)} "
+                               f"'#{{session_name}}' 2>/dev/null",
+                               timeout=15).stdout.decode(errors="replace").strip()
+        if not current:
+            raise RuntimeError("unknown session")
+        completed = self.run(f"{tmux} rename-session -t {shlex.quote(current)} "
+                             f"{shlex.quote(new_name)} 2>&1", timeout=20)
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(errors="replace").strip() or completed.stdout.decode(errors="replace").strip()
+            if "duplicate session" in detail:
+                raise RuntimeError("session already exists: %s" % new_name)
+            raise RuntimeError(detail or "tmux rename-session failed")
+        return {"session": new_name, "old": current}
+
+    def rename_window(self, pane_id: str, name: str) -> dict:
+        """远端窗口改名：用窗口里的任一 pane 定位。"""
+        if not PANE_ID_RE.fullmatch(pane_id):
+            raise ValueError("invalid pane id")
+        clean = normalize_window_name(name)
+        tmux = "${TMUX_BIN:-tmux}"
+        completed = self.run(f"{tmux} rename-window -t {shlex.quote(pane_id)} "
+                             f"{shlex.quote(clean)} 2>&1", timeout=20)
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(errors="replace").strip() or completed.stdout.decode(errors="replace").strip()
+            raise RuntimeError(detail or "tmux rename-window failed")
+        return {"pane": pane_id, "window": clean}
 
     def kill_session(self, name: str) -> dict:
         """Close a remote session; ``no such session`` is reported as such."""

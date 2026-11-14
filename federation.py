@@ -601,6 +601,17 @@ class FedClient:
         quoted = urllib.parse.quote(pane_id, safe="")
         return self._get(f"/api/fed/panes/{quoted}/capture?history={int(history)}").get("content") or ""
 
+    def rename_session(self, session: str, name: str) -> dict:
+        body = json.dumps({"session": session, "name": name}).encode()
+        return self._call("POST", "/api/fed/sessions/rename", body,
+                          {"Content-Type": "application/json"}, timeout=30)
+
+    def rename_window(self, pane_id: str, name: str) -> dict:
+        body = json.dumps({"name": name}).encode()
+        quoted = urllib.parse.quote(pane_id, safe="")
+        return self._call("POST", f"/api/fed/panes/{quoted}/rename", body,
+                          {"Content-Type": "application/json"}, timeout=30)
+
     def transcript(self, pane_id: str, limit: int = 200) -> dict:
         quoted = urllib.parse.quote(pane_id, safe="")
         return self._get(f"/api/fed/panes/{quoted}/transcript?limit={int(limit)}")
@@ -716,6 +727,12 @@ class FedTransport:
     def create_session(self, name: str, path: str = "", command: list[str] | None = None,
                        create_dir: bool = True, keep_open: bool = True) -> dict:
         return self.client.create_session(name, path, command, create_dir, keep_open)
+
+    def rename_session(self, session: str, name: str) -> dict:
+        return self.client.rename_session(session, name)
+
+    def rename_window(self, pane_id: str, name: str) -> dict:
+        return self.client.rename_window(self.raw_pane(pane_id), name)
 
     def kill_pane(self, pane_id: str) -> dict:
         return self.client.close_pane(self.raw_pane(pane_id))

@@ -116,6 +116,8 @@ fed_<id>.<secret>@https://ddr.167990.xyz
 - 浏览器 → 本机这一跳（下载、上传）也是三选一，聊天/终端顶栏左上的 `TS / 局域网 / CF`
   按钮循环切换（存在本机，跟这台浏览器走）。**两跳是分开的**：顶栏按钮管第一跳，
   节点上的三格管子节点那一跳。实测同一条链路上两跳最快的往往不是同一种线路。
+- 改名（会话名 / 窗口名）算「管理」：父节点调 `/api/sessions/rename`、`/api/panes/{id}/rename`，
+  子节点那边要 `admin` 作用域 + 本机政策里的 admin 打开，否则 403。
 - 打包下载（zip）走同一条线路：签一张 `direction=zip` 票据，浏览器直接请求
   `https://<magicdns>/t/zip?t=…`，整个包不再经过 Cloudflare。
 - **别靠肉眼确认线路**：`./.venv/bin/python scripts/selfcheck_download.py` 会打印本机

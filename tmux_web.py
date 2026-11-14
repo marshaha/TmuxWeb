@@ -51,7 +51,8 @@ import transcript_reader
 import transfer_tickets
 from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, RemoteHostStore, RemoteTerminalSession, SSHRunner,
                            UploadOffsetMismatch,
-                          host_key_fingerprint, normalize_session_name, pane_ref, scan_host_key, split_pane_ref,
+                          host_key_fingerprint, normalize_session_name, normalize_window_name,
+                          pane_ref, scan_host_key, split_pane_ref,
                           validate_private_key_text)
 
 LOGGER = logging.getLogger("tmux_web")
@@ -254,6 +255,40 @@ class TmuxBackend:
             raise
         return {"session": name, "path": directory, "created_dir": made_directory,
                 "command": agent_catalog.render(command) if command else ""}
+
+    def rename_session(self, session: str, name: str) -> dict:
+        """给会话改名。``session`` 也可以是该会话里的任一 pane id。"""
+        new_name = normalize_session_name(name)
+        current = session
+        if str(session).startswith("%"):
+            current = self.validate_pane(session).get("session") or ""
+        if not current:
+            raise TmuxError("unknown session")
+        try:
+            self._run("rename-session", "-t", current, new_name)
+        except TmuxError as exc:
+            detail = str(exc)
+            if "duplicate session" in detail:
+                raise TmuxError("session already exists: %s" % new_name) from exc
+            if "can't find session" in detail or "no such session" in detail:
+                raise TmuxError("no such session: %s" % current) from exc
+            raise
+        return {"session": new_name, "old": current}
+
+    def rename_window(self, pane_id: str, name: str) -> dict:
+        """给窗口改名。窗口没有独立 id 可寻址，用它的任一 pane 定位。"""
+        pane = self.validate_pane(pane_id)
+        try:
+            clean = normalize_window_name(name)
+        except ValueError as exc:
+            raise TmuxError(str(exc)) from exc
+        try:
+            self._run("rename-window", "-t", pane_id, clean)
+        except TmuxError as exc:
+            if "no such" in str(exc) or "can't find" in str(exc):
+                raise TmuxError("no such pane: %s" % pane_id) from exc
+            raise
+        return {"pane": pane_id, "window": clean, "session": pane.get("session") or ""}
 
     def kill_pane(self, pane_id: str) -> dict:
         """Close one pane; the session survives if it has other panes."""
@@ -1066,6 +1101,18 @@ class PasswordChangeRequest(BaseModel):
 
     class Config:
         populate_by_name = True
+
+
+class SessionRenameRequest(BaseModel):
+    """给 tmux 会话改名。"""
+    host: str = "localhost"
+    session: str
+    name: str
+
+
+class WindowRenameRequest(BaseModel):
+    """给窗口改名（"pane 的名字"就是它所在的窗口名）。"""
+    name: str
 
 
 class SessionCreateRequest(BaseModel):
@@ -2811,6 +2858,32 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"created": created, "session": name}
 
+    @app.post("/api/fed/sessions/rename")
+    async def fed_rename_session(request: Request, payload: dict):
+        require_fed(request, "admin")
+        session = str(payload.get("session") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        if not session or not name:
+            raise HTTPException(status_code=422, detail="session and name are required")
+        try:
+            renamed = await asyncio.to_thread(tmux.rename_session, session, name)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"renamed": renamed, "session": renamed.get("session", name)}
+
+    @app.post("/api/fed/panes/{pane_id}/rename")
+    async def fed_rename_window(request: Request, pane_id: str, payload: dict):
+        grants = require_fed(request, "admin")
+        actual = fed_pane_or_403(grants, pane_id)
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name is required")
+        try:
+            renamed = await asyncio.to_thread(tmux.rename_window, actual, name)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"renamed": renamed, "window": renamed.get("window", name)}
+
     @app.post("/api/fed/sessions/close")
     async def fed_close_session(request: Request, payload: dict):
         require_fed(request, "admin")
@@ -3964,6 +4037,32 @@ def create_app(
                                 detail=message) from exc
         return killed
 
+    def host_transport(host: str):
+        """按 host 取 transport：本机 / 子节点 / SSH 主机。"""
+        if host in ("", "localhost"):
+            return tmux, "localhost"
+        if fed_node(host):
+            return fed_transport(host), host
+        try:
+            record = remote_hosts.get_host(host, include_credential=True)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="remote host not found") from exc
+        return runner_for(record), host
+
+    @app.post("/api/sessions/rename")
+    async def rename_session(request: Request, payload: SessionRenameRequest):
+        """改 tmux 会话名。子节点需要它那边开放 admin。"""
+        require_auth(request)
+        transport, host_id = host_transport(payload.host)
+        try:
+            renamed = await asyncio.to_thread(transport.rename_session, payload.session, payload.name)
+        except (TmuxError, RuntimeError, OSError, ValueError, federation.FederationError) as exc:
+            message = str(exc)
+            status = 404 if "no such session" in message else 422
+            raise HTTPException(status_code=status, detail=message) from exc
+        return {"host": host_id, "session": renamed.get("session", payload.name),
+                "old": renamed.get("old", payload.session)}
+
     @app.delete("/api/sessions/{name}")
     async def delete_session(request: Request, name: str, host: str = "localhost"):
         """Close one tmux session (all of its windows and panes)."""
@@ -4444,6 +4543,17 @@ def create_app(
             raise
         except (TmuxError, RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/panes/{pane_id}/rename")
+    async def rename_pane_window(request: Request, pane_id: str, payload: WindowRenameRequest):
+        """改这个 pane 所在窗口的名字（tmux 的窗口名就是侧栏显示的那个）。"""
+        require_auth(request)
+        transport, actual = pane_transport(pane_id)
+        try:
+            renamed = await asyncio.to_thread(transport.rename_window, actual, payload.name)
+        except (TmuxError, RuntimeError, OSError, ValueError, federation.FederationError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"pane": actual, "window": renamed.get("window", payload.name)}
 
     @app.post("/api/panes/{pane_id}/input")
     async def send_input(request: Request, pane_id: str, payload: InputRequest):
