@@ -55,16 +55,6 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   overflow:visible;margin:0;border-collapse:collapse}
 .chat-user-wrap{display:flex;max-width:min(78%,720px);flex-direction:column;align-items:flex-end}.chat-user-wrap .chat-bubble{max-width:100%}.chat-bubble{max-width:min(78%,720px);padding:12px 16px;border-radius:18px;background:var(--bubble);color:var(--ink);white-space:pre-wrap}.message-delivery{display:flex;align-items:center;gap:5px;min-height:17px;margin:3px 7px 0;color:var(--faint);font-size:10px}.message-delivery.sent{color:var(--green)}.message-delivery.failed{color:var(--danger)}.retry-send{margin-left:7px;padding:2px 9px;border:1px solid rgba(178,58,46,.45);border-radius:999px;background:var(--card);color:var(--danger);font:11px/1.6 inherit;cursor:pointer}.retry-send:hover{background:rgba(178,58,46,.08)}
 .share-btn .ico,.mode-btn .ico{width:15px;height:15px}
-    .load-card{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);z-index:9;width:min(320px,78%);
-      padding:13px 15px;border:1px solid var(--line);border-radius:14px;background:var(--card);box-shadow:var(--shadow)}
-    .load-card[hidden]{display:none}
-    .load-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:12.5px;font-weight:600;color:var(--ink)}
-    .load-pct{flex:none;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
-    .load-bar{margin:9px 0 7px;height:5px;border-radius:99px;background:var(--card-hover);overflow:hidden}
-    .load-bar>i{display:block;height:100%;width:0;border-radius:99px;background:var(--accent);transition:width .18s ease}
-    .load-card.unknown .load-bar>i{width:34%;animation:loadslide 1.2s ease-in-out infinite}
-    @keyframes loadslide{0%{margin-left:-34%}100%{margin-left:100%}}
-    .load-meta{color:var(--muted);font:11px ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .route-btn{flex:0 0 auto;white-space:nowrap;height:34px;padding:0 10px;border:1px solid var(--line);border-radius:9px;
       background:var(--card);color:var(--muted);font:600 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;cursor:pointer;
       letter-spacing:.04em}
@@ -352,7 +342,7 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
     <header class="topbar"><div style="display:flex;align-items:center;min-width:0"><button class="icon-btn sidebar-open" id="menu" title="展开侧边栏" aria-label="展开侧边栏"><svg class="ico"><use href="#i-menu"/></svg></button><div class="session"><div class="session-title"><span class="session-num" id="selected-number" hidden></span><span id="selected-title">选择一个会话</span></div><div class="session-sub" id="selected-sub">从左侧选择 tmux pane</div></div></div><div class="top-actions"><button class="route-btn" id="route-switch" title="下载线路：TS → 局域网 → CF（点子节点时也切换它的线路）" aria-label="下载线路">TS</button><div class="status"><span class="status-dot" id="status-dot"></span><span class="status-text" id="status-text">未连接</span></div><button class="share-btn icon-only" id="live-toggle" title="暂停实时刷新" aria-label="暂停实时刷新" disabled><svg class="ico"><use href="#i-pause"/></svg></button><div class="mode-switch" role="group" aria-label="视图切换"><button class="mode-btn active" id="chat-mode" title="聊天视图" aria-label="聊天视图" aria-pressed="true"><svg class="ico"><use href="#i-chat"/></svg></button><button class="mode-btn" id="terminal-mode-button" title="终端视图" aria-label="终端视图" aria-pressed="false"><svg class="ico"><use href="#i-terminal"/></svg></button></div><button class="share-btn icon-only" id="grid-add" disabled title="加到多窗口" aria-label="加到多窗口"><svg class="ico"><use href="#i-grid"/></svg></button><button class="share-btn icon-only" id="fav-toggle" disabled title="收藏到主页" aria-label="收藏到主页" aria-pressed="false"><svg class="ico"><use href="#i-star"/></svg></button><button class="share-btn icon-only" id="pane-close" disabled title="关闭这个窗格" aria-label="关闭这个窗格"><svg class="ico"><use href="#i-trash"/></svg></button><button class="share-btn icon-only" id="share-button" disabled title="分享" aria-label="分享"><svg class="ico"><use href="#i-external"/></svg></button><button class="fullscreen-btn" id="fullscreen" title="全屏显示当前窗口"><svg class="ico"><use href="#i-fullscreen"/></svg><span>对话全屏</span></button></div></header>
     <div class="error-banner" id="error"></div>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
-    <section class="conversation"><div class="scroll" id="scroll"><div class="empty" id="empty"><div><strong>选择一个 tmux 会话</strong>实时查看内容，并在下方继续输入</div></div><div class="load-card" id="load-card" hidden><div class="load-head"><span id="load-what">远端加载中</span><span class="load-pct" id="load-pct"></span></div><div class="load-bar"><i id="load-fill"></i></div><div class="load-meta" id="load-meta"></div></div><div class="earlier-bar" id="earlier-bar" hidden><button class="earlier-btn" id="load-earlier" type="button">加载更早的消息</button></div><div class="transcript" id="transcript"></div><div class="message-shell" id="message-shell" hidden><div class="agent-label"><span class="agent-mark" id="agent-mark">T</span><span id="agent-name">tmux</span></div><div class="terminal-frame"><pre class="capture-output" id="terminal"></pre></div></div></div><div class="agent-progress" id="agent-progress"><span class="pending-wave" id="agent-progress-wave"><i></i><i></i><i></i></span><span id="agent-progress-label">idle</span><span class="elapsed" id="agent-progress-elapsed"></span></div><button class="jump" id="jump">回到最新 ↓</button>
+    <section class="conversation"><div class="scroll" id="scroll"><div class="empty" id="empty"><div><strong>选择一个 tmux 会话</strong>实时查看内容，并在下方继续输入</div></div><div class="earlier-bar" id="earlier-bar" hidden><button class="earlier-btn" id="load-earlier" type="button">加载更早的消息</button></div><div class="transcript" id="transcript"></div><div class="message-shell" id="message-shell" hidden><div class="agent-label"><span class="agent-mark" id="agent-mark">T</span><span id="agent-name">tmux</span></div><div class="terminal-frame"><pre class="capture-output" id="terminal"></pre></div></div></div><div class="agent-progress" id="agent-progress"><span class="pending-wave" id="agent-progress-wave"><i></i><i></i><i></i></span><span id="agent-progress-label">idle</span><span class="elapsed" id="agent-progress-elapsed"></span></div><button class="jump" id="jump">回到最新 ↓</button>
 <div class="terminal-mode" id="terminal-mode"><div class="terminal-host" id="terminal-host"></div><button class="terminal-jump" id="terminal-jump" type="button" hidden>回到底部</button><div class="terminal-keys" id="terminal-keys"><input id="terminal-input" class="terminal-kb-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" tabindex="-1" aria-hidden="true"><div class="terminal-key-row"><div class="terminal-key-scroll"><button class="terminal-key" data-key="Escape">esc</button><button class="terminal-key" data-key="Tab">tab</button><button class="terminal-key" data-mod="ctrl">ctrl</button><button class="terminal-key" data-mod="alt">alt</button><button class="terminal-key" data-ctrl-key="c">^C</button><button class="terminal-key" data-key="ArrowLeft">←</button><button class="terminal-key" data-key="ArrowUp">↑</button><button class="terminal-key" data-key="ArrowDown">↓</button><button class="terminal-key" data-key="ArrowRight">→</button><button class="terminal-key icon-key" id="terminal-paste" type="button" title="粘贴" aria-label="粘贴"><svg class="ico"><use href="#i-paste"/></svg></button><button class="terminal-key wide" data-key="BackTab">shift tab</button></div><div class="terminal-key-pinned"><button class="terminal-key icon-key" id="terminal-more" type="button" title="更多按键" aria-label="更多按键" aria-pressed="false"><svg class="ico"><use href="#i-grid"/></svg></button><button class="terminal-key icon-key" id="terminal-kb" type="button" title="显示或隐藏键盘" aria-label="显示或隐藏键盘" aria-pressed="false"><svg class="ico"><use href="#i-keyboard"/></svg></button></div></div><div class="terminal-type" id="terminal-type"></div><div class="terminal-ext" id="terminal-ext"><button class="terminal-key" data-key="Escape">esc</button><button class="terminal-key" data-key="Tab">tab</button><button class="terminal-key" data-mod="ctrl">ctrl</button><button class="terminal-key" data-mod="alt">alt</button><button class="terminal-key" data-ctrl-key="c">^C</button><button class="terminal-key" data-ctrl-key="d">^D</button><button class="terminal-key" data-ctrl-key="z">^Z</button><button class="terminal-key" data-ctrl-key="l">^L</button><button class="terminal-key" data-ctrl-key="r">^R</button><button class="terminal-key" data-ctrl-key="u">^U</button><button class="terminal-key" data-ctrl-key="k">^K</button><button class="terminal-key" data-ctrl-key="w">^W</button><button class="terminal-key" data-text="|">|</button><button class="terminal-key" data-text="~">~</button><button class="terminal-key" data-text="-">-</button><button class="terminal-key" data-text="=">=</button><button class="terminal-key" data-text=":">:</button><button class="terminal-key" data-text=";">;</button><button class="terminal-key" data-text="!">!</button><button class="terminal-key" data-text="$">$</button><button class="terminal-key" data-text="%">%</button><button class="terminal-key" data-text="^">^</button><button class="terminal-key" data-text="&lt;">&lt;</button><button class="terminal-key" data-text="&gt;">&gt;</button><button class="terminal-key" data-text="(">(</button><button class="terminal-key" data-text=")">)</button><button class="terminal-key" data-text="{">{</button><button class="terminal-key" data-text="}">}</button><button class="terminal-key" data-text="[">[</button><button class="terminal-key" data-text="]">]</button><button class="terminal-key" data-text="/">/</button><button class="terminal-key" data-text="?">?</button><button class="terminal-key" data-key="Home">home</button><button class="terminal-key" data-key="End">end</button><button class="terminal-key" data-key="PageUp">pgUp</button><button class="terminal-key" data-key="PageDown">pgDn</button><button class="terminal-key" data-key="ArrowLeft">←</button><button class="terminal-key" data-key="ArrowUp">↑</button><button class="terminal-key" data-key="ArrowDown">↓</button><button class="terminal-key" data-key="ArrowRight">→</button><button class="terminal-key" data-paste="1">paste</button><button class="terminal-key" data-key="Delete">del</button><button class="terminal-key" data-text="@">@</button><button class="terminal-key" data-text="&amp;">&amp;</button></div></div></div></section>
     <dialog class="session-dialog" id="session-dialog" aria-labelledby="session-dialog-title">
     <form id="session-form">
@@ -544,43 +534,36 @@ import {marked} from '/assets/marked.esm.js?v=1';
     requestAnimationFrame(()=>el.classList.add('show'));clearTimeout(toast.timer);
     toast.timer=setTimeout(()=>{el.classList.remove('show');setTimeout(()=>{el.hidden=true;},200);},ms);}
   // ---- 远端加载卡：pane 在子节点/慢链路上时，别让人对着空白等
-  const loadCard={shownAt:0,timer:null,tick:null,bytes:0,total:0,started:0};
+  // 远端加载的状态就显示在 idle / thinking 那一行：加载时状态本身没有意义，
+  // 再弹一张卡片反而把界面切开。这里只维护数据，画由 syncProgress() 统一负责。
+  const loadCard={shownAt:0,bytes:0,total:0,started:0,kind:'',label:'',tick:null,timer:null};
   function formatBytes(n){if(!n)return '0 B';if(n<1024)return `${n} B`;if(n<1024*1024)return `${(n/1024).toFixed(1)} KB`;return `${(n/1024/1024).toFixed(1)} MB`;}
   function paneLoadLabel(id){const found=state.panes.find(p=>p.id===id);if(!found)return id;const host=state.hosts.find(h=>h.id===(found.host_id||''))||{};const name=host.prefix?`${host.prefix}#${found.number}`:(found.number!=null?`#${found.number}`:id);return `${name} · ${host.name||host.id||''}`.trim();}
-  function paintLoadCard(){
-    if(!loadCard.shownAt)return;
-    const el=$('load-card');if(!el||el.hidden)return;
-    const elapsed=(performance.now()-loadCard.started)/1000;
+  function loadingActive(){return !!loadCard.shownAt;}
+  function loadingLabel(){return loadCard.kind==='fed'?'子节点加载中':'远端加载中';}
+  function loadingDetail(){const elapsed=(performance.now()-loadCard.started)/1000;
     const percent=loadCard.total>0?Math.min(100,Math.round(loadCard.bytes/loadCard.total*100)):null;
-    $('load-pct').textContent=percent==null?'':`${percent}%`;
-    el.classList.toggle('unknown',percent==null);
-    if(percent!=null)$('load-fill').style.width=`${percent}%`;
+    const parts=[`${elapsed.toFixed(1)}s`];
+    if(percent!=null)parts.push(`${percent}%`);
+    if(loadCard.bytes)parts.push(formatBytes(loadCard.bytes)+(loadCard.total>0?` / ${formatBytes(loadCard.total)}`:''));
     const speed=elapsed>0.35?loadCard.bytes/elapsed:0;
-    const parts=[];
-    if(loadCard.total>0)parts.push(`${formatBytes(loadCard.bytes)} / ${formatBytes(loadCard.total)}`);
-    else if(loadCard.bytes)parts.push(formatBytes(loadCard.bytes));
     if(speed)parts.push(`${formatBytes(Math.round(speed))}/s`);
-    parts.push(`${elapsed.toFixed(1)}s`);
-    const label=loadCard.label?loadCard.label+' · ':'';
-    $('load-meta').textContent=label+parts.join(' · ');
-  }
-  function showLoadCard(id){const el=$('load-card');if(!el)return;
+    return parts.join(' · ');}
+  function showLoadCard(id){
     loadCard.shownAt=Date.now();loadCard.started=performance.now();loadCard.bytes=0;loadCard.total=0;
     loadCard.label=paneLoadLabel(id);
     const found=state.panes.find(p=>p.id===id)||{};
     const host=state.hosts.find(h=>h.id===(found.host_id||''))||{};
-    $('load-what').textContent=host.kind==='fed'?`子节点加载中`:`远端加载中`;
-    $('load-pct').textContent='';
-    $('load-meta').textContent=loadCard.label;
-    $('load-fill').style.width='0%';
-    el.hidden=false;el.classList.add('unknown');
-    clearInterval(loadCard.tick);loadCard.tick=setInterval(paintLoadCard,200);
-    clearTimeout(loadCard.timer);loadCard.timer=setTimeout(()=>{if(loadCard.shownAt&&Date.now()-loadCard.shownAt>45000)hideLoadCard();},48000);}
-  function updateLoadCard(info){loadCard.bytes=info.received||0;loadCard.total=info.total||0;paintLoadCard();}
+    loadCard.kind=host.kind||'';
+    syncProgress();
+    clearInterval(loadCard.tick);loadCard.tick=setInterval(syncProgress,200);
+    clearTimeout(loadCard.timer);loadCard.timer=setTimeout(()=>{if(loadCard.shownAt&&Date.now()-loadCard.shownAt>45000)hideLoadCard();},48000);
+  }
+  function updateLoadCard(info){loadCard.bytes=info.received||0;loadCard.total=info.total||0;syncProgress();}
   // 给测试用的钩子（页面里的函数都在闭包里，外面看不到）
   window.TmuxLoadCard={show:showLoadCard,hide:hideLoadCard,update:updateLoadCard};
-  function hideLoadCard(){const el=$('load-card');if(!el)return;el.hidden=true;el.classList.remove('unknown');
-    clearInterval(loadCard.tick);clearTimeout(loadCard.timer);loadCard.shownAt=0;}
+  function hideLoadCard(){if(!loadCard.shownAt)return;loadCard.shownAt=0;loadCard.kind='';loadCard.label='';
+    clearInterval(loadCard.tick);clearTimeout(loadCard.timer);syncProgress();}
 
   // 带进度的 JSON 请求：读流、算百分比和速度。拿不到 body 就退回普通 api()。
   async function apiProgress(url,onProgress){
@@ -1312,10 +1295,13 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     const working=state.mode==='chat'&&!!state.selected&&agentWorking();
     // the strip sits above the composer: thinking while the agent reasons, idle otherwise
     if(box){
+      // 加载中优先：这时候 remote 的状态还没到，显示 idle/thinking 都是假的
+      const loading=state.mode==='chat'&&!!state.selected&&loadingActive();
       box.hidden=!(state.mode==='chat'&&!!state.selected);
-      box.classList.toggle('working',working);
-      $('agent-progress-label').textContent=working?'thinking':'idle';
-      $('agent-progress-elapsed').textContent=working?humanElapsed(sinceSeconds(state.waitingSince)):'';
+      box.classList.toggle('working',working||loading);
+      $('agent-progress-label').textContent=loading?loadingLabel():(working?'thinking':'idle');
+      $('agent-progress-elapsed').textContent=loading?loadingDetail():(working?humanElapsed(sinceSeconds(state.waitingSince)):'');
+      box.title=loading?loadCard.label:'';
     }
     if(dot){
       // a paused view is not live: neutral dot, the label says why

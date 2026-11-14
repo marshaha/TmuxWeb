@@ -1737,6 +1737,13 @@ class TmuxWebTests(unittest.TestCase):
             self.assertEqual(client.get("/api/panes", headers={
                 "Authorization": "Bearer relay-token-value"}).status_code, 200)
 
+    def test_remote_loading_shows_in_the_status_line_not_a_floating_card(self):
+        """加载时 idle/thinking 本来没有意义：状态就画在那一行，别弹浮层。"""
+        html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
+        self.assertNotIn('id="load-card"', html, "加载不该再弹浮层")
+        self.assertIn("子节点加载中", html)
+        self.assertIn("loadingActive()", html)
+
     def test_choosing_a_pane_closes_the_drawer_with_its_scrim(self):
         """手机上那层灰色遮罩 = .drawer-backdrop.show 没被清掉；选 pane 必须整块收掉。"""
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
