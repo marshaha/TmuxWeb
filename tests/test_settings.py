@@ -209,7 +209,7 @@ class SettingsPageWiringTests(unittest.TestCase):
 
     def test_the_panel_offers_server_and_share_management(self):
         script = self.client.get("/assets/settings.js").text
-        self.assertIn('<a class="ts-row ts-link" href="/hosts"><span>子节点和服务器管理</span>', script)
+        self.assertIn('<a class="ts-row ts-link" href="/hosts?from=settings"><span>子节点和服务器管理</span>', script)
         self.assertIn('<a class="ts-row ts-link" href="/shares"><span>分享管理</span>', script)
         self.assertIn(".ts-row.ts-link{text-decoration:none}", script)
         # both target pages exist
@@ -237,9 +237,16 @@ class SettingsPageWiringTests(unittest.TestCase):
         # one section with two tabs, not two separate rows
         # 子节点(让别人接入) / 添加子节点 / 修改密码 / 直连地址 / 导入导出 / 插件 / 主题 / 交互菜单卡片
         # —— every one of them starts collapsed
-        self.assertEqual(script.count('class="ts-row"'), 8, '子节点面板加进来、暂停按钮加进实验性一组')
+        self.assertEqual(script.count('class="ts-row"'), 9, '一级「实验性」+ 里面两个实验开关')
         self.assertIn("/api/system/addresses", script)
         self.assertIn('id="ts-direct-panel"', script)
+        # 实验性收成一个一级菜单，两个开关各开各的
+        self.assertIn('id="ts-lab-toggle"', script)
+        self.assertIn('id="ts-prompt-toggle"', script)
+        self.assertIn('id="ts-pause-toggle"', script)
+        self.assertIn("toggleSubsection", script)
+        # 从设置进服务器管理，回来要回设置
+        self.assertIn('/hosts?from=settings', script)
         # 下载线路可以自己选：默认走当前页面（CF），想走直连再打开
         self.assertIn('id="ts-transfer-direct"', script)
         self.assertIn("tmuxweb.transfer.direct", script)
@@ -268,6 +275,9 @@ class SettingsPageWiringTests(unittest.TestCase):
 
     def test_the_hosts_page_owns_child_node_management(self):
         page = self.client.get("/hosts").text
+        # 从设置进来的，返回链接要回设置（回到控制台再自动把设置打开）
+        self.assertIn("from==='settings'", page)
+        self.assertIn('/?settings=1', page)
         self.assertIn("子节点和服务器管理", page)
         for marker in ('id="child-name"', 'id="child-key"', 'id="child-prefer"',
                        'id="child-add"', 'id="child-list"', "/api/fed/nodes"):

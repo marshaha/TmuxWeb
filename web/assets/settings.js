@@ -130,7 +130,7 @@
     <h2>设置</h2>
 
     <section class="ts-block">
-      <a class="ts-row ts-link" href="/hosts"><span>子节点和服务器管理</span><span class="ts-go" aria-hidden="true"></span></a>
+      <a class="ts-row ts-link" href="/hosts?from=settings"><span>子节点和服务器管理</span><span class="ts-go" aria-hidden="true"></span></a>
       <a class="ts-row ts-link" href="/shares"><span>分享管理</span><span class="ts-go" aria-hidden="true"></span></a>
     </section>
 
@@ -257,6 +257,13 @@
     </section>
 
     <section class="ts-block">
+      <button class="ts-row" type="button" id="ts-lab-toggle" aria-expanded="false" aria-controls="ts-lab-panel">
+        <span>实验性</span><span class="ts-caret" aria-hidden="true"></span>
+      </button>
+      <div class="ts-panel" id="ts-lab-panel" hidden>
+      <p class="ts-hint">可能不稳定、默认关着的功能。下面的开关各自独立，随账号同步。</p>
+
+    <section class="ts-block ts-sub">
       <button class="ts-row" type="button" id="ts-prompt-toggle" aria-expanded="false" aria-controls="ts-prompt-panel">
         <span>交互菜单卡片（实验性）</span><span class="ts-caret" aria-hidden="true"></span>
       </button>
@@ -282,6 +289,8 @@
           <button type="button" data-ts-pause="on">开</button>
         </div>
         <p class="ts-state" id="ts-pause-state" role="status"></p>
+      </div>
+    </section>
       </div>
     </section>
 
@@ -538,6 +547,17 @@
     } catch (error) {
       note(out, `导入失败：${error.message}`, 'bad');
     }
+  }
+
+  // 嵌套在「实验性」里面的两个小分区：各自独立开合，不参与互斥
+  const subsections = [['ts-prompt-toggle', 'ts-prompt-panel'], ['ts-pause-toggle', 'ts-pause-panel']];
+
+  function toggleSubsection(toggleId) {
+    const pair = subsections.find(([id]) => id === toggleId);
+    if (!pair) return;
+    const panel = $(pair[1]);
+    panel.hidden = !panel.hidden;
+    $(pair[0]).setAttribute('aria-expanded', String(!panel.hidden));
   }
 
   function toggleSection(toggleId, force) {
@@ -1129,12 +1149,12 @@
                 ['ts-pw-toggle', 'ts-pw-panel'], ['ts-direct-toggle', 'ts-direct-panel'],
                 ['ts-io-toggle', 'ts-io-panel'],
                 ['ts-plugin-toggle', 'ts-plugin-panel'], ['ts-theme-toggle', 'ts-theme-panel'],
-                // 这两个（交互菜单、暂停按钮）以前没登记进 sections，点了展不开
-                ['ts-prompt-toggle', 'ts-prompt-panel'], ['ts-pause-toggle', 'ts-pause-panel']];
+                ['ts-lab-toggle', 'ts-lab-panel']];
     for (const [toggleId] of sections) $(toggleId).onclick = () => {
       toggleSection(toggleId);
       if (toggleId === 'ts-plugin-toggle' && !$('ts-plugin-panel').hidden) loadPlugins();
     };
+    for (const [toggleId] of subsections) $(toggleId).onclick = () => toggleSubsection(toggleId);
     for (const button of dialog.querySelectorAll('[data-ts-tab]')) {
       button.onclick = () => selectTab(button.dataset.tsTab);
     }
