@@ -1767,6 +1767,18 @@ class TmuxWebTests(unittest.TestCase):
             self.assertEqual(client.get("/api/panes", headers={
                 "Authorization": "Bearer relay-token-value"}).status_code, 200)
 
+    def test_the_pause_button_is_hidden_until_the_pref_turns_it_on(self):
+        html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
+        self.assertIn('id="live-toggle" hidden', html, "暂停按钮默认该藏起来")
+        self.assertIn("applyPauseButton", html)
+
+    def test_the_pause_button_preference_is_accepted(self):
+        self.login()
+        response = self.client.put("/api/prefs", json={"pause_button": "on"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["prefs"]["pause_button"], "on")
+        self.assertEqual(self.client.put("/api/prefs", json={"pause_button": "maybe"}).status_code, 400)
+
     def test_remote_loading_shows_in_the_status_line_not_a_floating_card(self):
         """加载时 idle/thinking 本来没有意义：状态就画在那一行，别弹浮层。"""
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()

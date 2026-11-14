@@ -237,7 +237,7 @@ class SettingsPageWiringTests(unittest.TestCase):
         # one section with two tabs, not two separate rows
         # 子节点(让别人接入) / 添加子节点 / 修改密码 / 直连地址 / 导入导出 / 插件 / 主题 / 交互菜单卡片
         # —— every one of them starts collapsed
-        self.assertEqual(script.count('class="ts-row"'), 7, '子节点面板加进来、添加子节点搬走')
+        self.assertEqual(script.count('class="ts-row"'), 8, '子节点面板加进来、暂停按钮加进实验性一组')
         self.assertIn("/api/system/addresses", script)
         self.assertIn('id="ts-direct-panel"', script)
         # 下载线路可以自己选：默认走当前页面（CF），想走直连再打开

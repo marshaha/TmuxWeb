@@ -272,6 +272,20 @@
     </section>
 
     <section class="ts-block">
+      <button class="ts-row" type="button" id="ts-pause-toggle" aria-expanded="false" aria-controls="ts-pause-panel">
+        <span>暂停实时刷新按钮（实验性）</span><span class="ts-caret" aria-hidden="true"></span>
+      </button>
+      <div class="ts-panel" id="ts-pause-panel" hidden>
+        <p class="ts-hint">顶栏那个「暂停实时刷新」按钮。默认隐藏：要冻结某个 pane 的画面手动看一会儿时才用得上。</p>
+        <div class="ts-tabs" role="group" aria-label="暂停实时刷新按钮">
+          <button type="button" data-ts-pause="off" class="on">关</button>
+          <button type="button" data-ts-pause="on">开</button>
+        </div>
+        <p class="ts-state" id="ts-pause-state" role="status"></p>
+      </div>
+    </section>
+
+    <section class="ts-block">
       <button class="ts-row" type="button" id="ts-theme-toggle" aria-expanded="false" aria-controls="ts-theme-panel">
         <span>主题</span>
         <span class="ts-tail"><span class="ts-hint" id="ts-theme-current"></span><span class="ts-caret" aria-hidden="true"></span></span>
@@ -565,6 +579,39 @@
 
   const PREVIEW_KEY = 'tmux-preview-delay';
   const PREVIEW_VALUES = new Set(['off', '1', '2', '3']);
+
+  const PAUSE_KEY = 'tmux-pause-button';
+  function paintPauseButton(on) {
+    for (const button of document.querySelectorAll('[data-ts-pause]')) {
+      button.classList.toggle('on', (button.dataset.tsPause === 'on') === on);
+    }
+    try { localStorage.setItem(PAUSE_KEY, on ? 'on' : 'off'); } catch {}
+    window.dispatchEvent(new CustomEvent('tmuxweb:pause-button', {detail: on}));
+  }
+
+  async function loadPauseButtonPref() {
+    let on = false;
+    try { on = localStorage.getItem(PAUSE_KEY) === 'on'; } catch {}
+    paintPauseButton(on);
+    try {
+      const data = await api('/api/prefs');
+      const server = (data.prefs || {}).pause_button;
+      if (server === 'on' || server === 'off') paintPauseButton(server === 'on');
+    } catch { /* 离线：用本地镜像 */ }
+  }
+
+  async function savePauseButtonPref(on) {
+    paintPauseButton(on);
+    try {
+      await api('/api/prefs', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pause_button: on ? 'on' : 'off'}),
+      });
+      note($('ts-pause-state'), on ? '已打开：顶栏出现暂停按钮' : '已关闭：按钮不再显示', on ? 'ok' : '');
+    } catch {
+      note($('ts-pause-state'), '保存到账号失败，已记在本浏览器', 'bad');
+    }
+  }
 
   const PROMPT_KEY = 'tmux-prompt-card';
   function paintPromptCard(on) {
@@ -1081,7 +1128,9 @@
     sections = [['ts-child-toggle', 'ts-child-panel'],
                 ['ts-pw-toggle', 'ts-pw-panel'], ['ts-direct-toggle', 'ts-direct-panel'],
                 ['ts-io-toggle', 'ts-io-panel'],
-                ['ts-plugin-toggle', 'ts-plugin-panel'], ['ts-theme-toggle', 'ts-theme-panel']];
+                ['ts-plugin-toggle', 'ts-plugin-panel'], ['ts-theme-toggle', 'ts-theme-panel'],
+                // 这两个（交互菜单、暂停按钮）以前没登记进 sections，点了展不开
+                ['ts-prompt-toggle', 'ts-prompt-panel'], ['ts-pause-toggle', 'ts-pause-panel']];
     for (const [toggleId] of sections) $(toggleId).onclick = () => {
       toggleSection(toggleId);
       if (toggleId === 'ts-plugin-toggle' && !$('ts-plugin-panel').hidden) loadPlugins();
@@ -1171,6 +1220,10 @@
     button.addEventListener('click', () => savePromptCardPref(button.dataset.tsPrompt === 'on'));
   }
   loadPromptCardPref();
+  for (const button of document.querySelectorAll('[data-ts-pause]')) {
+    button.addEventListener('click', () => savePauseButtonPref(button.dataset.tsPause === 'on'));
+  }
+  loadPauseButtonPref();
     $('ts-themes').addEventListener('click', event => {
       const button = event.target.closest('[data-theme]');
       if (button) chooseTheme(button.dataset.theme);

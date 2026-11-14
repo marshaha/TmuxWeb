@@ -2290,12 +2290,14 @@ def create_app(
             raise HTTPException(status_code=400, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="expected an object of preferences")
-        allowed = {"theme", "sidebar", "preview", "prompt_card", "transfer"}
+        allowed = {"theme", "sidebar", "preview", "prompt_card", "transfer", "pause_button"}
         # preview = 侧栏悬停预览的延迟（off 关闭；1/2/3 秒）
         # prompt_card = 聊天里的 agent 交互菜单卡片（实验性，默认 off）
         # transfer = 下载文件时要不要把字节改走直连源站（off 就一律走当前页面/CF）
+        # pause_button = 顶栏「暂停实时刷新」按钮（实验性，默认 off）
         choices = {"sidebar": {"pane", "none"}, "preview": {"off", "1", "2", "3"},
-                   "prompt_card": {"off", "on"}, "transfer": {"off", "on"}}
+                   "prompt_card": {"off", "on"}, "transfer": {"off", "on"},
+                   "pause_button": {"off", "on"}}
         saved = home.get_prefs()
         for key, value in payload.items():
             if key not in allowed:
