@@ -1771,6 +1771,8 @@ class TmuxWebTests(unittest.TestCase):
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
         self.assertIn('id="live-toggle" hidden', html, "暂停按钮默认该藏起来")
         self.assertIn("applyPauseButton", html)
+        # .share-btn 是 display:inline-grid，光有 hidden 属性压不住，按钮会照旧显示
+        self.assertIn(".share-btn[hidden]", html)
 
     def test_the_pause_button_preference_is_accepted(self):
         self.login()
