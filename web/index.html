@@ -2272,11 +2272,10 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(!pane||!text.trim()||attachmentsPending())return;
     // 条带在按 Enter 这一刻就收起来（以前等 POST 回来才清，那一秒图片还留着）
     const attachments=prompt?takeAttachments():[];
-    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});const st=sendResultState(d);setOptimisticStatus(localId,st.kind==='bad'?'failed':st.kind==='retrying'?'retrying':'sent');setSendState(st.text,st.kind);showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;refreshTranscript(pane,{force:true});}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点发送重试','bad');if(attachments.length)restoreAttachments(attachments);
-    // 别把用户刚打的字弄丢：放回输入框，改完/网络好了直接再发
-    // 别把用户刚打的字弄丢，也别把那行附件前缀留在输入框里：附件已经放回条带，
-    // 再发一次会重新拼前缀，留着就变成两行 "user uploaded file …"
-    if(!input.value.trim()){input.value=typed;input.style.height='auto';if(!isMobile())input.focus();}
+    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});const st=sendResultState(d);setOptimisticStatus(localId,st.kind==='bad'?'failed':st.kind==='retrying'?'retrying':'sent');setSendState(st.text,st.kind);showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;refreshTranscript(pane,{force:true});}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点消息上的重发','bad');
+    // 不把原文放回输入框：这条消息已经在聊天里显示出来了（带「重发」），
+    // 再放一份到输入框，用户会以为要重打一遍，也容易连发两条相同的。
+    if(!isMobile())input.focus();
   }finally{send.disabled=!state.selected;}}
   async function createShare(e){e.preventDefault();const result=$('share-result');result.textContent='创建中…';try{const d=await api('/api/shares',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane_id:state.selected,slug:$('share-slug').value.trim(),password:$('share-password').value,expires_in:Number($('share-expiry').value),allow_input:$('share-allow-input').checked})});const url=new URL(d.url,location.origin).href;try{await navigator.clipboard.writeText(url);result.textContent=`已创建并复制：${url}`;}catch{result.textContent=`已创建：${url}`;}}catch(error){result.textContent=error.message;}}
   list.addEventListener('click',e=>{const add=e.target.closest('[data-new-session]');if(!add)return;
@@ -2334,6 +2333,18 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
     TmuxRecents.setHosts(state.hosts);
     setupRecentPreview();
   }
+  // 从「服务器管理」按返回设置回来：?settings=1 直接把设置打开，参数从地址里抹掉
+  (function openSettingsFromQuery(){
+    let wanted=false;
+    try{wanted=new URLSearchParams(location.search).get('settings')==='1';}catch{}
+    if(!wanted)return;
+    history.replaceState(null,'',location.pathname);
+    const attempt=(tries)=>{
+      if(window.TmuxSettings&&TmuxSettings.open){TmuxSettings.open();return;}
+      if(tries>0)setTimeout(()=>attempt(tries-1),120);
+    };
+    attempt(20);
+  })();
   paintCachedHosts();loadPanes();setInterval(()=>{if(!document.hidden)loadPanes();},20000);
   // agent 的交互菜单（kimi 选择器、claude 权限确认）是实验性功能：
   // 设置里打开才轮询 /prompt，否则连请求都不发（读屏识别偶尔会误判）

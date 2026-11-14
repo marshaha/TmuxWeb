@@ -3059,8 +3059,10 @@ class TmuxWebTests(unittest.TestCase):
         self.assertLess(send.index("prompt?takeAttachments():[]"),
                         send.index("/input"), "要在发请求之前收")
         self.assertNotIn("clearAttachments()", send, "不能再等成功后清")
-        self.assertIn("restoreAttachments(attachments)", send, "失败要放回去")
-        self.assertIn("input.value=typed", send, "回填不含附件前缀，否则会拼两遍")
+        # 失败也不回填：消息已经画在聊天里（带重发），再放回输入框会让人重复发一遍
+        self.assertNotIn("restoreAttachments(attachments)", send)
+        self.assertNotIn("input.value=typed", send)
+        self.assertIn("点消息上的重发", send)
 
     def test_composer_files_can_take_and_restore_the_strip(self):
         script = (Path(__file__).resolve().parents[1] / "web" / "assets" / "composer-files.js").read_text()
