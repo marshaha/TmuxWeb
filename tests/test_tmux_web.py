@@ -1806,6 +1806,19 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.content[:4], b"\x89PNG")
 
+    def test_an_openlist_link_without_d_still_plays(self):
+        """openlist 少了 /d/ 会回自己的网页(200 + text/html)，不是文件 —— 代理要补一次。"""
+        import tmux_web
+
+        self.assertEqual(tmux_web.openlist_d_link("https://alist.461922950.xyz/189Cloud/videos/x.mp4"),
+                         "https://alist.461922950.xyz/d/189Cloud/videos/x.mp4")
+        # 已经是对的、或者本来就没有路径：不要瞎补
+        self.assertEqual(tmux_web.openlist_d_link("https://h/d/189Cloud/videos/x.mp4"), "")
+        self.assertEqual(tmux_web.openlist_d_link("https://h/"), "")
+        # 查询串要原样留着（签名链接靠它）
+        self.assertEqual(tmux_web.openlist_d_link("https://h/a/x.mp4?token=1"),
+                         "https://h/d/a/x.mp4?token=1")
+
     def test_the_media_proxy_refuses_to_touch_the_local_network(self):
         """远端视频要代取（octet-stream + attachment 浏览器不播），但不能变成打内网的后门。"""
         self.login()

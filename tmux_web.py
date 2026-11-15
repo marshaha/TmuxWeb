@@ -73,6 +73,25 @@ LONG_POLL_CHECK_SECONDS = 0.2
 LONG_POLL_WAITING_CHECK_SECONDS = 1.0
 
 
+def openlist_d_link(url: str) -> str:
+    """openlist/alist 的直链必须是 `https://host/d/<目录>/<文件>`。
+
+    缺了 `/d/` 的那一半，openlist 不回 404，而是回它自己的网页（200 + text/html），
+    看着就是"播放器一直空着"。agent 抄地址时经常漏这一段，所以代理会补一次再试。
+    已经是 /d/、或者压根没有路径的，返回空串（表示没有可试的变体）。
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return ""
+    path = parts.path or "/"
+    if path.startswith("/d/") or path.rstrip("/") == "/d":
+        return ""
+    if not path.strip("/"):
+        return ""
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/d" + path, parts.query, parts.fragment))
+
+
 def clamp_long_poll_wait(value) -> float:
     """Clamp a client-supplied long-poll wait to 0..LONG_POLL_MAX_SECONDS."""
     try:
@@ -2428,23 +2447,49 @@ def create_app(
         """
         if not url_is_fetchable(url):
             raise HTTPException(status_code=400, detail="这个地址不允许代理")
-        range_header = (request.headers.get("range") or "").strip()
-        try:
-            upstream = await asyncio.to_thread(open_media, url, range_header)
-        except urllib.error.HTTPError as error:
-            raise HTTPException(status_code=502, detail=f"上游返回 {error.code}") from error
-        except (urllib.error.URLError, OSError, RuntimeError, HTTPException) as error:
-            detail = getattr(error, "reason", None) or str(error)
-            raise HTTPException(status_code=502, detail=f"取不到这个地址：{detail}") from error
+        range_header = media_range_header((request.headers.get("range") or "").strip())
+        # 依次试：原地址 → openlist 的 /d/ 形式。
+        # openlist 对缺 /d/ 的路径不报错，而是回一张 HTML 首页（200），
+        # 那种响应既不能播也不该被当视频转发出去，所以 HTML 也算失败。
+        candidates = [url]
+        variant = openlist_d_link(url)
+        if variant:
+            candidates.append(variant)
+        upstream = None
+        upstream_url = url
+        failure = "取不到这个地址"
+        for candidate in candidates:
+            try:
+                attempt = await asyncio.to_thread(open_media, candidate, range_header)
+            except urllib.error.HTTPError as error:
+                failure = f"上游返回 {error.code}"
+                continue
+            except (urllib.error.URLError, OSError, RuntimeError, HTTPException) as error:
+                failure = f"取不到这个地址：{getattr(error, 'reason', None) or error}"
+                continue
+            kind_hint = (attempt.headers.get("Content-Type") or "").lower()
+            if kind_hint.startswith("text/html") or kind_hint.startswith("application/xhtml"):
+                # 这是 openlist 的网页，不是文件本身
+                failure = "这个地址不是直链（openlist 要用 /d/ 开头的链接）"
+                try:
+                    attempt.close()
+                except Exception:      # noqa: BLE001
+                    pass
+                continue
+            upstream = attempt
+            upstream_url = candidate
+            break
+        if upstream is None:
+            raise HTTPException(status_code=502, detail=failure)
 
         headers = {
             "Cache-Control": "private, max-age=60",
             "Accept-Ranges": "bytes",
         }
         upstream_type = (upstream.headers.get("Content-Type") or "").split(";")[0].strip()
-        kind = media_type_for(url) or media_type_for(upstream.geturl() or "") or upstream_type
-        if not kind or kind in ("application/octet-stream", "binary/octet-stream",
-                                "text/html", "text/plain"):
+        kind = (media_type_for(upstream_url) or media_type_for(upstream.geturl() or "")
+                or media_type_for(url) or upstream_type)
+        if not kind or kind in ("application/octet-stream", "binary/octet-stream", "text/plain"):
             kind = media_type_for(url) or "application/octet-stream"
         for name in ("Content-Range", "Content-Length"):
             value = upstream.headers.get(name)
@@ -5074,6 +5119,16 @@ def create_app(
                     or address.is_multicast or address.is_reserved or address.is_unspecified):
                 return False
         return True
+
+    MEDIA_CHUNK = 1048576          # 一次最多代取 1MB，metadata + 首帧够了
+
+    def media_range_header(header: str) -> str:
+        """把开放式 Range（`bytes=0-`）收成有界的一段，别为了取一帧把整段视频拉下来。"""
+        match = re.match(r"^bytes=(\d+)-$", header.strip())
+        if not match:
+            return header
+        start = int(match.group(1))
+        return f"bytes={start}-{start + MEDIA_CHUNK - 1}"
 
     def open_media(url: str, range_header: str):
         """跟着重定向走，但每一跳都重新校验，最多三跳。"""
