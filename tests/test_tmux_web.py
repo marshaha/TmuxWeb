@@ -770,6 +770,87 @@ class TmuxWebTests(unittest.TestCase):
         self.client.cookies.clear()
         self.assertIn(self.client.post("/api/panes/%254/key", json={"key": "Escape"}).status_code, (401, 403))
 
+    def _stub_restart(self, session_id="abc12345", busy=False):
+        """A codex pane whose session file says idle (or busy), with a
+        scripted respawn: the new process replaces the old pid and carries
+        the resume flag."""
+        import json as _json
+        record = {"type": "event_msg",
+                  "payload": {"type": "task_started" if busy else "task_complete"}}
+        handle = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        handle.write(_json.dumps(record) + "\n")
+        handle.close()
+        self.addCleanup(lambda: os.unlink(handle.name))
+        state = {"pid": "100", "hint": session_id}
+        data = {"provider": "codex", "session_id": session_id, "path": handle.name,
+                "messages": [{"role": "assistant", "text": "hi"}]}
+
+        def restart_info(pane_id, pane=None):
+            return {"provider": "codex", "session_id": state["hint"],
+                    "argv": ["codex"], "pane_pid": state["pid"]}
+
+        def restart_resume(pane_id, argv, pane=None, term_wait=None):
+            self.tmux.respawned = list(argv)
+            state["pid"] = "200"
+            return {"pane": pane_id, "command": " ".join(argv)}
+
+        self.tmux.restart_info = restart_info
+        self.tmux.restart_resume = restart_resume
+        self.tmux.transcript = lambda pane_id, limit=200, refresh=False, pane=None: dict(data)
+
+    def test_restart_info_reads_the_pane_pid_fresh(self):
+        # after a respawn the pane dict's pid is stale; verification must see
+        # the new process, so restart_info re-reads it from tmux every time
+        self.tmux.pane_pid = lambda pane_id: "999"
+        info = self.tmux.restart_info("%4", pane={"pane_pid": "100", "command": "claude"})
+        self.assertEqual(info["pane_pid"], "999")
+
+    def test_restart_resume_invalidates_the_cached_process_table(self):
+        # the listing's ps cache still names the dead process after a respawn;
+        # without an invalidate the new process is invisible to provider
+        # detection (and the next restart attempt 422s) for the rest of the TTL
+        self.tmux._run = lambda *args, **kwargs: ""
+        self.tmux._pid_alive = lambda pid: False
+        tmux_web._PS_CACHE["at"] = time.monotonic()
+        tmux_web._PS_CACHE["table"] = {"100": (1, "claude")}
+        self.tmux.restart_resume("%4", ["claude", "--resume", "abc12345"],
+                                 pane={"pane_pid": "100", "command": "claude"})
+        self.assertEqual(tmux_web._PS_CACHE["at"], 0.0)
+        self.assertEqual(tmux_web._PS_CACHE["table"], {})
+
+    def test_restart_resume_happy_path(self):
+        self.login()
+        self._stub_restart()
+        response = self.client.post("/api/panes/%254/restart-resume")
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["status"], "resumed")
+        self.assertEqual(payload["session_id"], "abc12345")
+        self.assertTrue(payload["verified"])
+        self.assertEqual(self.tmux.respawned, ["codex", "resume", "abc12345"])
+
+    def test_restart_resume_refuses_a_busy_pane(self):
+        self.login()
+        self._stub_restart(busy=True)
+        response = self.client.post("/api/panes/%254/restart-resume")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertFalse(hasattr(self.tmux, "respawned"))
+
+    def test_restart_resume_refuses_an_unsupported_pane(self):
+        self.login()
+        self.tmux.panes[0]["command"] = "vim"
+        response = self.client.post("/api/panes/%254/restart-resume")
+        self.assertEqual(response.status_code, 422, response.text)
+
+    def test_restart_resume_refuses_without_a_session(self):
+        self.login()
+        self._stub_restart(session_id="")
+        self.tmux.transcript = lambda pane_id, limit=200, refresh=False, pane=None: (_ for _ in ()).throw(
+            RuntimeError("no Codex transcript for /work/repo"))
+        response = self.client.post("/api/panes/%254/restart-resume")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertFalse(hasattr(self.tmux, "respawned"))
+
     def test_send_button_turns_into_a_stop_button_while_working(self):
         self.login()
         page = self.client.get("/").text

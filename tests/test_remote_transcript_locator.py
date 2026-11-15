@@ -119,5 +119,60 @@ printf '%s' "$id"
 
 
 
+@unittest.skipUnless(shutil.which("bash"), "bash is required to exercise the shell helper")
+class RestartInfoShellTests(unittest.TestCase):
+    """Run the real agent_args helper against a stubbed ``ps``/``pgrep``."""
+
+    def run_args(self, args_line: str) -> str:
+        body = SCRIPT.split("agent_args() {", 1)[1].split("\n}\n", 1)[0]
+        script = (
+            "set -u\n"
+            "pgrep() { return 1; }\n"
+            f"ps() {{ printf '%s\\n' {args_line!r}; }}\n"
+            "agent_args() {" + body + "\n}\n"
+            "agent_args 4242 || true\n"
+        )
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_direct_agent_argv_is_returned(self):
+        self.assertEqual(
+            self.run_args("claude --resume 11111111-2222-3333-4444-555555555555"),
+            "claude --resume 11111111-2222-3333-4444-555555555555")
+
+    def test_node_wrapped_codex_is_returned(self):
+        self.assertEqual(
+            self.run_args("node /usr/local/bin/codex resume 0199aaaa-bbbb-cccc-dddd-eeeeffff0000"),
+            "node /usr/local/bin/codex resume 0199aaaa-bbbb-cccc-dddd-eeeeffff0000")
+
+    def test_shebang_script_agent_is_returned(self):
+        self.assertEqual(
+            self.run_args("bash /tmp/bin/claude --resume 11111111-2222-3333-4444-555555555555"),
+            "bash /tmp/bin/claude --resume 11111111-2222-3333-4444-555555555555")
+
+    def test_command_string_after_dash_c_is_not_the_agent(self):
+        self.assertEqual(self.run_args("bash -c claude"), "")
+        self.assertEqual(self.run_args("python3 -c hermes"), "")
+
+    def test_shell_whose_command_mentions_an_agent_is_not_the_agent(self):
+        self.assertEqual(
+            self.run_args("zsh -c claude --resume 11111111-2222-3333-4444-555555555555"), "")
+
+    def test_plain_shell_returns_nothing(self):
+        self.assertEqual(self.run_args("bash"), "")
+
+    def test_restart_info_branch_prints_provider_session_argv_and_pid(self):
+        branch = SCRIPT.split('if [ "${TMUXWEB_RESTART_INFO:-0}" = 1 ]; then', 1)[1]
+        branch = branch.split("fi\n", 1)[0]
+        for header in ("TMUXWEB_PROVIDER", "TMUXWEB_SESSION", "TMUXWEB_ARGV", "TMUXWEB_PANE_PID"):
+            self.assertIn(header, branch)
+        self.assertIn('hint=$(session_hint "$pane_pid")', branch)
+        self.assertIn('args=$(agent_args "$pane_pid")', branch)
+        # the branch runs right after provider detection, before any transcript work
+        self.assertLess(SCRIPT.index("TMUXWEB_RESTART_INFO"),
+                        SCRIPT.index('if [ "$provider" = claude ]; then'))
+
+
 if __name__ == "__main__":
     unittest.main()

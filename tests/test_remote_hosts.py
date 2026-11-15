@@ -582,9 +582,50 @@ class RemoteHostTests(unittest.TestCase):
         self.assertIn("head -3", command)
         self.assertIn("grep -qF", command)
         self.assertNotIn("grep -lF", command)
-        self.assertLess(command.index("tail -c"), command.index("python3"))
+        # the python3 *runtime* (Hermes sqlite fallback) stays a last resort,
+        # after the tail-based discovery; the bare word also appears in
+        # agent_args as a name to match against, which never runs it
+        self.assertLess(command.index("tail -c"), command.index("command -v python3"))
         self.assertNotIn("--pane", command)  # the old python reader invocation is gone
         self.assertEqual([item["text"] for item in data["messages"]], ["问题", "回答"])
+
+    def test_restart_info_parses_the_live_argv(self):
+        runner = self.make_runner()
+        captured = {}
+
+        class Result:
+            def __init__(self, stdout):
+                self.stdout, self.stderr, self.returncode = stdout, b"", 0
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            return Result(b"TMUXWEB_PROVIDER<::>codex\n"
+                          b"TMUXWEB_SESSION<::>0199aaaa-bbbb-cccc-dddd-eeeeffff0000\n"
+                          b"TMUXWEB_ARGV<::>codex --model 'gpt 5' resume 0199aaaa-bbbb-cccc-dddd-eeeeffff0000\n"
+                          b"TMUXWEB_PANE_PID<::>4242\n")
+
+        runner.run = fake_run
+        info = runner.restart_info("%9")
+        self.assertIn("TMUXWEB_RESTART_INFO=1", captured["command"])
+        self.assertIn("%9", captured["command"])
+        self.assertEqual(info, {
+            "provider": "codex",
+            "session_id": "0199aaaa-bbbb-cccc-dddd-eeeeffff0000",
+            "argv": ["codex", "--model", "gpt 5", "resume",
+                     "0199aaaa-bbbb-cccc-dddd-eeeeffff0000"],
+            "pane_pid": "4242"})
+
+    def test_restart_info_surfaces_a_remote_error(self):
+        runner = self.make_runner()
+
+        class Result:
+            def __init__(self):
+                self.stdout = b"TMUXWEB_ERROR<::>unsupported pane command: zsh\n"
+                self.stderr, self.returncode = b"", 0
+
+        runner.run = lambda command, **kwargs: Result()
+        with self.assertRaises(RuntimeError):
+            runner.restart_info("%9")
 
     def test_incremental_transcript_only_transfers_new_bytes(self):
         runner = self.make_runner()

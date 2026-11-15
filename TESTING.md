@@ -374,8 +374,21 @@ curl -I https://your-host.example/login
 - Service Worker 不缓存敏感请求。
 - 本地源站停止时，公网监控能明确报告 origin 不可用。
 
-## 12. 发布前隐私检查
+## 12. 重启并恢复验收（只用临时 pane，绝不动正在工作的会话）
 
+1. 在一台测试机上起一个只跑假 agent 的临时 pane（不要用任何真实对话的 pane）：
+   先放一个假 `claude`（`#!/bin/bash`，打印参数后 `while :; do sleep 60; done`），再放一个假会话文件
+   `~/.claude/projects/<cwd 的 / 换成 ->/<id>.jsonl`，最后一行带 `"subtype":"turn_duration"`（空闲标记）；
+   然后 `tmux new-session -d -s restart-test -c <cwd> 'claude --resume <id>'`。
+   （假 agent 只是占位，真正验证会话恢复要用带真实 session 文件的 claude/codex/kimi/hermes。）
+2. 在 UI 里选中这个 pane → 顶栏出现「重启并恢复」按钮；点它 → 对话框说明滚动记录会清空；点「重启并恢复」→
+   空闲时返回 `{"status":"resumed","session_id":"…","verified":true}`，新进程的 `--resume` 参数等于旧会话 id；
+   agent 正在回答时返回 409「agent 还在忙」且不重启；没有会话 id 的 pane 返回 409 且不重启。
+3. 远端 pane 同样走一遍：同一 endpoint，SSH/agent 两种 transport 都应返回相同的结构。
+4. 恢复后检查：对话从会话文件重新显示，滚动记录清空是预期行为；若新进程起了新会话（verified 为 false），
+   按返回的错误处理，不要当作恢复成功。
+
+## 13. 发布前隐私检查
 ```bash
 git status --ignored --short
 git ls-files

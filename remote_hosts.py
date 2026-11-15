@@ -235,6 +235,48 @@ provider_hint() {
   done
   return 1
 }
+# The agent's own argv, for restart-and-resume: the pane root is often a shell,
+# so walk the tree like session_hint, but only the executable (or the script an
+# interpreter runs) names the agent — a shell whose -c string merely mentions
+# one is not the agent, its child is.
+agent_args() {
+  root=${1:-0}
+  [ -n "$root" ] || return 1
+  kids=$(pgrep -P "$root" 2>/dev/null)
+  grand=$(for child in $kids; do pgrep -P "$child" 2>/dev/null; done)
+  great=$(for child in $grand; do pgrep -P "$child" 2>/dev/null; done)
+  for pid in $root $kids $grand $great; do
+    [ -n "$pid" ] || continue
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+    [ -n "$args" ] || continue
+    first=${args%% *}
+    base=$(basename "$first" 2>/dev/null)
+    case "$base" in
+      claude|claude.*|claude-*|codex|codex.*|codex-*|kimi|kimi.*|kimi-*|hermes|hermes.*|hermes-*)
+        printf '%s' "$args"; return 0 ;;
+    esac
+    case "$base" in
+      node|nodejs|python|python3|bash|sh|zsh|dash)
+        script=""
+        for word in $args; do
+          [ "$word" = "$first" ] && continue
+          case "$word" in
+            -c|--command|-e) break ;;  # the next word is a command string, not a script
+            -*) continue ;;
+            *) script=$word; break ;;
+          esac
+        done
+        [ -n "$script" ] || continue
+        sbase=$(basename "$script" 2>/dev/null)
+        case "$sbase" in
+          claude|claude.*|claude-*|codex|codex.*|codex-*|kimi|kimi.*|kimi-*|hermes|hermes.*|hermes-*)
+            printf '%s' "$args"; return 0 ;;
+        esac
+        ;;
+    esac
+  done
+  return 1
+}
 args_match() {  # $1=args $2=agent 名
   case "$1" in
     *"/$2 "*|*"/$2"|*"/$2-"*|"$2 "*|"$2"|"$2-"*) return 0 ;;
@@ -278,6 +320,17 @@ title=${rest%%"$sep"*}
 command=${rest##*"$sep"}
 provider=$(detect_provider "$(${TMUX_BIN:-tmux} display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null)" "$command") || provider=""
 [ -n "$provider" ] || error "unsupported pane command: $command" 22
+
+# Restart-and-resume only needs the live argv, not the transcript: answer it
+# here so the caller pays one round trip instead of a full discovery.
+if [ "${TMUXWEB_RESTART_INFO:-0}" = 1 ]; then
+  pane_pid=$(${TMUX_BIN:-tmux} display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null)
+  hint=$(session_hint "$pane_pid") || hint=""
+  args=$(agent_args "$pane_pid") || args=""
+  printf 'TMUXWEB_PROVIDER%s%s\nTMUXWEB_SESSION%s%s\nTMUXWEB_ARGV%s%s\nTMUXWEB_PANE_PID%s%s\n' \
+    "$sep" "$provider" "$sep" "$hint" "$sep" "$args" "$sep" "$pane_pid"
+  exit 0
+fi
 
 if [ "$provider" = claude ]; then
   proj=$HOME/.claude/projects/$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')
@@ -695,6 +748,28 @@ def store_cache_entry(key: tuple, entry: dict) -> None:
             oldest = sorted(TRANSCRIPT_CACHE.items(), key=lambda item: item[1].get("at", 0))
             for old_key, _value in oldest[:len(TRANSCRIPT_CACHE) - TRANSCRIPT_CACHE_SIZE]:
                 TRANSCRIPT_CACHE.pop(old_key, None)
+
+
+def _parse_info_output(text: str) -> dict:
+    """``TMUXWEB_*<::>value`` lines from a helper that prints no payload
+    (restart info): the same header shape as parse_transcript_response,
+    without requiring a TMUXWEB_PAYLOAD marker."""
+    info = {}
+    for line in (text or "").splitlines():
+        if "<::>" not in line:
+            continue
+        key, value = line.split("<::>", 1)
+        info[key.strip()] = value.strip()
+    return info
+
+
+def _split_argv(text: str) -> list[str]:
+    """Best-effort argv split for a ``ps -o args=`` line: quoted arguments
+    survive shlex; a malformed line falls back to plain whitespace."""
+    try:
+        return shlex.split(text or "")
+    except ValueError:
+        return (text or "").split()
 
 
 def parse_transcript_response(stdout: bytes) -> tuple[dict, str]:
@@ -2405,6 +2480,88 @@ class SSHRunner:
             if pane and state:
                 result[pane] = state
         return result
+
+    def restart_info(self, pane_id: str, pane: dict | None = None) -> dict:
+        """The live agent argv + session hint for a pane, in one round trip.
+
+        The transcript script's restart-info mode answers without locating a
+        session file: the pane's own process tree already knows both.
+        """
+        if not PANE_ID_RE.fullmatch(pane_id):
+            raise ValueError("invalid pane id")
+        command = ("TMUXWEB_RESTART_INFO=1 sh -c " + shlex.quote(REMOTE_TRANSCRIPT_SCRIPT)
+                   + " sh " + shlex.quote(pane_id) + " 1")
+        completed = self.run(command, timeout=self.probe_timeout)
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(errors="replace").strip()
+            raise RuntimeError(detail or "remote restart info failed")
+        info = _parse_info_output(completed.stdout.decode(errors="replace"))
+        if info.get("TMUXWEB_ERROR"):
+            raise RuntimeError(info["TMUXWEB_ERROR"])
+        return {"provider": info.get("TMUXWEB_PROVIDER") or "",
+                "session_id": info.get("TMUXWEB_SESSION") or "",
+                "argv": _split_argv(info.get("TMUXWEB_ARGV") or ""),
+                "pane_pid": info.get("TMUXWEB_PANE_PID") or ""}
+
+    def restart_resume(self, pane_id: str, argv, pane: dict | None = None,
+                       term_wait: float | None = None) -> dict:
+        """TERM the pane's process group (bounded), then respawn it in place
+        with ``argv`` under the keep-open wrapper.
+
+        ``remain-on-exit`` is set on the window first: without it the pane
+        closes the moment its process dies and there is nothing left to
+        respawn into. It is restored in a finally, so the window is only
+        briefly affected. A process that ignores TERM is KILLed after the
+        wait; a respawn that still cannot run fails loudly and the old
+        process (if any) keeps running — the safe state.
+        """
+        import pane_restart
+
+        if not PANE_ID_RE.fullmatch(pane_id):
+            raise ValueError("invalid pane id")
+        if not argv:
+            raise ValueError("a non-empty argv list is required")
+        wait = max(1.0, float(term_wait if term_wait is not None
+                              else pane_restart.TERM_WAIT_SECONDS))
+        tmux = "${TMUX_BIN:-tmux}"
+        target = shlex.quote(pane_id)
+        self.run(f"{tmux} set-window-option -t {target} remain-on-exit on",
+                 timeout=self.probe_timeout)
+        try:
+            pid = ((pane or {}).get("pane_pid") or "").strip()
+            if not pid:
+                found = self.run(
+                    f"{tmux} display-message -p -t {target} '#{{pane_pid}}'",
+                    timeout=self.probe_timeout)
+                pid = found.stdout.decode(errors="replace").strip()
+            if pid and pid.isdigit():
+                self.run(f"kill -TERM -{pid} 2>/dev/null || kill -TERM {pid} 2>/dev/null || true",
+                         timeout=self.probe_timeout)
+                waited = self.run(
+                    "i=0; while [ $i -lt %d ]; do kill -0 %s 2>/dev/null || exit 0; "
+                    "i=$((i + 1)); sleep 0.5; done; exit 1" % (int(wait / 0.5), pid),
+                    timeout=int(wait) + 5)
+                if waited.returncode != 0:
+                    self.run(f"kill -KILL -{pid} 2>/dev/null || kill -KILL {pid} 2>/dev/null || true",
+                             timeout=self.probe_timeout)
+                    self.run(
+                        "i=0; while [ $i -lt 6 ]; do kill -0 %s 2>/dev/null || exit 0; "
+                        "i=$((i + 1)); sleep 0.5; done; exit 1" % pid,
+                        timeout=10)
+            rendered = agent_catalog.with_keep_open(list(argv))
+            completed = self.run(
+                f"{tmux} respawn-pane -t {target} {shlex.quote(rendered)}",
+                timeout=self.probe_timeout)
+            if completed.returncode != 0:
+                detail = completed.stderr.decode(errors="replace").strip()
+                raise RuntimeError(detail or "remote respawn failed")
+        finally:
+            try:
+                self.run(f"{tmux} set-window-option -t {target} remain-on-exit off",
+                         timeout=self.probe_timeout)
+            except (RuntimeError, OSError):
+                pass
+        return {"pane": pane_id, "command": agent_catalog.render(list(argv))}
 
     def send_key(self, pane_id: str, key: str, pane: dict | None = None) -> None:
         self.send_keys(pane_id, [key], pane=pane)
