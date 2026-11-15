@@ -56,6 +56,65 @@
     return response.json();
   }
 
+  function makePathLink(raw, pane, options, cwd) {
+    const link = document.createElement('a');
+    link.className = 'plink';
+    link.href = '#';
+    link.dataset.plinkPath = raw;
+    link.title = raw;
+    link.textContent = raw;
+    link.__plinkOpen = () => {
+      if (link.__plinkAt && Date.now() - link.__plinkAt < 600) return;   // 同一个手势只开一次
+      link.__plinkAt = Date.now();
+      open(raw, pane, options, cwd);
+    };
+    link.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      link.__plinkOpen();
+    });
+    // 鼠标悬停 380ms 弹小卡片：文件名 + 大小 + 预览/下载（触摸不弹，免得一点就冒出来）
+    link.addEventListener('pointerenter', event => {
+      if (event.pointerType && event.pointerType !== 'mouse') return;
+      clearTimeout(hideTimer);
+      clearTimeout(cardTimer);
+      cardTimer = setTimeout(() => { showCard(link, pane, options, cwd); }, 380);
+    });
+    link.addEventListener('pointerleave', scheduleHide);
+    link.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        link.__plinkOpen();
+      }
+    });
+    return link;
+  }
+
+  // 判断一段代码块文本是不是"纯路径"：是就返回清洗后的路径，否则空串。
+  // 抽出来是为了能单独测（enhance 本身要 DOM）。
+  function bareCodePath(text) {
+    const body = String(text == null ? '' : text).trim();
+    if (!body || body.length > 512) return '';
+    if (/\s/.test(body)) return '';          // 有空白 = 命令行/代码，不是纯路径
+    const raw = cleanPath(body);
+    return raw && plausible(raw) ? raw : '';
+  }
+
+  // 代码块里"整块就是一个路径"时才转成链接：这是最常见的形态
+  // （agent 把路径单独放进 ``` 里），而不是把代码里的每一段斜杠都变成链接
+  function enhanceBareCode(root, pane, options, cwd) {
+    let count = 0;
+    for (const block of root.querySelectorAll('pre')) {
+      if (block.closest('[data-plink]') || block.querySelector('a')) continue;
+      const raw = bareCodePath(block.textContent);
+      if (!raw) continue;
+      block.textContent = '';
+      block.appendChild(makePathLink(raw, pane, options, cwd));
+      count += 1;
+    }
+    return count;
+  }
+
   function wrapTextNode(node, pane, options, cwd) {
     const text = node.textContent || '';
     let match;
@@ -79,37 +138,7 @@
     for (const {start, raw} of hits) {
       if (start < last) continue;
       if (start > last) bits.push(document.createTextNode(text.slice(last, start)));
-      const link = document.createElement('a');
-      link.className = 'plink';
-      link.href = '#';
-      link.dataset.plinkPath = raw;
-      link.title = raw;
-      link.textContent = raw;
-      link.__plinkOpen = () => {
-        if (link.__plinkAt && Date.now() - link.__plinkAt < 600) return;   // 同一个手势只开一次
-        link.__plinkAt = Date.now();
-        open(raw, pane, options, cwd);
-      };
-      link.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        link.__plinkOpen();
-      });
-      // 鼠标悬停 380ms 弹小卡片：文件名 + 大小 + 预览/下载（触摸不弹，免得一点就冒出来）
-      link.addEventListener('pointerenter', event => {
-        if (event.pointerType && event.pointerType !== 'mouse') return;
-        clearTimeout(hideTimer);
-        clearTimeout(cardTimer);
-        cardTimer = setTimeout(() => { showCard(link, pane, options, cwd); }, 380);
-      });
-      link.addEventListener('pointerleave', scheduleHide);
-      link.addEventListener('keydown', event => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          link.__plinkOpen();
-        }
-      });
-      bits.push(link);
+      bits.push(makePathLink(raw, pane, options, cwd));
       last = start + raw.length;
     }
     if (!bits.length) return false;
@@ -282,6 +311,7 @@
     for (const textNode of targets) {
       if (wrapTextNode(textNode, pane, options, cwd)) count += 1;
     }
+    count += enhanceBareCode(root, pane, options, cwd);
     return count;
   }
 
@@ -302,5 +332,5 @@
     return true;
   }
 
-  window.TmuxPaths = {enhance, rawHref, lookup, activateAt, downloadHref, hideCard};
+  window.TmuxPaths = {enhance, rawHref, lookup, activateAt, downloadHref, hideCard, bareCodePath};
 })();

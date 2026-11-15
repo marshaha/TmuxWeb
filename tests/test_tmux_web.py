@@ -4336,6 +4336,9 @@ class TmuxWebTests(unittest.TestCase):
 
         module = self.client.get("/assets/path-links.js").text
         self.assertIn("function activateAt(x, y, scope)", module)
+        # 代码块里"整块就是一条路径"也要能点开/下载（以前 pre 整块被跳过）
+        self.assertIn("function enhanceBareCode(", module)
+        self.assertIn("enhanceBareCode(root, pane, options, cwd)", module)
         self.assertIn("__plinkOpen", module)
         # 悬停气泡：文件名 + 大小 + 预览/下载；log/txt 这类点开是预览而不是直接下载
         self.assertIn("TEXT_EXT", module)
@@ -4344,7 +4347,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("downloadHref", module)
         self.assertIn("onPreview:path=>openMarkdownViewer(", page)
         self.assertIn(".plink-card{position:fixed", self.client.get("/assets/path-links.css").text)
-        for marker in ("window.TmuxPaths = {enhance, rawHref, lookup, activateAt, downloadHref, hideCard};",
+        for marker in ("window.TmuxPaths = {enhance, rawHref, lookup, activateAt, downloadHref, hideCard, bareCodePath};",
                        "files/stat?path=", "onDir", "onMd", "onMissing", "dataset.plinkPath"):
             self.assertIn(marker, module)
         # 中文标点也是边界：`本地文件：/Users/...` 这类纯文本必须能识别
