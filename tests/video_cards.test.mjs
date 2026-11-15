@@ -28,6 +28,7 @@ function makeElement(tag) {
     setAttribute(name, value) { this.attributes[name] = value; },
     getAttribute(name) { return this.attributes[name]; },
     append(...nodes) { this.children.push(...nodes); },
+    addEventListener(name, handler) { (this.listeners ||= {})[name] = handler; },
     appendChild(node) { this.children.push(node); return node; },
     closest() { return null; },
     replaceWith(node) { this.replacedWith = node; },

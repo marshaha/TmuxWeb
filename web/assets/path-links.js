@@ -19,7 +19,8 @@
   // 后者故意要求"斜杠 + 扩展名"，免得把 and/or 之类的普通词也变成链接。
   const BOUNDARY = "[\\s(（\\[【<\"'`：:，、；;！？!?）】」』》>]";
   const ABSOLUTE = new RegExp('(^|' + BOUNDARY + ')((?:~|\\.{1,2})?\\/[^\\s\"' + '`<>|，。；：、）)】]+)', 'g');
-  const RELATIVE = new RegExp('(^|' + BOUNDARY + ')((?:\\.{1,2}\\/)?(?:[\\w@%+.-]+\\/)+[\\w@%+.-]+\\.[A-Za-z0-9]{1,8})', 'g');
+  // 扩展名至少两个字符：`12.5/12.8s`、`a/b.c` 这种不是文件
+  const RELATIVE = new RegExp('(^|' + BOUNDARY + ')((?:\\.{1,2}\\/)?(?:[\\w@%+.-]+\\/)+[\\w@%+.-]+\\.[A-Za-z][A-Za-z0-9]{1,7})', 'g');
   const SKIP_TAGS = new Set(['A', 'PRE', 'SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'BUTTON', 'SVG']);
   const MD_EXT = /\.(md|markdown|mdx)$/i;
   // 可以直接看内容、也可以下载的文本类
@@ -29,8 +30,12 @@
   // 至少两段（/a/b）或者以 ~/ ./ ../ 开头，才算"像路径"：/grid、/OUT-OF-BAND 这种就放过
   // 只屏蔽明确的接口/静态资源前缀；`/home/...` 是 Linux 家目录，不能连坐（曾经把整条路径吃掉）
   const WEB_PREFIX = /^\/(api|assets|static|vendor|mcp|share-assets)\//;
+  // `12.5/12.8s`、`1.5/2.0x` 这种是分镜时间码/倍率，不是文件
+  const NUMERIC_PAIR = /^\d+(?:\.\d+)?\/\d+(?:\.\d+)?s?$/;
+
   function plausible(path) {
     if (WEB_PREFIX.test(path)) return false;          // 接口/静态资源不是文件
+    if (NUMERIC_PAIR.test(path)) return false;
     if (/^(~|\.{1,2})\//.test(path)) return true;
     return path.split('/').filter(Boolean).length >= 2;
   }
@@ -101,17 +106,30 @@
     return raw && plausible(raw) ? raw : '';
   }
 
-  // 代码块里"整块就是一个路径"时才转成链接：这是最常见的形态
-  // （agent 把路径单独放进 ``` 里），而不是把代码里的每一段斜杠都变成链接
-  function enhanceBareCode(root, pane, options, cwd) {
+  // 代码块按"行"看：整行就是一条路径 → 变成链接，其余行原样保留。
+  // 这样 ``` /path/x.mp4 \n 26.4 秒 · 960×544 · ... ``` 这种"路径 + 说明"的块也能点/能播，
+  // 而命令行（带空格的）不会被误拆。
+  function enhanceCodeLines(root, pane, options, cwd) {
     let count = 0;
     for (const block of root.querySelectorAll('pre')) {
-      if (block.closest('[data-plink]') || block.querySelector('a')) continue;
-      const raw = bareCodePath(block.textContent);
-      if (!raw) continue;
+      if (block.closest('[data-plink]') || block.querySelector('.plink') || block.querySelector('a')) continue;
+      const lines = String(block.textContent || '').split('\n');
+      const parts = [];
+      let made = 0;
+      for (let index = 0; index < lines.length; index += 1) {
+        const raw = bareCodePath(lines[index]);
+        if (raw) {
+          parts.push(makePathLink(raw, pane, options, cwd));
+          made += 1;
+        } else {
+          parts.push(document.createTextNode(lines[index]));
+        }
+        if (index < lines.length - 1) parts.push(document.createTextNode('\n'));
+      }
+      if (!made) continue;
+      count += made;
       block.textContent = '';
-      block.appendChild(makePathLink(raw, pane, options, cwd));
-      count += 1;
+      for (const part of parts) block.appendChild(part);
     }
     return count;
   }
@@ -131,6 +149,7 @@
         const raw = cleanPath(found[group]);
         if (!raw || !plausible(raw)) continue;
         if (/:\/\//.test(text.slice(Math.max(0, start - 8), start))) continue;   // 跳过 URL
+        if (/:[/]/.test(text.slice(Math.max(0, start - 1), start))) continue;      // URL 里的路径段
         if (hits.some(hit => start >= hit.start && start < hit.start + hit.raw.length)) continue;
         hits.push({start, raw});
       }
@@ -312,7 +331,7 @@
     for (const textNode of targets) {
       if (wrapTextNode(textNode, pane, options, cwd)) count += 1;
     }
-    count += enhanceBareCode(root, pane, options, cwd);
+    count += enhanceCodeLines(root, pane, options, cwd);
     return count;
   }
 

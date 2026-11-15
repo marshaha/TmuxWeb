@@ -4369,7 +4369,11 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn('/assets/path-links.js', page)
         self.assertIn("function enhancePaths(root){", page)
         # 懒处理：渲染时不扫，碰到哪条消息才处理哪条（长会话别每次全量扫文本）
-        self.assertIn("function enhancePathsLazy(container){", page)
+        self.assertIn("function enhancePathsLazy(container, force){", page)
+        # 重渲染（轮询刷新换掉 DOM）之后要再跑一遍，否则新节点永远没被处理
+        self.assertIn("enhancePathsLazy(host,true)", page)
+        # .plink 建好之后才轮到视频卡片
+        self.assertIn("enhanceVideos(root)", page)
         self.assertIn("container.dataset.pathsBound='1';", page)
         self.assertIn("'pointerover',touch,true", page)
         self.assertIn("enhancePathsLazy(host);", page)
@@ -4385,8 +4389,9 @@ class TmuxWebTests(unittest.TestCase):
         module = self.client.get("/assets/path-links.js").text
         self.assertIn("function activateAt(x, y, scope)", module)
         # 代码块里"整块就是一条路径"也要能点开/下载（以前 pre 整块被跳过）
-        self.assertIn("function enhanceBareCode(", module)
-        self.assertIn("enhanceBareCode(root, pane, options, cwd)", module)
+        # 代码块按行看（以前"整块只有一条路径"才认，#179 那种"路径 + 说明"就漏了）
+        self.assertIn("function enhanceCodeLines(", module)
+        self.assertIn("enhanceCodeLines(root, pane, options, cwd)", module)
         self.assertIn("__plinkOpen", module)
         # 悬停气泡：文件名 + 大小 + 预览/下载；log/txt 这类点开是预览而不是直接下载
         self.assertIn("TEXT_EXT", module)

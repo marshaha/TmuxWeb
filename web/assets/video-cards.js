@@ -53,7 +53,17 @@
     note.textContent = '视频';
     caption.append(open, note);
 
-    figure.append(video, caption);
+    // 远端地址可能不让直接播放（防盗链、需要登录）。别留个坏掉的框，给一句人话 + 原链接。
+    const trouble = document.createElement('p');
+    trouble.className = 'video-trouble';
+    trouble.hidden = true;
+    trouble.textContent = '这个地址不能直接播放，点上面的文件名可以在新标签打开。';
+    video.addEventListener('error', () => {
+      figure.classList.add('is-broken');
+      trouble.hidden = false;
+    });
+
+    figure.append(video, caption, trouble);
     return figure;
   }
 
@@ -85,7 +95,12 @@
                       location.origin);
       } catch (_error) { return; }
       link.dataset.videoDone = '1';
-      link.replaceWith(card(url, path.split('/').filter(Boolean).pop() || '视频'));
+      const player = card(url, path.split('/').filter(Boolean).pop() || '视频');
+      // 代码块里插播放器会被 <pre> 的 monospace + nowrap 挤歪：路径留在块里当链接，
+      // 播放器放到块下面
+      const block = link.closest('pre');
+      if (block) block.after(player);
+      else link.replaceWith(player);
       made += 1;
     });
     return made;

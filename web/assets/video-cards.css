@@ -5,6 +5,8 @@
 .video-card figcaption{display:flex;align-items:center;gap:8px;min-width:0;padding:6px 10px;background:var(--surface2);color:var(--muted);font-size:12px;line-height:1.4}
 .video-card figcaption a{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);text-decoration:none}
 .video-card figcaption a:hover{text-decoration:underline}
+.video-card.is-broken video{display:none}
+.video-card .video-trouble{margin:0;padding:10px 12px;background:var(--surface2);color:var(--muted);font-size:12.5px;line-height:1.5;overflow-wrap:anywhere;white-space:normal}
 .video-card .video-note{flex:none;margin-left:auto;color:var(--muted)}
 /* 看板卡片正文更窄，播放器压得更扁一点 */
 .card-body.md .video-card{width:100%;margin:6px 0;border-radius:9px}

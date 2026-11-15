@@ -1208,8 +1208,10 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   function fileDownloadHref(path){return `/api/panes/${encodeURIComponent(state.selected)}/files/download?path=${encodeURIComponent(path)}`;}
   // 长会话一下子上百条消息，逐条扫文本太费；改成"碰到哪条处理哪条"：
   // 鼠标移入 / 手指按下 时才扫这一条，结果打上 data-paths 不重复处理。
-  function enhancePathsLazy(container){
-    if(!container||container.dataset.pathsBound==='1')return;
+  function enhancePathsLazy(container, force){
+    if(!container)return;
+    if(container.dataset.pathsBound==='1'&&!force)return;
+    if(container.dataset.pathsBound==='1'){eagerPass(container);return;}
     container.dataset.pathsBound='1';
     const touch=event=>{
       const message=event.target.closest&&event.target.closest('.chat-message');
@@ -1226,6 +1228,15 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       if(window.TmuxPaths&&window.TmuxPaths.activateAt)window.TmuxPaths.activateAt(clientX,clientY,event.target.closest('.chat-message')||event.target);
     },true);
     container.addEventListener('focusin',touch,true);
+    eagerPass(container);
+  }
+
+  // 最后几条不必等悬停：视频/图片预览要一打开就能看到。
+  // 每次整段重渲染（轮询刷新会换掉 DOM）之后要重新跑一遍，否则新节点永远没人处理。
+  function eagerPass(container){
+    const run=()=>{[...container.querySelectorAll('.chat-message')].slice(-8).forEach(message=>{
+      if(message.dataset.paths==='1')return;message.dataset.paths='1';enhancePaths(message);});};
+    if(window.requestIdleCallback)requestIdleCallback(run,{timeout:600});else setTimeout(run,120);
   }
   function enhancePaths(root){
     if(!root||!window.TmuxPaths||!state.selected)return;
@@ -1239,6 +1250,8 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       onMissing:path=>showError(`找不到：${path}`),
       onError:message=>showError(message),
     });
+    // .plink 生成之后才轮得到视频卡片（顺序反了的话视频永远拿不到链接）
+    enhanceVideos(root);
   }
   // 附件预览、票据、静态资源都是应用自己的地址，别当成"本地文件"去 rewrite
   const APP_URL_RE=/^\/(api|t|assets)\//;
@@ -1599,7 +1612,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     for(const item of pending){const index=Math.min(messages.length,pendingAnchorIndex(messages,item.pending));slots[index]=slots[index]||[];slots[index].push(item.html);}
     const ordered=messages.map((message,index)=>(slots[index]||[]).join('')+formal[index]).join('')
       +(slots[messages.length]||[]).join('');
-    host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host);}
+    host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);}
   const CODE_LANG_RE=/language-([\w+#-]+)/;
   async function copyText(text,button){const value=String(text==null?'':text);let ok=false;
     try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);ok=true;}}catch{}

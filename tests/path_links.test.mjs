@@ -43,3 +43,18 @@ test('空块和超长块不认', () => {
   assert.equal(paths.bareCodePath(''), '');
   assert.equal(paths.bareCodePath('/' + 'a'.repeat(600)), '');
 });
+
+test('代码块里"路径 + 说明"混排时，路径那一行仍然认', () => {
+  const paths = load();
+  // #179 那条消息的形态：第一行是视频路径，下面几行是时长/分辨率
+  assert.equal(paths.bareCodePath('/Users/marscrazy/Downloads/bathhouse_itching_powder.mp4'),
+               '/Users/marscrazy/Downloads/bathhouse_itching_powder.mp4');
+  // 说明那行不是路径
+  assert.ok(!paths.bareCodePath('26.4 秒 · 960×544（16:9）· 24fps · 632 帧 · 5.7 MB'));
+});
+
+test('时间码不会被当成文件路径', () => {
+  const paths = load();
+  // 分镜里的 12.5/12.8s 曾经被当成相对路径，扩展名至少两个字才认
+  assert.ok(!paths.bareCodePath('12.5/12.8s'));
+});
