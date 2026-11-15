@@ -24,11 +24,16 @@
     return VIDEO_URL_RE.test(decoded) ? decoded.split('/').pop() : '';
   }
 
-  // 第三方链接（openlist、对象存储签名链接）常常发 octet-stream + attachment，
-  // 浏览器拿到就不肯播；签名又改不了，只能让自家服务端代取一次。
-  function playableSrc(url) {
-    if (!/^https?:$/.test(url.protocol)) return url.href;
-    if (url.origin === location.origin) return url.href;      // 自己的 /api/… 直接播
+  // 先按原地址放：能直连的一律直连（少一跳、少占服务器带宽）。
+  // 播不了才换成自家代理 —— openlist 这类签名链接常常发 octet-stream + attachment，
+  // 浏览器拿到就拒播，签名又改不了。
+  function directSrc(url) {
+    return url.href;
+  }
+
+  function proxySrc(url) {
+    if (!/^https?:$/.test(url.protocol)) return '';
+    if (url.origin === location.origin) return '';
     return `${location.origin}/api/media/proxy?url=${encodeURIComponent(url.href)}`;
   }
 
@@ -43,8 +48,8 @@
     video.preload = 'metadata';
     video.setAttribute('controlsList', 'nodownload');
     // 加一个 #t=0.5 媒体片段：Chrome 会立刻解一帧画出来，否则 metadata 到了也还是黑框
-    const base = playableSrc(url);
-    video.src = base.includes('#') ? base : `${base}#t=0.5`;
+    const withFrame = href => (href.includes('#') ? href : `${href}#t=0.5`);
+    video.src = withFrame(directSrc(url));
 
     const caption = document.createElement('figcaption');
     const open = document.createElement('a');
@@ -69,6 +74,14 @@
     fallback.textContent = '在新标签打开';
     trouble.append('这个地址不能直接播放，', fallback, '。');
     video.addEventListener('error', () => {
+      // 直连被拒（octet-stream / attachment / 防盗链）→ 换代理再来一次；代理也不行才算坏
+      const proxied = proxySrc(url);
+      if (proxied && video.dataset.proxied !== '1') {
+        video.dataset.proxied = '1';
+        video.src = withFrame(proxied);
+        video.load();
+        return;
+      }
       figure.classList.add('is-broken');
       trouble.hidden = false;
     });

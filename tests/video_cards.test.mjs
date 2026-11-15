@@ -65,9 +65,8 @@ test('mp4 链接变成播放器，并且保留原链接', () => {
   const video = figure.children[0];
   assert.equal(video.tagName, 'VIDEO');
   // 第三方链接走自家代理：签名/octet-stream/attachment 那一套浏览器不肯播
-  // #t=0.5：让 Chrome 一到就解一帧，不然 metadata 到了画面还是黑的
-  assert.equal(video.src,
-               `https://chat.example.com/api/media/proxy?url=${encodeURIComponent(href)}#t=0.5`);
+  // 先直连（少一跳），播不了再由 error 处理器换代理；#t=0.5 让 Chrome 立刻解一帧
+  assert.equal(video.src, `${href}#t=0.5`);
   assert.equal(video.preload, 'metadata', '必须只取元信息，不能自动下载整段');
   assert.equal(video.playsInline, true);
   assert.equal(video.controls, true);
