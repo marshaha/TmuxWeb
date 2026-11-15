@@ -114,6 +114,7 @@ CONSOLE_BUNDLE_SOURCES = (
     ("assets", "markdown-cjk.js"),
     ("assets", "video-cards.js"),
     ("assets", "upload-cards.js"),
+    ("assets", "image-viewer.js"),
     ("assets", "transfer.js"),
     ("assets", "downloads.js"),
     ("assets", "pane-preview.js"),
@@ -3397,6 +3398,17 @@ def create_app(
     async def recents_script() -> FileResponse:
         """The shared 「最近」 block: pins, favourites, rename, height and folding in one place."""
         return FileResponse(WEB_DIR / "assets" / "recents.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/image-viewer.css")
+    async def image_viewer_stylesheet() -> FileResponse:
+        """在应用内查看聊天里上传的图片（缩放/返回），不再跳到裸图片页。"""
+        return FileResponse(WEB_DIR / "assets" / "image-viewer.css", media_type="text/css",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/image-viewer.js")
+    async def image_viewer_script() -> FileResponse:
+        return FileResponse(WEB_DIR / "assets" / "image-viewer.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/path-links.css")

@@ -49,7 +49,11 @@ def _lum(hexs: str):
 
 
 PAGES = sorted(p.name for p in WEB.glob("*.html"))
-STATIC = [p for p in (list(ASSETS.glob("*.js")) + list(ASSETS.glob("*.css"))) if p.name != "theme.css"]
+# 故意不跟主题走的文件：图片查看层始终是深底浅字（半透明白按钮压在近黑遮罩上），
+# 那不是"浅色底"，也不该跟着浅色主题变白。
+DARK_ONLY = {"image-viewer.css"}
+STATIC = [p for p in (list(ASSETS.glob("*.js")) + list(ASSETS.glob("*.css")))
+          if p.name != "theme.css" and p.name not in DARK_ONLY]
 
 
 class ThemePaletteTests(unittest.TestCase):

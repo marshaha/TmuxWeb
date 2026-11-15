@@ -4313,6 +4313,22 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("window.TmuxDownload.maybe(href, {name})",
                       self.client.get("/assets/path-links.js").text)
 
+    def test_clicking_an_uploaded_image_opens_the_viewer(self):
+        """手机上点缩略图不能跳到裸图片页（那看着就是白屏）：要走应用内查看层。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn('/assets/image-viewer.css', page)
+        module = self.client.get("/assets/image-viewer.js").text
+        self.assertEqual(self.client.get("/assets/image-viewer.css").status_code, 200)
+        for marker in ("TmuxImageViewer", "data-iview-close", "a.upload-thumb[data-upload]",
+                       "history.pushState", "popstate"):
+            self.assertIn(marker, module)
+        # 文件已经不在了就别跳过去白屏
+        self.assertIn("broken", module)
+        # 预览页（/preview）也要能点开
+        preview = self.client.get("/preview?pane=%251").text
+        self.assertIn('/assets/image-viewer.js', preview)
+
     def test_chat_messages_turn_paths_into_links(self):
         """独立的路径后处理：/assets/path-links.js，控制台和 /preview 都用它。"""
         self.login()
