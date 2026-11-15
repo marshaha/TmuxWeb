@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -13,6 +14,15 @@ class ClassifyCommandTests(unittest.TestCase):
         for command, provider in [
             ("claude", "claude"), ("codex", "codex"), ("kimi", "kimi"),
             ("python", "hermes"), ("python3", "hermes"), ("hermes", "hermes"),
+        ]:
+            self.assertEqual(transcript_reader.provider_for_command(command), provider, command)
+
+    def test_absolute_paths_map_to_providers(self):
+        for command, provider in [
+            ("/usr/local/bin/claude --resume abc", "claude"),
+            ("/opt/homebrew/bin/codex", "codex"),
+            ("/home/u/.local/bin/kimi", "kimi"),
+            ("/usr/bin/python3 /opt/hermes/main.py", "hermes"),
         ]:
             self.assertEqual(transcript_reader.provider_for_command(command), provider, command)
 
@@ -51,6 +61,15 @@ class ProcessTreeDetectionTests(unittest.TestCase):
         pane = {"command": "zsh", "pane_pid": "200", "session": "codex-old"}
         # 名字里带 codex 也不算数：只认真正在跑的进程
         self.assertIsNone(transcript_reader.provider_for_pane(pane, self.table))
+
+    def test_the_root_process_itself_can_be_the_agent(self):
+        # tmux new-session 'claude …' runs the agent as the pane root, with
+        # no wrapping shell above it; the tree walk must not skip the root
+        table = transcript_reader.parse_process_table(
+            "  300   1 bash /tmp/bin/claude --resume 11111111-2222-3333-4444-555555555555\n"
+            "  301 300 sleep 60\n")
+        pane = {"command": "bash", "pane_pid": "300"}
+        self.assertEqual(transcript_reader.provider_for_pane(pane, table), "claude")
 
     def test_a_real_agent_command_wins_without_any_table(self):
         self.assertEqual(transcript_reader.provider_for_pane({"command": "claude"}), "claude")
@@ -261,6 +280,102 @@ class FixtureTests(unittest.TestCase):
             (proc / "4242").mkdir()
             (proc / "4242" / "cmdline").write_bytes(b"codex\x00resume\x00--last\x00")
             self.assertIsNone(transcript_reader.resume_session_hint(4242, proc_root=proc))
+
+    def test_agent_argv_finds_the_agent_directly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "4242").mkdir()
+            (proc / "4242" / "cmdline").write_bytes(
+                b"/opt/homebrew/bin/claude\x00--resume\x0011111111-2222-3333-4444-555555555555\x00")
+            self.assertEqual(
+                transcript_reader.agent_argv(4242, proc_root=proc),
+                ("claude", ["/opt/homebrew/bin/claude", "--resume",
+                            "11111111-2222-3333-4444-555555555555"]))
+
+    def test_agent_argv_keeps_arguments_with_spaces(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "4242").mkdir()
+            (proc / "4242" / "cmdline").write_bytes(
+                b"codex\x00--model\x00gpt 5 thinking\x00")
+            self.assertEqual(
+                transcript_reader.agent_argv(4242, proc_root=proc),
+                ("codex", ["codex", "--model", "gpt 5 thinking"]))
+
+    def test_agent_argv_ignores_a_plain_shell(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "4242").mkdir()
+            (proc / "4242" / "cmdline").write_bytes(b"zsh\x00")
+            self.assertIsNone(transcript_reader.agent_argv(4242, proc_root=proc))
+
+    def test_agent_argv_ignores_a_shell_whose_command_mentions_an_agent(self):
+        # `zsh -c 'claude …'` is not the agent; the agent is its child, and
+        # rebuilding a command from the shell's argv would be nonsense.
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "4242").mkdir()
+            (proc / "4242" / "cmdline").write_bytes(
+                b"zsh\x00-c\x00claude --resume 11111111-2222-3333-4444-555555555555\x00")
+            self.assertIsNone(transcript_reader.agent_argv(4242, proc_root=proc))
+
+    def test_agent_argv_finds_a_node_wrapped_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "4242").mkdir()
+            (proc / "4242" / "cmdline").write_bytes(
+                b"node\x00/usr/local/bin/codex\x00resume\x000199aaaa-bbbb-cccc-dddd-eeeeffff0000\x00")
+            self.assertEqual(
+                transcript_reader.agent_argv(4242, proc_root=proc),
+                ("codex", ["node", "/usr/local/bin/codex", "resume",
+                           "0199aaaa-bbbb-cccc-dddd-eeeeffff0000"]))
+
+    def test_agent_argv_finds_a_shebang_script_agent(self):
+        # a shell-script wrapper runs as `bash /path/to/claude …`; the script
+        # token names the agent, and respawning that argv re-runs the wrapper
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "4242").mkdir()
+            (proc / "4242" / "cmdline").write_bytes(
+                b"bash\x00/tmp/bin/claude\x00--resume\x0011111111-2222-3333-4444-555555555555\x00")
+            self.assertEqual(
+                transcript_reader.agent_argv(4242, proc_root=proc),
+                ("claude", ["bash", "/tmp/bin/claude", "--resume",
+                            "11111111-2222-3333-4444-555555555555"]))
+
+    def test_agent_argv_ignores_a_command_string_after_dash_c(self):
+        # `bash -c claude` runs the agent as a child; the bash argv itself is
+        # not a respawnable agent command (its -c string would swallow --resume)
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "4242").mkdir()
+            (proc / "4242" / "cmdline").write_bytes(b"bash\x00-c\x00claude\x00")
+            self.assertIsNone(transcript_reader.agent_argv(4242, proc_root=proc))
+            (proc / "4242" / "cmdline").write_bytes(b"python3\x00-c\x00hermes\x00")
+            self.assertIsNone(transcript_reader.agent_argv(4242, proc_root=proc))
+
+    def test_agent_argv_walks_to_a_shell_wrapped_child(self):
+        # `exec -a` names the child process after the agent while the shell
+        # stays the pane root; the walk must find the child, not the shell.
+        import subprocess
+        shell = subprocess.Popen(
+            ["bash", "-c", "exec -a claude sleep 60 & wait"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            found = None
+            for _ in range(50):
+                found = transcript_reader.agent_argv(shell.pid)
+                if found is not None:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(found, ("claude", ["claude", "60"]))
+        finally:
+            shell.terminate()
+            try:
+                shell.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                shell.kill()
+                shell.wait(timeout=5)
 
     def test_unknown_provider_is_rejected(self):
         with self.assertRaises(transcript_reader.TranscriptError):

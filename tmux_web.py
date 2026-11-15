@@ -43,6 +43,7 @@ import file_browser
 from home_store import HomeStore
 import mcp_relay
 import agent_status
+import pane_restart
 import agent_catalog
 import agent_models
 import agent_prompts
@@ -411,6 +412,98 @@ class TmuxBackend:
 
     def pane_pid(self, pane_id: str) -> str:
         return self._run("display-message", "-p", "-t", pane_id, "#{pane_pid}").strip()
+
+    def restart_info(self, pane_id: str, pane: dict | None = None) -> dict:
+        """The live agent argv + session hint for a pane, from /proc."""
+        if pane is None:
+            pane = self.validate_pane(pane_id)
+        # never trust the pane dict's pid here: after a respawn it is stale,
+        # and verification would conclude the process was never replaced
+        try:
+            pid = self.pane_pid(pane_id)
+        except (TmuxError, RuntimeError, OSError, ValueError):
+            pid = pane.get("pane_pid") or ""
+        provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
+        argv: list[str] = []
+        hint = ""
+        if pid:
+            found = transcript_reader.agent_argv(pid)
+            if found:
+                provider, argv = found
+            hint = transcript_reader.resume_session_hint(pid) or ""
+        return {"provider": provider or "", "session_id": hint,
+                "argv": argv, "pane_pid": pid}
+
+    @staticmethod
+    def _signal_pane_group(pid: int, sig: int) -> None:
+        """Signal a pane's process group; a pid that is not a group leader
+        falls back to the single process."""
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        except PermissionError:
+            pass
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except (ValueError, OverflowError):
+            return False
+        return True
+
+    def restart_resume(self, pane_id: str, argv, pane: dict | None = None,
+                       term_wait: float | None = None) -> dict:
+        """TERM the pane's process group (bounded), then respawn it in place
+        with ``argv`` under the keep-open wrapper. See SSHRunner.restart_resume
+        for why remain-on-exit is set first and restored after."""
+        if pane is None:
+            pane = self.validate_pane(pane_id)
+        if not argv:
+            raise TmuxError("a non-empty argv list is required")
+        wait = max(1.0, float(term_wait if term_wait is not None
+                              else pane_restart.TERM_WAIT_SECONDS))
+        self._run("set-window-option", "-t", pane_id, "remain-on-exit", "on")
+        try:
+            pid = pane.get("pane_pid") or ""
+            if not pid:
+                try:
+                    pid = self.pane_pid(pane_id)
+                except (TmuxError, RuntimeError, OSError, ValueError):
+                    pid = ""
+            if pid and pid.isdigit():
+                self._signal_pane_group(int(pid), signal.SIGTERM)
+                deadline = time.monotonic() + wait
+                while time.monotonic() < deadline:
+                    if not self._pid_alive(int(pid)):
+                        break
+                    time.sleep(0.2)
+                else:
+                    self._signal_pane_group(int(pid), signal.SIGKILL)
+                    for _ in range(15):
+                        if not self._pid_alive(int(pid)):
+                            break
+                        time.sleep(0.2)
+            self._run("respawn-pane", "-t", pane_id,
+                      agent_catalog.with_keep_open(list(argv)))
+        finally:
+            try:
+                self._run("set-window-option", "-t", pane_id, "remain-on-exit", "off")
+            except TmuxError:
+                pass
+            # the pane's process tree just changed: the cached table still
+            # names the dead process, so provider detection would miss the
+            # new one until the TTL expires
+            invalidate_process_table()
+        return {"pane": pane_id, "command": agent_catalog.render(list(argv))}
 
     def transcript(self, pane_id: str, limit: int = 200, refresh: bool = False, pane: dict | None = None) -> dict:
         # `refresh` exists so the API can pass it for every transport: remote hosts cache
@@ -1277,6 +1370,14 @@ def local_process_table(ttl: float = 10.0) -> dict:
     _PS_CACHE["at"] = now
     _PS_CACHE["table"] = table
     return dict(table)
+
+
+def invalidate_process_table() -> None:
+    """Drop the cached process table: the tree just changed (a pane was
+    respawned), so the next listing must re-run ps or the new process is
+    invisible to provider detection for the rest of the TTL."""
+    _PS_CACHE["at"] = 0.0
+    _PS_CACHE["table"] = {}
 
 
 def pane_metadata(pane: dict) -> dict:
@@ -4655,6 +4756,41 @@ def create_app(
             return {"status": "sent", "pane": pane_id, "key": key, "provider": provider}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/panes/{pane_id}/restart-resume")
+    async def restart_resume_pane(request: Request, pane_id: str):
+        """Restart this pane's agent in place and resume its session.
+
+        For a harness upgrade: the binary is replaced on disk while the old
+        TUI keeps running; this respawns the pane with the same command plus
+        the provider's resume flag, so the conversation continues under the
+        new binary. Refuses while the agent is busy, when no session can be
+        named, and when the new process cannot be shown to have resumed the
+        same session. The scrollback clears; the conversation re-renders
+        from the session file.
+        """
+        require_auth(request)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        provider = pane_provider(pane)
+        if provider not in pane_restart.SUPPORTED_PROVIDERS:
+            raise HTTPException(
+                status_code=422,
+                detail="this pane cannot be restarted with its session")
+        transport, actual = pane_transport(pane_id)
+        if not hasattr(transport, "restart_resume"):
+            raise HTTPException(
+                status_code=422,
+                detail="this pane cannot be restarted from here")
+        try:
+            result = await asyncio.to_thread(
+                pane_restart.restart_and_resume, transport, actual, pane, provider)
+        except pane_restart.RestartResumeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (TmuxError, RuntimeError, OSError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return result
 
     @app.post("/api/panes/{pane_id}/key")
     async def send_key(request: Request, pane_id: str, payload: KeyRequest):

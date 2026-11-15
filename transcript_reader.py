@@ -36,15 +36,18 @@ class TranscriptError(RuntimeError):
 def provider_for_command(command):
     """Map a pane's foreground command to a transcript provider (or None)."""
     command = (command or "").strip().lower()
-    if command.startswith("claude"):
+    # an absolute path still names the agent: /usr/local/bin/codex -> codex
+    first = command.split(None, 1)[0] if command else ""
+    name = os.path.basename(first)
+    if name.startswith("claude"):
         return "claude"
-    if command.startswith("codex"):
+    if name.startswith("codex"):
         return "codex"
-    if command.startswith("kimi"):
+    if name.startswith("kimi"):
         return "kimi"
     # Hermes runs as ``hermes`` or as a plain python interpreter; both expose
     # their history through ~/.hermes/state.db.
-    if command.startswith("hermes") or command.startswith("python"):
+    if name.startswith("hermes") or name.startswith("python"):
         return "hermes"
     return None
 
@@ -82,7 +85,10 @@ def provider_for_pane(pane, table=None):
         for pid, (ppid, argv) in table.items():
             children.setdefault(ppid, []).append((pid, argv))
         seen = set()
-        queue = [(child, 1) for child in children.get(root, [])]
+        # the root process itself can be the agent: `tmux new-session 'claude …'`
+        # runs it directly, with no wrapping shell above it
+        queue = [((root, table[root][1]), 0)]
+        queue.extend((child, 1) for child in children.get(root, []))
         while queue:
             (pid, argv), depth = queue.pop(0)
             if pid in seen or depth > 6:
@@ -236,6 +242,78 @@ def _pane_env(pane):
     while len(fields) < 4:
         fields.append("")
     return fields[0], fields[1], fields[2], fields[3]
+
+
+def agent_name_in_argv(argv):
+    """Strict version of :func:`provider_from_argv`: only the executable (or
+    the script an interpreter runs) names the agent. A shell whose ``-c``
+    string merely mentions an agent is not the agent — its child is, and the
+    tree walk finds that child instead of rebuilding a command from the
+    shell's own argv."""
+    if not argv:
+        return None
+    first = os.path.basename(str(argv[0])).lower()
+    for agent in AGENT_NAMES:
+        if first == agent or first.startswith(agent + ".") or first.startswith(agent + "-"):
+            return agent
+    if first in ("node", "nodejs", "python", "python3", "bash", "sh", "zsh", "dash"):
+        # an interpreter runs a script: `bash /path/to/claude …` (a shebang
+        # script is exec'd this way) names the agent through the script token
+        for token in argv[1:]:
+            base = os.path.basename(str(token)).lower()
+            if base.startswith("-"):
+                if base in ("-c", "--command", "-e"):
+                    return None  # the next token is a command string, not a script
+                continue
+            for agent in AGENT_NAMES:
+                if base == agent or base.startswith(agent + ".") or base.startswith(agent + "-"):
+                    return agent
+            break  # only the first non-flag token can be the script
+    return None
+
+
+def agent_argv(pane_pid, proc_root=None):
+    """(provider, argv) of the agent running in a pane's process tree.
+
+    The pane root is often a shell (``zsh -c 'claude …'``, the keep-open
+    wrapper, a runtime shim), so the agent itself is a descendant. Walks the
+    tree like :func:`resume_session_hint` and returns the first process whose
+    argv names a known agent, with its argv split on the NUL separators so
+    arguments containing spaces survive. ``None`` when no agent runs there.
+    """
+    proc_root = Path(proc_root) if proc_root is not None else Path("/proc")
+    try:
+        queue = [int(pane_pid)]
+    except (TypeError, ValueError):
+        return None
+    seen = set()
+    while queue:
+        pid = queue.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            raw = (proc_root / str(pid) / "cmdline").read_bytes()
+        except OSError:
+            raw = b""
+        argv = [token.decode(errors="replace")
+                for token in raw.split(b"\0") if token]
+        if argv:
+            provider = agent_name_in_argv(argv)
+            if provider:
+                return provider, argv
+        try:
+            children = subprocess.run(
+                ["pgrep", "-P", str(pid)], capture_output=True, check=False
+            ).stdout.split()
+        except OSError:
+            children = []
+        for child in children:
+            try:
+                queue.append(int(child))
+            except ValueError:
+                continue
+    return None
 
 
 def resume_session_hint(pane_pid, proc_root=None):
