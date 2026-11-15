@@ -1806,6 +1806,15 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.content[:4], b"\x89PNG")
 
+    def test_the_media_proxy_refuses_to_touch_the_local_network(self):
+        """远端视频要代取（octet-stream + attachment 浏览器不播），但不能变成打内网的后门。"""
+        self.login()
+        for bad in ("http://127.0.0.1:8787/api/hosts", "http://10.0.0.5/x.mp4",
+                    "http://169.254.169.254/latest/meta-data", "file:///etc/passwd",
+                    "http://user:pass@example.com/x.mp4"):
+            response = self.client.get("/api/media/proxy", params={"url": bad})
+            self.assertEqual(response.status_code, 400, f"{bad} 应该被拒绝：{response.text}")
+
     def test_a_remote_video_can_be_range_read(self):
         """视频拖进度条要 206 + Content-Range；远端不按区间读的话，浏览器得先下完整个文件。"""
         self.login()

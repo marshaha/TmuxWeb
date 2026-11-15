@@ -64,7 +64,10 @@ test('mp4 链接变成播放器，并且保留原链接', () => {
   assert.equal(figure.className, 'video-card');
   const video = figure.children[0];
   assert.equal(video.tagName, 'VIDEO');
-  assert.equal(video.src, href);
+  // 第三方链接走自家代理：签名/octet-stream/attachment 那一套浏览器不肯播
+  // #t=0.5：让 Chrome 一到就解一帧，不然 metadata 到了画面还是黑的
+  assert.equal(video.src,
+               `https://chat.example.com/api/media/proxy?url=${encodeURIComponent(href)}#t=0.5`);
   assert.equal(video.preload, 'metadata', '必须只取元信息，不能自动下载整段');
   assert.equal(video.playsInline, true);
   assert.equal(video.controls, true);
@@ -78,7 +81,7 @@ test('本地文件路径（/files/raw?path=…mp4）也认', () => {
   const href = '/api/panes/%2524/files/raw?path=%2Ftmp%2Fdemo.mp4';
   const {made, links} = run([href]);
   assert.equal(made, 1);
-  assert.equal(links[0].replacedWith.children[0].src, 'https://chat.example.com' + href);
+  assert.equal(links[0].replacedWith.children[0].src, 'https://chat.example.com' + href + '#t=0.5');
 });
 
 test('视频以外的链接一律不动', () => {
@@ -123,4 +126,12 @@ test('扩展名大小写和查询串都认', () => {
   assert.ok(api.VIDEO_URL_RE.test('.MP4'));
   assert.ok(api.VIDEO_URL_RE.test('a.webm?token=1'));
   assert.ok(!api.VIDEO_URL_RE.test('a.mp4.png'));
+});
+
+test('本地路径的视频不当播放器（经 SSH 拉整段太慢，框一直空着）', () => {
+  // .plink 那种本地路径不再生成播放器：源文件里不该还有这段扫描
+  assert.ok(!/plink\[data-plink-path\]/.test(source), '本地路径不该再生成播放器');
+  // 远端链接仍然生成
+  const href = 'https://alist.example.com/d/189Cloud/videos/x.mp4';
+  assert.equal(run([href]).made, 1);
 });

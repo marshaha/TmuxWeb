@@ -15,7 +15,11 @@ import secrets
 import shlex
 import socket
 import sys
+import urllib.error
 import urllib.parse
+import urllib.request
+import ipaddress
+from http.client import HTTPException
 import signal
 import struct
 import subprocess
@@ -35,7 +39,7 @@ from html import escape
 from urllib.parse import parse_qs, quote
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, RedirectResponse,
                                Response, StreamingResponse)
 from pydantic import BaseModel, Field, field_validator
@@ -2413,6 +2417,55 @@ def create_app(
         value = local_addresses()
         ADDRESS_CACHE.update({"at": time.time(), "value": value})
         return copy.deepcopy(value)
+
+    @app.get("/api/media/proxy")
+    async def media_proxy(request: Request, url: str = Query(..., min_length=8, max_length=4096)):
+        """把第三方视频/音频代取一遍，修好 content-type 并去掉 attachment。
+
+        浏览器对 `application/octet-stream` + `Content-Disposition: attachment` 的
+        <video> 会直接判成放不了；签名链接又没法改查询参数（会破坏签名），
+        所以只能由服务端代转一次。Range 原样透传，拖动进度条照旧可用。
+        """
+        if not url_is_fetchable(url):
+            raise HTTPException(status_code=400, detail="这个地址不允许代理")
+        range_header = (request.headers.get("range") or "").strip()
+        try:
+            upstream = await asyncio.to_thread(open_media, url, range_header)
+        except urllib.error.HTTPError as error:
+            raise HTTPException(status_code=502, detail=f"上游返回 {error.code}") from error
+        except (urllib.error.URLError, OSError, RuntimeError, HTTPException) as error:
+            detail = getattr(error, "reason", None) or str(error)
+            raise HTTPException(status_code=502, detail=f"取不到这个地址：{detail}") from error
+
+        headers = {
+            "Cache-Control": "private, max-age=60",
+            "Accept-Ranges": "bytes",
+        }
+        upstream_type = (upstream.headers.get("Content-Type") or "").split(";")[0].strip()
+        kind = media_type_for(url) or media_type_for(upstream.geturl() or "") or upstream_type
+        if not kind or kind in ("application/octet-stream", "binary/octet-stream",
+                                "text/html", "text/plain"):
+            kind = media_type_for(url) or "application/octet-stream"
+        for name in ("Content-Range", "Content-Length"):
+            value = upstream.headers.get(name)
+            if value:
+                headers[name] = value
+        status = 206 if upstream.status == 206 else 200
+
+        def relay():
+            try:
+                while True:
+                    chunk = upstream.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                try:
+                    upstream.close()
+                except Exception:      # noqa: BLE001 - 关流失败不值得炸掉下载
+                    pass
+
+        return StreamingResponse(relay(), status_code=status, media_type=kind, headers=headers)
 
     @app.get("/api/system/addresses")
     async def system_addresses(request: Request):
@@ -4971,6 +5024,78 @@ def create_app(
                 thumb_pending.discard(str(target))
 
         threading.Thread(target=work, daemon=True).start()
+
+    # ---- 远端媒体代理 -------------------------------------------------------
+    # 第三方视频链接（openlist/alist、对象存储签名链接）经常是
+    # `Content-Type: application/octet-stream` + `Content-Disposition: attachment`，
+    # 浏览器直接拿 <video> 播会报 MEDIA_ERR_SRC_NOT_SUPPORTED —— 看着就是"预览框空着"。
+    # 这里代取一次，把类型改对、去掉 attachment、原样转发 Range，浏览器才能拖进度条。
+    MEDIA_TYPES = {
+        ".mp4": "video/mp4", ".m4v": "video/x-m4v", ".mov": "video/quicktime",
+        ".webm": "video/webm", ".mkv": "video/x-matroska", ".ogv": "video/ogg",
+        ".ogg": "video/ogg", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+        ".wav": "audio/wav", ".aac": "audio/aac",
+    }
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    MEDIA_OPENER = urllib.request.build_opener(_NoRedirect())
+
+    def media_type_for(url: str) -> str:
+        path = urllib.parse.urlsplit(url).path.lower()
+        for suffix, kind in MEDIA_TYPES.items():
+            if path.endswith(suffix):
+                return kind
+        return ""
+
+    def url_is_fetchable(url: str) -> bool:
+        """只放行公网 http(s)：代理不能变成打内网/读本地文件的后门。"""
+        try:
+            parts = urllib.parse.urlsplit(url)
+        except ValueError:
+            return False
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return False
+        if parts.username or parts.password:
+            return False
+        host = parts.hostname
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return False
+        for info in infos:
+            try:
+                address = ipaddress.ip_address(info[4][0])
+            except ValueError:
+                return False
+            if (address.is_private or address.is_loopback or address.is_link_local
+                    or address.is_multicast or address.is_reserved or address.is_unspecified):
+                return False
+        return True
+
+    def open_media(url: str, range_header: str):
+        """跟着重定向走，但每一跳都重新校验，最多三跳。"""
+        seen = url
+        for _hop in range(4):
+            if not url_is_fetchable(seen):
+                raise RuntimeError("这个地址不允许代理")
+            request_headers = {"User-Agent": "TmuxWeb-Media/1.0", "Accept": "*/*"}
+            if range_header:
+                request_headers["Range"] = range_header
+            request = urllib.request.Request(seen, headers=request_headers)
+            try:
+                return MEDIA_OPENER.open(request, timeout=20)
+            except urllib.error.HTTPError as error:
+                if error.code in (301, 302, 303, 307, 308):
+                    target = (error.headers or {}).get("Location")
+                    if not target:
+                        raise RuntimeError("重定向没有目标地址") from error
+                    seen = urllib.parse.urljoin(seen, target)
+                    continue
+                raise
+        raise RuntimeError("重定向太多次")
 
     def parse_byte_range(header: str, size: int | None):
         """`bytes=start-end` → (first, last)；不满意就返回 None（当作整份处理）。"""

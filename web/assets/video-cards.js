@@ -24,6 +24,14 @@
     return VIDEO_URL_RE.test(decoded) ? decoded.split('/').pop() : '';
   }
 
+  // 第三方链接（openlist、对象存储签名链接）常常发 octet-stream + attachment，
+  // 浏览器拿到就不肯播；签名又改不了，只能让自家服务端代取一次。
+  function playableSrc(url) {
+    if (!/^https?:$/.test(url.protocol)) return url.href;
+    if (url.origin === location.origin) return url.href;      // 自己的 /api/… 直接播
+    return `${location.origin}/api/media/proxy?url=${encodeURIComponent(url.href)}`;
+  }
+
   function card(url, name) {
     const figure = document.createElement('figure');
     figure.className = 'video-card';
@@ -33,7 +41,9 @@
     video.playsInline = true;
     video.preload = 'metadata';
     video.setAttribute('controlsList', 'nodownload');
-    video.src = url.href;
+    // 加一个 #t=0.5 媒体片段：Chrome 会立刻解一帧画出来，否则 metadata 到了也还是黑框
+    const base = playableSrc(url);
+    video.src = base.includes('#') ? base : `${base}#t=0.5`;
     const fallback = document.createElement('a');
     fallback.href = url.href;
     fallback.target = '_blank';
@@ -81,28 +91,8 @@
       link.replaceWith(card(url, name));
       made += 1;
     });
-    // 聊天里的路径（普通文本或代码块里的 /path/to/x.mp4）会被 path-links 变成 .plink，
-    // href 是 "#"，上面的循环认不出来 —— 这里按路径再认一次，就地给播放器。
-    root.querySelectorAll('.plink[data-plink-path]').forEach(link => {
-      if (link.dataset.videoDone === '1' || link.closest('.video-card')) return;
-      const path = link.dataset.plinkPath || '';
-      if (!VIDEO_URL_RE.test(path)) return;
-      const pane = link.dataset.plinkPane || '';
-      if (!pane) return;
-      let url = null;
-      try {
-        url = new URL(`/api/panes/${encodeURIComponent(pane)}/files/raw?path=${encodeURIComponent(path)}`,
-                      location.origin);
-      } catch (_error) { return; }
-      link.dataset.videoDone = '1';
-      const player = card(url, path.split('/').filter(Boolean).pop() || '视频');
-      // 代码块里插播放器会被 <pre> 的 monospace + nowrap 挤歪：路径留在块里当链接，
-      // 播放器放到块下面
-      const block = link.closest('pre');
-      if (block) block.after(player);
-      else link.replaceWith(player);
-      made += 1;
-    });
+    // 本地路径的视频不做播放器：经 SSH 拉一个 5MB 的 mp4 要十几秒，框一直空着更难受。
+    // 路径本身还是 .plink，点开是文件面板/下载；要预览就看消息里的远端链接。
     return made;
   }
 
