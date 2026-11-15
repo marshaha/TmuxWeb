@@ -1390,22 +1390,40 @@ class _ControlModeClient:
         with self._lock:
             self._last_output[parts[1]] = time.time() if now is None else now
 
-    def quiet_seconds(self, pane_id: str, now: float | None = None) -> float | None:
+    def quiet_seconds(self, pane_id: str, now: float | None = None,
+                      session: str | None = None) -> float | None:
         """Seconds since this pane last produced output, or None.
 
         None means "unknown": the client is not attached to this pane's
         session (or never started), so quiet cannot be judged — the
-        caller must not treat that as quiet. A pane that never produced
-        output while attached counts as quiet since the attach.
+        caller must not treat that as quiet. ``session`` is the pane's
+        session from the watcher's list-panes map; when it is given,
+        a pane in any other session reads unknown even if a stale
+        ``%output`` entry for it survives from an earlier attachment
+        (the client only ever sees output for the session it is
+        attached to, so an entry for another session's pane is
+        unobserved since — it must not read as quiet). An entry older
+        than the current attach likewise counts as "no output while
+        attached": quiet since the attach, not since the stale entry.
+        Without ``session`` (direct unit-test use) the old behaviour
+        holds: a recorded entry wins, else quiet since attach.
         """
         now = time.time() if now is None else now
         with self._lock:
             last = self._last_output.get(pane_id)
             attached_at = self._attached_at
-            attached = self._attached_session is not None
+            attached = self._attached_session
+        if session is not None:
+            if attached is None or attached != session:
+                return None
+            if last is not None and last >= attached_at:
+                return max(0.0, now - last)
+            if attached_at:
+                return max(0.0, now - attached_at)
+            return None
         if last is not None:
             return max(0.0, now - last)
-        if attached and attached_at:
+        if attached is not None and attached_at:
             return max(0.0, now - attached_at)
         return None
 
@@ -1669,15 +1687,24 @@ class HostWatcher:
         self._pane_sessions_at = now
 
     def _control_quiet(self, pane: dict, now: float) -> bool:
-        """True when control mode proves this pane's screen is quiet."""
+        """True when control mode proves this pane's screen is quiet.
+
+        The pane's session comes from the cached list-panes map, and
+        quiet is judged against that session only: a pane whose
+        session is unknown to the map reads unknown (False), never
+        quiet — a stale ``%output`` entry for it must not light a
+        card for a session the client never observed.
+        """
         binary = self._resolver.path if self._resolver else ""
         if not self._control.ensure_started(binary):
             return False
         self._refresh_pane_sessions()
         session = self._pane_sessions.get(pane.get("pane_id") or "")
-        if session:
-            self._control.attach(session)
-        quiet = self._control.quiet_seconds(pane.get("pane_id") or "", now)
+        if not session:
+            return False
+        self._control.attach(session)
+        quiet = self._control.quiet_seconds(pane.get("pane_id") or "", now,
+                                            session=session)
         return quiet is not None and quiet >= self._quiet_seconds
 
     # -- snapshot --------------------------------------------------------------

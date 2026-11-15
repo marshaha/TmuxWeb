@@ -382,6 +382,98 @@ class ControlModeParseTests(unittest.TestCase):
             client.handle_line(line, now=1000.0)
         self.assertIsNone(client.quiet_seconds("%0", now=1001.0))
 
+    def test_stale_entry_for_a_pane_in_another_session_is_unknown(self):
+        """Fix 1(a): attached to A, stale %output for a pane in B.
+
+        The old code returned now - last for any recorded entry,
+        whatever session the client was attached to — so a pane in
+        B read as quiet on B's unobserved output. Now it is unknown.
+        """
+        client = agent_program._ControlModeClient("/usr/bin/tmux")
+        client.handle_line("%output %0 hello", now=1000.0)
+        client._attached_session = "sess-a"
+        client._attached_at = 999.0
+        self.assertIsNone(client.quiet_seconds("%0", now=1010.0,
+                                               session="sess-b"))
+        # The same entry, judged against its own session, still counts.
+        self.assertEqual(client.quiet_seconds("%0", now=1010.0,
+                                              session="sess-a"), 10.0)
+
+    def test_no_entry_for_a_pane_in_another_session_is_unknown(self):
+        """Fix 1(b): no output, attached to A, pane in B -> unknown."""
+        client = agent_program._ControlModeClient("/usr/bin/tmux")
+        client._attached_session = "sess-a"
+        client._attached_at = 1000.0
+        self.assertIsNone(client.quiet_seconds("%0", now=1010.0,
+                                               session="sess-b"))
+
+    def test_pane_in_attached_session_with_no_entry_is_quiet_since_attach(self):
+        """Fix 1(c): no output while attached -> quiet since attach."""
+        client = agent_program._ControlModeClient("/usr/bin/tmux")
+        client._attached_session = "sess-a"
+        client._attached_at = 1000.0
+        self.assertEqual(client.quiet_seconds("%0", now=1007.0,
+                                              session="sess-a"), 7.0)
+
+    def test_entry_older_than_the_attach_counts_as_quiet_since_attach(self):
+        """An entry predating the current attach is stale: the client
+        only observes output while attached, so quiet runs from the
+        attach, not from an entry a previous attachment recorded."""
+        client = agent_program._ControlModeClient("/usr/bin/tmux")
+        client.handle_line("%output %0 hello", now=900.0)
+        client._attached_session = "sess-a"
+        client._attached_at = 1000.0
+        self.assertEqual(client.quiet_seconds("%0", now=1010.0,
+                                              session="sess-a"), 10.0)
+
+
+class QuietSessionValidationTests(_TempHome):
+    """Fix 1(d) at watcher level: the session comes from the map."""
+
+    def _fake_attached_client(self, watcher, session, attached_at):
+        """A client that looks alive and attached, without any tmux."""
+        client = agent_program._ControlModeClient("/usr/bin/tmux")
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        client._proc = proc
+        client._started_ok = True
+        client._attached_session = session
+        client._attached_at = attached_at
+        return client
+
+    def test_pane_with_no_session_in_the_map_reads_unknown(self):
+        watcher = self.watcher()
+        watcher._pane_sessions = {"%0": "sess-a"}
+        watcher._pane_sessions_at = time.monotonic()
+        watcher._control = self._fake_attached_client(
+            watcher, "sess-a", time.time() - 10)
+        try:
+            self.assertFalse(watcher._control_quiet(
+                {"pane_id": "%9"}, time.time()))
+            self.assertTrue(watcher._control_quiet(
+                {"pane_id": "%0"}, time.time()))
+        finally:
+            watcher.stop()
+
+    def test_pane_in_another_session_is_judged_against_its_own_session(self):
+        """%0 in A (quiet 10s) and %1 in B (attached 1s ago): the two
+        panes must not share one verdict."""
+        watcher = self.watcher()
+        watcher._pane_sessions = {"%0": "sess-a", "%1": "sess-b"}
+        watcher._pane_sessions_at = time.monotonic()
+        client = self._fake_attached_client(
+            watcher, "sess-a", time.time() - 10)
+        watcher._control = client
+        try:
+            self.assertTrue(watcher._control_quiet(
+                {"pane_id": "%0"}, time.time()))
+            # Attaching to B resets the clock: %1 is not quiet yet,
+            # even though %0's session has been quiet for 10s.
+            self.assertFalse(watcher._control_quiet(
+                {"pane_id": "%1"}, time.time()))
+        finally:
+            watcher.stop()
+
 
 # ---------------------------------------------------------------------------
 # Live control mode against a scratch tmux server (sandbox only)
