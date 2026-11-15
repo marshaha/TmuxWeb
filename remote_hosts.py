@@ -164,7 +164,7 @@ REMOTE_TRANSCRIPT_SCRIPT = agent_status.STATUS_SHELL + r"""
 # TMUXWEB_STATUS_ONLY=1 stops right after the session file is known and prints its verdict:
 # the sweep uses that to ask "is this agent running" without pulling a transcript.
 status_emit() {
-  printf 'TMUXWEB_STATUS%s%s\nTMUXWEB_PROVIDER%s%s\n' "$sep" "$(status_of "$provider" "$1")" "$sep" "$provider"
+  printf 'TMUXWEB_STATUS%s%s\nTMUXWEB_PROVIDER%s%s\nTMUXWEB_DECISION%s%s\n' "$sep" "$(status_of "$provider" "$1")" "$sep" "$provider" "$sep" "$(decision_of "$provider" "$1")"
   exit 0
 }
 pane=$1
@@ -2418,23 +2418,84 @@ class SSHRunner:
         return (
             "S=" + shlex.quote(REMOTE_TRANSCRIPT_SCRIPT) + "; "
             "for pane in " + " ".join(shlex.quote(pane) for pane in ids) + "; do "
-            "printf '\\037%s ' \"$pane\"; "
-            "TMUXWEB_STATUS_ONLY=1 sh -c \"$S\" sh \"$pane\" 1 2>/dev/null "
-            "| sed -n 's/^TMUXWEB_STATUS" + FIELD_SEPARATOR + r"\(.*\)$/\1/p' | head -1; done"
+            "out=$(TMUXWEB_STATUS_ONLY=1 sh -c \"$S\" sh \"$pane\" 1 2>/dev/null); "
+            "printf '\\037%s %s %s\\n' \"$pane\" "
+            "\"$(printf '%s' \"$out\" | sed -n 's/^TMUXWEB_STATUS" + FIELD_SEPARATOR + r"\(.*\)$/\1/p' | head -1)\" "
+            "\"$(printf '%s' \"$out\" | sed -n 's/^TMUXWEB_DECISION" + FIELD_SEPARATOR + r"\(.*\)$/\1/p' | head -1)\"; done"
         )
 
     @staticmethod
     def _parse_status_many_output(text: str) -> dict:
-        """Split one status script's \\x1f-marked output back per pane."""
+        """Split one status script's \\x1f-marked output back per pane.
+
+        One line per pane: ``\\x1f<pane> <status> [<decision>]`` — the third
+        token is the needs-you decision point and is ignored here, so old
+        two-token output still parses exactly as before.
+        """
         result = {}
         for line in text.splitlines():
             if not line.startswith("\x1f"):
                 continue
-            pane, _, state = line[1:].partition(" ")
-            state = state.strip()
-            if pane and state:
-                result[pane] = state
+            pane, _, rest = line[1:].partition(" ")
+            parts = rest.strip().split(" ")
+            if pane and parts and parts[0]:
+                result[pane] = parts[0]
         return result
+
+    @staticmethod
+    def _parse_verdicts_many_output(text: str) -> tuple[dict, dict]:
+        """Split one status script's output into ({pane: status}, {pane: decision}).
+
+        A missing decision token means "no" — fail closed, never fail open.
+        """
+        states, decisions = {}, {}
+        for line in text.splitlines():
+            if not line.startswith("\x1f"):
+                continue
+            pane, _, rest = line[1:].partition(" ")
+            parts = rest.strip().split(" ")
+            if not pane or not parts or not parts[0]:
+                continue
+            states[pane] = parts[0]
+            decisions[pane] = len(parts) > 1 and parts[1] == "yes"
+        return states, decisions
+
+    def _verdicts_many_chunk(self, ids) -> tuple[dict, dict]:
+        """One ssh call asking the verdict and the decision point for a few panes."""
+        script = self._status_many_script(ids)
+        if script is None:
+            return {}, {}
+        completed = self.run(script, timeout=self.transcript_timeout)
+        return self._parse_verdicts_many_output(completed.stdout.decode(errors="replace"))
+
+    def verdicts_many(self, pane_ids) -> tuple[dict, dict]:
+        """(status_many, decision_many) in one ssh call per chunk.
+
+        The sweep needs both the busy/idle verdict and the needs-you decision
+        point; a second round trip per chunk would double the sweep's remote
+        cost. Chunking and failure handling are status_many's: a failed chunk
+        only loses its own panes.
+        """
+        ids = [pane for pane in pane_ids if PANE_ID_RE.fullmatch(str(pane or ""))][:80]
+        if not ids:
+            return {}, {}
+        chunks = _status_chunks(ids)
+        if len(chunks) == 1:
+            return self._verdicts_many_chunk(chunks[0])
+
+        def _safe(chunk):
+            try:
+                return self._verdicts_many_chunk(chunk)
+            except Exception:
+                return {}, {}
+
+        states: dict = {}
+        decisions: dict = {}
+        with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+            for part_states, part_decisions in pool.map(_safe, chunks):
+                states.update(part_states)
+                decisions.update(part_decisions)
+        return states, decisions
 
     def send_key(self, pane_id: str, key: str, pane: dict | None = None) -> None:
         self.send_keys(pane_id, [key], pane=pane)

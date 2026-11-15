@@ -8,7 +8,7 @@
  */
 (() => {
   const state = {
-    hosts: [], states: new Map(), favorites: new Set(), open: new Set(), collapsed: false, hooks: {},
+    hosts: [], states: new Map(), needs: new Map(), favorites: new Set(), open: new Set(), collapsed: false, hooks: {},
   };
 
   const $ = id => document.getElementById(id);
@@ -38,8 +38,11 @@
     const status = state.states.get(pane.id) || 'unknown';
     const starred = state.favorites.has(pane.id);
     const name = pane.title || `pane ${pane.index ?? ''} · ${pane.command || ''}`;
-    return `<button class="tpane" data-pane="${esc(pane.id)}" title="${esc(pane.path || '')}">`
-      + `<span class="trow"><span class="tstate ${esc(status)}"></span><span class="tname">${esc(name)}</span>`
+    const need = state.needs.get(pane.id);
+    const badge = need
+      ? `<span class="tneed" title="等你回答：${esc((need.title || '').trim() || '菜单') }">等你</span>` : '';
+    return `<button class="tpane${need ? ' needs-you' : ''}" data-pane="${esc(pane.id)}" title="${esc(pane.path || '')}">`
+      + `<span class="trow"><span class="tstate ${esc(status)}"></span><span class="tname">${esc(name)}</span>${badge}`
       + `<span class="tstar ${starred ? 'on' : ''}" data-star="${esc(pane.id)}" role="button" tabindex="-1"`
       + ` title="${starred ? '取消收藏' : '收藏到主页'}">`
       + `<svg class="ico"><use href="#i-${starred ? 'star-fill' : 'star'}"/></svg></span></span>`
@@ -66,7 +69,10 @@
         const windowHtml = [...windows].map(([wkey, panes]) => {
           const first = panes[0];
           const label = `${first.window ?? ''}${first.window_name ? ': ' + first.window_name : ''}`;
-          return treeDetails(`${host.id}/${session}/${wkey}`, label, panes.map(paneRow).join(''), panes.length, 8);
+          // 等你的 pane 置顶：同窗口内 needs_input 在前，其余保持原顺序。
+          const ordered = [...panes].sort((a, b) =>
+            (state.needs.has(b.id) ? 1 : 0) - (state.needs.has(a.id) ? 1 : 0));
+          return treeDetails(`${host.id}/${session}/${wkey}`, label, ordered.map(paneRow).join(''), panes.length, 8);
         }).join('');
         return treeDetails(`${host.id}/${session}`, session, windowHtml, `${windows.size}`, 4);
       }).join('');
@@ -124,6 +130,13 @@
     try {
       const data = await api('/api/panes/status');
       state.states = new Map((data.panes || []).map(item => [item.id, item.status]));
+      const needs = new Map((data.panes || [])
+        .filter(item => item.needs_input && item.prompt)
+        .map(item => [item.id, item.prompt]));
+      const changed = needs.size !== state.needs.size
+        || [...needs.keys()].some(id => !state.needs.has(id));
+      state.needs = needs;
+      if (changed) renderTree();
       if (window.TmuxRecents) TmuxRecents.setStates(state.states);
       for (const button of document.querySelectorAll('#tree [data-pane]')) {
         const dot = button.querySelector('.tstate');

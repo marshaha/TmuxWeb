@@ -669,12 +669,21 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
     # -- sweep batch (capture_many + status_many in one agent round trip) -----
 
     def test_capture_and_status_many_sends_one_batch(self):
-        agent = self._connect_agent(exec_handler=_sweep_exec)
+        # %9 carries a decision line (busy + outstanding call), %10 a plain
+        # 2-token verdict: the 3rd token must survive the batch, and a pane
+        # without one decides False (fail closed).
+        def handler(op):
+            if "TMUXWEB_STATUS_ONLY" in op["command"]:
+                return _ok(b"\x1f%9 busy yes\n\x1f%10 idle\n")
+            return _sweep_exec(op)
+
+        agent = self._connect_agent(exec_handler=handler)
         before = len(agent.received)
-        captures, statuses = self._transport().capture_and_status_many(
+        captures, statuses, decisions = self._transport().capture_and_status_many(
             ["%9", "%10"], status_ids=["%9", "%10"])
         self.assertEqual(captures, {"%9": "screen nine", "%10": "screen ten\n"})
         self.assertEqual(statuses, {"%9": "busy", "%10": "idle"})
+        self.assertEqual(decisions, {"%9": True, "%10": False})
         packets = agent.received[before:]
         self.assertEqual(len(packets), 1)
         ops = packets[0]["ops"]
@@ -685,9 +694,10 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
     def test_capture_and_status_many_no_status_ids_sends_one_op(self):
         agent = self._connect_agent(exec_handler=_sweep_exec)
         before = len(agent.received)
-        captures, statuses = self._transport().capture_and_status_many(["%9", "%10"])
+        captures, statuses, decisions = self._transport().capture_and_status_many(["%9", "%10"])
         self.assertEqual(captures, {"%9": "screen nine", "%10": "screen ten\n"})
         self.assertEqual(statuses, {})
+        self.assertEqual(decisions, {})
         packets = agent.received[before:]
         self.assertEqual(len(packets), 1)
         self.assertEqual(len(packets[0]["ops"]), 1)
@@ -712,9 +722,9 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
                                                stdout=b"via-ssh", stderr=b"")
 
         with mock.patch.object(SSHRunner, "run", fake_ssh_run):
-            captures, statuses = self._transport().capture_and_status_many(
+            captures, statuses, decisions = self._transport().capture_and_status_many(
                 ["%9"], status_ids=["%9"])
-        self.assertEqual((captures, statuses), ({}, {}))
+        self.assertEqual((captures, statuses, decisions), ({}, {}, {}))
         self.assertEqual(len(calls), 2)
         self.assertIn("capture-pane", calls[0])
         self.assertIn("TMUXWEB_STATUS_ONLY", calls[1])
@@ -744,11 +754,13 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
         agent = self._connect_agent(exec_handler=handler)
         ids = ["%%%d" % i for i in range(1, 18)]
         before = len(agent.received)
-        captures, statuses = self._transport().capture_and_status_many(
+        captures, statuses, decisions = self._transport().capture_and_status_many(
             ids, status_ids=ids)
         self.assertEqual(len(captures), 17)
         self.assertEqual(len(statuses), 17)
         self.assertTrue(all(state == "idle" for state in statuses.values()))
+        # fake status lines carry no decision token: every pane decides False
+        self.assertEqual(decisions, {pane: False for pane in ids})
         packets = agent.received[before:]
         self.assertEqual(len(packets), 1)  # still one round trip
         ops = packets[0]["ops"]
@@ -782,10 +794,11 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
 
         agent = self._connect_agent(exec_handler=handler)
         ids = ["%%%d" % i for i in range(1, 18)]
-        captures, statuses = self._transport().capture_and_status_many(
+        captures, statuses, decisions = self._transport().capture_and_status_many(
             ids, status_ids=ids)
         self.assertEqual(len(captures), 17)  # capture survives a dead status chunk
         self.assertEqual(len(statuses), 12)  # chunk 0 holds %1..%5
+        self.assertEqual(decisions, {pane: False for pane in statuses})
         self.assertNotIn("%1", statuses)
         self.assertEqual(statuses["%17"], "busy")
 

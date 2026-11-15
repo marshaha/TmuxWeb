@@ -791,6 +791,20 @@ class TmuxWebTests(unittest.TestCase):
         self.client.cookies.clear()
         self.assertIn(self.client.post("/api/panes/%254/key", json={"key": "Escape"}).status_code, (401, 403))
 
+    def test_key_endpoint_accepts_the_single_character_keys_a_menu_answer_needs(self):
+        """菜单答案就是一个字符 + Enter（y/n、编号菜单的数字）：/key 必须能发它们，
+        否则等你卡片只能答光标菜单。单个字符以外还是 422。"""
+        self.login()
+        sent = []
+        self.tmux.send_key = lambda pane_id, key, pane=None: sent.append((pane_id, key))
+        for key in ("y", "n", "2"):
+            response = self.client.post("/api/panes/%254/key", json={"key": key})
+            self.assertEqual(response.status_code, 200, key)
+        self.assertEqual(sent, [("%4", "y"), ("%4", "n"), ("%4", "2")])
+        for key in ("ab", "yes", ";", "C-x"):
+            self.assertEqual(self.client.post("/api/panes/%254/key", json={"key": key}).status_code,
+                             422, key)
+
     def test_send_button_turns_into_a_stop_button_while_working(self):
         self.login()
         page = self.client.get("/").text
@@ -2123,6 +2137,236 @@ class TmuxWebTests(unittest.TestCase):
                     break
                 time.sleep(0.2)
             self.assertGreater(tmux.calls, 1)
+
+    # -- "needs you": the sweep-level gate -----------------------------------
+    # One menu screen, reused by the sweep tests below (claude's permission
+    # confirm: cursor list + numbers, Esc to cancel).
+    NEEDS_MENU = (
+        " Do you want to proceed?\n"
+        " ❯ 1. Yes\n"
+        "   2. Yes, and don't ask again this session\n"
+        "   3. No, and tell Claude what to do differently\n"
+        " Esc to cancel\n"
+    )
+    NEEDS_MENU_MOVED = NEEDS_MENU.replace(" ❯ 1. Yes\n   2.", "   1. Yes\n ❯ 2.")
+
+    def _wait_for_panes(self, client, predicate, timeout=10):
+        """Poll /api/panes/status until predicate(states) holds (background sweep)."""
+        deadline = time.monotonic() + timeout
+        states = []
+        while time.monotonic() < deadline:
+            states = client.get("/api/panes/status").json()["panes"]
+            if states and predicate(states):
+                return states
+            time.sleep(0.2)
+        return states
+
+    def _fresh_status_client(self):
+        client = TestClient(create_app(
+            self.tmux, password="unit-test-admin-password",
+            session_secret="test-secret", terminal_factory=FakeTerminalFactory(),
+            share_db=":memory:", home_db=":memory:",
+            remote_store=self.remote_store,
+            remote_runner_factory=FakeSSHRunner))
+        response = client.post("/login", data={"password": "unit-test-admin-password"},
+                               follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        return client
+
+    def test_needs_input_fires_only_after_two_idle_stable_sweeps(self):
+        """三腿齐了才亮灯：第一轮只记不亮，第二轮相同才亮，带下去的 prompt 能直接答。"""
+        import agent_status
+
+        client = self._fresh_status_client()
+        self.tmux.output = self.NEEDS_MENU
+        now = [time.time()]
+
+        def fake_time():
+            return now[0]
+
+        with mock.patch("agent_status.status_for_pane", return_value="idle"), \
+                mock.patch("agent_status.decision_point_for_pane", return_value=True), \
+                mock.patch("time.time", side_effect=fake_time):
+            states = self._wait_for_panes(client, lambda rows: len(rows) == 1)
+            self.assertEqual(len(states), 1)
+            local = states[0]
+            self.assertEqual(local["status"], "idle")
+            self.assertEqual(local["status_source"], "session")
+            self.assertFalse(local["needs_input"], "第一轮：只记稳定计数，不亮灯")
+            self.assertIsNone(local["prompt"])
+
+            now[0] += 61            # 超过 sweep 最小间隔 60 秒：下一轮必须开起来
+            states = self._wait_for_panes(
+                client, lambda rows: rows and rows[0].get("needs_input"))
+            local = states[0]
+            self.assertTrue(local["needs_input"])
+            prompt = local["prompt"]
+            self.assertEqual(prompt["title"], "Do you want to proceed?")
+            self.assertEqual([option["label"] for option in prompt["options"]],
+                             ["Yes", "Yes, and don't ask again this session",
+                              "No, and tell Claude what to do differently"])
+            for option in prompt["options"]:
+                self.assertTrue(option["keys"], option)
+                self.assertEqual(option["keys"][-1], "Enter")
+
+    def test_needs_input_never_fires_while_the_agent_is_just_executing(self):
+        """agent 只是在执行（没有决策点）：菜单一直在屏上也绝不亮 —— stale prompt 的标准形态。"""
+        client = self._fresh_status_client()
+        self.tmux.output = self.NEEDS_MENU
+        now = [time.time()]
+
+        def fake_time():
+            return now[0]
+
+        with mock.patch("agent_status.status_for_pane", return_value="busy"), \
+                mock.patch("agent_status.decision_point_for_pane", return_value=False), \
+                mock.patch("time.time", side_effect=fake_time):
+            self._wait_for_panes(client, lambda rows: len(rows) == 1)
+            now[0] += 61
+            states = self._wait_for_panes(client, lambda rows: len(rows) == 1)
+            self.assertFalse(states[0]["needs_input"])
+            self.assertIsNone(states[0]["prompt"])
+            now[0] += 61
+            states = self._wait_for_panes(client, lambda rows: len(rows) == 1)
+            self.assertFalse(states[0]["needs_input"], "执行时攒再多轮也没用")
+
+    def test_needs_input_fires_at_a_permission_wait_while_the_turn_is_running(self):
+        """THE corrected case: turn 还在跑（verdict 是 BUSY，turn-end 标记在等批复时
+        根本不写），但一个 tool 调用 outstanding —— agent 正坐在权限确认上等你。
+        旧版的门（只认 turn ended）在这里永远不亮，这正是它错的地方。"""
+        client = self._fresh_status_client()
+        self.tmux.output = self.NEEDS_MENU
+        now = [time.time()]
+
+        def fake_time():
+            return now[0]
+
+        with mock.patch("agent_status.status_for_pane", return_value="busy"), \
+                mock.patch("agent_status.decision_point_for_pane", return_value=True), \
+                mock.patch("time.time", side_effect=fake_time):
+            states = self._wait_for_panes(client, lambda rows: len(rows) == 1)
+            self.assertEqual(states[0]["status"], "busy")
+            self.assertFalse(states[0]["needs_input"], "第一轮：只记不亮")
+            now[0] += 61
+            states = self._wait_for_panes(
+                client, lambda rows: rows and rows[0].get("needs_input"))
+            self.assertEqual(states[0]["status"], "busy")
+            self.assertTrue(states[0]["needs_input"])
+            self.assertEqual(states[0]["prompt"]["title"], "Do you want to proceed?")
+
+    def test_needs_input_never_fires_without_a_session_file_verdict(self):
+        """没有 verdict 的 provider（hermes / shell / 未知）：fail closed。"""
+        client = self._fresh_status_client()
+        self.tmux.output = self.NEEDS_MENU
+        now = [time.time()]
+
+        def fake_time():
+            return now[0]
+
+        with mock.patch("agent_status.status_for_pane", return_value="unknown"), \
+                mock.patch("agent_status.decision_point_for_pane", return_value=False), \
+                mock.patch("time.time", side_effect=fake_time):
+            self._wait_for_panes(client, lambda rows: len(rows) == 1)
+            now[0] += 61
+            states = self._wait_for_panes(client, lambda rows: len(rows) == 1)
+            self.assertFalse(states[0]["needs_input"])
+            self.assertIsNone(states[0]["prompt"])
+
+    def test_a_transient_menu_does_not_fire_until_it_settles(self):
+        """菜单在两轮之间变了（光标移动）：稳定计数重来，稳住之后才亮。"""
+        client = self._fresh_status_client()
+        self.tmux.output = self.NEEDS_MENU
+        now = [time.time()]
+
+        def fake_time():
+            return now[0]
+
+        with mock.patch("agent_status.status_for_pane", return_value="idle"), \
+                mock.patch("agent_status.decision_point_for_pane", return_value=True), \
+                mock.patch("time.time", side_effect=fake_time):
+            self._wait_for_panes(client, lambda rows: len(rows) == 1)
+            self.tmux.output = self.NEEDS_MENU_MOVED
+            now[0] += 61
+            states = self._wait_for_panes(client, lambda rows: len(rows) == 1)
+            self.assertFalse(states[0]["needs_input"], "变过一次：计数重来")
+            now[0] += 61
+            states = self._wait_for_panes(
+                client, lambda rows: rows and rows[0].get("needs_input"))
+            self.assertTrue(states[0]["needs_input"], "新菜单稳住两轮之后才亮")
+            self.assertEqual(states[0]["prompt"]["selected"], 1)
+
+    def test_a_remote_pane_uses_the_same_gate(self):
+        """远端 pane：turn verdict 和抓屏同一包回来（capture_and_status_many），
+        门的三个腿和本机一模一样。"""
+        menu = self.NEEDS_MENU
+
+        class MenuRunner(FakeSSHRunner):
+            def capture_and_status_many(self, pane_ids, history=40, status_ids=None, panes=None):
+                # verdict 是 busy（turn 在跑），decision 是 True（tool 调用 outstanding）：
+                # 这正是远端权限等待在网线那头的样子，两个值必须同一包回来。
+                return ({pane_id: menu for pane_id in pane_ids},
+                        {pane_id: "busy" for pane_id in (status_ids or ())},
+                        {pane_id: True for pane_id in (status_ids or ())})
+
+            def status_many(self, pane_ids):
+                # 没有这个方法 sweep 根本不会问 verdict（status_ids 留空），
+                # 远端 pane 就只能靠抓屏猜状态 —— 那正是本 PR 要修的毛病。
+                return {pane_id: "idle" for pane_id in pane_ids}
+
+        client = TestClient(create_app(
+            self.tmux, password="unit-test-admin-password",
+            session_secret="test-secret", terminal_factory=FakeTerminalFactory(),
+            share_db=":memory:", home_db=":memory:",
+            remote_store=self.remote_store,
+            remote_runner_factory=MenuRunner))
+        response = client.post("/login", data={"password": "unit-test-admin-password"},
+                               follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        host_key = "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        fingerprint = host_key_fingerprint(host_key)
+        client.post("/api/remote-hosts", json={
+            "name": "build-box", "hostname": "10.0.0.8", "port": 22, "username": "ubuntu",
+            "auth_type": "password", "credential": "secret", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint,
+        })
+        now = [time.time()]
+
+        def fake_time():
+            return now[0]
+
+        with mock.patch("time.time", side_effect=fake_time):
+            states = self._wait_for_panes(client, lambda rows: len(rows) == 2)
+            remote = next(item for item in states if "~" in item["id"])
+            self.assertEqual(remote["status"], "busy")
+            self.assertFalse(remote["needs_input"], "第一轮：只记不亮")
+            now[0] += 61
+            states = self._wait_for_panes(
+                client, lambda rows: any(item.get("needs_input") for item in rows))
+            remote = next(item for item in states if "~" in item["id"])
+            self.assertEqual(remote["status"], "busy", "等批复时 verdict 仍是 busy")
+            self.assertTrue(remote["needs_input"])
+            self.assertEqual(remote["prompt"]["title"], "Do you want to proceed?")
+            self.assertEqual(remote["status_source"], "session")
+
+    def test_the_needs_you_card_is_wired(self):
+        """卡片脚本、bundle、控制台页、侧栏树：缺一环前面都白做。"""
+        script = self.client.get("/assets/needs-you.js")
+        self.assertEqual(script.status_code, 200)
+        self.assertIn("TmuxNeedsYou", script.text)
+        self.assertIn("/api/panes/status", script.text)
+        self.assertIn("/api/panes/${encodeURIComponent(pane)}/key", script.text)
+        self.assertNotIn("prompt/choose", script.text, "新卡只走 /key，不另起发送路径")
+        self.assertIn("TmuxNeedsYou", self.client.get("/assets/console.bundle.js").text)
+        web = Path(__file__).resolve().parent.parent / "web"
+        html = (web / "index.html").read_text()
+        for marker in ('id="needs-you-card"', 'id="needs-you-card-options"',
+                       'id="needs-you-card-esc"', "TmuxNeedsYou.start(()=>state.selected)",
+                       ".needs-you-badge{", "needsInput"):
+            self.assertIn(marker, html, marker)
+        shell = (web / "assets" / "shell.js").read_text()
+        for marker in ("tneed", "needs-you", "state.needs"):
+            self.assertIn(marker, shell, marker)
+        self.assertIn(".tneed{", (web / "assets" / "shell.css").read_text())
 
     def test_every_pane_gets_a_stable_short_number(self):
         """多服务器场景：每个窗口一个 #N，和主机/pane id 无关，编号不回收。"""

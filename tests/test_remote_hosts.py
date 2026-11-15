@@ -1088,6 +1088,77 @@ class RemoteHostTests(unittest.TestCase):
         self.assertNotIn("%1", states)
         self.assertEqual(states["%17"], "busy")
 
+    def test_verdicts_many_returns_status_and_decision_in_one_ssh(self):
+        """One SSH call must carry both the verdict and the decision point:
+        %9 is busy with an outstanding call (a permission wait), %8 idle."""
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+        seen = {}
+
+        def fake_run(command, **kwargs):
+            seen["command"] = command
+            return subprocess.CompletedProcess(
+                [], 0, b"\x1f%8 idle no\n\x1f%9 busy yes\n", b"")
+
+        with mock.patch.object(runner, "run", side_effect=fake_run):
+            states, decisions = runner.verdicts_many(["%8", "%9", "bogus"])
+        self.assertEqual(states, {"%8": "idle", "%9": "busy"})
+        self.assertEqual(decisions, {"%8": False, "%9": True})
+        command = seen["command"]
+        self.assertIn("for pane in %8 %9", command)          # the bogus id is dropped
+        self.assertIn("TMUXWEB_STATUS_ONLY=1", command)
+        self.assertIn("TMUXWEB_DECISION", command)
+
+    def test_verdicts_many_treats_a_missing_decision_token_as_no(self):
+        """Old 2-token output (no decision token) must still parse — and the
+        pane decides False, fail closed, never guessed."""
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess([], 0, b"\x1f%8 idle\n\x1f%9 busy\n", b"")
+
+        with mock.patch.object(runner, "run", side_effect=fake_run):
+            states, decisions = runner.verdicts_many(["%8", "%9"])
+        self.assertEqual(states, {"%8": "idle", "%9": "busy"})
+        self.assertEqual(decisions, {"%8": False, "%9": False})
+
+    def test_verdicts_many_keeps_other_chunks_when_one_fails(self):
+        """A dead chunk must not lose the verdicts the other chunks already got."""
+        import re
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+
+        def fake_run(command, **kwargs):
+            listed = re.search(r"for pane in ([^;]+);", command).group(1)
+            panes = re.findall(r"%\d+", listed)
+            if "%1" in panes:
+                raise RuntimeError("ssh hiccup")
+            lines = "".join("\x1f%s busy yes\n" % pane for pane in panes)
+            return subprocess.CompletedProcess([], 0, lines.encode(), b"")
+
+        ids = ["%%%d" % i for i in range(1, 18)]
+        with mock.patch.object(runner, "run", side_effect=fake_run):
+            states, decisions = runner.verdicts_many(ids)
+        self.assertEqual(len(states), 12)
+        self.assertNotIn("%1", states)
+        self.assertEqual(states["%17"], "busy")
+        self.assertTrue(all(decisions[pane] for pane in states))
+
+    def test_status_many_still_strips_the_decision_token(self):
+        """status_many keeps its old contract: 3-token lines parse to statuses
+        only, the decision token is ignored (callers that want it use
+        verdicts_many)."""
+        host = dict(FAKE_SSH_HOST)
+        runner = SSHRunner(host)
+
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess([], 0, b"\x1f%8 idle no\n\x1f%9 busy yes\n", b"")
+
+        with mock.patch.object(runner, "run", side_effect=fake_run):
+            states = runner.status_many(["%8", "%9"])
+        self.assertEqual(states, {"%8": "idle", "%9": "busy"})
+
     def test_the_remote_attach_records_and_restores_the_window_size(self):
         """A phone-sized attach must not leave the oracle window at 47 columns."""
         host = dict(FAKE_SSH_HOST)

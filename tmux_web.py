@@ -50,6 +50,7 @@ import agent_status
 import agent_catalog
 import agent_models
 import agent_prompts
+import needs_input
 import relay
 import transcript_reader
 import transfer_tickets
@@ -134,6 +135,7 @@ CONSOLE_BUNDLE_SOURCES = (
     ("assets", "composer-files.js"),
     ("assets", "path-links.js"),
     ("assets", "prompt-card.js"),
+    ("assets", "needs-you.js"),
     ("assets", "markdown-cjk.js"),
     ("assets", "video-cards.js"),
     ("assets", "upload-cards.js"),
@@ -989,6 +991,13 @@ class InputRequest(BaseModel):
 
 
 ALLOWED_KEYS = {"Escape", "Enter", "Tab", "C-c", "C-d", "C-q", "C-u", "Up", "Down", "Left", "Right"}
+# Single-character keys: a menu answer is one character plus Enter ("y"/"n",
+# a digit for a numbered list), and /prompt/choose already allows precisely
+# this alphabet (keys_are_safe). Without them the needs-you card could only
+# answer cursor menus through /key; multi-character strings are still 422.
+ALLOWED_KEYS |= {chr(code) for code in range(ord("0"), ord("9") + 1)}
+ALLOWED_KEYS |= {chr(code) for code in range(ord("a"), ord("z") + 1)}
+ALLOWED_KEYS |= {chr(code) for code in range(ord("A"), ord("Z") + 1)}
 
 def interrupt_key(provider: str | None) -> str:
     """Which key stops a running turn for this agent CLI.
@@ -1938,6 +1947,10 @@ def create_app(
                 continue
         return found
 
+    # "Needs you": one gate per app process, fed once per sweep per pane (see
+    # needs_input.py — the three-legged conjunction, never parsing alone).
+    needs_gate = needs_input.NeedsInputGate()
+
     def collect_pane_states() -> list[dict]:
         # Reuse the pane list /api/hosts just probed (the console and the board poll
         # it) instead of listing every host's panes again: the sweep only needs the
@@ -1981,25 +1994,36 @@ def create_app(
         # afterwards, and the session-file verdict comes back in the same
         # packet. Agent transports send capture + status as one batch;
         # anything without capture_and_status_many runs the same two
-        # calls as before, one each.
+        # calls as before, one each. Both calls also carry the needs-you
+        # decision point (turn ended, or a tool call outstanding) in the
+        # same packet — no second round trip per host per sweep.
         captured: dict[int, dict] = {}
         native: dict[str, str] = {}
+        native_decision: dict[str, bool] = {}
         def grab_both(group):
             key, transport, host_id, pane_ids, panes, status_ids = group
             try:
                 both = getattr(transport, "capture_and_status_many", None)
                 if both is not None:
-                    texts, states = both(pane_ids, 40, status_ids=status_ids, panes=panes)
+                    result = both(pane_ids, 40, status_ids=status_ids, panes=panes)
+                    texts, states = result[0], result[1]
+                    decisions = result[2] if len(result) > 2 else {}
                 else:
                     texts = transport.capture_many(pane_ids, 40, panes=panes)
-                    states = (transport.status_many(status_ids)
-                              if status_ids and hasattr(transport, "status_many") else {})
+                    verdicts = getattr(transport, "verdicts_many", None)
+                    if status_ids and verdicts is not None:
+                        states, decisions = verdicts(status_ids)
+                    else:
+                        states = (transport.status_many(status_ids)
+                                  if status_ids and hasattr(transport, "status_many") else {})
+                        decisions = {}
             except Exception:  # noqa: BLE001 - fall back to per-pane captures
-                return key, {}, []
+                return key, {}, [], []
             # host-scoped: "%8" exists on several hosts and means a different pane
-            return key, texts, [
-                (f"{host_id}~{pane_id}" if "~" not in str(pane_id) else str(pane_id), state)
-                for pane_id, state in states.items()]
+            scoped = lambda mapping: [
+                (f"{host_id}~{pane_id}" if "~" not in str(pane_id) else str(pane_id), value)
+                for pane_id, value in mapping.items()]
+            return key, texts, scoped(states), scoped(decisions)
         groups: dict[int, tuple] = {}
         for job in jobs:
             host_id, _, transport, pane = job
@@ -2009,18 +2033,24 @@ def create_app(
             entry[3].append(actual)
             entry[4][actual] = pane
             provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
-            if host_id != "localhost" and provider and hasattr(transport, "status_many"):
+            if (host_id != "localhost" and provider
+                    and (hasattr(transport, "status_many") or hasattr(transport, "verdicts_many"))):
                 entry[5].append(actual)
         with ThreadPoolExecutor(max_workers=max(1, min(8, len(groups) or 1))) as pool:
-            for index, texts, listing in pool.map(grab_both, list(groups.values())):
+            for index, texts, listing, decision_listing in pool.map(grab_both, list(groups.values())):
                 captured[index] = texts
                 for key, state in listing:
                     native[key] = state
+                for key, flag in decision_listing:
+                    native_decision[key] = bool(flag)
 
         # Ask each agent's own session file whether its turn is running: the screen lies
         # (a status bar saying "thinking: high" is a model setting, a TUI redraws while
         # idle) while the session file records the turn boundary. Remote verdicts
         # already came back with the captures above; only localhost is probed here.
+        # The same probe also asks whether the pane is at a decision point (turn
+        # ended, or a tool call outstanding): a permission wait never writes a
+        # turn-end marker, so the status verdict alone would miss it.
         local_agents = [job[3] for job in jobs
                         if job[0] == "localhost"
                         and (job[3].get("provider")
@@ -2033,17 +2063,23 @@ def create_app(
                     try:
                         state = agent_status.status_for_pane(
                             provider, pane.get("path", ""), pane.get("title", ""))
+                        decision = agent_status.decision_point_for_pane(
+                            provider, pane.get("path", ""), pane.get("title", ""))
                     except Exception:  # noqa: BLE001
                         continue
-                    if state in (agent_status.BUSY, agent_status.IDLE):
-                        out.append((pane["id"], state))
+                    # the decision is recorded even when the status is unknown:
+                    # a decision point can exist without a decisive status record
+                    # (e.g. a codex tail cut to just the call)
+                    out.append((pane["id"], state, decision))
                 return out
         else:
             def probe_local():
                 return []
 
-        for key, state in probe_local():
-            native[key] = state
+        for key, state, decision in probe_local():
+            if state in (agent_status.BUSY, agent_status.IDLE):
+                native[key] = state
+            native_decision[key] = decision
 
         busy_window = float(os.environ.get("TMUX_WEB_ACTIVITY_BUSY_SECONDS", "3"))
         now = time.time()
@@ -2072,9 +2108,22 @@ def create_app(
                 except Exception:  # noqa: BLE001 - one slow or dead pane must not fail the sweep
                     status, source = "unknown", "screen"
             target = pane.get("target") or ""
+            # Leg 1 is the session-file decision point only — never the derived
+            # status (activity/screen fallbacks would let a streaming pane
+            # light up). Remote panes get the same decision via verdicts_many /
+            # capture_and_status_many in the same packet as their capture.
+            gated_prompt = needs_gate.observe(
+                pane["id"], decision_point=(surface == agent_status.IDLE
+                                            or native_decision.get(pane["id"], False)),
+                screen_text=text)
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
                     "host_name": host_name, "target": target, "provider": provider,
                     "status": status, "status_source": source, "activity_age": age,
+                    "needs_input": gated_prompt is not None,
+                    # Only a gated prompt ever leaves the server: an ungated
+                    # parse is not shipped, so no client can render it as a
+                    # "needs you" card on parsing alone.
+                    "prompt": gated_prompt,
                     "title": pane.get("title", ""), "path": pane.get("path", ""),
                     "session": target.split(":")[0] if target else "",
                     "window": pane.get("window_name") or target}
@@ -2082,6 +2131,7 @@ def create_app(
         workers = max(4, min(32, int(os.environ.get("TMUX_WEB_STATE_WORKERS", "24"))))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             states = list(pool.map(describe, jobs))
+        needs_gate.prune(state["id"] for state in states)
         # 编号在这里统一带上：relay / 主页 / MCP 拿到的 peer 都自带 #N
         try:
             numbers = home.ensure_numbers([state["id"] for state in states if state.get("id")])
@@ -3567,6 +3617,12 @@ def create_app(
     async def prompt_card_script() -> FileResponse:
         """agent 交互菜单卡片：把 pane 里等着的选择渲染成按钮。"""
         return FileResponse(WEB_DIR / "assets" / "prompt-card.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/needs-you.js")
+    async def needs_you_script() -> FileResponse:
+        """「等你回答」卡片：只渲染过门（needs_input）的菜单，答案只走 /key。"""
+        return FileResponse(WEB_DIR / "assets" / "needs-you.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/markdown-cjk.js")
@@ -6266,7 +6322,8 @@ def create_app(
         # Never wait out a whole sweep here: answer from the cache at once when
         # it holds anything, and only a cold cache waits, briefly.
         states = await asyncio.to_thread(pane_states_cached, 0.5, 30.0, True)
-        return {"panes": [{key: item.get(key) for key in ("id", "provider", "status", "status_source")}
+        return {"panes": [{key: item.get(key) for key in ("id", "provider", "status", "status_source",
+                                                          "needs_input", "prompt")}
                           for item in states]}
 
     async def perform_relay_ask(payload: RelayAskRequest) -> dict:

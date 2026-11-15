@@ -368,7 +368,7 @@ class AgentTransport(SSHRunner):
         The sweep needs both per host per cycle; sending the scripts as one
         batch costs one round trip instead of two. ``status_ids`` is the
         subset with a provider (only those have a session file to ask); omit
-        it and only the capture runs. Returns ``(captures, statuses)``,
+        it and only the capture runs. Returns ``(captures, statuses, decisions)``,
         parsed exactly like :meth:`capture_many` and :meth:`status_many`
         parse them, so a host answers the same over either transport. A
         failed capture op raises RuntimeError, like ``capture_many``; a
@@ -390,7 +390,7 @@ class AgentTransport(SSHRunner):
                     status_scripts.append(script)
         commands = ([cap_script] if cap_script is not None else []) + status_scripts
         if not commands:
-            return {}, {}
+            return {}, {}, {}
         results = self.run_many(commands, timeout=self.capture_timeout or 15)
         # run_many returns one CompletedProcess per command, in order.
         captures: dict = {}
@@ -405,10 +405,13 @@ class AgentTransport(SSHRunner):
         else:
             status_results = results
         statuses = {}
+        decisions = {}
         for result in status_results:
-            statuses.update(self._parse_status_many_output(
-                result.stdout.decode(errors="replace")))
-        return captures, statuses
+            part_states, part_decisions = self._parse_verdicts_many_output(
+                result.stdout.decode(errors="replace"))
+            statuses.update(part_states)
+            decisions.update(part_decisions)
+        return captures, statuses, decisions
 
     def capture_with_pane(self, pane_id: str, history: int = 500) -> tuple[dict, str]:
         """List panes and capture one pane in a single agent round trip.

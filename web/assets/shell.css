@@ -104,3 +104,7 @@ body.resizing .app,body.resizing .shell{transition:none}
 .chip-btn:hover{background:var(--card);border-color:var(--line-strong)}
 .chip-btn.active,.chip-btn.primary{background:#292825;border-color:#292825;color:#fff}
 .chip-btn:disabled{opacity:.45;cursor:default}
+
+/* "等你回答"：过门菜单的 pane 在树里置顶并挂这枚徽标。 */
+.tneed{flex:none;font-size:10px;line-height:1;padding:3px 6px;border-radius:999px;background:color-mix(in srgb,var(--amber) 16%,var(--card));color:var(--ink);font-weight:650;white-space:nowrap}
+.tp-need,.tpane.needs-you{background:color-mix(in srgb,var(--amber) 10%,transparent)}

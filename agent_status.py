@@ -118,20 +118,146 @@ def status_for_file(provider: str, path) -> str:
     return verdict
 
 
-def status_for_pane(provider: str, cwd: str, title: str = "", home=None, screen=None) -> str:
-    """Locate a pane's session file and read its verdict.
+# An "outstanding" tool call: the agent issued it and no result has come back.
+# This is the state a permission prompt lives in. Real session files prove the
+# turn-end marker does NOT cover it: across two Claude files (10432 + 45645
+# records) 0 of 4008 tool_use blocks are followed by a turn_duration before the
+# next user message carrying the tool_result — turn_duration is written only
+# after the tool result returns and the turn completes. So while the agent sits
+# at a permission prompt, the file's last decisive record is the assistant
+# message and the verdict is BUSY. The outstanding call is the signal instead.
+def _tail_records(path):
+    """Parsed JSON records from the tail, oldest first; unparsable lines skipped."""
+    records = []
+    for line in tail_lines(path):
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue
+    return records
 
-    Resolution is the same code the transcript reader uses, including the Kimi
-    "newest updatedAt" rule, so status and transcript can never disagree about which
-    session is live.
-    """
+
+def _outstanding_claude(records) -> bool:
+    """A tool_use id with no tool_result yet. A plain user message after the
+    call means the user intervened and the call is abandoned; a turn-end
+    marker closes everything before it."""
+    pending: set = set()
+    for event in records:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "assistant":
+            content = (event.get("message") or {}).get("content") or []
+            if isinstance(content, list):
+                for block in content:
+                    if (isinstance(block, dict) and block.get("type") == "tool_use"
+                            and block.get("id")):
+                        pending.add(block["id"])
+        elif kind == "user":
+            content = (event.get("message") or {}).get("content")
+            blocks = content if isinstance(content, list) else []
+            results = [block for block in blocks
+                       if isinstance(block, dict) and block.get("type") == "tool_result"]
+            if results:
+                for block in results:
+                    pending.discard(block.get("tool_use_id"))
+            elif blocks or isinstance(content, str):
+                pending.clear()
+        elif kind == "system" and event.get("subtype") in ("turn_duration", "stop_hook_summary"):
+            pending.clear()
+    return bool(pending)
+
+
+CODEX_CALL_TYPES = ("function_call", "custom_tool_call")
+CODEX_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
+
+
+def _outstanding_codex(records) -> bool:
+    """A call item with no matching output item. Codex writes NO explicit
+    approval-wait event: the permission/approval lines in a real rollout file
+    are approval_policy settings, thread_settings_applied, and content mentions
+    inside outputs — settings and quotes, not a wait event."""
+    pending: set = set()
+    for event in records:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "event_msg":
+            marker = (event.get("payload") or {}).get("type")
+            if marker in ("task_complete", "turn_aborted", "task_started"):
+                pending.clear()
+            continue
+        if event.get("type") != "response_item":
+            continue
+        payload = event.get("payload") or {}
+        key = payload.get("call_id") or payload.get("id")
+        if not key:
+            continue
+        if payload.get("type") in CODEX_CALL_TYPES:
+            pending.add(key)
+        elif payload.get("type") in CODEX_OUTPUT_TYPES:
+            pending.discard(key)
+    return bool(pending)
+
+
+# Kimi has no turn marker for a wait either (state.json lastTurnReason is only
+# ever 'completed'): the event stream is the signal. A tool.call opens a
+# pending call; the step/turn ending, a new prompt, or the next llm.request
+# (which only fires once the tool result is back) closes it.
+KIMI_CALL_CLOSERS = ("prompt.completed", "turn.ended", "step.end",
+                     "prompt.submitted", "llm.request")
+
+
+def _outstanding_kimi(records) -> bool:
+    pending = False
+    for event in records:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "tool.call":
+            pending = True
+        elif kind in KIMI_CALL_CLOSERS:
+            pending = False
+        elif kind == "context.append_loop_event":
+            if (event.get("event") or {}).get("type") == "step.end":
+                pending = False
+    return pending
+
+
+def has_outstanding_call(provider: str, path) -> bool:
+    """Is there a tool call in the session tail with no result yet?"""
+    provider = (provider or "").lower()
+    if provider not in ("claude", "codex", "kimi"):
+        return False
+    try:
+        records = _tail_records(path)
+    except OSError:
+        return False
+    if provider == "claude":
+        return _outstanding_claude(records)
+    if provider == "codex":
+        return _outstanding_codex(records)
+    return _outstanding_kimi(records)
+
+
+def decision_point_for_file(provider: str, path) -> bool:
+    """The "decision point" disjunction: the turn ended, OR a tool call is
+    outstanding. The second disjunct is what a permission wait looks like in
+    the file — the turn-end marker never fires there (0/4008, see above)."""
+    if status_for_file(provider, path) == IDLE:
+        return True
+    return has_outstanding_call(provider, path)
+
+
+def _session_path(provider: str, cwd: str, title: str = "", home=None, screen=None):
+    """Locate a pane's session file the way the transcript reader does,
+    including the Kimi "newest updatedAt" rule. None when it cannot be found."""
     import transcript_reader
 
     home = home or os.path.expanduser("~")
     try:
         if provider == "claude":
             try:
-                path = transcript_reader._claude_session_path(home, cwd, title, screen, None)
+                return transcript_reader._claude_session_path(home, cwd, title, screen, None)
             except transcript_reader.TranscriptError:
                 # several sessions, none attributable: the newest one is the live one
                 import re
@@ -139,19 +265,43 @@ def status_for_pane(provider: str, cwd: str, title: str = "", home=None, screen=
                            / re.sub(r"[^A-Za-z0-9]", "-", cwd or ""))
                 candidates = sorted(project.glob("*.jsonl"), key=lambda item: item.stat().st_mtime,
                                     reverse=True) if project.is_dir() else []
-                if not candidates:
-                    return UNKNOWN
-                path = candidates[0]
-            return status_for_file("claude", path)
+                return candidates[0] if candidates else None
         if provider == "codex":
             _, path = transcript_reader._codex_session_path(home, cwd, title)
-            return status_for_file("codex", path)
+            return path
         if provider == "kimi":
             _, path = transcript_reader._kimi_session_path(home, cwd, title)
-            return status_for_file("kimi", path)
+            return path
     except (OSError, ValueError, RuntimeError, transcript_reader.TranscriptError):
+        return None
+    return None
+
+
+def status_for_pane(provider: str, cwd: str, title: str = "", home=None, screen=None) -> str:
+    """Locate a pane's session file and read its verdict.
+
+    Resolution is the same code the transcript reader uses, including the Kimi
+    "newest updatedAt" rule, so status and transcript can never disagree about which
+    session is live.
+    """
+    path = _session_path(provider, cwd, title, home, screen)
+    if path is None:
         return UNKNOWN
-    return UNKNOWN
+    return status_for_file(provider, path)
+
+
+def decision_point_for_pane(provider: str, cwd: str, title: str = "", home=None,
+                            screen=None) -> bool:
+    """Is this pane at a decision point (turn ended, or a tool call outstanding)?
+
+    Same session-file resolution as status_for_pane, so the two can never
+    disagree about which session is live. False when the file cannot be found
+    or the provider has no such signal — fail closed.
+    """
+    path = _session_path(provider, cwd, title, home, screen)
+    if path is None:
+        return False
+    return decision_point_for_file(provider, path)
 
 
 # The same rules in POSIX shell: remote hosts must not need python3.
@@ -187,5 +337,54 @@ status_of() {  # $1 = provider, $2 = session file -> busy|idle|unknown
     fi
   fi
   printf '%s\n' "$_st"
+}
+
+decision_of() {  # $1 = provider, $2 = session file -> yes|no
+  # yes if the turn ended, or a tool call is outstanding (a permission wait
+  # never writes a turn-end marker, so "idle" alone misses exactly the case
+  # that matters — see decision_point_for_file in agent_status.py).
+  # The shell only checks the NEWEST call: an older parallel call still
+  # pending while a newer one finished is missed — fail-closed, and the
+  # Python side tracks every id exactly.
+  _st=$(status_of "$1" "$2")
+  [ "$_st" = idle ] && { printf 'yes\n'; return; }
+  [ -n "$2" ] && [ -f "$2" ] || { printf 'no\n'; return; }
+  _tail=$(tail -n 200 -- "$2" 2>/dev/null | sed 's/":[[:space:]]*"/":"/g')
+  [ -n "$_tail" ] || { printf 'no\n'; return; }
+  case "$1" in
+    claude)
+      _use_line=$(printf '%s\n' "$_tail" | grep -n '"type":"tool_use"' | tail -n 1 | cut -d: -f1)
+      [ -n "$_use_line" ] || { printf 'no\n'; return; }
+      _use=$(printf '%s\n' "$_tail" | sed -n "${_use_line}p" | grep -o '"id":"[^"]*"' | head -n 1 | sed 's/.*"id":"//;s/"$//')
+      [ -n "$_use" ] || { printf 'no\n'; return; }
+      _after=$(printf '%s\n' "$_tail" | awk -v n="$_use_line" 'NR>n')
+      case "$_after" in
+        *'"tool_use_id":"'"$_use"'"'*) printf 'no\n' ;;   # the result came back
+        *'"type":"user"'*) printf 'no\n' ;;               # the user intervened
+        *'"subtype":"turn_duration"'*|*'"subtype":"stop_hook_summary"'*) printf 'no\n' ;;
+        *) printf 'yes\n' ;;
+      esac ;;
+    codex)
+      _call_line=$(printf '%s\n' "$_tail" | grep -nE '"type":"(function_call|custom_tool_call)"' | tail -n 1 | cut -d: -f1)
+      [ -n "$_call_line" ] || { printf 'no\n'; return; }
+      _call=$(printf '%s\n' "$_tail" | sed -n "${_call_line}p" | grep -o '"call_id":"[^"]*"' | head -n 1 | sed 's/.*"call_id":"//;s/"$//')
+      [ -n "$_call" ] || { printf 'no\n'; return; }
+      _after=$(printf '%s\n' "$_tail" | awk -v n="$_call_line" 'NR>n')
+      case "$_after" in
+        *'"call_id":"'"$_call"'"'*) printf 'no\n' ;;      # the output came back
+        *'"type":"task_complete"'*|*'"type":"turn_aborted"'*|*'"type":"task_started"'*) printf 'no\n' ;;
+        *) printf 'yes\n' ;;
+      esac ;;
+    kimi)
+      _call_line=$(printf '%s\n' "$_tail" | grep -n '"type":"tool.call"' | tail -n 1 | cut -d: -f1)
+      [ -n "$_call_line" ] || { printf 'no\n'; return; }
+      _after=$(printf '%s\n' "$_tail" | awk -v n="$_call_line" 'NR>n')
+      case "$_after" in
+        *'"type":"prompt.completed"'*|*'"type":"turn.ended"'*|*'"type":"step.end"'*|\
+*'"type":"prompt.submitted"'*|*'"type":"llm.request"'*) printf 'no\n' ;;
+        *) printf 'yes\n' ;;
+      esac ;;
+    *) printf 'no\n' ;;
+  esac
 }
 """
