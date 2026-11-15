@@ -2095,6 +2095,36 @@ class SSHRunner:
         except (ValueError, IndexError):
             return None
 
+    def stream_range(self, path: str, start: int, length: int, chunk: int = 65536,
+                     idle_timeout: float = 60.0):
+        """按字节区间读远端文件：视频拖动进度条要 Range，否则浏览器得先下完整个文件。"""
+        if "\x00" in path or "\n" in path:
+            raise ValueError("invalid path")
+        start = max(0, int(start))
+        length = max(0, int(length))
+        if not length:
+            return
+        quoted = shlex.quote(path)
+        command = (f"if [ ! -f {quoted} ]; then echo 'no such file: {path}' >&2; exit 44; fi; "
+                   f"tail -c +{start + 1} -- {quoted} 2>/dev/null | head -c {length}")
+        process, directory = self.spawn(command)
+        sent = 0
+        try:
+            assert process.stdout is not None
+            while sent < length:
+                ready, _, _ = select.select([process.stdout], [], [], idle_timeout)
+                if not ready:
+                    raise RuntimeError("remote read stalled for %ds" % int(idle_timeout))
+                data = os.read(process.stdout.fileno(), min(chunk, length - sent))
+                if not data:
+                    break
+                sent += len(data)
+                yield data
+        finally:
+            if process.poll() is None:
+                process.kill()
+            shutil.rmtree(directory, ignore_errors=True)
+
     def stream_file(self, path: str, max_bytes: int, chunk: int = 65536,
                     idle_timeout: float = 90.0):
         """Yield a remote file in chunks instead of buffering the whole thing.

@@ -71,6 +71,23 @@
       link.replaceWith(card(url, name));
       made += 1;
     });
+    // 聊天里的路径（普通文本或代码块里的 /path/to/x.mp4）会被 path-links 变成 .plink，
+    // href 是 "#"，上面的循环认不出来 —— 这里按路径再认一次，就地给播放器。
+    root.querySelectorAll('.plink[data-plink-path]').forEach(link => {
+      if (link.dataset.videoDone === '1' || link.closest('.video-card')) return;
+      const path = link.dataset.plinkPath || '';
+      if (!VIDEO_URL_RE.test(path)) return;
+      const pane = link.dataset.plinkPane || '';
+      if (!pane) return;
+      let url = null;
+      try {
+        url = new URL(`/api/panes/${encodeURIComponent(pane)}/files/raw?path=${encodeURIComponent(path)}`,
+                      location.origin);
+      } catch (_error) { return; }
+      link.dataset.videoDone = '1';
+      link.replaceWith(card(url, path.split('/').filter(Boolean).pop() || '视频'));
+      made += 1;
+    });
     return made;
   }
 

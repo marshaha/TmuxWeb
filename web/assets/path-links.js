@@ -61,6 +61,7 @@
     link.className = 'plink';
     link.href = '#';
     link.dataset.plinkPath = raw;
+    link.dataset.plinkPane = pane || '';
     link.title = raw;
     link.textContent = raw;
     link.__plinkOpen = () => {

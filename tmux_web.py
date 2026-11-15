@@ -4972,6 +4972,23 @@ def create_app(
 
         threading.Thread(target=work, daemon=True).start()
 
+    def parse_byte_range(header: str, size: int | None):
+        """`bytes=start-end` → (first, last)；不满意就返回 None（当作整份处理）。"""
+        match = re.match(r"^bytes=(\d*)-(\d*)$", header)
+        if not match or size is None or size <= 0:
+            return None
+        start, end = match.group(1), match.group(2)
+        if not start and not end:
+            return None
+        if not start:                     # 末尾 N 字节
+            length = min(int(end), size)
+            return size - length, size - 1
+        first = int(start)
+        last = int(end) if end else size - 1
+        if first >= size:
+            return None
+        return first, min(last, size - 1)
+
     def remote_thumb(transport, path: str, size: int, name: str) -> str | None:
         """给远端图片在本地缩一张 320px 的缓存图；做不到就返回 None（照旧发原图）。"""
         if size <= 0 or size > 30 * 1024 * 1024:
@@ -5103,6 +5120,21 @@ def create_app(
                 size = await asyncio.to_thread(transport.file_size, path)
             except (RuntimeError, OSError, ValueError):
                 size = None
+            # 视频拖动进度条要 Range：远端按区间读，别让浏览器先下完整个文件
+            stream_range = getattr(transport, "stream_range", None)
+            parsed = parse_byte_range((request.headers.get("range") or "").strip(), size) \
+                if (stream_range and size) else None
+            if parsed and size:
+                first, last = parsed
+                headers["Content-Range"] = f"bytes {first}-{last}/{size}"
+                headers["Accept-Ranges"] = "bytes"
+                headers["Content-Length"] = str(last - first + 1)
+
+                def relay_slice(start=first, length=last - first + 1):
+                    for chunk in stream_range(path, start, length):
+                        yield chunk
+                return StreamingResponse(relay_slice(), status_code=206,
+                                         media_type=media_type, headers=headers)
             if size:
                 headers["Content-Length"] = str(size)
             chunks = stream_file(path, download_limit, idle_timeout=download_idle)

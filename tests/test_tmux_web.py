@@ -352,6 +352,14 @@ class FakeSSHRunner:
         for start in range(0, len(data), chunk):
             yield data[start:start + chunk]
 
+    def stream_range(self, path, start, length, chunk=65536, idle_timeout=60.0):
+        data = FakeSSHRunner.remote_files.get(path)
+        if data is None:
+            raise RuntimeError("no such file: %s" % path)
+        piece = data[start:start + length]
+        for offset in range(0, len(piece), chunk):
+            yield piece[offset:offset + chunk]
+
     def zip_files(self, paths, base, max_bytes, max_files):
         FakeSSHRunner.zipped = (tuple(paths), base, max_bytes, max_files)
         buffer = io.BytesIO()
@@ -1797,6 +1805,30 @@ class TmuxWebTests(unittest.TestCase):
         response = self.client.get(f"/api/panes/{pane_id}/uploads/shot.png")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.content[:4], b"\x89PNG")
+
+    def test_a_remote_video_can_be_range_read(self):
+        """视频拖进度条要 206 + Content-Range；远端不按区间读的话，浏览器得先下完整个文件。"""
+        self.login()
+        host_key = "10.0.0.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        host = self.remote_store.add_host(
+            name="box", hostname="10.0.0.9", port=22, username="u", auth_type="password",
+            credential="pw", transport="ssh", host_key=host_key,
+            fingerprint=host_key_fingerprint(host_key))
+        hosts = self.client.get("/api/hosts").json()["hosts"]
+        pane = next(p for h in hosts for p in (h.get("panes") or []) if h["id"] == host["id"])
+        path = pane["path"].rstrip("/") + "/lamp_bird.mp4"
+        FakeSSHRunner.remote_files[path] = b"0123456789" * 100
+
+        response = self.client.get(f"/api/panes/{pane['id']}/files/raw", params={"path": path},
+                                   headers={"Range": "bytes=10-19"})
+        self.assertEqual(response.status_code, 206, response.text)
+        self.assertEqual(response.content, b"0123456789")
+        self.assertEqual(response.headers["content-range"], "bytes 10-19/1000")
+
+        tail = self.client.get(f"/api/panes/{pane['id']}/files/raw", params={"path": path},
+                               headers={"Range": "bytes=-8"})
+        self.assertEqual(tail.status_code, 206)
+        self.assertEqual(len(tail.content), 8)
 
     def test_the_pause_button_is_hidden_until_the_pref_turns_it_on(self):
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
