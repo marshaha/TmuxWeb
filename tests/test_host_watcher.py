@@ -352,6 +352,161 @@ class CompositionTests(_TempHome):
 
 
 # ---------------------------------------------------------------------------
+# Caching (Fix 2)
+# ---------------------------------------------------------------------------
+
+class CacheTests(_TempHome):
+    def _claude_waiting_file(self, cwd="/proj"):
+        project = self.home / ".claude" / "projects" / "-proj"
+        return _write_jsonl(project / "sess-1.jsonl", [
+            {"type": "user"}, _claude_assistant()])
+
+    def _resolve_spy(self):
+        orig = agent_program._watcher_resolve_session_file
+        return mock.patch.object(
+            agent_program, "_watcher_resolve_session_file", wraps=orig)
+
+    def test_snapshot_cache_hit_skips_recompute(self):
+        self._claude_waiting_file()
+        panes = [{"pane_id": "%0", "provider": "claude", "cwd": "/proj"}]
+        watcher = self.watcher()
+        with self._resolve_spy() as spy:
+            first = watcher.snapshot(panes)
+            second = watcher.snapshot(panes)
+        self.assertEqual(first, second)
+        self.assertEqual(spy.call_count, 1)  # the second snapshot reused it
+
+    def test_snapshot_cache_miss_on_a_different_pane_set(self):
+        self._claude_waiting_file()
+        watcher = self.watcher()
+        with self._resolve_spy() as spy:
+            watcher.snapshot([{"pane_id": "%0", "provider": "claude",
+                               "cwd": "/proj"}])
+            out = watcher.snapshot([
+                {"pane_id": "%0", "provider": "claude", "cwd": "/proj"},
+                {"pane_id": "%1", "provider": "claude", "cwd": "/other"}])
+        self.assertEqual(spy.call_count, 2)  # a new pane set recomputes
+        self.assertIn("%1", out)
+
+    def test_snapshot_cache_expires(self):
+        self._claude_waiting_file()
+        panes = [{"pane_id": "%0", "provider": "claude", "cwd": "/proj"}]
+        watcher = self.watcher(poll_interval=0.5)
+        with mock.patch.object(watcher, "_control_quiet",
+                               wraps=watcher._control_quiet) as spy:
+            watcher.snapshot(panes)
+            watcher.snapshot(panes)
+            self.assertEqual(spy.call_count, 1)  # cache hit: no recompute
+            time.sleep(0.6)
+            watcher.snapshot(panes)
+            self.assertEqual(spy.call_count, 2)  # expired: recomputed
+
+    def test_needs_input_op_reuses_the_poll_loop_snapshot(self):
+        """The op path shares the poll loop's snapshot: a sweep that
+        just ran must not pay for a second full snapshot."""
+        now = time.time()
+        self.events_file([{"hook_event_name": "PermissionRequest",
+                           "session_id": "sess-1", "cwd": "/proj",
+                           "timestamp": now}])
+        panes = [{"pane_id": "%0", "provider": "claude", "cwd": "/proj",
+                  "session_id": "sess-1"}]
+        watcher = self.watcher()
+        with self._resolve_spy() as spy:
+            watcher.snapshot(panes, now=now)  # the poll loop just ran
+            result = agent_program.run_needs_input(
+                {"op": "needs_input", "panes": panes}, self.resolver,
+                watcher)
+        self.assertEqual(spy.call_count, 1)
+        self.assertTrue(result["waiting"]["%0"]["waiting"])
+
+    def test_resolve_cache_survives_a_snapshot_cache_bust(self):
+        self._claude_waiting_file()
+        panes = [{"pane_id": "%0", "provider": "claude", "cwd": "/proj"}]
+        watcher = self.watcher()
+        with self._resolve_spy() as spy:
+            watcher.snapshot(panes)
+            watcher._snapshot_cache = None
+            watcher.snapshot(panes)
+        self.assertEqual(spy.call_count, 1)
+
+    def test_resolve_cache_invalidates_when_the_file_changes(self):
+        path = self._claude_waiting_file()
+        panes = [{"pane_id": "%0", "provider": "claude", "cwd": "/proj"}]
+        watcher = self.watcher()
+        with self._resolve_spy() as spy:
+            watcher.snapshot(panes)
+            watcher._snapshot_cache = None
+            later = time.time() + 60
+            os.utime(path, (later, later))
+            watcher.snapshot(panes)
+        self.assertEqual(spy.call_count, 2)
+
+    def test_resolve_miss_is_cached_briefly_then_retried(self):
+        panes = [{"pane_id": "%0", "provider": "claude", "cwd": "/nowhere"}]
+        watcher = self.watcher()
+        with self._resolve_spy() as spy:
+            watcher.snapshot(panes)
+            watcher._snapshot_cache = None
+            watcher.snapshot(panes)
+            self.assertEqual(spy.call_count, 1)  # miss cached (5s)
+            key = ("claude", "/nowhere", "")
+            cached_path, cached_at, mtime = watcher._resolve_cache[key]
+            watcher._resolve_cache[key] = (cached_path, cached_at - 6.0, mtime)
+            watcher._snapshot_cache = None
+            watcher.snapshot(panes)
+            self.assertEqual(spy.call_count, 2)  # miss TTL expired
+
+    def test_event_file_is_not_reparsed_while_unchanged(self):
+        now = time.time()
+        self.events_file([{"hook_event_name": "PermissionRequest",
+                           "session_id": "sess-1", "cwd": "/proj",
+                           "timestamp": now}])
+        panes = [{"pane_id": "%0", "provider": "claude", "cwd": "/proj",
+                  "session_id": "sess-1"}]
+        watcher = self.watcher()
+        orig_parse = agent_program.parse_hook_event
+        with mock.patch.object(agent_program, "parse_hook_event",
+                               wraps=orig_parse) as spy:
+            out = watcher.snapshot(panes, now=now)
+            self.assertTrue(out["%0"]["waiting"])
+            first_calls = spy.call_count
+            self.assertGreater(first_calls, 0)
+            watcher._snapshot_cache = None
+            out = watcher.snapshot(panes, now=now)
+            self.assertTrue(out["%0"]["waiting"])
+            self.assertEqual(spy.call_count, first_calls)  # no re-parse
+            # A new event changes mtime/size: the next snapshot sees it.
+            with open(watcher.events_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(
+                    {"hook_event_name": "Stop", "session_id": "sess-1",
+                     "cwd": "/proj", "timestamp": now}) + "\n")
+            watcher._snapshot_cache = None
+            out = watcher.snapshot(panes, now=now)
+            self.assertFalse(out["%0"]["waiting"])
+            self.assertGreater(spy.call_count, first_calls)
+
+    def test_stale_events_still_expire_from_the_cached_parse(self):
+        """The 1h TTL is applied at use time, so a reused parse still
+        lets an event expire on schedule without re-reading the file."""
+        now = time.time()
+        self.events_file([{"hook_event_name": "PermissionRequest",
+                           "session_id": "sess-1", "cwd": "/proj",
+                           "timestamp": now}])
+        panes = [{"pane_id": "%0", "provider": "claude", "cwd": "/proj",
+                  "session_id": "sess-1"}]
+        watcher = self.watcher()
+        orig_parse = agent_program.parse_hook_event
+        with mock.patch.object(agent_program, "parse_hook_event",
+                               wraps=orig_parse) as spy:
+            out = watcher.snapshot(panes, now=now)
+            self.assertTrue(out["%0"]["waiting"])
+            watcher._snapshot_cache = None
+            out = watcher.snapshot(panes, now=now + 3700)
+            self.assertFalse(out["%0"]["waiting"])
+            self.assertEqual(spy.call_count, 1)  # parsed once, reused
+
+
+# ---------------------------------------------------------------------------
 # Control-mode parsing (no tmux needed)
 # ---------------------------------------------------------------------------
 

@@ -1057,6 +1057,18 @@ WATCHER_MAX_EVENTS_KEPT = 1000
 WATCHER_QUIET_SECONDS = 5.0  # no %output for this long == screen quiet
 WATCHER_POLL_INTERVAL = 2.0  # background refresh cadence (seconds)
 WATCHER_TAIL_BYTES = 65536
+# Session-file resolution cache TTL. A pane's session file changes
+# identity only when a new session starts in the same cwd — rare
+# against the 2s snapshot cadence — so 30s bounds the staleness of
+# "which file is newest" while the Codex rglob + first-line scan
+# (36ms for 20 files on oracle) runs at most once per pane per 30s
+# instead of once per snapshot. The resolved file's mtime is checked
+# on every hit, so an appended or replaced file re-resolves at once.
+WATCHER_RESOLVE_TTL_SECONDS = 30.0
+# A miss (no session file for this pane) is cached only briefly: a
+# session file that appears — the pane's agent just started — must
+# be found within seconds, not after the full 30s.
+WATCHER_RESOLVE_MISS_TTL_SECONDS = 5.0
 
 # Normalised hook-event kinds. "waiting" events set waiting, "clear"
 # events clear it. Anything else is ignored (SessionStart, PreToolUse
@@ -1529,15 +1541,26 @@ class HostWatcher:
     """Per-pane "needs you" state from hooks + control mode + session files.
 
     The watcher is cheap to construct and safe to use without its
-    background threads: :meth:`snapshot` always re-reads the event file
-    and the session files, so a one-shot ``needs_input`` op is fresh
-    even if the poll thread never ran. :meth:`start` adds the
-    background loop (event tail + control-mode attach + session mtimes
-    every :attr:`poll_interval`) so %output times stay warm between
-    server sweeps. Every failure mode degrades to "no signal", never
-    to a crash: a missing event file, a dead control client, an
+    background threads: :meth:`snapshot` computes fresh when its
+    caches are cold, so a one-shot ``needs_input`` op is fresh even
+    if the poll thread never ran. :meth:`start` adds the background
+    loop (event tail + control-mode attach + session mtimes every
+    :attr:`poll_interval`) so %output times stay warm between server
+    sweeps. Every failure mode degrades to "no signal", never to a
+    crash: a missing event file, a dead control client, an
     unresolvable session file and an unknown provider all read as
     "not waiting".
+
+    Caching (all fail-open to a fresh read, never to a stale "yes"):
+    the snapshot result is cached for one poll interval and keyed on
+    the pane set, so a ``needs_input`` op arriving just after the
+    poll loop reuses it; session-file resolution is cached per
+    (provider, cwd, hint) for 30s (5s for a miss) and invalidated
+    when the resolved file's mtime changes; the event file is only
+    re-parsed when its mtime/size changed, with the 1h TTL applied
+    at use time. Session-file *contents* are never cached — every
+    uncached snapshot re-reads the tail — only the "which file"
+    answer and the parsed events are.
     """
 
     def __init__(self, resolver: TmuxResolver, *, home=None, events_path=None,
@@ -1552,6 +1575,14 @@ class HostWatcher:
             self._events_path = (self._home / ".config" / "tmuxweb-agent"
                                  / "events.jsonl")
         self._poll_interval = max(0.5, float(poll_interval))
+        # Snapshot cache freshness window: one poll interval. A
+        # needs_input op arriving shortly after the poll loop's
+        # snapshot reuses it instead of recomputing; a result older
+        # than this is never served. 2s of staleness is the accepted
+        # bound — the hook leg (exact, second-scale) and the server
+        # gate (the fallback) both cover the gap, and a one-shot op
+        # with a cold cache still computes fresh.
+        self._snapshot_ttl = self._poll_interval
         self._event_ttl = float(event_ttl)
         self._quiet_seconds = float(quiet_seconds)
         self._lock = threading.Lock()
@@ -1562,6 +1593,16 @@ class HostWatcher:
         self._pane_sessions: dict[str, str] = {}  # pane_id -> session name
         self._pane_sessions_at: float = 0.0
         self._events_seen: int = 0
+        # Snapshot cache: (pane-set key, result, monotonic timestamp).
+        self._snapshot_cache: tuple | None = None
+        # Resolution cache: (provider, cwd, hint) ->
+        # (path or None, monotonic timestamp, resolved mtime_ns or None).
+        self._resolve_cache: dict = {}
+        # Event cache: (parsed events, (mtime_ns, size) signature).
+        # The TTL is applied at use time, not at parse time, so a
+        # reused parse still expires events on schedule.
+        self._events_cache: list[dict] | None = None
+        self._events_sig: tuple | None = None
 
     # -- event file --------------------------------------------------------
     @property
@@ -1573,32 +1614,53 @@ class HostWatcher:
         return self._events_seen
 
     def _read_events(self, now: float | None = None) -> list[dict]:
-        """Parsed, unexpired hook events, oldest first."""
+        """Parsed, unexpired hook events, oldest first.
+
+        The file is re-parsed only when its (mtime_ns, size) changed
+        since the last read — the poll loop and the op path both call
+        this every ~2s, and re-parsing up to 1000 lines each time is
+        the cost this avoids. The 1h TTL is applied at use time, so
+        a reused parse still lets events expire on schedule; a
+        deleted file reads as no events (the cache is dropped).
+        """
         now = time.time() if now is None else now
         try:
-            size = self._events_path.stat().st_size
+            stat = self._events_path.stat()
+            sig = (stat.st_mtime_ns, stat.st_size)
         except OSError:
+            self._events_cache = None
+            self._events_sig = None
+            self._events_seen = 0
             return []
-        try:
-            if size > WATCHER_MAX_EVENTS_BYTES:
-                self._rotate_events()
-            text = self._events_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return []
-        events = []
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        if sig != self._events_sig or self._events_cache is None:
             try:
-                parsed = parse_hook_event(json.loads(line))
-            except ValueError:
-                continue
-            if parsed is None:
-                continue
-            if now - parsed["timestamp"] > self._event_ttl:
-                continue
-            events.append(parsed)
+                if stat.st_size > WATCHER_MAX_EVENTS_BYTES:
+                    self._rotate_events()
+                    stat = self._events_path.stat()
+                    sig = (stat.st_mtime_ns, stat.st_size)
+                text = self._events_path.read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError:
+                self._events_cache = None
+                self._events_sig = None
+                self._events_seen = 0
+                return []
+            parsed = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = parse_hook_event(json.loads(line))
+                except ValueError:
+                    continue
+                if event is None:
+                    continue
+                parsed.append(event)
+            self._events_cache = parsed
+            self._events_sig = sig
+        events = [e for e in (self._events_cache or [])
+                  if now - e["timestamp"] <= self._event_ttl]
         self._events_seen = len(events)
         return events
 
@@ -1648,10 +1710,44 @@ class HostWatcher:
 
     # -- session files -------------------------------------------------------
     def _session_file(self, pane: dict):
-        return _watcher_resolve_session_file(
-            pane.get("provider") or "", pane.get("cwd") or "",
-            pane.get("title") or "", pane.get("session_id") or "",
-            home=self._home)
+        """A pane's session file, cached per (provider, cwd, hint).
+
+        The resolver ignores ``title``, so it is not part of the key.
+        A hit is used only while its TTL holds (30s for a found file,
+        5s for a miss) and the resolved file's mtime is unchanged —
+        an appended or replaced file re-resolves at once. A brand-new
+        session file superseding the cached one for the same cwd is
+        picked up when the TTL expires (at most 30s late); the hook
+        leg and the server gate cover that window.
+        """
+        provider = (pane.get("provider") or "").lower()
+        cwd = pane.get("cwd") or ""
+        hint = pane.get("session_id") or ""
+        key = (provider, cwd, hint)
+        now_mono = time.monotonic()
+        entry = self._resolve_cache.get(key)
+        if entry is not None:
+            path, cached_at, mtime_ns = entry
+            ttl = (WATCHER_RESOLVE_TTL_SECONDS if path is not None
+                   else WATCHER_RESOLVE_MISS_TTL_SECONDS)
+            if now_mono - cached_at < ttl:
+                if path is None:
+                    return None
+                try:
+                    if path.stat().st_mtime_ns == mtime_ns:
+                        return path
+                except OSError:
+                    pass  # the file vanished: re-resolve below
+        path = _watcher_resolve_session_file(
+            provider, cwd, pane.get("title") or "", hint, home=self._home)
+        resolved_mtime = None
+        if path is not None:
+            try:
+                resolved_mtime = path.stat().st_mtime_ns
+            except OSError:
+                resolved_mtime = None
+        self._resolve_cache[key] = (path, now_mono, resolved_mtime)
+        return path
 
     def _decision_point(self, pane: dict) -> tuple[bool, str | None]:
         """(decision_point, session_id) — the file leg, fail-closed."""
@@ -1719,23 +1815,39 @@ class HostWatcher:
         alone is enough; a decision point alone is not — that is the
         server gate's job, and this watcher must not duplicate its
         false-positive mode.
+
+        The result is cached for one poll interval, keyed on the pane
+        set, so a ``needs_input`` op arriving just after the poll
+        loop's snapshot reuses it instead of recomputing. A different
+        pane list, or a result older than the window, recomputes; a
+        cold cache (the poll thread never ran) computes fresh.
         """
         now = time.time() if now is None else now
-        events = self._read_events(now)
-        out: dict[str, dict] = {}
+        normalized = []
         for raw in panes or []:
             if not isinstance(raw, dict):
                 continue
             pane_id = str(raw.get("pane_id") or raw.get("id") or "")
             if not pane_id:
                 continue
-            pane = {
+            normalized.append({
                 "pane_id": pane_id,
                 "provider": str(raw.get("provider") or "").lower(),
                 "cwd": str(raw.get("cwd") or raw.get("path") or ""),
                 "title": str(raw.get("title") or ""),
                 "session_id": str(raw.get("session_id") or ""),
-            }
+            })
+        key = tuple(sorted(
+            (p["pane_id"], p["provider"], p["cwd"], p["title"],
+             p["session_id"]) for p in normalized))
+        cached = self._snapshot_cache
+        if (cached is not None and cached[0] == key
+                and time.monotonic() - cached[2] < self._snapshot_ttl):
+            return {pid: dict(state) for pid, state in cached[1].items()}
+        events = self._read_events(now)
+        out: dict[str, dict] = {}
+        for pane in normalized:
+            pane_id = pane["pane_id"]
             with self._lock:
                 self._known[pane_id] = pane
             hook_waiting, hook_since = self._hook_state(pane, events, now)
@@ -1755,6 +1867,7 @@ class HostWatcher:
                 "decision_point": decision, "control_quiet": control_quiet,
                 "hook": hook_waiting,
             }
+        self._snapshot_cache = (key, out, time.monotonic())
         return out
 
     @property
