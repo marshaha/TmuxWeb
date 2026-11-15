@@ -117,12 +117,24 @@
       const parts = [];
       let made = 0;
       for (let index = 0; index < lines.length; index += 1) {
-        const raw = bareCodePath(lines[index]);
+        const line = lines[index];
+        const url = /^https?:\/\/\S+$/.test(line.trim()) ? line.trim() : '';
+        if (url) {
+          const link = document.createElement('a');
+          link.href = url;
+          link.textContent = url;
+          link.rel = 'noopener noreferrer';
+          parts.push(link);
+          made += 1;
+          if (index < lines.length - 1) parts.push(document.createTextNode('\n'));
+          continue;
+        }
+        const raw = bareCodePath(line);
         if (raw) {
           parts.push(makePathLink(raw, pane, options, cwd));
           made += 1;
         } else {
-          parts.push(document.createTextNode(lines[index]));
+          parts.push(document.createTextNode(line));
         }
         if (index < lines.length - 1) parts.push(document.createTextNode('\n'));
       }

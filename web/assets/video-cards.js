@@ -35,6 +35,7 @@
   function card(url, name) {
     const figure = document.createElement('figure');
     figure.className = 'video-card';
+    figure.dataset.videoSrc = url.href;
 
     const video = document.createElement('video');
     video.controls = true;
@@ -44,12 +45,6 @@
     // 加一个 #t=0.5 媒体片段：Chrome 会立刻解一帧画出来，否则 metadata 到了也还是黑框
     const base = playableSrc(url);
     video.src = base.includes('#') ? base : `${base}#t=0.5`;
-    const fallback = document.createElement('a');
-    fallback.href = url.href;
-    fallback.target = '_blank';
-    fallback.rel = 'noopener noreferrer';
-    fallback.textContent = '这个格式浏览器可能放不了，点这里打开';
-    video.appendChild(fallback);
 
     const caption = document.createElement('figcaption');
     const open = document.createElement('a');
@@ -67,7 +62,12 @@
     const trouble = document.createElement('p');
     trouble.className = 'video-trouble';
     trouble.hidden = true;
-    trouble.textContent = '这个地址不能直接播放，点上面的文件名可以在新标签打开。';
+    const fallback = document.createElement('a');
+    fallback.href = url.href;
+    fallback.target = '_blank';
+    fallback.rel = 'noopener noreferrer';
+    fallback.textContent = '在新标签打开';
+    trouble.append('这个地址不能直接播放，', fallback, '。');
     video.addEventListener('error', () => {
       figure.classList.add('is-broken');
       trouble.hidden = false;
@@ -75,6 +75,13 @@
 
     figure.append(video, caption, trouble);
     return figure;
+  }
+
+  // 同一条消息里同一个地址只放一个播放器：enhance 可能被不同层级调用好几次
+  // （整段重渲染、eager 处理单条消息…），只在自己的 root 里查会漏。
+  function alreadyPlayed(root, href) {
+    const scope = (root.closest && root.closest('.chat-message')) || root;
+    return [...scope.querySelectorAll('.video-card')].some(card => card.dataset.videoSrc === href);
   }
 
   function enhance(root) {
@@ -88,9 +95,44 @@
       const name = videoLikeName(url);
       if (!name) return;
       link.dataset.videoDone = '1';
-      link.replaceWith(card(url, name));
+      if (alreadyPlayed(root, url.href)) return;
+      const player = card(url, name);
+      const block = link.closest('pre');
+      if (block) block.after(player);
+      else link.replaceWith(player);
       made += 1;
     });
+    // agent 经常顺手贴一行裸 HTML：`<video controls src="…"></video>`。
+    // markdown 会把它转义成文字（屏幕上就是一堆尖括号），这里摘掉，用同一个播放器代替。
+    const RAW_VIDEO = /<video\b[^>]*?\bsrc=["']([^"']+)["'][^>]*>(?:\s*<\/video>)?/gi;
+    root.querySelectorAll('pre').forEach(block => {
+      const text = block.textContent || '';
+      const found = [...text.matchAll(RAW_VIDEO)].map(match => match[1]);
+      if (!found.length) return;
+      // 摘掉标签，剩下的文字（说明行）留着
+      const cleaned = text.replace(RAW_VIDEO, '').replace(/\n{3,}/g, '\n\n');
+      if (!block.querySelector('.plink')) block.textContent = cleaned;
+      else {
+        // 里面已经有链接了：只删掉标签那一段文字节点
+        [...block.childNodes].forEach(node => {
+          if (node.nodeType === 3 && /<video\b/i.test(node.nodeValue || '')) {
+            node.nodeValue = node.nodeValue.replace(RAW_VIDEO, '');
+          }
+        });
+      }
+      found.forEach(raw => {
+        const target = raw.trim();
+        if (!target) return;
+        if (alreadyPlayed(root, target)) return;
+        let url = null;
+        try { url = new URL(target, location.origin); } catch (_error) { return; }
+        if (!/^(https?|blob):$/.test(url.protocol)) return;
+        const name = videoLikeName(url) || '视频';
+        block.after(card(url, name));
+        made += 1;
+      });
+    });
+
     // 本地路径的视频不做播放器：经 SSH 拉一个 5MB 的 mp4 要十几秒，框一直空着更难受。
     // 路径本身还是 .plink，点开是文件面板/下载；要预览就看消息里的远端链接。
     return made;

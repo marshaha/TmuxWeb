@@ -135,3 +135,10 @@ test('本地路径的视频不当播放器（经 SSH 拉整段太慢，框一直
   const href = 'https://alist.example.com/d/189Cloud/videos/x.mp4';
   assert.equal(run([href]).made, 1);
 });
+
+test('裸 HTML 的 <video> 标签会被摘掉并换成播放器', () => {
+  assert.match(source, /RAW_VIDEO/);
+  assert.match(source, /<video\\b/);
+  // 同一条消息里同一个地址只留一个播放器（enhance 会被不同层级调多次）
+  assert.match(source, /function alreadyPlayed\(root, href\)/);
+});
