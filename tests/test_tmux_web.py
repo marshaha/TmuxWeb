@@ -339,6 +339,19 @@ class FakeSSHRunner:
     def transcript(self, pane_id, limit=200, refresh=False, pane=None):
         return {"pane": pane_id, "provider": "claude", "session_id": "remote-session-1", "mtime": 7,
                 "messages": [{"id": "r1", "role": "user", "text": "远端问题", "timestamp": None}]}
+    remote_files = {}      # path -> bytes，测远端文件预览用
+
+    def file_size(self, path):
+        data = FakeSSHRunner.remote_files.get(path)
+        return len(data) if data is not None else None
+
+    def stream_file(self, path, max_bytes, chunk=65536, idle_timeout=90.0):
+        data = FakeSSHRunner.remote_files.get(path)
+        if data is None:
+            raise RuntimeError("no such file: %s" % path)
+        for start in range(0, len(data), chunk):
+            yield data[start:start + chunk]
+
     def zip_files(self, paths, base, max_bytes, max_files):
         FakeSSHRunner.zipped = (tuple(paths), base, max_bytes, max_files)
         buffer = io.BytesIO()
@@ -1766,6 +1779,24 @@ class TmuxWebTests(unittest.TestCase):
                                         headers={"X-TmuxWeb-Token": "relay-token-value"}).status_code, 200)
             self.assertEqual(client.get("/api/panes", headers={
                 "Authorization": "Bearer relay-token-value"}).status_code, 200)
+
+    def test_an_uploaded_image_previews_from_a_remote_pane(self):
+        """远端 pane 的上传文件不该走本机 os.path.isfile —— 那会永远 404「图片已不在这里」。"""
+        self.login()
+        host_key = "10.0.0.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        host = self.remote_store.add_host(
+            name="box", hostname="10.0.0.9", port=22, username="u", auth_type="password",
+            credential="pw", transport="ssh", host_key=host_key,
+            fingerprint=host_key_fingerprint(host_key))
+        host_id = host["id"]
+        remote_pane = self.client.get("/api/hosts").json()["hosts"]
+        pane = next(p for h in remote_pane for p in (h.get("panes") or []) if h["id"] == host_id)
+        pane_id = pane["id"]
+        path = pane["path"].rstrip("/") + "/upload_files/shot.png"
+        FakeSSHRunner.remote_files[path] = b"\x89PNG\r\n\x1a\n" + b"x" * 32
+        response = self.client.get(f"/api/panes/{pane_id}/uploads/shot.png")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.content[:4], b"\x89PNG")
 
     def test_the_pause_button_is_hidden_until_the_pref_turns_it_on(self):
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()

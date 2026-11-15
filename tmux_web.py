@@ -4938,6 +4938,57 @@ def create_app(
         remember_stat(cache_key, answer)
         return answer
 
+    thumb_pending: set[str] = set()
+
+    def thumb_cache_path(path: str, size: int) -> Path:
+        import hashlib
+        key = hashlib.sha1(f"{path}|{size}".encode()).hexdigest()[:20]
+        return Path(os.path.expanduser("~/.cache/tmuxweb/thumbs")) / f"{key}.jpg"
+
+    def queue_remote_thumb(transport, path: str, size: int, name: str) -> None:
+        """后台缩一张，别让第一张预览等几十秒（先把原图给浏览器，下次就快了）。"""
+        target = thumb_cache_path(path, size)
+        if target.is_file() or str(target) in thumb_pending:
+            return
+        thumb_pending.add(str(target))
+
+        def work():
+            try:
+                remote_thumb(transport, path, size, name)
+            finally:
+                thumb_pending.discard(str(target))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def remote_thumb(transport, path: str, size: int, name: str) -> str | None:
+        """给远端图片在本地缩一张 320px 的缓存图；做不到就返回 None（照旧发原图）。"""
+        if size <= 0 or size > 30 * 1024 * 1024:
+            return None
+        import subprocess as sp
+        import tempfile
+        target = thumb_cache_path(path, size)
+        cache_dir = target.parent
+        if target.is_file():
+            return str(target)
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(suffix=os.path.splitext(name)[1] or ".img", delete=False) as handle:
+                source = handle.name
+                for chunk in transport.stream_file(path, size, 65536):
+                    handle.write(chunk)
+            try:
+                sp.run(["ffmpeg", "-y", "-loglevel", "error", "-i", source,
+                        "-vf", "scale='min(320,iw)':-2", "-frames:v", "1", str(target)],
+                       capture_output=True, timeout=60, check=True)
+            finally:
+                try:
+                    os.unlink(source)
+                except OSError:
+                    pass
+            return str(target) if target.is_file() else None
+        except (OSError, ValueError, sp.SubprocessError, RuntimeError):
+            return None
+
     @app.get("/api/panes/{pane_id}/uploads/{name}")
     async def pane_upload_file(request: Request, pane_id: str, name: str, thumb: int = 0):
         """Serve a file that was uploaded through the composer.
@@ -4967,13 +5018,38 @@ def create_app(
             candidates.append(os.path.join(shots, name))
         if base:
             candidates.append(os.path.join(base, name))
+
+        # 远端 pane（SSH / 子节点）的文件不在本机磁盘上：必须通过它的 transport 去看，
+        # 以前这里用 os.path.isfile 只查了服务器本地，远端预览一律 404「图片已不在这里」。
+        transport, _actual, _pane = await file_target(pane_id)
+        remote = getattr(transport, "stream_file", None) is not None
+        headers = {"Cache-Control": "private, max-age=86400",
+                   "X-Content-Type-Options": "nosniff"}
         for candidate in candidates:
-            if os.path.isfile(candidate):
-                media_type = mimetypes.guess_type(candidate)[0] or "application/octet-stream"
-                return FileResponse(candidate, media_type=media_type, headers={
-                    "Cache-Control": "private, max-age=86400",
-                    "X-Content-Type-Options": "nosniff",
-                })
+            media_type = mimetypes.guess_type(candidate)[0] or "application/octet-stream"
+            if not remote:
+                if os.path.isfile(candidate):
+                    return FileResponse(candidate, media_type=media_type, headers=headers)
+                continue
+            try:
+                size = await asyncio.to_thread(transport.file_size, candidate)
+            except (RuntimeError, OSError, ValueError):
+                size = None
+            if size is None:
+                continue
+            if thumb and name.lower().endswith((".png", ".jpeg", ".jpg", ".webp", ".gif", ".bmp")):
+                # 远端没有 sidecar（对端不一定装了 ffmpeg）：这边缩一次并缓存。
+                # 命中的话立刻给小图；没命中就先把原图发过去、后台慢慢缩，
+                # 不让第一张预览卡几十秒。
+                cache_file = thumb_cache_path(candidate, size)
+                if cache_file.is_file():
+                    return FileResponse(str(cache_file), media_type="image/jpeg", headers=headers)
+                queue_remote_thumb(transport, candidate, size, name)
+
+            def relay(path=candidate, limit=size):
+                for chunk in transport.stream_file(path, limit, 65536):
+                    yield chunk
+            return StreamingResponse(relay(), media_type=media_type, headers=headers)
         raise HTTPException(status_code=404, detail="not found")
 
     @app.get("/api/panes/{pane_id}/files/raw")
