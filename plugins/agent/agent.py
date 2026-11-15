@@ -1006,11 +1006,15 @@ def handle_batch(message: dict, resolver: TmuxResolver,
 #    exit 0. The watcher tails that file. A permission event sets
 #    waiting; a result/stop event clears it. Hooks never dial out and
 #    never block the agent: write + exit 0, short timeout.
-# 2. tmux control mode (screen-quiet). A persistent ``tmux -C`` client
-#    owned by this program tracks the last ``%output`` time per pane.
-#    Quiet + a session-file decision point (leg 3) means the agent is
-#    sitting at a prompt it did not announce by hook — question prompts
-#    and elicitation, which have no permission event. A dead control
+# 2. tmux control mode (screen-quiet). One persistent ``tmux -C``
+#    client per session with decision-point panes (capped at 4 by
+#    default, see WATCHER_MAX_CONTROL_CLIENTS), sharing one
+#    last-%output table, tracks the last ``%output`` time per pane.
+#    Each client stays attached to its own session, so the quiet
+#    clock is never reset by flapping between sessions. Quiet + a
+#    session-file decision point (leg 3) means the agent is sitting
+#    at a prompt it did not announce by hook — question prompts and
+#    elicitation, which have no permission event. A dead control
 #    client degrades to "no control signal", never kills the agent.
 # 3. Session files (decision point). High-frequency mtime polling of
 #    the same files ``agent_status.py`` reads on the server (Claude
@@ -1069,6 +1073,27 @@ WATCHER_RESOLVE_TTL_SECONDS = 30.0
 # session file that appears — the pane's agent just started — must
 # be found within seconds, not after the full 30s.
 WATCHER_RESOLVE_MISS_TTL_SECONDS = 5.0
+# Cap on concurrent control-mode clients (one tmux -C process per
+# session with decision-point panes). 4 is the default: it bounds
+# the tmux -C processes and the %output volume on hosts with 13-18
+# sessions (localhost 17, oracle 18, macmini 13) while covering the
+# sessions that actually have decision-point panes — the ones the
+# sweep is judging right now. Sessions past the cap get no quiet
+# signal (fail-closed, same as a host with no client at all).
+# Override with TMUXWEB_WATCHER_MAX_CONTROL_CLIENTS; a bad value
+# falls back to the default, 0 disables control mode entirely.
+WATCHER_MAX_CONTROL_CLIENTS = 4
+
+
+def _watcher_max_control_clients() -> int:
+    """Cap on control-mode clients, from the environment or default."""
+    raw = os.environ.get("TMUXWEB_WATCHER_MAX_CONTROL_CLIENTS", "")
+    if not raw.strip():
+        return WATCHER_MAX_CONTROL_CLIENTS
+    try:
+        return max(0, int(raw.strip()))
+    except ValueError:
+        return WATCHER_MAX_CONTROL_CLIENTS
 
 # Normalised hook-event kinds. "waiting" events set waiting, "clear"
 # events clear it. Anything else is ignored (SessionStart, PreToolUse
@@ -1367,7 +1392,8 @@ def _tmux_argv(binary: str, *args: str) -> list[str]:
 
 
 class _ControlModeClient:
-    """One persistent ``tmux -C`` client, tracking last-%output per pane.
+    """One persistent ``tmux -C`` client for one session, tracking
+    last-%output per pane.
 
     ``%output %N <text>`` is the only line that matters: it proves the
     pane's screen changed at that moment. Everything else (%begin /
@@ -1376,16 +1402,24 @@ class _ControlModeClient:
     ``tmux -C`` on a host with no server would create a stray session.
     A dead client degrades to "no control signal" and is restarted
     lazily (at most once per 10s); it never raises into the daemon.
+
+    The watcher owns one client per session (see HostWatcher), and
+    the clients share one ``last_output`` dict plus its lock: pane
+    ids are server-wide unique, and a client only ever observes
+    output for the session it is attached to, so sharing is safe —
+    and a restarted client keeps the history its predecessor
+    recorded. A standalone client owns its dict.
     """
 
     _RESTART_MIN_INTERVAL = 10.0
 
-    def __init__(self, tmux_path: str = "") -> None:
+    def __init__(self, tmux_path: str = "", last_output=None, lock=None) -> None:
         self._tmux_path = tmux_path
         self._proc = None
         self._reader = None
-        self._lock = threading.Lock()
-        self._last_output: dict[str, float] = {}
+        self._lock = lock if lock is not None else threading.Lock()
+        self._last_output: dict[str, float] = (
+            last_output if last_output is not None else {})
         self._attached_session: str | None = None
         self._attached_at: float = 0.0
         self._last_start_attempt: float = 0.0
@@ -1458,8 +1492,19 @@ class _ControlModeClient:
         finally:
             self._started_ok = False
 
-    def ensure_started(self, tmux_path: str = "") -> bool:
-        """Start the client if it is not running. Never raises."""
+    def ensure_started(self, tmux_path: str = "", session: str = "") -> bool:
+        """Start the client if it is not running. Never raises.
+
+        When ``session`` is given the client spawns already attached
+        to it (``tmux -C attach-session -t <session>``): a control-mode
+        client started with no session makes tmux create a stray
+        session for it — observed on a scratch host: sessions named
+        "1", "2", "3", each with a live shell pane, surviving after
+        the client died — so an unattached start is never done when
+        the target session is known. The probe lists the sessions
+        first, and a missing target session refuses the start
+        outright instead of spawning a client that can never attach.
+        """
         if self.available:
             return True
         now = time.monotonic()
@@ -1477,14 +1522,19 @@ class _ControlModeClient:
                 capture_output=True, text=True, timeout=5)
             if probe.returncode != 0 or not probe.stdout.strip():
                 return False
+            if session and session not in probe.stdout.split():
+                return False
+            argv = _tmux_argv(binary, "-C")
+            if session:
+                argv += ["attach-session", "-t", session]
             proc = subprocess.Popen(
-                _tmux_argv(binary, "-C"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, text=True, bufsize=1)
         except (OSError, subprocess.SubprocessError):
             return False
         self._proc = proc
-        self._attached_session = None
-        self._attached_at = 0.0
+        self._attached_session = session or None
+        self._attached_at = time.time() if session else 0.0
         self._started_ok = True
         self._reader = threading.Thread(target=self._reader_loop,
                                         name="tmuxweb-agent-control-mode",
@@ -1493,7 +1543,12 @@ class _ControlModeClient:
         return True
 
     def attach(self, session_name: str) -> bool:
-        """Attach the control client to a session (quoted, no shell)."""
+        """Attach the control client to a session (quoted, no shell).
+
+        This is the fallback for a client that is alive but
+        unattached (e.g. after a detach): the normal path spawns
+        already attached (see ensure_started), so it is rarely used.
+        """
         if not self.available or not session_name:
             return False
         if self._attached_session == session_name:
@@ -1566,7 +1621,8 @@ class HostWatcher:
     def __init__(self, resolver: TmuxResolver, *, home=None, events_path=None,
                  poll_interval: float = WATCHER_POLL_INTERVAL,
                  event_ttl: float = WATCHER_EVENT_TTL_SECONDS,
-                 quiet_seconds: float = WATCHER_QUIET_SECONDS) -> None:
+                 quiet_seconds: float = WATCHER_QUIET_SECONDS,
+                 max_control_clients: int | None = None) -> None:
         self._resolver = resolver
         self._home = Path(home) if home is not None else Path.home()
         if events_path is not None:
@@ -1585,11 +1641,21 @@ class HostWatcher:
         self._snapshot_ttl = self._poll_interval
         self._event_ttl = float(event_ttl)
         self._quiet_seconds = float(quiet_seconds)
+        self._max_control_clients = (
+            max(0, int(max_control_clients))
+            if max_control_clients is not None
+            else _watcher_max_control_clients())
         self._lock = threading.Lock()
         self._known: dict[str, dict] = {}  # pane_id -> descriptor
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._control = _ControlModeClient(resolver.path if resolver else "")
+        # One control-mode client per session (see _ensure_control_
+        # client), sharing one %output dict: pane ids are server-wide
+        # unique, so the dict is safe to share and a restarted client
+        # keeps its predecessor's history.
+        self._controls: dict[str, _ControlModeClient] = {}
+        self._shared_output: dict[str, float] = {}
+        self._shared_output_lock = threading.Lock()
         self._pane_sessions: dict[str, str] = {}  # pane_id -> session name
         self._pane_sessions_at: float = 0.0
         self._events_seen: int = 0
@@ -1782,25 +1848,88 @@ class HostWatcher:
         self._pane_sessions = mapping
         self._pane_sessions_at = now
 
+    # -- control mode --------------------------------------------------------
+    def _ensure_control_client(self, session: str):
+        """The client for one session, or None (fail-closed).
+
+        A client is created only for a session that currently has
+        decision-point panes, and it stays attached to that session
+        for its whole life — so %output for its panes is never mixed
+        with another session's, and the quiet clock is never reset by
+        flapping between sessions (the old single client re-attached
+        on every pane and reset its clock each time). A dead client
+        restarts lazily, at most once per 10s (the client's own
+        throttle); while it is down the session reads as no signal.
+        Past the cap, no client is created and the session reads as
+        no signal.
+        """
+        if not session:
+            return None
+        binary = self._resolver.path if self._resolver else ""
+        client = self._controls.get(session)
+        if client is not None:
+            if not client.available:
+                if not client.ensure_started(binary, session):
+                    return None
+            if client.attached_session != session:
+                if not client.attach(session):
+                    return None
+            return client
+        if len(self._controls) >= self._max_control_clients:
+            return None
+        client = _ControlModeClient(
+            binary, last_output=self._shared_output,
+            lock=self._shared_output_lock)
+        if not client.ensure_started(binary, session):
+            return None
+        if client.attached_session != session:
+            if not client.attach(session):
+                client.stop()
+                return None
+        self._controls[session] = client
+        return client
+
+    def _sync_control_clients(self, sessions) -> None:
+        """Spawn clients for sessions that need one; stop the rest.
+
+        ``sessions`` is in pane order, so the cap keeps the first
+        sessions the sweep reports — the ones the server is judging
+        right now. Clients for sessions with no decision-point panes
+        are stopped, including sessions that no longer exist (they
+        drop out of the cached list-panes map within one 30s map
+        refresh), so no tmux -C process is left attached to a dead
+        session.
+        """
+        wanted: list[str] = []
+        for session in sessions:
+            if session and session not in wanted:
+                wanted.append(session)
+        for session in list(self._controls):
+            if session not in wanted:
+                self._controls[session].stop()
+                del self._controls[session]
+        for session in wanted:
+            self._ensure_control_client(session)
+
     def _control_quiet(self, pane: dict, now: float) -> bool:
         """True when control mode proves this pane's screen is quiet.
 
         The pane's session comes from the cached list-panes map, and
-        quiet is judged against that session only: a pane whose
-        session is unknown to the map reads unknown (False), never
-        quiet — a stale ``%output`` entry for it must not light a
-        card for a session the client never observed.
+        quiet is judged against the client for that pane's OWN
+        session — never against another session's client. A pane
+        whose session is unknown to the map, or whose session has no
+        client (over the cap, or no decision-point panes), reads as
+        not quiet (fail-closed).
         """
-        binary = self._resolver.path if self._resolver else ""
-        if not self._control.ensure_started(binary):
-            return False
         self._refresh_pane_sessions()
         session = self._pane_sessions.get(pane.get("pane_id") or "")
         if not session:
             return False
-        self._control.attach(session)
-        quiet = self._control.quiet_seconds(pane.get("pane_id") or "", now,
-                                            session=session)
+        client = self._ensure_control_client(session)
+        if client is None:
+            return False
+        quiet = client.quiet_seconds(pane.get("pane_id") or "", now,
+                                     session=session)
         return quiet is not None and quiet >= self._quiet_seconds
 
     # -- snapshot --------------------------------------------------------------
@@ -1845,7 +1974,7 @@ class HostWatcher:
                 and time.monotonic() - cached[2] < self._snapshot_ttl):
             return {pid: dict(state) for pid, state in cached[1].items()}
         events = self._read_events(now)
-        out: dict[str, dict] = {}
+        judged = []
         for pane in normalized:
             pane_id = pane["pane_id"]
             with self._lock:
@@ -1855,6 +1984,18 @@ class HostWatcher:
             if not pane["session_id"] and file_session:
                 pane["session_id"] = file_session
                 hook_waiting, hook_since = self._hook_state(pane, events, now)
+            judged.append((pane, hook_waiting, hook_since, decision))
+        # Clients exist only for sessions with decision-point panes
+        # right now, in pane order (so the cap keeps the sessions the
+        # sweep is judging). Sessions that lost their decision point
+        # — including sessions that no longer exist — lose their
+        # client here. Control mode is judged after this, per pane.
+        self._refresh_pane_sessions()
+        self._sync_control_clients(
+            self._pane_sessions.get(pane["pane_id"], "")
+            for pane, _, _, decision in judged if decision)
+        out: dict[str, dict] = {}
+        for pane, hook_waiting, hook_since, decision in judged:
             control_quiet = self._control_quiet(pane, now) if decision else False
             if hook_waiting:
                 waiting, source, since = True, "hook", hook_since
@@ -1862,7 +2003,7 @@ class HostWatcher:
                 waiting, source, since = True, "control-mode", now - self._quiet_seconds
             else:
                 waiting, source, since = False, None, None
-            out[pane_id] = {
+            out[pane["pane_id"]] = {
                 "waiting": waiting, "source": source, "since": since,
                 "decision_point": decision, "control_quiet": control_quiet,
                 "hook": hook_waiting,
@@ -1872,7 +2013,7 @@ class HostWatcher:
 
     @property
     def control_mode_available(self) -> bool:
-        return self._control.available
+        return any(client.available for client in self._controls.values())
 
     # -- background loop -------------------------------------------------------
     def start(self) -> None:
@@ -1897,7 +2038,9 @@ class HostWatcher:
 
     def stop(self) -> None:
         self._stop.set()
-        self._control.stop()
+        for client in list(self._controls.values()):
+            client.stop()
+        self._controls.clear()
         thread = self._thread
         if thread is not None:
             thread.join(timeout=2)

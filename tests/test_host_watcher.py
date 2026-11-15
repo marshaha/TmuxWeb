@@ -18,6 +18,7 @@ import base64
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -587,7 +588,9 @@ class QuietSessionValidationTests(_TempHome):
 
     def _fake_attached_client(self, watcher, session, attached_at):
         """A client that looks alive and attached, without any tmux."""
-        client = agent_program._ControlModeClient("/usr/bin/tmux")
+        client = agent_program._ControlModeClient(
+            "/usr/bin/tmux", last_output=watcher._shared_output,
+            lock=watcher._shared_output_lock)
         proc = mock.Mock()
         proc.poll.return_value = None
         client._proc = proc
@@ -600,7 +603,7 @@ class QuietSessionValidationTests(_TempHome):
         watcher = self.watcher()
         watcher._pane_sessions = {"%0": "sess-a"}
         watcher._pane_sessions_at = time.monotonic()
-        watcher._control = self._fake_attached_client(
+        watcher._controls["sess-a"] = self._fake_attached_client(
             watcher, "sess-a", time.time() - 10)
         try:
             self.assertFalse(watcher._control_quiet(
@@ -610,22 +613,24 @@ class QuietSessionValidationTests(_TempHome):
         finally:
             watcher.stop()
 
-    def test_pane_in_another_session_is_judged_against_its_own_session(self):
+    def test_panes_in_different_sessions_are_judged_independently(self):
         """%0 in A (quiet 10s) and %1 in B (attached 1s ago): the two
-        panes must not share one verdict."""
+        panes must not share one verdict — and a stale shared-dict
+        entry for %1, predating B's attach, must not make %1 quiet."""
         watcher = self.watcher()
         watcher._pane_sessions = {"%0": "sess-a", "%1": "sess-b"}
         watcher._pane_sessions_at = time.monotonic()
-        client = self._fake_attached_client(
-            watcher, "sess-a", time.time() - 10)
-        watcher._control = client
+        now = time.time()
+        watcher._controls["sess-a"] = self._fake_attached_client(
+            watcher, "sess-a", now - 10)
+        watcher._controls["sess-b"] = self._fake_attached_client(
+            watcher, "sess-b", now - 1)
+        watcher._shared_output["%1"] = now - 100
         try:
             self.assertTrue(watcher._control_quiet(
-                {"pane_id": "%0"}, time.time()))
-            # Attaching to B resets the clock: %1 is not quiet yet,
-            # even though %0's session has been quiet for 10s.
+                {"pane_id": "%0"}, now))
             self.assertFalse(watcher._control_quiet(
-                {"pane_id": "%1"}, time.time()))
+                {"pane_id": "%1"}, now))
         finally:
             watcher.stop()
 
@@ -654,18 +659,28 @@ class LiveControlModeTests(_TempHome):
                        capture_output=True)
 
     def test_output_resets_quiet_and_silence_accumulates(self):
+        project = self.home / ".claude" / "projects" / "-proj"
+        _write_jsonl(project / "sess-1.jsonl", [
+            {"type": "user"}, _claude_assistant()])
         watcher = self.watcher(quiet_seconds=2.0)
         try:
+            # Drive through the watcher path: the snapshot spawns one
+            # client for watcher-scratch and attaches it there.
+            out = watcher.snapshot([{"pane_id": "%0", "provider": "claude",
+                                     "cwd": "/proj"}])
+            self.assertTrue(out["%0"]["decision_point"])
+            client = watcher._controls["watcher-scratch"]
+            self.assertTrue(client.available)
+            self.assertEqual(client.attached_session, "watcher-scratch")
             # Attach through the watcher path and prove %output lands.
-            self.assertTrue(watcher._control.ensure_started("/usr/bin/tmux"))
-            self.assertTrue(watcher._control.attach("watcher-scratch"))
             subprocess.run(["tmux", "-S", self.sock, "send-keys",
                             "-t", "watcher-scratch", "echo live-output",
                             "Enter"], check=True)
             deadline = time.monotonic() + 5
             seen = None
             while time.monotonic() < deadline:
-                seen = watcher._control.quiet_seconds("%0")
+                seen = client.quiet_seconds(
+                    "%0", session="watcher-scratch")
                 if seen is not None and seen < 2.0:
                     break
                 time.sleep(0.1)
@@ -674,7 +689,7 @@ class LiveControlModeTests(_TempHome):
             # Then silence: after the quiet threshold, quiet holds.
             time.sleep(2.2)
             self.assertGreaterEqual(
-                watcher._control.quiet_seconds("%0"), 2.0)
+                client.quiet_seconds("%0", session="watcher-scratch"), 2.0)
             self.assertTrue(watcher._control_quiet(
                 {"pane_id": "%0"}, time.time()))
         finally:
@@ -685,9 +700,250 @@ class LiveControlModeTests(_TempHome):
                        capture_output=True)
         watcher = self.watcher()
         try:
-            self.assertFalse(watcher._control.ensure_started("/usr/bin/tmux"))
             self.assertFalse(watcher._control_quiet(
                 {"pane_id": "%0"}, time.time()))
+            self.assertEqual(watcher._controls, {})
+        finally:
+            watcher.stop()
+
+
+# ---------------------------------------------------------------------------
+# Multi-session control-mode clients with a cap (Fix 3)
+# ---------------------------------------------------------------------------
+
+class ControlClientCapTests(_TempHome):
+    """Fix 3 at unit level: the cap and the lifecycle, no tmux."""
+
+    def _fake_client(self, watcher, session, attached_at=None):
+        client = agent_program._ControlModeClient(
+            "/usr/bin/tmux", last_output=watcher._shared_output,
+            lock=watcher._shared_output_lock)
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        client._proc = proc
+        client._started_ok = True
+        client._attached_session = session
+        client._attached_at = attached_at or time.time()
+        return client
+
+    def test_fifth_session_gets_no_client_and_reads_unknown(self):
+        watcher = self.watcher(max_control_clients=2)
+        watcher._pane_sessions = {"%0": "sess-a", "%1": "sess-b",
+                                  "%2": "sess-c"}
+        watcher._pane_sessions_at = time.monotonic()
+        watcher._controls["sess-a"] = self._fake_client(watcher, "sess-a")
+        watcher._controls["sess-b"] = self._fake_client(watcher, "sess-b")
+        try:
+            self.assertIsNone(watcher._ensure_control_client("sess-c"))
+            self.assertFalse(watcher._control_quiet(
+                {"pane_id": "%2"}, time.time()))
+            self.assertEqual(len(watcher._controls), 2)
+        finally:
+            watcher.stop()
+
+    def test_sync_stops_clients_for_sessions_with_no_decision_panes(self):
+        watcher = self.watcher()
+        a = self._fake_client(watcher, "sess-a")
+        b = self._fake_client(watcher, "sess-b")
+        watcher._controls["sess-a"] = a
+        watcher._controls["sess-b"] = b
+        with mock.patch.object(b, "stop", wraps=b.stop) as spy:
+            watcher._sync_control_clients(["sess-a"])
+        self.assertNotIn("sess-b", watcher._controls)
+        spy.assert_called_once_with()
+        self.assertIn("sess-a", watcher._controls)
+        watcher.stop()
+
+    def test_clients_share_one_last_output_dict(self):
+        watcher = self.watcher()
+        a = self._fake_client(watcher, "sess-a")
+        b = self._fake_client(watcher, "sess-b")
+        watcher._controls["sess-a"] = a
+        watcher._controls["sess-b"] = b
+        a.handle_line("%output %0 hello", now=1000.0)
+        self.assertEqual(b._last_output["%0"], 1000.0)
+        watcher.stop()
+
+    def test_cap_default_is_four_and_env_overrides_it(self):
+        self.assertEqual(agent_program.WATCHER_MAX_CONTROL_CLIENTS, 4)
+        with mock.patch.dict(os.environ,
+                             {"TMUXWEB_WATCHER_MAX_CONTROL_CLIENTS": ""}):
+            self.assertEqual(agent_program._watcher_max_control_clients(), 4)
+        with mock.patch.dict(os.environ,
+                             {"TMUXWEB_WATCHER_MAX_CONTROL_CLIENTS": "2"}):
+            self.assertEqual(agent_program._watcher_max_control_clients(), 2)
+        with mock.patch.dict(os.environ,
+                             {"TMUXWEB_WATCHER_MAX_CONTROL_CLIENTS": "bogus"}):
+            self.assertEqual(agent_program._watcher_max_control_clients(), 4)
+        with mock.patch.dict(os.environ,
+                             {"TMUXWEB_WATCHER_MAX_CONTROL_CLIENTS": "0"}):
+            self.assertEqual(agent_program._watcher_max_control_clients(), 0)
+
+
+class LiveMultiSessionTests(_TempHome):
+    """Fix 3 on a real scratch tmux server: cap, lifecycle, cleanup.
+
+    Every scratch pane is a claude pane in /proj with an outstanding
+    tool call, so every pane is a decision-point pane; the only thing
+    separating them is the session they live in.
+    """
+
+    def setUp(self):
+        super().setUp()
+        if shutil.which("tmux") is None:
+            self.skipTest("no tmux binary in the sandbox")
+        self.sock = str(Path(self._tmp.name) / "tmux.sock")
+        self._env = mock.patch.dict(
+            os.environ, {"TMUXWEB_AGENT_TMUX_SOCKET": self.sock})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        self.addCleanup(self._kill_server)
+        project = self.home / ".claude" / "projects" / "-proj"
+        _write_jsonl(project / "sess-1.jsonl", [
+            {"type": "user"}, _claude_assistant()])
+
+    def _kill_server(self):
+        subprocess.run(["tmux", "-S", self.sock, "kill-server"],
+                       capture_output=True)
+
+    def _new_session(self, name):
+        subprocess.run(["tmux", "-S", self.sock, "new-session", "-d",
+                        "-s", name, "-x", "80", "-y", "24",
+                        "sleep 60"], check=True)
+
+    def _pane_map(self):
+        out = subprocess.run(["tmux", "-S", self.sock, "list-panes", "-a",
+                              "-F", "#{pane_id} #{session_name}"],
+                             capture_output=True, text=True, check=True)
+        return dict(line.split() for line in out.stdout.splitlines())
+
+    def _panes(self, mapping):
+        return [{"pane_id": pid, "provider": "claude", "cwd": "/proj"}
+                for pid in mapping]
+
+    def _control_pids(self):
+        """Pids of tmux -C processes on the scratch socket."""
+        out = subprocess.run(["pgrep", "-f", f"tmux -S {self.sock} -C"],
+                             capture_output=True, text=True)
+        return [line for line in out.stdout.splitlines() if line.strip()]
+
+    def _control_clients(self):
+        """Attached control-mode clients, per list-clients."""
+        out = subprocess.run(["tmux", "-S", self.sock, "list-clients", "-F",
+                              "#{client_session} #{client_control_mode}"],
+                             capture_output=True, text=True)
+        return [line for line in out.stdout.splitlines() if line.strip()]
+
+    def _sessions(self):
+        """Session names on the scratch server, sorted."""
+        out = subprocess.run(["tmux", "-S", self.sock, "list-sessions",
+                              "-F", "#{session_name}"],
+                             capture_output=True, text=True, check=True)
+        return sorted(out.stdout.split())
+
+    def test_five_sessions_spawn_at_most_four_clients(self):
+        for name in ("cap-a", "cap-b", "cap-c", "cap-d", "cap-e"):
+            self._new_session(name)
+        mapping = self._pane_map()
+        self.assertEqual(len(mapping), 5)
+        watcher = self.watcher(quiet_seconds=2.0)
+        try:
+            out = watcher.snapshot(self._panes(mapping))
+            self.assertTrue(all(state["decision_point"]
+                                for state in out.values()))
+            self.assertEqual(len(watcher._controls), 4)
+            self.assertEqual(len(self._control_pids()), 4)
+            self.assertEqual(len(self._control_clients()), 4)
+            # Spawning a client must not create a stray session: an
+            # unattached `tmux -C` makes tmux create one (observed:
+            # sessions "1", "2", "3" with live shell panes), so
+            # clients spawn already attached.
+            self.assertEqual(
+                self._sessions(),
+                ["cap-a", "cap-b", "cap-c", "cap-d", "cap-e"])
+            # After 2s of silence the four covered sessions read quiet
+            # (and waiting); the fifth session still has no signal.
+            time.sleep(2.5)
+            watcher._snapshot_cache = None
+            out = watcher.snapshot(self._panes(mapping))
+            quiet = [pid for pid, state in out.items()
+                     if state["control_quiet"]]
+            self.assertEqual(len(quiet), 4)
+            self.assertEqual(len(watcher._controls), 4)
+            self.assertEqual(len(self._control_pids()), 4)
+            dark = [pid for pid, state in out.items()
+                    if not state["control_quiet"]]
+            self.assertEqual(len(dark), 1)
+            self.assertFalse(out[dark[0]]["waiting"])
+            self.assertTrue(all(out[pid]["waiting"] for pid in quiet))
+        finally:
+            watcher.stop()
+
+    def test_stopping_the_watcher_leaves_no_control_process(self):
+        for name in ("stop-a", "stop-b"):
+            self._new_session(name)
+        mapping = self._pane_map()
+        watcher = self.watcher()
+        try:
+            watcher.snapshot(self._panes(mapping))
+            self.assertEqual(len(self._control_pids()), 2)
+            watcher.stop()
+            self.assertEqual(self._control_pids(), [])
+            self.assertEqual(self._control_clients(), [])
+        finally:
+            watcher.stop()
+
+    def test_dead_client_restarts_lazily(self):
+        self._new_session("restart-s")
+        mapping = self._pane_map()
+        pane_id = next(iter(mapping))
+        watcher = self.watcher()
+        try:
+            watcher.snapshot(self._panes(mapping))
+            client = watcher._controls["restart-s"]
+            self.assertTrue(client.available)
+            old_pid = client._proc.pid
+            os.kill(old_pid, signal.SIGKILL)
+            deadline = time.monotonic() + 5
+            while client.available and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertFalse(client.available)
+            # The 10s restart discipline holds: no restart yet, so the
+            # session reads as no signal.
+            self.assertFalse(watcher._control_quiet(
+                {"pane_id": pane_id}, time.time()))
+            self.assertFalse(client.available)
+            # Past the throttle, the same client object restarts (a
+            # fresh attach is not quiet yet, so the op still reads
+            # False — the point is the client is alive again).
+            client._last_start_attempt = 0.0
+            watcher._control_quiet({"pane_id": pane_id}, time.time())
+            self.assertTrue(client.available)
+            self.assertNotEqual(client._proc.pid, old_pid)
+            self.assertEqual(client.attached_session, "restart-s")
+        finally:
+            watcher.stop()
+
+    def test_client_for_a_dead_session_is_stopped(self):
+        self._new_session("live-s")
+        self._new_session("dead-s")
+        mapping = self._pane_map()
+        watcher = self.watcher()
+        try:
+            watcher.snapshot(self._panes(mapping))
+            self.assertEqual(len(watcher._controls), 2)
+            self.assertEqual(len(self._control_pids()), 2)
+            self.assertEqual(self._sessions(), ["dead-s", "live-s"])
+            subprocess.run(["tmux", "-S", self.sock, "kill-session",
+                            "-t", "dead-s"], check=True)
+            watcher._pane_sessions_at = 0.0  # force a map refresh
+            watcher._snapshot_cache = None
+            mapping = self._pane_map()
+            self.assertEqual(list(mapping.values()), ["live-s"])
+            watcher.snapshot(self._panes(mapping))
+            self.assertNotIn("dead-s", watcher._controls)
+            self.assertEqual(len(watcher._controls), 1)
+            self.assertEqual(len(self._control_pids()), 1)
         finally:
             watcher.stop()
 
