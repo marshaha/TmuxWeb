@@ -20,17 +20,36 @@ file, now version 1.1.0) gains a `HostWatcher`:
    result/stop event clears it. Hooks never dial out and never block
    the agent (write + exit 0, 5s timeout). The event file is capped
    at 256KB / 1000 lines; events older than 1 hour expire.
-2. **tmux control mode (screen-quiet).** A persistent `tmux -C`
-   client owned by the agent tracks the last `%output` time per pane.
-   Quiet (no output for 5s) + a session-file decision point means the
-   agent is sitting at a prompt it did not announce by hook —
-   question prompts and elicitation, which carry no permission event.
-   A dead control client degrades to "no control signal", never kills
-   the agent. It only starts when the host actually has tmux sessions
-   (starting `tmux -C` on a host with no server would create a stray
-   session), and it attaches to the session of the pane being judged —
-   one session at a time, so panes in other sessions fall back to the
-   file + hook legs.
+2. **tmux control mode (screen-quiet).** One persistent `tmux -C`
+   client per session with decision-point panes, capped at 4
+   (`WATCHER_MAX_CONTROL_CLIENTS`, env
+   `TMUXWEB_WATCHER_MAX_CONTROL_CLIENTS`; 4 bounds the `tmux -C`
+   processes and the `%output` volume on hosts with 13–18 sessions
+   while covering the sessions the sweep is judging). The clients
+   share one last-`%output` table (pane ids are server-wide unique)
+   and each stays attached to its own session, so the quiet clock
+   is never reset by flapping between sessions. A client spawns
+   already attached (`tmux -C attach-session -t <session>`) — an
+   unattached `tmux -C` makes tmux create a stray session for it
+   (observed: sessions named "1", "2", "3", each with a live shell
+   pane, surviving after the client died) — and the start probe
+   refuses a session that is not listed. Clients spawn and stop as
+   sessions gain and lose decision-point panes; a dead client
+   restarts lazily (at most once per 10s) and a session past the cap
+   gets no quiet signal. Quiet is judged against the client for the
+   pane's own session only: a pane whose session is unknown to the
+   list-panes map, or in another session, reads unknown, never
+   quiet — a stale `%output` entry from an earlier attachment must
+   not light a card for a session the client never observed.
+   Quiet (no output for 5s) + a session-file decision point means
+   the agent is sitting at a prompt it did not announce by hook —
+   question prompts and elicitation, which carry no permission
+   event. A dead control client degrades to "no control signal",
+   never kills the agent. It only starts when the host actually has
+   tmux sessions (starting `tmux -C` on a host with no server would
+   create a stray session), and it attaches to the session of the
+   pane being judged — one client per session, so panes in sessions
+   past the cap fall back to the file + hook legs.
 3. **Session files (decision point).** High-frequency mtime polling
    (2s background loop, plus a fresh read on every `needs_input` op)
    of the same files `agent_status.py` reads: Claude
@@ -61,6 +80,36 @@ are never asked.
 | Kimi 2.3.1 | `[[hooks]]` in `~/.kimi-code/config.toml` (exactly `event` / `matcher` / `command` / `timeout`), `PermissionRequest` / `PermissionResult` / `Stop` | Official docs, kimi.com/code/docs hooks page, read 2026-11-16: JSON on stdin with `hook_event_name` / `session_id` / `session_title` / `client_type` / `cwd`; `PermissionRequest` is "just before waiting for user approval", observation-only, fail-open. Installed 2.3.1 binary strings contain `fireAndForget("PermissionRequest", ...)`. |
 | Hermes | — | No user-facing TUI hook (`config.yaml` has zero hook lines). Its precise channel is ACP (`session/request_permission`), which needs ACP driving, not the TUI — out of scope. Hermes stays on the server-side gate; the watcher never reports it waiting. |
 
+## Performance (measured on a synthetic host)
+
+Synthetic host: scratch tmux socket, temp HOME, 30 panes across 10
+sessions, 66 fake Codex session files, 10 Claude project dirs, 10
+Kimi session dirs, ~500 hook events (~100KB), no `session_id` hints
+(worst-case resolution). Before the batch, every snapshot re-read
+the whole event file, re-resolved every pane's session file, and
+re-read a 64KB tail + JSON parse per pane; the `needs_input` op
+re-ran the whole snapshot even when the poll loop had just run.
+
+| | Before | After |
+|---|---|---|
+| Warm snapshot (median of 10) | 19.8ms | ~0.0ms (cache hit) |
+| Resolutions per snapshot | 30 | 0 (warm) |
+| `needs_input` op | ~20ms | ~0.0ms (reuses poll snapshot) |
+| Cache-miss snapshot, warm resolve/event caches | — | 6.3–6.9ms |
+| Cold watcher (first snapshot) | ~32ms | ~50ms (spawns up to 4 clients at once — one-time) |
+
+Cache windows (all fail-open to a fresh read, never to a stale
+"yes"): snapshot result 1 poll interval (2s), keyed on the pane
+set; session-file resolution 30s per (provider, cwd, hint), 5s for
+a miss, invalidated when the resolved file's mtime changes (a
+brand-new session file superseding the cached one for the same cwd
+is picked up at TTL expiry, at most 30s late); event file re-parsed
+only when its mtime/size changed, with the 1h TTL applied at use
+time. Session-file *contents* are never cached — every uncached
+snapshot still re-reads the tail. The pane→session map is still
+cached 30s, so a session that died is pruned from the client set
+within one map refresh.
+
 ## Honest limits
 
 - Hook events are exact for permission prompts. Question prompts /
@@ -69,10 +118,18 @@ are never asked.
   call, and inherit that inference's false-positive mode (a
   long-running tool whose TUI sits frozen on a menu-like screen).
   The card still never answers on its own — a human taps.
-- Control-mode coverage depends on the tmux server the agent can
-  reach: one attached session at a time; panes in other sessions get
-  no quiet signal. A host with no tmux sessions gets no control-mode
-  client at all.
+- Control-mode coverage is capped at 4 sessions (default): panes in
+  sessions past the cap get no quiet signal and fall back to the
+  file + hook legs. A host with no tmux sessions gets no control-mode
+  client at all. A client for a session that no longer exists is
+  stopped within one 30s map refresh.
+- Stray sessions: the pre-fix client spawned `tmux -C` unattached,
+  which makes tmux create a stray session (observed names "1", "2",
+  "3", each with a live shell pane) that survives after the client
+  dies. The fixed client spawns already attached and creates none,
+  but stray sessions left behind by the old client are not cleaned
+  up automatically — kill them by hand (`tmux kill-session -t <name>`)
+  if they show up in the pane list.
 - Claude's `permission_prompt` notification fires ~6s into the wait,
   so the hook leg lags the prompt by seconds; the file + quiet legs
   can fire sooner.
