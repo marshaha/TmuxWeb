@@ -1888,6 +1888,30 @@ class TmuxWebTests(unittest.TestCase):
         base = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-base.css").read_text()
         self.assertIn(".share-btn[hidden]", base)
 
+    def test_off_screen_transcript_messages_are_virtualized_like_open_webui(self):
+        """Borrowed from Open WebUI Message.svelte (message-virtualized):
+        off-screen transcript messages get content-visibility:auto; the last
+        message (current turn, streaming lands on it) and WebKit never do."""
+        app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
+        base = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-base.css").read_text()
+        self.assertIn(".chat-message.msg-virtualized{content-visibility:auto;contain-intrinsic-size:auto 150px}", base)
+        self.assertIn("function isWebKit()", app)
+        self.assertIn("Apple Computer, Inc.", app)
+        self.assertIn("function virtualizedClass(index,total)", app)
+        self.assertIn("virtualizedClass(index,messages.length)", app)
+        self.assertIn("transcriptBubble(message,rendered.length+offset,messages.length)", app)
+        pending = app.index('<article class="chat-message user pending"')
+        pending_line = app[pending:app.index("\n", pending)]
+        self.assertNotIn("msg-virtualized", pending_line)
+        # Streaming must update in place: a full rebuild per poll would destroy
+        # every remembered intrinsic size and collapse scrollHeight.
+        self.assertIn("const prevText=state.messageText||new Map();", app)
+        self.assertIn("node.replaceWith(...wrap.childNodes)", app)
+        # load-earlier must anchor on the visible message, not a scrollHeight delta.
+        self.assertIn("function firstVisibleMessage()", app)
+        self.assertIn("function restoreAnchor(anchor)", app)
+        self.assertNotIn("scroll.scrollTop+=scroll.scrollHeight-height", app)
+
     def test_the_pause_button_preference_is_accepted(self):
         self.login()
         response = self.client.put("/api/prefs", json={"pause_button": "on"})
