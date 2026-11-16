@@ -558,7 +558,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     // keep the frozen screen: the new attach repaints into it, so there is no black gap while connecting
     if(state.mode==='terminal')connectTerminal(state.selected,true);
     else connectTranscript(state.selected,true);}
-  function closeConnections(keepTerminal){stopLiveTail();state.termPending='';state.viewportFitTimers.forEach(clearTimeout);state.viewportFitTimers=[];if(state.ws){state.ws.close();state.ws=null;}if(state.termWs){state.termWs.close();state.termWs=null;}if(state.transcriptTimer){clearTimeout(state.transcriptTimer);state.transcriptTimer=null;}if(state.resizeObserver){state.resizeObserver.disconnect();state.resizeObserver=null;}if(!keepTerminal&&state.xterm){state.xterm.dispose();state.xterm=null;state.fit=null;$('terminal-host').innerHTML='';}}
+  function closeConnections(keepTerminal){cancelScheduledTranscriptRender();stopLiveTail();state.termPending='';state.viewportFitTimers.forEach(clearTimeout);state.viewportFitTimers=[];if(state.ws){state.ws.close();state.ws=null;}if(state.termWs){state.termWs.close();state.termWs=null;}if(state.transcriptTimer){clearTimeout(state.transcriptTimer);state.transcriptTimer=null;}if(state.resizeObserver){state.resizeObserver.disconnect();state.resizeObserver=null;}if(!keepTerminal&&state.xterm){state.xterm.dispose();state.xterm=null;state.fit=null;$('terminal-host').innerHTML='';}}
   async function loadSessionAgents(hostId){const select=$('session-agent');
     select.innerHTML='<option value="">无（普通 shell）</option>';$('session-args-field').hidden=true;$('session-args').value='';
     try{const data=await api(`/api/hosts/${encodeURIComponent(hostId)}/agents`);
@@ -977,7 +977,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       const messages=d.messages||[];
       state.hasMore=!!d.has_more&&messages.length>previous;
       rememberTranscript(id,d);state.transcriptSig=transcriptSignature(d);state.transcriptMtime=d.mtime;
-      renderTranscript(messages);
+      renderTranscriptNow(messages);
       // keep the reader's place: only the content above changed. Correct three
       // times: each pass puts the anchor back per the live geometry, and each
       // pass lets the messages newly next to the viewport be measured for
@@ -1011,7 +1011,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       scroll.scrollTop=top;state.stick=entry.stick!==false;});}
   function paintCachedTranscript(id){const entry=cachedTranscript(id);if(!entry||!entry.messages||!entry.messages.length)return false;
     term.textContent='';$('transcript').classList.add('active');$('message-shell').hidden=true;
-    state.transcriptMtime=entry.mtime;state.transcriptSig=entry.sig;state.transcriptProvider=entry.provider||'';renderTranscript(entry.messages);
+    state.transcriptMtime=entry.mtime;state.transcriptSig=entry.sig;state.transcriptProvider=entry.provider||'';renderTranscriptNow(entry.messages);
     $('status-dot').className='status-dot live';$('status-text').textContent=`${entry.provider||'缓存'} · 更新中…`;
     restorePaneUi(id);return true;}
   // ---- 下载线路：浏览器 → 本机这一跳（TS / 局域网 / CF）；点子节点 pane 时也切换它的线路
@@ -1157,6 +1157,38 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       ? `<article class="chat-message user${virt}" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copy}</div></article>`
       : `<article class="chat-message assistant${virt}" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copy}</div></article>`;
   }
+  // Borrowed from Open WebUI (src/lib/components/chat/Messages/Markdown.svelte:121):
+  // while streaming, marked parses at most once per animation frame — every
+  // update that lands inside the same frame only replaces the pending text —
+  // and when done the final text parses immediately. Upstream cancels the
+  // pending frame in onDestroy; here a pane switch / mode change does the
+  // same (closeConnections), and the frame callback drops a render whose
+  // pane is no longer selected, so a stale frame can never paint over a
+  // new pane. The other half of A2 — streamLargeDeltasAsRandomChunks in
+  // streaming/index.ts, re-chunking large deltas into random 1–3 char
+  // pieces — is a typewriter effect for providers that send large chunks
+  // at once; TmuxWeb's transcript arrives whole, so that half is
+  // deliberately not taken.
+  let transcriptRenderFrame=null, transcriptRenderPending=null;
+  function cancelScheduledTranscriptRender(){if(transcriptRenderFrame!=null){cancelAnimationFrame(transcriptRenderFrame);transcriptRenderFrame=null;}transcriptRenderPending=null;}
+  function renderTranscriptNow(messages){cancelScheduledTranscriptRender();renderTranscript(messages);}
+  function scheduleTranscriptRender(paneId,messages,afterRender){
+    transcriptRenderPending={paneId,messages,afterRender};
+    if(transcriptRenderFrame!=null)return;
+    transcriptRenderFrame=requestAnimationFrame(()=>{
+      transcriptRenderFrame=null;
+      const pending=transcriptRenderPending;transcriptRenderPending=null;
+      if(!pending||state.selected!==pending.paneId||state.mode!=='chat')return;
+      renderTranscript(pending.messages);
+      if(pending.afterRender)pending.afterRender();});}
+  // Streaming poll path: coalesce into one render per frame; the final
+  // update (agent no longer waiting) renders immediately, like upstream's
+  // `done` branch. The scroll-to-bottom runs inside the same frame, right
+  // after the DOM write — never ahead of it.
+  function applyTranscriptUpdate(paneId,messages,scrollToBottom,done){
+    const after=scrollToBottom?()=>{scroll.scrollTop=scroll.scrollHeight;}:null;
+    if(done){renderTranscriptNow(messages);if(after)after();return;}
+    scheduleTranscriptRender(paneId,messages,after);}
   // A streaming agent appends one message at a time. Rebuilding every bubble (and
   // re-parsing every markdown block) for each of them is what made a long chat
   // feel heavy, so an append-only update only renders the new tail.
@@ -1271,8 +1303,8 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(!source||!target)return;const showSource=source.hidden;source.hidden=!showSource;target.hidden=showSource;
     button.textContent=showSource?'渲染':'源码';button.setAttribute('aria-pressed',String(showSource));}
   function addOptimisticMessage(text){const localId=`pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,baselineIds=new Set(state.transcriptMessages.map(message=>String(message.id)));state.pendingMessages.set(localId,{pane:state.selected,text,submit:$('submit-enter').checked,status:'sending',baselineIds,createdAt:Date.now()});
-    state.waiting=true;state.waitingSince=Date.now()/1000;syncProgress();renderTranscript();requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;state.stick=true;});return localId;}
-  function setOptimisticStatus(localId,status){const pending=state.pendingMessages.get(localId);if(!pending)return;pending.status=status;renderTranscript();requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
+    state.waiting=true;state.waitingSince=Date.now()/1000;syncProgress();renderTranscriptNow();requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;state.stick=true;});return localId;}
+  function setOptimisticStatus(localId,status){const pending=state.pendingMessages.get(localId);if(!pending)return;pending.status=status;renderTranscriptNow();requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
   // 轮询间隔：跑任务时靠 1.5s 的 tail 给实时感，transcript 2s 看一次结果就够了；
   // 空闲越久越省：30s 内 1.5s，之后 3s，5 分钟后 5s，10 分钟后 10s。
   // 高延迟链路上每次轮询都是一次往返，空闲时拉长间隔是最便宜的省法。
@@ -1307,13 +1339,11 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
         const merged=mergeIncrementalMessages(state.transcriptMessages,d.messages,sinceId);
         if(!merged){await refreshTranscript(id,{force:true});return;}
         rememberTranscript(id,{...d,messages:merged});
-        if(changed){state.lastTranscriptChange=Date.now();state.transcriptSig=signature;state.transcriptMtime=d.mtime;renderTranscript(merged);syncProgress();
-          if(follow||first)requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
+        if(changed){state.lastTranscriptChange=Date.now();state.transcriptSig=signature;state.transcriptMtime=d.mtime;applyTranscriptUpdate(id,merged,follow||first,!d.waiting);syncProgress();}
         else {syncProgress();}
       }else{
         rememberTranscript(id,d);
-        if(changed){state.lastTranscriptChange=Date.now();state.transcriptSig=signature;state.transcriptMtime=d.mtime;renderTranscript(d.messages);syncProgress();
-          if(follow||first)requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
+        if(changed){state.lastTranscriptChange=Date.now();state.transcriptSig=signature;state.transcriptMtime=d.mtime;applyTranscriptUpdate(id,d.messages,follow||first,!d.waiting);syncProgress();}
         else {syncProgress();}
       }
     }catch(e){state.transcriptFailures=(state.transcriptFailures||0)+1;
@@ -1394,7 +1424,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
         $('transcript').classList.remove('active');if(allowFallback){showError('');connect(id);}else showError('该会话还没有消息');return;}
       showError('');state.transcriptMtime=d.mtime;state.transcriptSig=transcriptSignature(d);rememberTranscript(id,d);
       state.transcriptProvider=d.provider||'';state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;syncProgress();
-      renderTranscript(d.messages);syncProgress();
+      renderTranscriptNow(d.messages);syncProgress();
       const entry=cachedTranscript(id);const top=entry&&entry.scrollTop!=null?entry.scrollTop:scroll.scrollHeight;
       requestAnimationFrame(()=>{scroll.scrollTop=top;state.stick=(entry&&entry.stick===false)?false:true;});
       state.transcriptTimer=setTimeout(()=>refreshTranscript(id),1000);
