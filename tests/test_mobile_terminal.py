@@ -23,7 +23,19 @@ class MobileTerminalTests(unittest.TestCase):
             remote_runner_factory=FakeSSHRunner,
         ))
         self.client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
-        self.page = self.client.get("/").text
+        self.page = self.console_surface()
+
+    def console_surface(self, path="/"):
+        """The console page plus the two versioned assets it loads.
+
+        The app module and the style bundle used to be inline in
+        index.html; a marker that used to be in the page now lives in
+        one of them, so tests that used to read the page read all three.
+        """
+        page = self.client.get(path).text
+        app = self.client.get("/assets/console-app.js").text
+        css = self.client.get("/assets/console.css").text
+        return page + "\n" + app + "\n" + css
 
     def test_there_is_no_separate_input_box_below_the_terminal(self):
         """The keyboard types straight into the terminal; a visible mirror field only got in the way."""

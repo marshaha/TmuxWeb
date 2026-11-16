@@ -171,6 +171,48 @@ def build_console_bundle() -> tuple[bytes, str]:
 CONSOLE_BUNDLE_BYTES, CONSOLE_BUNDLE_HASH = build_console_bundle()
 
 
+# The console app itself: it used to be a 156KB inline <script type="module">
+# in index.html, re-downloaded on every console visit because the page is
+# no-store. As a versioned asset it is fetched once and then served from the
+# browser cache; a module script is deferred by default, so the <script
+# type="module" src=...> tag at the old inline position keeps the execution
+# order (deferred bundle first, then the app module).
+CONSOLE_APP_BYTES = (WEB_DIR / "assets" / "console-app.js").read_bytes()
+CONSOLE_APP_HASH = hashlib.sha1(CONSOLE_APP_BYTES).hexdigest()[:12]
+
+
+# The console styles: the 42KB <style> that used to sit in <head> plus the
+# eight console stylesheets, concatenated once at startup in the order the
+# cascade used to see them (head style first, then the links in document
+# order). theme.css stays separate: it is shared by every page and must load
+# after the console rules. The eight files stay on disk and keep their own
+# routes: home.html and preview.html still link them individually.
+CONSOLE_CSS_SOURCES = (
+    "console-base.css",
+    "recents.css",
+    "path-links.css",
+    "composer-files.css",
+    "downloads.css",
+    "video-cards.css",
+    "upload-cards.css",
+    "image-viewer.css",
+    "pane-preview.css",
+)
+
+
+def build_console_css() -> tuple[bytes, str]:
+    """Concatenate the console styles once; return (bytes, 12-char sha1)."""
+    parts = []
+    for name in CONSOLE_CSS_SOURCES:
+        text = (WEB_DIR / "assets" / name).read_bytes().decode("utf-8")
+        parts.append("/* console.css: %s */\n%s" % (name, text))
+    blob = "\n".join(parts).encode("utf-8")
+    return blob, hashlib.sha1(blob).hexdigest()[:12]
+
+
+CONSOLE_CSS_BYTES, CONSOLE_CSS_HASH = build_console_css()
+
+
 class LoginRateLimiter:
     def __init__(self, attempts: int = 5, window: int = 60):
         self.attempts = attempts
@@ -1992,10 +2034,15 @@ def create_app(
     # needs_input.py — the three-legged conjunction, never parsing alone).
     needs_gate = needs_input.NeedsInputGate()
 
+    # Last sweep's per-phase seconds (capture / needs_input / describe),
+    # for the log line: the total alone never says which phase is slow.
+    pane_state_phases: dict = {}
+
     def collect_pane_states() -> list[dict]:
         # Reuse the pane list /api/hosts just probed (the console and the board poll
         # it) instead of listing every host's panes again: the sweep only needs the
         # screens, one batched capture per host.
+        sweep_t0 = time.monotonic()
         jobs = []
         snapshot = hosts_snapshot["value"]
         if snapshot and (time.time() - hosts_snapshot["at"]) < 15:
@@ -2084,6 +2131,7 @@ def create_app(
                     native[key] = state
                 for key, flag in decision_listing:
                     native_decision[key] = bool(flag)
+        phases: dict = {"capture": time.monotonic() - sweep_t0}
 
         # Host watcher (agent 1.1+): one extra batch per agent host per
         # sweep, asking the on-host watcher which panes are waiting.
@@ -2091,19 +2139,32 @@ def create_app(
         # needs_input_many and are simply not asked; an agent that does
         # not know the op answers {} (see transport.py). Fail closed:
         # any failure here leaves the server gate as the fallback.
+        # The per-host calls run in parallel: serially they cost the sum
+        # of the watcher latencies (one slow host held the whole sweep);
+        # each call is independent, so the wall time is the slowest host.
         agent_waiting: dict[str, dict] = {}
-        for _key, transport, host_id, _pane_ids, panes, _status_ids in groups.values():
+
+        def ask_host(group):
+            _key, transport, host_id, _pane_ids, panes, _status_ids = group
             ask = getattr(transport, "needs_input_many", None)
             if ask is None:
-                continue
+                return host_id, {}
             try:
                 waiting = ask([_pane_needs_input_descriptor(pane)
                                for pane in panes.values()], timeout=10)
             except Exception:  # noqa: BLE001 - no agent signal, not a failure
-                continue
-            for pane_id, entry in (waiting or {}).items():
-                if isinstance(entry, dict):
-                    agent_waiting[f"{host_id}~{pane_id}"] = entry
+                return host_id, {}
+            return host_id, waiting or {}
+
+        agent_groups = [group for group in groups.values()
+                        if getattr(group[1], "needs_input_many", None) is not None]
+        if agent_groups:
+            with ThreadPoolExecutor(max_workers=len(agent_groups)) as pool:
+                for host_id, waiting in pool.map(ask_host, agent_groups):
+                    for pane_id, entry in waiting.items():
+                        if isinstance(entry, dict):
+                            agent_waiting[f"{host_id}~{pane_id}"] = entry
+        phases["needs"] = time.monotonic() - sweep_t0 - phases["capture"]
 
         # Ask each agent's own session file whether its turn is running: the screen lies
         # (a status bar saying "thinking: high" is a model setting, a TUI redraws while
@@ -2199,6 +2260,8 @@ def create_app(
         workers = max(4, min(32, int(os.environ.get("TMUX_WEB_STATE_WORKERS", "24"))))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             states = list(pool.map(describe, jobs))
+        phases["describe"] = time.monotonic() - sweep_t0 - phases["capture"] - phases["needs"]
+        pane_state_phases.update(phases)
         needs_gate.prune(state["id"] for state in states)
         # 编号在这里统一带上：relay / 主页 / MCP 拿到的 peer 都自带 #N
         try:
@@ -2233,7 +2296,11 @@ def create_app(
             elapsed = time.time() - started_at
             pane_state_last.update({"finished_at": time.time(), "duration": elapsed})
             log = LOGGER.warning if elapsed > 3 else LOGGER.info
-            log("pane state sweep: %d panes in %.1fs", len(states), elapsed)
+            phases = pane_state_phases
+            log("pane state sweep: %d panes in %.1fs (capture %.1fs, needs %.1fs, describe %.1fs)",
+                len(states), elapsed,
+                phases.get("capture", 0.0), phases.get("needs", 0.0),
+                phases.get("describe", 0.0))
         except Exception:  # noqa: BLE001 - a failed sweep must never kill the poller
             LOGGER.warning("pane state sweep failed after %.1fs", time.time() - started_at, exc_info=True)
         finally:
@@ -2738,8 +2805,10 @@ def create_app(
         if not authenticated(request):
             return RedirectResponse(f"/login?next={quote(request.url.path + ('?' + request.url.query if request.url.query else ''))}", status_code=303)
         html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
-        return HTMLResponse(html.replace("__CONSOLE_BUNDLE_HASH__", CONSOLE_BUNDLE_HASH),
-                            headers={"Cache-Control": "no-store"})
+        html = html.replace("__CONSOLE_BUNDLE_HASH__", CONSOLE_BUNDLE_HASH)
+        html = html.replace("__CONSOLE_APP_HASH__", CONSOLE_APP_HASH)
+        html = html.replace("__CONSOLE_CSS_HASH__", CONSOLE_CSS_HASH)
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     @app.get("/shares")
     async def shares_page(request: Request):
@@ -3751,6 +3820,26 @@ def create_app(
         in the bundle: it must run synchronously before first paint.
         """
         return Response(content=CONSOLE_BUNDLE_BYTES, media_type="application/javascript",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/console-app.js")
+    async def console_app() -> Response:
+        """The console app module (was a 156KB inline script in index.html).
+
+        Same versioning contract as the bundle: unversioned is no-store, the
+        ?v=<content hash> URL injected into index.html is immutable.
+        """
+        return Response(content=CONSOLE_APP_BYTES, media_type="application/javascript",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/console.css")
+    async def console_styles() -> Response:
+        """The console styles as one bundle, built once at startup.
+
+        Same versioning contract as the bundle: unversioned is no-store, the
+        ?v=<content hash> URL injected into index.html is immutable.
+        """
+        return Response(content=CONSOLE_CSS_BYTES, media_type="text/css",
                         headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/app-icon.svg")

@@ -323,7 +323,8 @@ class PluginLoadingTests(unittest.TestCase):
         # 控制台读取同一个 key，并按 pane 记住视图
         page = self.client_public()
         page.post("/login", data={"password": PASSWORD}, follow_redirects=False)
-        console = page.get("/").text
+        console = (page.get("/").text + page.get("/assets/console-app.js").text
+                   + page.get("/assets/console.css").text)
         self.assertIn("tmux-sidebar-memory", console)
         self.assertIn("tmux-files-view", console)
         self.assertIn("readFilesView", console)

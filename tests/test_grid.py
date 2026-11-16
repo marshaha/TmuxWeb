@@ -23,6 +23,12 @@ class GridPageTests(unittest.TestCase):
             remote_runner_factory=FakeSSHRunner,
         ))
         self.client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+    def console_surface(self, path="/"):
+        """The console page plus the two versioned assets it loads."""
+        page = self.client.get(path).text
+        app = self.client.get("/assets/console-app.js").text
+        css = self.client.get("/assets/console.css").text
+        return page + "\n" + app + "\n" + css
 
     def test_the_grid_requires_a_login_and_comes_back_after_it(self):
         anonymous = TestClient(create_app(
@@ -468,7 +474,7 @@ class GridPageTests(unittest.TestCase):
         self.assertIn("if(state.panes.includes(paneId)){flashPane(paneId);return;}", page)
 
     def test_the_console_can_push_its_pane_into_the_grid(self):
-        console = self.client.get("/").text
+        console = self.console_surface()
         self.assertIn('id="grid-add"', console)
         self.assertIn("location='/grid?add='", console)
         self.assertIn("params.get('add')", self.client.get("/grid").text)

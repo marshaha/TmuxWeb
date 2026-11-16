@@ -1,4 +1,4 @@
-// Unit tests for the incremental-transcript merge in web/index.html.
+// Unit tests for the incremental-transcript merge in web/assets/console-app.js.
 // Run with: node --test tests/js/chat-refresh.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const root = path.dirname(new URL(import.meta.url).pathname);
-const page = fs.readFileSync(path.join(root, '..', '..', 'web', 'index.html'), 'utf8');
+const page = fs.readFileSync(path.join(root, '..', '..', 'web', 'assets', 'console-app.js'), 'utf8');
 
 function grab(name) {
   const start = page.indexOf('  function ' + name + '(');

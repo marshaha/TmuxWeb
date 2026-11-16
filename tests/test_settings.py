@@ -160,6 +160,13 @@ class SettingsApiTests(unittest.TestCase):
 class SettingsPageWiringTests(unittest.TestCase):
     """The console page must carry the three things the settings work added."""
 
+    def console_surface(self, path="/"):
+        """The console page plus the two versioned assets it loads."""
+        page = self.client.get(path).text
+        app = self.client.get("/assets/console-app.js").text
+        css = self.client.get("/assets/console.css").text
+        return page + "\n" + app + "\n" + css
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.env = patch.dict("os.environ", {
@@ -170,7 +177,7 @@ class SettingsPageWiringTests(unittest.TestCase):
             terminal_factory=FakeTerminalFactory(), share_db=":memory:",
             remote_store=FakeRemoteStore(), remote_runner_factory=FakeSSHRunner))
         self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
-        self.page = self.client.get("/?pane=%2561").text
+        self.page = self.console_surface("/?pane=%2561")
 
     def tearDown(self):
         self.env.stop()
@@ -194,7 +201,7 @@ class SettingsPageWiringTests(unittest.TestCase):
 
     def test_the_copy_glyph_is_the_one_from_the_icon_sheet(self):
         """#i-copy comes from icon.png (two sheets, back one clipped); the share arrow stays as it was."""
-        page = self.client.get("/?pane=%251").text
+        page = self.console_surface("/?pane=%251")
         self.assertIn('<symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7"', page)
         self.assertIn('rect x="1.9" y="5.7"', page)
         self.assertIn('<svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span>', page)

@@ -53,6 +53,18 @@ class HomeBoardTests(unittest.TestCase):
         ))
         self.client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
 
+    def console_surface(self, path="/"):
+        """The console page plus the two versioned assets it loads.
+
+        The app module and the style bundle used to be inline in
+        index.html; a marker that used to be in the page now lives in
+        one of them, so tests that used to read the page read all three.
+        """
+        page = self.client.get(path).text
+        app = self.client.get("/assets/console-app.js").text
+        css = self.client.get("/assets/console.css").text
+        return page + "\n" + app + "\n" + css
+
     def favourite(self, pane="%4"):
         return self.client.post("/api/home/favorites", json={"pane": pane})
 
@@ -159,12 +171,13 @@ class HomeBoardTests(unittest.TestCase):
         self.assertNotIn("%4", [row["pane"] for row in self.client.get("/api/home/recent").json()["recent"]])
 
     def test_the_console_sidebar_lists_recent_chats_under_the_tree(self):
-        page = self.client.get("/").text
+        page = self.console_surface()
         # 标记和逻辑都在共用模块里（三个页面同一份），控制台只负责挂载；
         # recents.js 现在随 console bundle 一起下，不再单独挂一个 script 标签
         self.assertIn("/assets/console.bundle.js?v=", page)
-        self.assertIn("/assets/recents.css?v=1", page)
-        self.assertIn("TmuxRecents.mount(", page)
+        self.assertIn("console.css: recents.css",
+                      self.client.get("/assets/console.css").text)
+        self.assertIn("TmuxRecents.mount(", self.client.get("/assets/console.bundle.js").text)
         self.assertIn("hideWhenFiles: true", page)
         self.assertNotIn('id="recent-block"', page)      # 页面里不再抄一份标记
         recent = self.recent_script()
@@ -184,10 +197,14 @@ class HomeBoardTests(unittest.TestCase):
 
     def test_the_recent_block_is_one_implementation_for_all_three_pages(self):
         """控制台 / 主页 / 多窗口 用同一份最近块，页面只决定点一行做什么。"""
-        for path in ("/", "/home", "/grid"):
+        for path in ("/home", "/grid"):
             page = self.client.get(path).text
             self.assertIn("/assets/recents.css", page, path)
             self.assertNotIn('id="recent-block"', page, path)   # 谁都不许再抄一份
+        # the console loads the recent styles through the css bundle now
+        self.assertIn("console.css: recents.css",
+                      self.client.get("/assets/console.css").text)
+        self.assertNotIn('id="recent-block"', self.console_surface(), "/")
         for path in ("/home", "/grid"):
             self.assertIn("/assets/recents.js", self.client.get(path).text, path)
         # the console loads it through the bundle now
@@ -203,7 +220,7 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("TmuxRecents.setFavorites", shell)
         self.assertIn("tmuxweb:favorites", shell)
         # 三个页面的点击行为不同：控制台切会话、主页跳控制台、多窗口加窗口
-        self.assertIn("onPick: pane => { selectPane(pane);", self.client.get("/").text)
+        self.assertIn("onPick: pane => { selectPane(pane);", self.console_surface())
         self.assertIn("onPane:paneId=>{location=consoleUrl(paneId);}", self.client.get("/home").text)
         self.assertIn("onPane: paneId => openPane(paneId)", self.client.get("/grid").text)
 
@@ -351,7 +368,7 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("function nameFor(id) {", script)
         self.assertIn("return (entry.label || '').trim() || (entry.title || '').trim();", script)
         self.assertIn("nameFor,", script)
-        page = self.client.get("/?pane=%2528").text
+        page = self.console_surface("/?pane=%2528")
         self.assertIn("TmuxRecents.nameFor(id)", page)
         self.assertIn("const shownTitle=customName||p.title||p.target;", page)
 
@@ -449,7 +466,7 @@ class HomeBoardTests(unittest.TestCase):
         self.assertNotIn("}, {passive: true});\n    for (const type of ['pointerup'", script)
 
     def test_the_footer_keeps_clear_of_a_phones_bottom_left_corner(self):
-        page = self.client.get("/").text
+        page = self.console_surface()
         self.assertIn(".side-foot{padding:10px 12px calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))}", page)
 
     def test_the_recent_block_has_an_adjustable_height_and_folds(self):
@@ -481,7 +498,7 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("setInterval(() => { if (!document.hidden) load(); }, 120000);", page)
 
     def test_the_console_opens_on_the_board_when_there_is_nothing_to_restore(self):
-        page = self.client.get("/").text
+        page = self.console_surface()
         self.assertIn("landOnBoard", page)
         self.assertIn("location.replace('/home')", page)
         # 访问记录搬进共用模块，控制台在 selectPane 里调它
@@ -496,7 +513,7 @@ class HomeBoardTests(unittest.TestCase):
         shell = self.client.get("/assets/shell.js").text
         for marker in ("data-refresh-host", "refreshHost", "class=\"trefresh\""):
             self.assertIn(marker, shell)
-        console = self.client.get("/").text
+        console = self.console_surface()
         for marker in ("data-refresh-host", "refreshHost", "class=\"host-refresh\""):
             self.assertIn(marker, console)
         # both use the cheap per-host endpoint instead of a full re-probe
@@ -530,11 +547,11 @@ class HomeBoardTests(unittest.TestCase):
             self.assertIn(marker, shell)
         self.assertIn('href="/assets/shell.css"', home.text)
 
-        console = self.client.get("/")
+        console = self.console_surface()
         for marker in ('id="side-resizer"', "var(--side-w,280px)", "tmux-side-w"):
-            self.assertIn(marker, console.text)
+            self.assertIn(marker, console)
         # collapsing must still win over the stored width
-        self.assertIn(".app.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}", console.text)
+        self.assertIn(".app.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}", console)
 
         # a narrow sidebar must not lose its action buttons: the row stays on one line and scrolls
         # sideways instead of dropping icons onto a second row
@@ -544,9 +561,9 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("overflow-x:auto", shell_css)
         self.assertNotIn("flex-wrap:wrap;row-gap:", shell_css)
         self.assertIn("initIconRowScroll", home.text)     # wheel scrolls the row sideways
-        self.assertIn("flex-wrap:nowrap", console.text)
-        self.assertNotIn("flex-wrap:wrap;row-gap:", console.text)
-        self.assertIn("initIconRowScroll", console.text)
+        self.assertIn("flex-wrap:nowrap", console)
+        self.assertNotIn("flex-wrap:wrap;row-gap:", console)
+        self.assertIn("initIconRowScroll", console)
 
     def test_the_title_and_the_icon_row_are_stacked(self):
         """Title on its own line, the icons in one row underneath, with a fade as the "it scrolls" hint."""
@@ -559,7 +576,7 @@ class HomeBoardTests(unittest.TestCase):
         # a desktop has no touch: no scrolling, the buttons shrink instead
         self.assertIn("@media (pointer:coarse){\n  .side-actions{flex-wrap:nowrap", shell)
 
-        console = self.client.get("/?pane=%254").text
+        console = self.console_surface("/?pane=%254")
         self.assertIn(".brand{position:relative;flex-direction:column;", console)
         self.assertIn(".brand::after{", console)
         self.assertIn("linear-gradient(to right,rgba(238,237,232,0),var(--sidebar,#eeeDE8))", console)
@@ -590,7 +607,7 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("state.open.has(key)", shell)        # collapsed by default
         self.assertNotIn("state.treeOpen.size?state.treeOpen.has(key):true", page)
 
-        console = self.client.get("/").text
+        console = self.console_surface()
         self.assertIn('id="tree-expand"', console)
         self.assertIn('id="tree-collapse"', console)
         self.assertIn("function treeKeys()", console)
@@ -627,7 +644,7 @@ class HomeBoardTests(unittest.TestCase):
                       self.client.get("/assets/pane-preview.css").text)
 
     def test_the_chat_and_terminal_switch_sits_next_to_the_star(self):
-        page = self.client.get("/").text
+        page = self.console_surface()
         start = page.index('class="top-actions"')
         head = page[start:page.index("</header>", start)]
         self.assertIn('id="chat-mode"', head)
@@ -644,7 +661,7 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("setMode('terminal')", page)
 
     def test_the_console_offers_a_star_per_pane_and_a_home_link(self):
-        page = self.client.get("/").text
+        page = self.console_surface()
         self.assertIn('data-star=', page)
         self.assertIn('href="/home"', page)
         self.assertIn('id="i-star-fill"', page)
@@ -653,7 +670,7 @@ class HomeBoardTests(unittest.TestCase):
         self.assertNotIn('data-pane="%4" data-star', page)
 
     def test_an_open_conversation_has_a_star_in_its_top_bar(self):
-        console = self.client.get("/").text
+        console = self.console_surface()
         for marker in ('id="fav-toggle"', "syncFavButton", "#i-star-fill",
                        "$('fav-toggle').onclick"):
             self.assertIn(marker, console)

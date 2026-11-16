@@ -437,6 +437,18 @@ class TmuxWebTests(unittest.TestCase):
         response = self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
         self.assertEqual(response.status_code, 303)
 
+    def console_surface(self, path="/"):
+        """The console page plus the two versioned assets it loads.
+
+        The app module and the style bundle used to be inline in
+        index.html; a marker that used to be in the page now lives in
+        one of them, so tests that used to read the page read all three.
+        """
+        page = self.client.get(path).text
+        app = self.client.get("/assets/console-app.js").text
+        css = self.client.get("/assets/console.css").text
+        return page + "\n" + app + "\n" + css
+
     def enable_prompt_card(self):
         """交互菜单卡片是实验性功能，默认关；要测它的用例先把它打开。"""
         self.login()
@@ -572,7 +584,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_the_mobile_terminal_has_its_own_input_row(self):
         """The soft keyboard needs a real field: xterm's textarea must not summon it."""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         for marker in ('id="terminal-input"', 'enterkeyhint="send"', "setupTerminalInput",
                        "setAttribute('inputmode','none')", "compositionstart"):
             self.assertIn(marker, page)
@@ -594,7 +606,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_the_terminal_input_is_a_keyboard_proxy(self):
         """A mirrored buffer cannot express "cursor left, then type" and re-sent whole lines."""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         for marker in ("function withMods", "field.value=''", "flushTerminalPending",
                        "state.termPending", "Delete:'\\x1b[3~'"):
             self.assertIn(marker, page)
@@ -807,7 +819,7 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_send_button_turns_into_a_stop_button_while_working(self):
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         for marker in ('id="i-stop"', "function stopAgent(", "function syncSendButton(",
                        "/interrupt`,{method:'POST'}", ".send.stop{background:#b34b43}",
                        "停止当前推理（Esc）"):
@@ -1167,7 +1179,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_pausing_keeps_the_terminal_on_screen(self):
         """Pausing stops the stream; it must not dispose the xterm and leave a black screen."""
         self.login()
-        page = self.client.get("/?pane=%254").text
+        page = self.console_surface("/?pane=%254")
         # closeConnections() takes a flag: pause keeps the canvas, everything else tears it down
         self.assertIn("function closeConnections(keepTerminal){", page)
         self.assertIn("if(!keepTerminal&&state.xterm){state.xterm.dispose();", page)
@@ -1189,7 +1201,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_the_send_status_line_reports_failure_and_clears_after_a_retry(self):
         """The composer's status line is neutral by default, red on failure, and a retry must reset it."""
         self.login()
-        page = self.client.get("/?pane=%254").text
+        page = self.console_surface("/?pane=%254")
         self.assertIn(".send-state{min-height:17px;color:var(--muted)}", page)
         self.assertIn(".send-state.ok{color:var(--green)}", page)
         self.assertIn(".send-state.bad{color:var(--danger)}", page)
@@ -1206,7 +1218,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_message_rows_show_the_time_next_to_the_copy_button(self):
         """Each bubble's action row carries the message timestamp on the left."""
         self.login()
-        page = self.client.get("/?pane=%254").text
+        page = self.console_surface("/?pane=%254")
         self.assertIn("clockTime=ts=>", page)
         self.assertIn('<span class="msg-time">', page)
         self.assertIn(".msg-actions .msg-time{", page)
@@ -1225,7 +1237,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_a_touch_device_does_not_autofocus_the_composer(self):
         """手机上点进聊天就弹键盘很烦；桌面上仍然自动聚焦。判据是粗指针/无悬停，不是宽度。"""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         self.assertIn("function isTouch(){return matchMedia('(pointer:coarse)').matches", page)
         self.assertIn("function canAutoFocusComposer(){return !isMobile()&&!isTouch();}", page)
         self.assertIn("if(state.mode==='chat'&&canAutoFocusComposer())input.focus();", page)
@@ -1235,7 +1247,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_fullscreen_follows_the_visual_viewport_on_a_phone(self):
         """手机上全屏写死 100vh，键盘一弹出输入框就被顶到键盘底下（只露出上半截）。"""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         self.assertIn(".main:fullscreen,.main.fullscreen-fallback{width:100vw;height:var(--visual-height,100dvh);", page)
         self.assertIn("max-height:var(--visual-height,100dvh)}", page)
         self.assertIn("padding-bottom:calc(9px + env(safe-area-inset-bottom,0px) + 4px)}", page)
@@ -1243,7 +1255,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_labelled_buttons_cannot_be_squeezed_into_overflow(self):
         """带字的按钮一律 flex:0 0 auto + nowrap：窄屏时被挤扁，文字就会顶出边框（对话全屏 那次）。"""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         self.assertIn(".share-btn,.fullscreen-btn{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap}", page)
         # 手机上仍然是图标按钮（文字藏起来），不会挤
         self.assertIn(".fullscreen-btn{width:34px;padding:0;justify-content:center}", page)
@@ -1252,7 +1264,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_a_block_copy_button_shows_its_label(self):
         """块顶栏的「复制 / 源码」按钮：图标没有宽高时 svg 是 300×150，会把文字顶出按钮。"""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         self.assertIn(".msg-copy .ico,.block-btn .ico{width:11px;height:11px;", page)
         self.assertIn(".msg-copy,.block-btn{display:inline-flex;align-items:center}", page)
         # 文字单独一层：复制成功只换字，不会把图标删掉
@@ -1264,7 +1276,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_a_wide_table_cannot_push_the_copy_row_off_screen(self):
         """手机上宽表格：表格在自己的框里横滚，气泡宽度被夹住，复制行留在气泡里且不会被挤出去。"""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         # 复制行仍在气泡里（两个构造消息的地方都是这个结构）
         self.assertEqual(page.count('${markdown(message.text)}${copy}'), 1)
         self.assertEqual(page.count('${markdown(message.text)}${copyButton(message)}'), 1)
@@ -1283,7 +1295,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_an_agent_pane_does_not_fall_back_to_its_screen(self):
         """Streaming a full-screen TUI is what used to lock up the browser."""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         for marker in ("isAgentPane", "showTranscriptNotice", "retryTranscript",
                        "transcript-empty", "CAPTURE_MAX_BYTES"):
             self.assertIn(marker, page)
@@ -1552,166 +1564,167 @@ class TmuxWebTests(unittest.TestCase):
         self.login()
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Tmux Chat", response.text)
-        self.assertIn("pane-list", response.text)
-        self.assertIn("composer-card", response.text)
-        self.assertIn("terminal-mode", response.text)
-        self.assertIn("capture-output", response.text)
-        self.assertNotIn(".terminal{display:block;min-width:max-content", response.text)
-        self.assertIn("connectTranscript(id,true)", response.text)
-        self.assertIn("ansi_to_html", response.text)
-        self.assertIn("renderTableLine", response.text)
-        self.assertIn("terminalWidth", response.text)
-        self.assertIn(".terminal-cell.wide{width:2ch}", response.text)
-        self.assertIn(".terminal-table-line{display:inline;white-space:nowrap}", response.text)
-        self.assertNotIn(".terminal-table-line{display:block;height:1.5em", response.text)
-        self.assertIn("visibilitychange", response.text)
-        self.assertIn("connectTranscript", response.text)
-        self.assertIn("marked.parse", response.text)
-        self.assertIn('id="fullscreen"', response.text)
-        self.assertIn('<main class="main" id="main">', response.text)
-        self.assertIn("requestFullscreen", response.text)
-        self.assertIn('id="sidebar-close"', response.text)
-        self.assertIn('id="drawer-backdrop"', response.text)
-        self.assertIn("tmux-sidebar-collapsed", response.text)
-        self.assertIn("env(safe-area-inset-bottom)", response.text)
-        self.assertIn("visualViewport", response.text)
-        self.assertIn("mobile-composing", response.text)
-        self.assertIn("setComposing", response.text)
-        self.assertIn("state.mode==='chat'&&canAutoFocusComposer()", response.text)
-        self.assertIn("mode==='chat'&&state.selected&&canAutoFocusComposer()", response.text)
-        self.assertIn("viewport-fit=cover", response.text)
-        self.assertIn('rel="manifest"', response.text)
-        self.assertIn("apple-mobile-web-app-capable", response.text)
-        self.assertIn("serviceWorker.register('/sw.js')", response.text)
-        self.assertIn("-webkit-text-size-adjust:100%", response.text)
-        self.assertIn(".chat-message.assistant{justify-content:flex-start}", response.text)
-        self.assertIn("background:var(--card);color:var(--ink);font-size:15px", response.text)
-        self.assertIn("refreshTranscript(id,{force=false,refresh=false}", response.text)
-        self.assertIn("state.selected!==id||state.mode!=='chat'", response.text)
-        self.assertIn("/api/hosts'", response.text)
+        page = self.console_surface()
+        self.assertIn("Tmux Chat", page)
+        self.assertIn("pane-list", page)
+        self.assertIn("composer-card", page)
+        self.assertIn("terminal-mode", page)
+        self.assertIn("capture-output", page)
+        self.assertNotIn(".terminal{display:block;min-width:max-content", page)
+        self.assertIn("connectTranscript(id,true)", page)
+        self.assertIn("ansi_to_html", page)
+        self.assertIn("renderTableLine", page)
+        self.assertIn("terminalWidth", page)
+        self.assertIn(".terminal-cell.wide{width:2ch}", page)
+        self.assertIn(".terminal-table-line{display:inline;white-space:nowrap}", page)
+        self.assertNotIn(".terminal-table-line{display:block;height:1.5em", page)
+        self.assertIn("visibilitychange", page)
+        self.assertIn("connectTranscript", page)
+        self.assertIn("marked.parse", page)
+        self.assertIn('id="fullscreen"', page)
+        self.assertIn('<main class="main" id="main">', page)
+        self.assertIn("requestFullscreen", page)
+        self.assertIn('id="sidebar-close"', page)
+        self.assertIn('id="drawer-backdrop"', page)
+        self.assertIn("tmux-sidebar-collapsed", page)
+        self.assertIn("env(safe-area-inset-bottom)", page)
+        self.assertIn("visualViewport", page)
+        self.assertIn("mobile-composing", page)
+        self.assertIn("setComposing", page)
+        self.assertIn("state.mode==='chat'&&canAutoFocusComposer()", page)
+        self.assertIn("mode==='chat'&&state.selected&&canAutoFocusComposer()", page)
+        self.assertIn("viewport-fit=cover", page)
+        self.assertIn('rel="manifest"', page)
+        self.assertIn("apple-mobile-web-app-capable", page)
+        self.assertIn("serviceWorker.register('/sw.js')", page)
+        self.assertIn("-webkit-text-size-adjust:100%", page)
+        self.assertIn(".chat-message.assistant{justify-content:flex-start}", page)
+        self.assertIn("background:var(--card);color:var(--ink);font-size:15px", page)
+        self.assertIn("refreshTranscript(id,{force=false,refresh=false}", page)
+        self.assertIn("state.selected!==id||state.mode!=='chat'", page)
+        self.assertIn("/api/hosts'", page)
         for marker in ('id="live-toggle"', "CAPTURE_PAINT_MS", "CAPTURE_MAX_LINES", "pushTerminal",
                        "TERM_BACKLOG_MAX", "queueCapture", "pauseLive", "resumeLive"):
-            self.assertIn(marker, response.text)
-        self.assertIn("treeDetails", response.text)
-        self.assertIn("treeOpen:new Set()", response.text)
-        self.assertIn("tmux-tree-open", response.text)
-        self.assertIn("state.treeOpen.has(key)?' open':''", response.text)
-        self.assertIn("tree-host", response.text)
-        self.assertIn("e.isComposing||isMobile()", response.text)
-        self.assertIn('id="terminal-keys"', response.text)
-        self.assertIn('data-key="ArrowUp"', response.text)
-        self.assertIn("scheduleTerminalFit", response.text)
-        self.assertIn("visualViewport.addEventListener('resize',handleVisualViewportChange)", response.text)
-        self.assertIn("pendingMessages:new Map()", response.text)
-        self.assertIn("addOptimisticMessage", response.text)
-        self.assertIn("const baseline=waiting[0][1].baselineIds;", response.text)
-        self.assertIn("const fresh=messages.filter(message=>message.role==='user'&&!baseline.has(String(message.id)))", response.text)
-        self.assertIn("messageTextKey(message.text)===key", response.text)
-        self.assertIn("function pendingAnchorIndex(messages,pending)", response.text)
-        self.assertIn("pendingAnchorIndex(messages,item.pending)", response.text)
-        self.assertIn("a rewritten/expanded echo still belongs to the same send", response.text)
-        self.assertIn("发送中", response.text)
-        self.assertIn("已发送 ✓", response.text)
-        self.assertIn("发送失败", response.text)
-        self.assertIn("pending-wave", response.text)
-        self.assertIn("pane-state", response.text)
-        self.assertIn("refreshPaneStates", response.text)
-        self.assertIn("/api/panes/status", response.text)
-        self.assertIn("applyPaneStates", response.text)
-        self.assertIn("p.capabilities&&p.capabilities.share", response.text)
-        self.assertIn('id="file-panel"', response.text)
-        self.assertIn('id="files-toggle"', response.text)
-        self.assertIn('id="file-input"', response.text)
-        self.assertIn("setupFiles", response.text)
-        self.assertIn("openFiles", response.text)
-        self.assertIn("uploadFiles", response.text)
-        self.assertIn("/files/download?path=", response.text)
-        self.assertIn("dataTransfer.files", response.text)
-        self.assertIn(".file-panel[hidden],.pane-list[hidden]{display:none!important}", response.text)
-        self.assertIn('id="file-close"', response.text)
-        self.assertIn("tmux-files-mode", response.text)
-        self.assertIn("transcriptSignature", response.text)
-        self.assertIn("signature!==state.transcriptSig", response.text)
+            self.assertIn(marker, page)
+        self.assertIn("treeDetails", page)
+        self.assertIn("treeOpen:new Set()", page)
+        self.assertIn("tmux-tree-open", page)
+        self.assertIn("state.treeOpen.has(key)?' open':''", page)
+        self.assertIn("tree-host", page)
+        self.assertIn("e.isComposing||isMobile()", page)
+        self.assertIn('id="terminal-keys"', page)
+        self.assertIn('data-key="ArrowUp"', page)
+        self.assertIn("scheduleTerminalFit", page)
+        self.assertIn("visualViewport.addEventListener('resize',handleVisualViewportChange)", page)
+        self.assertIn("pendingMessages:new Map()", page)
+        self.assertIn("addOptimisticMessage", page)
+        self.assertIn("const baseline=waiting[0][1].baselineIds;", page)
+        self.assertIn("const fresh=messages.filter(message=>message.role==='user'&&!baseline.has(String(message.id)))", page)
+        self.assertIn("messageTextKey(message.text)===key", page)
+        self.assertIn("function pendingAnchorIndex(messages,pending)", page)
+        self.assertIn("pendingAnchorIndex(messages,item.pending)", page)
+        self.assertIn("a rewritten/expanded echo still belongs to the same send", page)
+        self.assertIn("发送中", page)
+        self.assertIn("已发送 ✓", page)
+        self.assertIn("发送失败", page)
+        self.assertIn("pending-wave", page)
+        self.assertIn("pane-state", page)
+        self.assertIn("refreshPaneStates", page)
+        self.assertIn("/api/panes/status", page)
+        self.assertIn("applyPaneStates", page)
+        self.assertIn("p.capabilities&&p.capabilities.share", page)
+        self.assertIn('id="file-panel"', page)
+        self.assertIn('id="files-toggle"', page)
+        self.assertIn('id="file-input"', page)
+        self.assertIn("setupFiles", page)
+        self.assertIn("openFiles", page)
+        self.assertIn("uploadFiles", page)
+        self.assertIn("/files/download?path=", page)
+        self.assertIn("dataTransfer.files", page)
+        self.assertIn(".file-panel[hidden],.pane-list[hidden]{display:none!important}", page)
+        self.assertIn('id="file-close"', page)
+        self.assertIn("tmux-files-mode", page)
+        self.assertIn("transcriptSignature", page)
+        self.assertIn("signature!==state.transcriptSig", page)
 
         # the UI uses one inline SVG sprite instead of ad-hoc text glyphs and emoji
         for symbol in ("i-folder", "i-server", "i-share", "i-external", "i-refresh", "i-chevron-left",
                        "i-menu", "i-upload", "i-close", "i-file", "i-link", "i-parent"):
-            self.assertIn(f'<symbol id="{symbol}"', response.text, symbol)
+            self.assertIn(f'<symbol id="{symbol}"', page, symbol)
         for glyph in ("▤", "⌁", "⇧", "↻", "☰", "‹", "⤒", "✕", "⌘", "↰", "⛶", "📁", "📄", "🔗"):
-            self.assertNotIn(glyph, response.text, glyph)
-        self.assertIn(".ico{", response.text)
-        self.assertIn('aria-label="文件"', response.text)
+            self.assertNotIn(glyph, page, glyph)
+        self.assertIn(".ico{", page)
+        self.assertIn('aria-label="文件"', page)
 
         # the file panel is scoped to one pane: switching pane/host drops the old
         # listing instead of reloading the previous path on the new machine
-        self.assertIn("filesPane:null", response.text)
-        self.assertIn("state.filesPane&&state.filesPane!==id", response.text)
-        self.assertIn("state.filesPane===state.selected?state.filesPath:null", response.text)
+        self.assertIn("filesPane:null", page)
+        self.assertIn("state.filesPane&&state.filesPane!==id", page)
+        self.assertIn("state.filesPane===state.selected?state.filesPath:null", page)
         # 目录列表请求带序号：后发的赢，快速切目录不会被慢响应覆盖
-        self.assertIn("pane!==state.selected||seq!==state.filesSeq)return", response.text)
+        self.assertIn("pane!==state.selected||seq!==state.filesSeq)return", page)
         # the path bar names the machine the listing came from
-        self.assertIn('id="file-host"', response.text)
+        self.assertIn('id="file-host"', page)
 
         # creating a tmux session on a host that has none
-        self.assertIn('id="session-dialog"', response.text)
-        self.assertIn('data-new-session="', response.text)
-        self.assertIn('<symbol id="i-plus"', response.text)
-        self.assertIn("async function submitSessionForm(", response.text)
-        self.assertIn("api('/api/sessions'", response.text)
+        self.assertIn('id="session-dialog"', page)
+        self.assertIn('data-new-session="', page)
+        self.assertIn('<symbol id="i-plus"', page)
+        self.assertIn("async function submitSessionForm(", page)
+        self.assertIn("api('/api/sessions'", page)
         # 关闭窗格：顶栏入口 + 二次确认 + 打 DELETE
-        self.assertIn('id="pane-close"', response.text)
-        self.assertIn('id="pane-close-dialog"', response.text)
-        self.assertIn("关闭这个窗格？", response.text)
-        self.assertIn("`/api/panes/${encodeURIComponent(id)}`,{method:'DELETE'}", response.text)
-        self.assertIn("e.stopPropagation();state.sessionHost=add.dataset.newSession", response.text)
+        self.assertIn('id="pane-close"', page)
+        self.assertIn('id="pane-close-dialog"', page)
+        self.assertIn("关闭这个窗格？", page)
+        self.assertIn("`/api/panes/${encodeURIComponent(id)}`,{method:'DELETE'}", page)
+        self.assertIn("e.stopPropagation();state.sessionHost=add.dataset.newSession", page)
 
         # per-message copy + per-block controls (code / mermaid / table)
-        self.assertIn('data-msg-copy=', response.text)
+        self.assertIn('data-msg-copy=', page)
 
         # switching panes must reuse the cached transcript instead of reloading
-        self.assertIn("function paintCachedTranscript(", response.text)
-        self.assertIn("function rememberTranscript(", response.text)
-        self.assertIn("function savePaneUi(", response.text)
-        self.assertIn("transcripts:new Map()", response.text)
-        self.assertIn("drafts:new Map()", response.text)
-        self.assertIn("更新中…", response.text)
-        self.assertIn('复制全部', response.text)
-        self.assertIn("async function copyText(", response.text)
-        self.assertIn("function enhanceBlocks(", response.text)
-        self.assertIn("data-block-copy", response.text)
-        self.assertIn("data-block-source", response.text)
-        self.assertIn("/assets/mermaid/mermaid.min.js", response.text)
+        self.assertIn("function paintCachedTranscript(", page)
+        self.assertIn("function rememberTranscript(", page)
+        self.assertIn("function savePaneUi(", page)
+        self.assertIn("transcripts:new Map()", page)
+        self.assertIn("drafts:new Map()", page)
+        self.assertIn("更新中…", page)
+        self.assertIn('复制全部', page)
+        self.assertIn("async function copyText(", page)
+        self.assertIn("function enhanceBlocks(", page)
+        self.assertIn("data-block-copy", page)
+        self.assertIn("data-block-source", page)
+        self.assertIn("/assets/mermaid/mermaid.min.js", page)
         mermaid = self.client.get("/assets/mermaid/mermaid.min.js")
         self.assertEqual(mermaid.status_code, 200)
         self.assertGreater(len(mermaid.content), 100000)
         self.assertEqual(self.client.get("/assets/mermaid/other.js").status_code, 404)
-        self.assertIn("$('file-host').textContent=owner?owner.name", response.text)
+        self.assertIn("$('file-host').textContent=owner?owner.name", page)
 
         # editable path bar + multi-select zip download
-        self.assertIn('id="file-path" type="text"', response.text)
-        self.assertIn("$('file-path').addEventListener('keydown'", response.text)
-        self.assertIn("$('file-path').addEventListener('focus'", response.text)
+        self.assertIn('id="file-path" type="text"', page)
+        self.assertIn("$('file-path').addEventListener('keydown'", page)
+        self.assertIn("$('file-path').addEventListener('focus'", page)
         # selection follows desktop conventions instead of a mode toggle
-        self.assertNotIn('id="file-select"', response.text)
-        self.assertNotIn("filesSelect", response.text)
-        self.assertIn("e.ctrlKey||e.metaKey", response.text)
-        self.assertIn("e.shiftKey", response.text)
-        self.assertIn("function selectRange(", response.text)
-        self.assertIn("function togglePick(", response.text)
-        self.assertIn('class="file-check"', response.text.replace("${", ""))
-        self.assertIn('<symbol id="i-select"', response.text)
-        self.assertIn("async function downloadArchive(", response.text)
+        self.assertNotIn('id="file-select"', page)
+        self.assertNotIn("filesSelect", page)
+        self.assertIn("e.ctrlKey||e.metaKey", page)
+        self.assertIn("e.shiftKey", page)
+        self.assertIn("function selectRange(", page)
+        self.assertIn("function togglePick(", page)
+        self.assertIn('class="file-check"', page.replace("${", ""))
+        self.assertIn('<symbol id="i-select"', page)
+        self.assertIn("async function downloadArchive(", page)
         # the toolbar "up" button was redundant with the ".." row; it is a batch
         # download button now, and both zip entry points share one code path
-        self.assertNotIn('id="file-up"', response.text)
-        self.assertIn('id="file-download"', response.text)
-        self.assertIn('<symbol id="i-download"', response.text)
-        self.assertIn("$('file-download').onclick", response.text)
+        self.assertNotIn('id="file-up"', page)
+        self.assertIn('id="file-download"', page)
+        self.assertIn('<symbol id="i-download"', page)
+        self.assertIn("$('file-download').onclick", page)
         # definition + footer button + toolbar button (two call sites) + 右键/长按菜单
-        self.assertEqual(response.text.count("downloadArchive("), 5)
-        self.assertIn("/files/zip", response.text)
-        self.assertIn("function syncFileSelection()", response.text)
+        self.assertEqual(page.count("downloadArchive("), 5)
+        self.assertIn("/files/zip", page)
+        self.assertIn("function syncFileSelection()", page)
 
         hosts_page = self.client.get("/hosts")
         self.assertIn("function esc(value)", hosts_page.text)
@@ -1869,9 +1882,11 @@ class TmuxWebTests(unittest.TestCase):
     def test_the_pause_button_is_hidden_until_the_pref_turns_it_on(self):
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
         self.assertIn('id="live-toggle" hidden', html, "暂停按钮默认该藏起来")
-        self.assertIn("applyPauseButton", html)
+        app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
+        self.assertIn("applyPauseButton", app)
         # .share-btn 是 display:inline-grid，光有 hidden 属性压不住，按钮会照旧显示
-        self.assertIn(".share-btn[hidden]", html)
+        base = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-base.css").read_text()
+        self.assertIn(".share-btn[hidden]", base)
 
     def test_the_pause_button_preference_is_accepted(self):
         self.login()
@@ -1884,8 +1899,9 @@ class TmuxWebTests(unittest.TestCase):
         """加载时 idle/thinking 本来没有意义：状态就画在那一行，别弹浮层。"""
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
         self.assertNotIn('id="load-card"', html, "加载不该再弹浮层")
-        self.assertIn("子节点加载中", html)
-        self.assertIn("loadingActive()", html)
+        app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
+        self.assertIn("子节点加载中", app)
+        self.assertIn("loadingActive()", app)
 
     def test_a_session_and_a_window_can_be_renamed(self):
         self.login()
@@ -1908,7 +1924,7 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_choosing_a_pane_closes_the_drawer_with_its_scrim(self):
         """手机上那层灰色遮罩 = .drawer-backdrop.show 没被清掉；选 pane 必须整块收掉。"""
-        html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
+        html = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
         # 选 pane 时曾经只摘了 open、留下 .drawer-backdrop.show —— 手机上就是一层灰罩
         self.assertNotIn("$('sidebar').classList.remove('open');}", html)
         self.assertIn("closeSidebar();}", html)
@@ -1918,7 +1934,7 @@ class TmuxWebTests(unittest.TestCase):
         restored from localStorage, so a chat opened from the board or the grid could
         start with 文件管理 instead of the server list."""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         self.assertIn("id=\"file-panel\"", page)          # 控制台页面本身，不是登录页
         self.assertNotIn("localStorage.getItem('tmux-files-mode')", page)
         self.assertNotIn("localStorage.setItem('tmux-files-mode'", page)
@@ -2359,10 +2375,12 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("TmuxNeedsYou", self.client.get("/assets/console.bundle.js").text)
         web = Path(__file__).resolve().parent.parent / "web"
         html = (web / "index.html").read_text()
+        app = (web / "assets" / "console-app.js").read_text()
         for marker in ('id="needs-you-card"', 'id="needs-you-card-options"',
-                       'id="needs-you-card-esc"', "TmuxNeedsYou.start(()=>state.selected)",
-                       ".needs-you-badge{", "needsInput"):
+                       'id="needs-you-card-esc"', ".needs-you-badge{"):
             self.assertIn(marker, html, marker)
+        for marker in ("TmuxNeedsYou.start(()=>state.selected)", "needsInput"):
+            self.assertIn(marker, app, marker)
         shell = (web / "assets" / "shell.js").read_text()
         for marker in ("tneed", "needs-you", "state.needs"):
             self.assertIn(marker, shell, marker)
@@ -2395,7 +2413,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_the_number_is_shown_in_every_title_bar(self):
         """#N 不只挂在侧栏：控制台顶栏、/grid 每格标题、/preview 标题都要有。"""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         self.assertIn('class="session-num" id="selected-number"', page)
         self.assertIn("$('selected-number')", page)
         # 编号统一走 paneLabel()：联邦节点显示 ddr#12，本机仍是 #12
@@ -2453,7 +2471,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(transcript.status_code, 200, transcript.text)
         self.assertEqual(self.client.get("/api/panes/%239999/capture").status_code, 404)
 
-        page = self.client.get("/").text
+        page = self.console_surface()
         self.assertIn('class="pane-num"', page)
         self.assertIn("/^#?\\d{1,5}$/.test(wanted.trim())", page)
         self.assertIn("state.panes.find(p=>p.number===number)", page)
@@ -3177,9 +3195,11 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("TmuxPrompt", script.text)
         self.assertIn("/prompt/choose", script.text)
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
+        app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
         for marker in ('id="prompt-card"', 'id="prompt-card-options"', 'id="prompt-card-esc"',
-                       '/assets/console.bundle.js?v=', "TmuxPrompt.start(()=>state.selected)"):
+                       '/assets/console.bundle.js?v='):
             self.assertIn(marker, html, marker)
+        self.assertIn("TmuxPrompt.start(()=>state.selected)", app)
         self.assertIn("TmuxPrompt", self.client.get("/assets/console.bundle.js").text)
         self.assertIn(".prompt-card{", html)
         # 卡片本身不滚动，只有选项列表滚：标题/开关/Esc 必须常驻可见
@@ -3359,7 +3379,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn('data-ts-prompt="off"', panel)
         self.assertIn('data-ts-prompt="on"', panel)
         self.assertIn("交互菜单卡片（实验性）", panel)
-        page = self.client.get("/").text
+        page = self.console_surface()
         # 控制台据此决定要不要轮询
         self.assertIn("tmuxweb:prompt-card", page)
         self.assertIn("TmuxPrompt.stop()", page)
@@ -3383,7 +3403,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_sending_hides_the_attachment_strip_right_away(self):
         """按 Enter 那一刻条带就该收起来，而不是等 POST 回来（那一秒图片还杵着）。"""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         send = page[page.index("async function sendInput("):]
         send = send[:send.index("async function createShare(")]
         self.assertIn("prompt?takeAttachments():[]", send, "先收条带")
@@ -3629,10 +3649,13 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(script.status_code, 200)
         self.assertIn("TmuxMarkdownCjk", script.text)
         web = Path(__file__).resolve().parent.parent / "web"
-        for name in ("index.html", "home.html"):
-            html = (web / name).read_text()
-            self.assertIn("TmuxMarkdownCjk.fix(", html, name)
-            self.assertIn("TmuxMarkdownCjk.strip(", html, name)
+        # 控制台的调用在 console-app.js 里；看板仍在 home.html 里
+        app = (web / "assets" / "console-app.js").read_text()
+        self.assertIn("TmuxMarkdownCjk.fix(", app, "console-app.js")
+        self.assertIn("TmuxMarkdownCjk.strip(", app, "console-app.js")
+        home = (web / "home.html").read_text()
+        self.assertIn("TmuxMarkdownCjk.fix(", home, "home.html")
+        self.assertIn("TmuxMarkdownCjk.strip(", home, "home.html")
         # the console loads it through the bundle now; the board page still has its own tag
         self.assertIn("/assets/console.bundle.js?v=", (web / "index.html").read_text())
         self.assertIn("TmuxMarkdownCjk", self.client.get("/assets/console.bundle.js").text)
@@ -3649,13 +3672,16 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".video-card", style.text)
         # 没登录会被重定向，所以直接读文件里的接线；聊天页和看板共用同一份脚本/样式
         web = Path(__file__).resolve().parent.parent / "web"
-        for name in ("index.html", "home.html"):
-            html = (web / name).read_text()
-            self.assertIn("/assets/video-cards.css", html, name)
+        # 控制台的样式走 console.css 打包：index.html 只引打包后的版本化链接
+        self.assertIn("/assets/console.css?v=", (web / "index.html").read_text())
+        self.assertIn("console.css: video-cards.css",
+                      self.client.get("/assets/console.css").text)
+        self.assertIn("/assets/video-cards.css", (web / "home.html").read_text())
         self.assertIn("/assets/video-cards.js", (web / "home.html").read_text())
         self.assertIn("/assets/console.bundle.js?v=", (web / "index.html").read_text())
         self.assertIn("TmuxVideo", self.client.get("/assets/console.bundle.js").text)
-        self.assertIn("enhanceVideos(root)", (web / "index.html").read_text())
+        self.assertIn("enhanceVideos(root)",
+                      (web / "assets" / "console-app.js").read_text())
         self.assertIn("TmuxVideo.enhance($('cards'))", (web / "home.html").read_text())
 
     def test_a_local_video_is_served_inline_so_a_player_can_use_it(self):
@@ -4153,15 +4179,13 @@ class TmuxWebTests(unittest.TestCase):
         self.assertTrue(body.get("unchanged"))
 
     def test_inline_console_script_passes_node_check(self):
-        """index.html 的内联 <script type=module> 抽出来必须过 node --check。"""
+        """web/assets/console-app.js（原 index.html 的内联 module 脚本）必须过 node --check。"""
         if shutil.which("node") is None:
             self.skipTest("node is not installed")
-        import re
-        page = Path(__file__).resolve().parent.parent.joinpath("web", "index.html").read_text()
-        match = re.search(r'<script type="module">(.*?)</script>', page, re.S)
-        self.assertIsNotNone(match, "找不到内联 module 脚本")
+        script = Path(__file__).resolve().parent.parent.joinpath(
+            "web", "assets", "console-app.js").read_text()
         with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as handle:
-            handle.write(match.group(1))
+            handle.write(script)
             script_path = handle.name
         self.addCleanup(os.unlink, script_path)
         completed = subprocess.run(["node", "--check", script_path],
@@ -4180,7 +4204,7 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_chat_refresh_client_wiring_is_present(self):
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         for marker in (
             "refreshTranscript(pane,{force:true})",   # 1a：发送后立即刷新
             "since=",                                # 2：增量 transcript
@@ -4193,7 +4217,7 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_progress_indicator_markup_is_present(self):
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         for marker in ('id="agent-progress"', "function syncProgress(", "function sinceSeconds(",
                        "function humanElapsed(", "'thinking'", "'idle'", "function agentWorking(",
                        "agent-progress.working"):
@@ -4201,7 +4225,7 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_share_and_fullscreen_entries_are_icons_on_phones(self):
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         # the share management entry reuses the arrow icon, both actions are icon-only
         self.assertIn('<a class="icon-btn" href="/shares" title="管理分享"', page)
         self.assertIn('href="/shares" title="管理分享" aria-label="管理分享" style="text-decoration:none"><svg class="ico"><use href="#i-external"/></svg>', page)
@@ -4214,7 +4238,7 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_share_dialog_is_a_fixed_size_sheet_on_phones(self):
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         # width no longer depends on the containing block, so it cannot jump
         self.assertIn(".share-dialog{width:min(calc(100vw - 24px),520px);max-width:520px;max-height:86dvh;overflow:auto;", page)
         # phones get a bottom sheet with a bounded height and in-place scrolling
@@ -4242,8 +4266,7 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_transcript_paging_controls_are_present(self):
         self.login()
-        response = self.client.get("/")
-        page = response.text
+        page = self.console_surface()
         for marker in ('id="load-earlier"', 'function loadEarlier(', 'TRANSCRIPT_PAGE_MAX',
                        'id="earlier-bar"', 'state.transcriptLimit'):
             self.assertIn(marker, page)
@@ -4254,18 +4277,17 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_markdown_links_open_an_in_console_preview(self):
         self.login()
-        response = self.client.get("/")
-        page = response.text
+        page = self.console_surface()
         for marker in ('id="md-viewer"', 'id="md-toggle"', 'function openMarkdownViewer(',
                        'function looksLikeMarkdownLink(', 'MD_VIEWER_EXTS'):
             self.assertIn(marker, page)
 
     def test_rendered_transcript_links_are_rewritten_to_the_raw_endpoint(self):
         self.login()
-        response = self.client.get("/")
-        self.assertIn("/files/raw?path=", response.text)
-        self.assertIn("function rewriteLocalLinks(", response.text)
-        self.assertIn("rewriteLocalLinks(host)", response.text)
+        page = self.console_surface()
+        self.assertIn("/files/raw?path=", page)
+        self.assertIn("function rewriteLocalLinks(", page)
+        self.assertIn("rewriteLocalLinks(host)", page)
 
     def test_uploads_a_file_into_the_current_directory(self):
         self.login()
@@ -4330,9 +4352,10 @@ class TmuxWebTests(unittest.TestCase):
     def test_the_chat_composer_can_attach_files(self):
         """控制台聊天和 /preview 共用同一份附件实现（按钮在输入框卡片里，一条细线分隔）。"""
         self.login()
-        page = self.client.get("/").text
-        self.assertIn('/assets/composer-files.css', page)
-        self.assertIn('/assets/composer-files.js', page)
+        page = self.console_surface()
+        self.assertIn('console.css: composer-files.css', page)
+        self.assertIn('console.bundle: assets/composer-files.js',
+                      self.client.get("/assets/console.bundle.js").text)
         self.assertIn('<div class="composer-card"><div class="cf-bar">', page)
         self.assertIn('<div class="cf-strip" id="uploads" hidden></div>', page)
         self.assertIn('id="attach"', page)
@@ -4350,8 +4373,8 @@ class TmuxWebTests(unittest.TestCase):
     def test_the_sidebar_previews_a_pane_after_hovering(self):
         """侧栏（会话树 + 最近）悬停 N 秒预览最后消息，和 home 卡片共用一份实现。"""
         self.login()
-        page = self.client.get("/").text
-        self.assertIn('<link rel="stylesheet" href="/assets/pane-preview.css?v=1">', page)
+        page = self.console_surface()
+        self.assertIn('console.css: pane-preview.css', page)
         self.assertIn("/assets/console.bundle.js?v=", page)
         self.assertIn("TmuxPanePreview", self.client.get("/assets/console.bundle.js").text)
         for marker in ("function setupPanePreview(){", "setupRecentPreview();",
@@ -4422,6 +4445,68 @@ class TmuxWebTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr[-2000:])
             finally:
                 os.unlink(name)
+
+    def test_console_app_is_one_versioned_request(self):
+        """控制台应用脚本曾经是 index.html 里 156KB 的内联 module：每次打开
+        控制台都要跟着 no-store 的页面重新下载。现在是版本化 asset，首访
+        下载一次，之后走浏览器缓存；页面只剩 40KB。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn("/assets/console-app.js?v=", page)
+        self.assertNotIn('<script type="module">', page)
+        app = self.client.get("/assets/console-app.js")
+        self.assertEqual(app.status_code, 200)
+        self.assertIn("javascript", app.headers.get("content-type", ""))
+        self.assertEqual(app.headers.get("cache-control"), "no-store")
+        for marker in ("refreshTranscript(pane,{force:true})", "mergeIncrementalMessages(",
+                       "function syncProgress(", "connectTranscript(id,true)"):
+            self.assertIn(marker, app.text)
+        digest = hashlib.sha1(app.content).hexdigest()[:12]
+        self.assertIn("/assets/console-app.js?v=" + digest, page)
+        versioned = self.client.get("/assets/console-app.js?v=" + digest)
+        self.assertEqual(versioned.headers.get("cache-control"),
+                         "public, max-age=31536000, immutable")
+        node = shutil.which("node")
+        if node:
+            with tempfile.NamedTemporaryFile("wb", suffix=".mjs", delete=False) as handle:
+                handle.write(app.content)
+                name = handle.name
+            try:
+                result = subprocess.run([node, "--check", name], capture_output=True,
+                                        text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+            finally:
+                os.unlink(name)
+
+    def test_console_css_is_one_versioned_bundle(self):
+        """控制台样式曾经是 <head> 里 42KB 的内联 <style> 加 8 个独立链接：
+        每次打开控制台都要重新下载，冷启动多 8 次往返。现在打成一个版本化
+        bundle，首访一次下载，之后走缓存；theme.css 仍是独立文件（全站共用，
+        且必须在控制台规则之后加载）。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn("/assets/console.css?v=", page)
+        self.assertNotIn('href="/assets/recents.css', page)
+        self.assertNotIn('href="/assets/pane-preview.css', page)
+        self.assertIn('href="/assets/theme.css?v=1"', page)
+        css = self.client.get("/assets/console.css")
+        self.assertEqual(css.status_code, 200)
+        self.assertIn("text/css", css.headers.get("content-type", ""))
+        self.assertEqual(css.headers.get("cache-control"), "no-store")
+        for marker in ("console.css: console-base.css", "console.css: recents.css",
+                       "console.css: path-links.css", "console.css: composer-files.css",
+                       "console.css: downloads.css", "console.css: video-cards.css",
+                       "console.css: upload-cards.css", "console.css: image-viewer.css",
+                       "console.css: pane-preview.css",
+                       ".assistant-body>.msg-actions{margin-top:12px;",
+                       ".fullscreen-btn span{display:none}",
+                       ".share-dialog{width:min(calc(100vw - 24px)"):
+            self.assertIn(marker, css.text)
+        digest = hashlib.sha1(css.content).hexdigest()[:12]
+        self.assertIn("/assets/console.css?v=" + digest, page)
+        versioned = self.client.get("/assets/console.css?v=" + digest)
+        self.assertEqual(versioned.headers.get("cache-control"),
+                         "public, max-age=31536000, immutable")
 
     def test_the_hover_preview_delay_is_a_follow_me_preference(self):
         """设置面板里可调（关闭 / 1 / 2 / 3 秒），存到账号；手机没有悬停，默认不绑。"""
@@ -4496,7 +4581,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_file_panel_exposes_rename_and_delete_controls(self):
         """面板里的入口：选中栏按钮、右键/长按菜单、F2 与 Delete 键。"""
         self.login()
-        page = self.client.get("/").text
+        page = self.console_surface()
         for marker in ('id="file-rename"', 'id="file-delete"', 'id="file-dialog"', 'id="file-menu"',
                        'id="fd-input"', 'id="fd-recursive"', "fileDialog(options)", "function renameFile(path)",
                        "async function deleteFiles(paths)", "function setupFileMenu()",
@@ -4590,8 +4675,8 @@ class TmuxWebTests(unittest.TestCase):
     def test_mobile_downloads_ask_before_opening(self):
         """移动端下载必须先确认：iOS 直接打开下载链接会跳进没有返回按钮的预览。"""
         self.login()
-        page = self.client.get("/").text
-        self.assertIn('/assets/downloads.css', page)
+        page = self.console_surface()
+        self.assertIn('console.css: downloads.css', page)
         self.assertIn('/assets/console.bundle.js?v=', page)
         self.assertIn("TmuxDownload", self.client.get("/assets/console.bundle.js").text)
         self.assertIn("TmuxDownload.maybe(", page)
@@ -4614,8 +4699,8 @@ class TmuxWebTests(unittest.TestCase):
     def test_clicking_an_uploaded_image_opens_the_viewer(self):
         """手机上点缩略图不能跳到裸图片页（那看着就是白屏）：要走应用内查看层。"""
         self.login()
-        page = self.client.get("/").text
-        self.assertIn('/assets/image-viewer.css', page)
+        page = self.console_surface()
+        self.assertIn('console.css: image-viewer.css', page)
         module = self.client.get("/assets/image-viewer.js").text
         self.assertEqual(self.client.get("/assets/image-viewer.css").status_code, 200)
         for marker in ("TmuxImageViewer", "data-iview-close", "a.upload-thumb[data-upload]",
@@ -4630,9 +4715,10 @@ class TmuxWebTests(unittest.TestCase):
     def test_chat_messages_turn_paths_into_links(self):
         """独立的路径后处理：/assets/path-links.js，控制台和 /preview 都用它。"""
         self.login()
-        page = self.client.get("/").text
-        self.assertIn('/assets/path-links.css', page)
-        self.assertIn('/assets/path-links.js', page)
+        page = self.console_surface()
+        self.assertIn('console.css: path-links.css', page)
+        self.assertIn('console.bundle: assets/path-links.js',
+                      self.client.get("/assets/console.bundle.js").text)
         self.assertIn("function enhancePaths(root){", page)
         # 懒处理：渲染时不扫，碰到哪条消息才处理哪条（长会话别每次全量扫文本）
         self.assertIn("function enhancePathsLazy(container, force){", page)
