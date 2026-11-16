@@ -1773,6 +1773,34 @@ class TmuxWebTests(unittest.TestCase):
         for page in ("/", "/login", "/hosts", "/shares"):
             self.assertIn("app-icon.svg", self.client.get(page).text, page)
 
+    def test_version_endpoint_reports_the_booted_server_version_without_caching(self):
+        # 借 Open WebUI 的版本轮询：控制台定期问一次服务端版本，发版后自己发现。
+        self.login()
+        response = self.client.get("/api/version")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(tmux_web.SERVER_VERSION, "the server must report a version")
+        self.assertEqual(response.json(), {"version": tmux_web.SERVER_VERSION})
+        cache = response.headers.get("cache-control", "")
+        self.assertIn("no-cache", cache)
+        self.assertIn("no-store", cache)
+
+    def test_version_endpoint_requires_auth(self):
+        self.assertEqual(self.client.get("/api/version").status_code, 401)
+
+    def test_console_page_embeds_the_server_version_as_its_baseline(self):
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn('<meta name="server-version" content="%s">' % tmux_web.SERVER_VERSION, page)
+        self.assertNotIn("__SERVER_VERSION__", page)
+
+    def test_version_endpoint_moves_when_the_server_version_moves(self):
+        # 端点必须读启动时算好的 live 值：部署拉到新 commit、服务重启后，旧页面
+        # 轮询到新串才会弹 toast；写死在代码里的串测不出这点。
+        self.login()
+        with mock.patch.object(tmux_web, "SERVER_VERSION", "deadbee1234"):
+            response = self.client.get("/api/version")
+        self.assertEqual(response.json(), {"version": "deadbee1234"})
+
     def test_ansi_sequences_can_be_removed_without_changing_columns(self):
         raw = "| A   | B |\n\x1b[38;5;231m| 123 | x |\x1b[0m"
         self.assertEqual(ANSI_RE.sub("", raw), "| A   | B |\n| 123 | x |")
