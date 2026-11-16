@@ -694,9 +694,9 @@ class FedTransport:
         return texts
 
     def capture_and_status_many(self, pane_ids, history: int = 40, status_ids=None,
-                                panes=None) -> tuple[dict, dict]:
-        """sweep 期望 (texts, states)；联邦侧没有状态扫描，返回空的状态表。"""
-        return (self._capture_all(pane_ids, history), {})
+                                panes=None) -> tuple[dict, dict, dict]:
+        """sweep 期望 (texts, states, decisions)；联邦侧没有状态扫描，返回空的状态表和空的决策表。"""
+        return (self._capture_all(pane_ids, history), {}, {})
 
     def capture_many(self, pane_ids, history: int = 40, panes=None) -> dict:
         return self._capture_all(pane_ids, history)
