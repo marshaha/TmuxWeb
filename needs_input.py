@@ -95,7 +95,10 @@ GATED_PROVIDERS = providers.gated_providers()
 def prompt_signature(prompt: dict | None) -> tuple | None:
     """Canonical form of a parsed menu: two parses are "the same menu" iff
     these are equal. The selected row counts — a cursor still moving means
-    the screen is not stable yet."""
+    the screen is not stable yet. ``description`` (the line under an option)
+    and ``recommended`` (first-option marker) are display-only on purpose:
+    a description rewrap must not reset the stability count, and the
+    recommended mark follows the option order, which is already covered."""
     if not prompt:
         return None
     options = tuple(

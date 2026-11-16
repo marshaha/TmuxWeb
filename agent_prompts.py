@@ -24,6 +24,7 @@ BULLET_MARKS = ("●", "○", "•")
 NUMBERED_RE = re.compile(r"^\s{0,8}(\d{1,2})[.)]\s+(\S.*)$")
 # 菜单项都很短，而且不会以句号/叹号结尾；这条主要用来挡住"聊天正文里的一段编号"
 OPTION_MAX = 160   # codex 的更新项里带一条完整命令，比一般菜单项长得多
+DESCRIPTION_MAX = 160   # 选项描述行（label 下一行缩进的说明文字）和 label 同长
 TOGGLE_SEGMENT_MAX = 14
 SENTENCE_END = ("。", "．", ".", "！", "!", "？")
 CURSOR_RE = re.compile(r"^\s{0,8}([❯➤→»›▸▶]|>\s)\s*(\S.*)$")
@@ -122,6 +123,49 @@ def _looks_like_row(line: str) -> bool:
     return True
 
 
+def _looks_like_description(line: str, threshold_column: int) -> bool:
+    """这一行像不像某选项的描述行：比 threshold 列更靠右、无标记、够短、
+    不是提示/页脚/分隔/开关行。walk 里跳过描述行与 _description_after
+    认描述行用同一条判定，别各写一套。
+
+    threshold 的取法分两种，原因不同：
+    - 光标列表：选项行本身就占 label_column..label_column+1 两列（无标记行
+      要给 ❯ 留位，见 MODEL_PICKER），所以 threshold 取 label_column+1，
+      描述行必须比任何选项行都深；
+    - 编号列表：同级行都带序号、不会被误认，所以 threshold 取选项行自身的
+      缩进，描述行只要比行首更靠右就算。
+    """
+    if not _looks_like_row(line):
+        return False
+    if _indent(line) <= threshold_column:
+        return False
+    marker, _ = _marker(line)
+    if marker:
+        return False
+    if NUMBERED_RE.match(_clean(line)):
+        return False
+    text = _clean(line).strip()
+    return bool(text) and len(text) <= DESCRIPTION_MAX
+
+
+def _description_after(lines: list[str], row_line: int, threshold_column: int) -> str:
+    """选项行正下方那一行是不是它的描述。
+
+    Claude 的 AskUserQuestion 式菜单把描述写在 label 下一行、缩进更深：
+        ❯ Quick fix
+            Patch the bug in place
+    label 换行续写一般和 label 同列，所以不会被误认成描述；认不出来
+    就返回 ""，不猜。描述行缩进不够深（和选项行同列）时宁可漏认——
+    卡片少一行描述只是少信息，把选项行吃掉却是答错题。
+    """
+    nxt = row_line + 1
+    if nxt >= len(lines):
+        return ""
+    if not _looks_like_description(lines[nxt], threshold_column):
+        return ""
+    return _clean(lines[nxt]).strip()
+
+
 def _collect_rows(lines: list[str], anchor: int) -> list[dict]:
     """从光标行向上/向下收同一列的连续选项行（遇到空行、分隔线、提示行就停）。"""
     # 标签实际起始列：光标标记后面可能不止一个空格（`❯    选项 A`），
@@ -141,6 +185,10 @@ def _collect_rows(lines: list[str], anchor: int) -> list[dict]:
             line = lines[position]
             if not _looks_like_row(line):
                 break
+            # 描述行不是选项：跳过它继续走，不能把它收成一项、也不能截断菜单
+            if _looks_like_description(line, label_column + 1):
+                position += step
+                continue
             if abs(_indent(line) - label_column) > 2:
                 break
             marker, _ = _marker(line)
@@ -164,12 +212,16 @@ def _collect_rows(lines: list[str], anchor: int) -> list[dict]:
         if not label:
             continue
         numbers.append(number)
-        options.append({
+        item = {
             "label": label[:80],
             "meta": meta[:40],
             "selected": marker in CURSOR_MARKS,
             "number": number,
-        })
+        }
+        description = _description_after(lines, row["line"], label_column + 1)
+        if description:
+            item["description"] = description
+        options.append(item)
     # 只有整段都带序号才允许发数字（claude 的 ❯ 1. Yes 就是这种）
     numbered_all = bool(options) and all(option["number"] for option in options)
     return [{"options": options, "numbers": numbered_all, "numbers_seq": numbers,
@@ -231,6 +283,15 @@ def _finish(kind: str, title: str, hint: str, options: list[dict], view: list[st
             "meta": option.get("meta", ""),
             "selected": bool(option.get("selected")),
         }
+        if option.get("description"):
+            # 描述行只做展示：不进签名（needs_input.prompt_signature），
+            # 描述换行重排不该让稳定计数重来
+            item["description"] = option["description"][:DESCRIPTION_MAX]
+        if index == 0:
+            # 首选项标 Recommended：对标 Open WebUI ask_user（提问者把推荐项
+            # 列在第一位，UI 给首选项打 Recommended）。这只是位置标记——
+            # 卡片从不替用户作答，标记不改变任何判定。
+            item["recommended"] = True
         if option.get("key"):
             item["key"] = option["key"]
         if option.get("number"):
@@ -367,11 +428,17 @@ def parse_screen(text: str) -> dict[str, Any] | None:
                 break
             rest = match.group(2)
             label, meta = _split_row(rest)
+            # 编号列表里同级行都带序号：下一行只要比本行行首更靠右、
+            # 不是序号行/提示行，就是本项的描述
+            description = _description_after(lines, position, _indent(lines[position]))
             block.append({"label": label, "meta": meta,
                           "selected": row_marker in CURSOR_MARKS,
-                          "number": match.group(1)})
+                          "number": match.group(1),
+                          "description": description})
             expected += 1
             position += 1
+            if description:
+                position += 1   # 描述行已归属上一项，下一轮直接看下一个序号
         if len(block) >= 2 and all(_option_is_plausible(item["label"]) for item in block):
             hint_at = _hint_index(lines, offset, offset + len(block) - 1, above=2, below=3)
             if hint_at is None:
