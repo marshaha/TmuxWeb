@@ -72,6 +72,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import select
 import shutil
 import signal
@@ -1021,9 +1022,14 @@ def handle_batch(message: dict, resolver: TmuxResolver,
 #    ``~/.claude/projects/<dashified-cwd>/*.jsonl``, Codex
 #    ``~/.codex/sessions/**/*.jsonl``, Kimi
 #    ``~/.kimi-code/sessions/wd_*/session_*/agents/main/wire.jsonl``),
-#    with the same outstanding-call predicates ported here — the agent
-#    is deployed standalone and cannot import server modules, so the
-#    minimal predicates are copied, not shared.
+#    with the same outstanding-call predicates and session resolvers
+#    the server uses: the agent is deployed as one file and cannot
+#    import server modules, so the registry's provider facts are
+#    generated into this file (see the GENERATED PROVIDER FACTS block
+#    below, from providers/ via scripts/generate_agent_provider_facts.py)
+#    and the watcher below it is a small generic engine over that
+#    data — no per-provider strings of its own. The drift test fails
+#    if the generated block disagrees with the registry.
 #
 # Hermes has no hook and no usable session-file wait signal (its
 # ``verification_required`` finish_reason appears twice in 43314 rows
@@ -1095,24 +1101,363 @@ def _watcher_max_control_clients() -> int:
     except ValueError:
         return WATCHER_MAX_CONTROL_CLIENTS
 
-# Normalised hook-event kinds. "waiting" events set waiting, "clear"
-# events clear it. Anything else is ignored (SessionStart, PreToolUse
-# and friends carry no wait signal).
-_HOOK_WAITING = {
-    "permissionprompt", "permissionrequest", "elicitationdialog",
-    "agentneedsinput",
-}
-_HOOK_CLEARING = {
-    "permissionresult", "stop", "sessionend", "interrupt",
-    "userpromptsubmit", "turnstarted",
+# --- BEGIN GENERATED PROVIDER FACTS (do not edit by hand) ---
+# Generated from providers/ by scripts/generate_agent_provider_facts.py.
+# Regenerate with: python3 scripts/generate_agent_provider_facts.py
+# The drift test (tests/test_provider_registry.py) fails if this
+# block differs from what the generator renders from the registry.
+
+PROVIDER_FACTS = {'claude': {'label': 'Claude Code',
+            'bins': ('claude',),
+            'command_prefixes': ('claude',),
+            'model_presets': ('opus', 'sonnet', 'haiku'),
+            'model_switch_template': '/model {model}',
+            'provider_label': 'Anthropic',
+            'hook_template': 'claude-settings.json',
+            'hook_waiting': ('permission_prompt', 'elicitation_dialog'),
+            'hook_clearing': ('stop',),
+            'gated': True,
+            'idle_markers': ('"subtype":"turn_duration"', '"subtype":"stop_hook_summary"'),
+            'busy_markers': ('"type":"user"', '"type":"assistant"'),
+            'resume_template': ('--resume', '{session_id}'),
+            'transcript_source': [{'kind': 'jsonl',
+                                   'root': '~/.claude/projects',
+                                   'layout': '<dashified-cwd>/*.jsonl',
+                                   'hint': '*/<session_id>.jsonl'}]},
+ 'codex': {'label': 'Codex',
+           'bins': ('codex',),
+           'command_prefixes': ('codex',),
+           'model_presets': ('gpt-5.6-sol', 'gpt-5-codex', 'o3'),
+           'model_switch_template': '/model {model}',
+           'provider_label': 'OpenAI',
+           'hook_template': 'codex-hooks.json',
+           'hook_waiting': ('PermissionRequest',),
+           'hook_clearing': ('Stop',),
+           'gated': True,
+           'idle_markers': ('"type":"task_complete"', '"type":"turn_aborted"'),
+           'busy_markers': ('"type":"task_started"',
+                            '"type":"item_completed"',
+                            '"type":"token_count"'),
+           'resume_template': ('resume', '{session_id}'),
+           'transcript_source': [{'kind': 'jsonl',
+                                  'root': '~/.codex/sessions',
+                                  'layout': '**/*.jsonl',
+                                  'index': '~/.codex/session_index.jsonl'}]},
+ 'kimi': {'label': 'Kimi Code',
+          'bins': ('kimi',),
+          'command_prefixes': ('kimi',),
+          'model_presets': ('K3.1 Pro', 'K3', 'K3-256k', 'K2.7 Code Highspeed'),
+          'model_switch_template': '/model',
+          'provider_label': 'Kimi Code',
+          'hook_template': 'kimi-hooks.toml',
+          'hook_waiting': ('PermissionRequest',),
+          'hook_clearing': ('PermissionResult', 'Stop'),
+          'gated': True,
+          'idle_markers': ('"type":"prompt.completed"', '"type":"turn.ended"'),
+          'busy_markers': ('"type":"prompt.submitted"',
+                           '"type":"llm.request"',
+                           '"type":"llm.response"',
+                           '"type":"step.start"',
+                           '"type":"step.end"',
+                           '"type":"tool.call"',
+                           '"type":"agent.message.appended"'),
+          'resume_template': ('--resume', '{session_id}'),
+          'transcript_source': [{'kind': 'jsonl',
+                                 'root': '~/.kimi-code/sessions',
+                                 'layout': 'wd_*/session_*/state.json + agents/main/wire.jsonl'}]},
+ 'hermes': {'label': 'Hermes',
+            'bins': ('hermes',),
+            'command_prefixes': ('hermes', 'python'),
+            'model_presets': (),
+            'model_switch_template': '/model {model}',
+            'provider_label': 'Hermes',
+            'hook_template': '',
+            'hook_waiting': (),
+            'hook_clearing': (),
+            'gated': False,
+            'idle_markers': (),
+            'busy_markers': (),
+            'resume_template': ('--resume', '{session_id}'),
+            'transcript_source': [{'kind': 'sqlite',
+                                   'db': '~/.hermes/state.db',
+                                   'tables': {'sessions': 'id, cwd, started_at, last_activity_at, '
+                                                          'model',
+                                              'messages': 'id, session_id, role, content, '
+                                                          'timestamp, active'}},
+                                  {'kind': 'jsonl',
+                                   'root': '~/.hermes/sessions',
+                                   'layout': '<session_id>.jsonl'}]}}
+
+def claude_file_contains(path, needle):
+    target = needle.encode()
+    overlap = max(0, len(target) - 1)
+    previous = b""
+    with Path(path).open("rb") as handle:
+        while True:
+            block = handle.read(64 * 1024)
+            if not block:
+                return False
+            data = previous + block
+            if target in data:
+                return True
+            previous = data[-overlap:] if overlap else b""
+
+def claude_outstanding(records):
+    """A tool_use id with no tool_result yet. A plain user message after the
+    call means the user intervened and the call is abandoned; a turn-end
+    marker closes everything before it."""
+    pending = set()
+    for event in records:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "assistant":
+            content = (event.get("message") or {}).get("content") or []
+            if isinstance(content, list):
+                for block in content:
+                    if (isinstance(block, dict) and block.get("type") == "tool_use"
+                            and block.get("id")):
+                        pending.add(block["id"])
+        elif kind == "user":
+            content = (event.get("message") or {}).get("content")
+            blocks = content if isinstance(content, list) else []
+            results = [block for block in blocks
+                       if isinstance(block, dict) and block.get("type") == "tool_result"]
+            if results:
+                for block in results:
+                    pending.discard(block.get("tool_use_id"))
+            elif blocks or isinstance(content, str):
+                pending.clear()
+        elif kind == "system" and event.get("subtype") in ("turn_duration", "stop_hook_summary"):
+            pending.clear()
+    return bool(pending)
+
+def claude_resolve_session_file(home, cwd, title, screen=None, hint=None):
+    """Locate a Claude session file, or None.
+
+    Same rules as transcript_reader._claude_session_path, plus the
+    newest-file fallback agent_status used to apply when that raised:
+    hint glob first, then a session whose bytes contain the pane title,
+    then one whose bytes contain a long on-screen line, then the newest
+    file in this cwd's project directory.
+    """
+    home = Path(home) if home is not None else Path.home()
+    projects = home / ".claude" / "projects"
+    if hint:
+        matches = sorted(projects.glob("*/%s.jsonl" % hint))
+        if matches:
+            return matches[0]
+    project_dir = projects / re.sub(r"[^A-Za-z0-9]", "-", cwd or "")
+    candidates = list(project_dir.glob("*.jsonl")) if project_dir.is_dir() else []
+    title = re.sub(r"^[^A-Za-z0-9\u4e00-\u9fff]+", "", title or "").strip()
+    if title:
+        title_matches = []
+        for path in candidates:
+            try:
+                if claude_file_contains(path, title):
+                    title_matches.append(path)
+            except OSError:
+                continue
+        if len(title_matches) == 1:
+            return title_matches[0]
+    text = screen() if callable(screen) else (screen or "")
+    probes = [line.strip() for line in str(text).splitlines() if len(line.strip()) >= 24]
+    for probe in reversed(probes):
+        matches = []
+        for path in candidates:
+            try:
+                if claude_file_contains(path, probe):
+                    matches.append(path)
+            except OSError:
+                continue
+        if len(matches) == 1:
+            return matches[0]
+    if candidates:
+        try:
+            return max(candidates, key=lambda item: item.stat().st_mtime)
+        except OSError:
+            return None
+    return None
+
+def codex_mtime(path):
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+def codex_outstanding(records):
+    """A call item with no matching output item. Codex writes NO explicit
+    approval-wait event: the permission/approval lines in a real rollout file
+    are approval_policy settings, thread_settings_applied, and content mentions
+    inside outputs — settings and quotes, not a wait event."""
+    pending = set()
+    for event in records:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "event_msg":
+            marker = (event.get("payload") or {}).get("type")
+            if marker in ("task_complete", "turn_aborted", "task_started"):
+                pending.clear()
+            continue
+        if event.get("type") != "response_item":
+            continue
+        payload = event.get("payload") or {}
+        key = payload.get("call_id") or payload.get("id")
+        if not key:
+            continue
+        if payload.get("type") in ("function_call", "custom_tool_call"):
+            pending.add(key)
+        elif payload.get("type") in ("function_call_output", "custom_tool_call_output"):
+            pending.discard(key)
+    return bool(pending)
+
+def codex_resolve_session_file(home, cwd, title, screen=None, hint=None):
+    """Locate a Codex rollout file, or None.
+
+    Same rules as transcript_reader._codex_session_path: the pane's own
+    argv hint wins, then the title index, then the newest file whose
+    first record is a session_meta with this cwd — that first-record
+    check is the genuinely code-shaped predicate (a bare glob match
+    would land on a sibling session in the same directory).
+    """
+    home = Path(home) if home is not None else Path.home()
+    codex_home = home / ".codex"
+    title = (title or "").split(" | ", 1)[0].strip()
+    session_id = None
+    index_path = codex_home / "session_index.jsonl"
+    if index_path.exists() and title:
+        for line in index_path.read_text(errors="replace").splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if entry.get("thread_name") == title:
+                session_id = entry.get("id")
+    files = list((codex_home / "sessions").rglob("*.jsonl"))
+    if hint:
+        matches = [path for path in files if str(hint) in path.name]
+        if matches:
+            return max(matches, key=codex_mtime)
+    if session_id:
+        matches = [path for path in files if session_id in path.name]
+        if matches:
+            return max(matches, key=codex_mtime)
+    # Newest-first so the first cwd match is the same session the scan-heavy
+    # implementation would have selected, without reading every session file.
+    for path in sorted(files, key=codex_mtime, reverse=True):
+        try:
+            with path.open(errors="replace") as handle:
+                first = json.loads(handle.readline())
+        except (OSError, ValueError):
+            continue
+        payload = first.get("payload") or {}
+        if first.get("type") == "session_meta" and payload.get("cwd") == cwd:
+            return path
+    return None
+
+def kimi_outstanding(records):
+    """Kimi has no turn marker for a wait either (state.json lastTurnReason is only
+    ever 'completed'): the event stream is the signal. A tool.call opens a
+    pending call; the step/turn ending, a new prompt, or the next llm.request
+    (which only fires once the tool result is back) closes it."""
+    pending = False
+    for event in records:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "tool.call":
+            pending = True
+        elif kind in ("prompt.completed", "turn.ended", "step.end",
+                      "prompt.submitted", "llm.request"):
+            pending = False
+        elif kind == "context.append_loop_event":
+            if (event.get("event") or {}).get("type") == "step.end":
+                pending = False
+    return pending
+
+def kimi_resolve_session_file(home, cwd, title, screen=None, hint=None):
+    """Locate a Kimi wire.jsonl, or None.
+
+    Same rules as transcript_reader._kimi_session_path: sessions with
+    this cwd (not archived) whose wire file exists, title-matching ones
+    preferred, newest updatedAt wins — several can share a cwd (and a
+    title), and the older ones end in an aborted turn with no messages.
+    """
+    home = Path(home) if home is not None else Path.home()
+    sessions_root = home / ".kimi-code" / "sessions"
+    candidates = []
+    for state_path in sessions_root.glob("wd_*/session_*/state.json"):
+        try:
+            state = json.loads(state_path.read_text(errors="replace"))
+        except (OSError, ValueError):
+            continue
+        if state.get("archived") or state.get("cwd") != cwd:
+            continue
+        wire_path = state_path.parent / "agents" / "main" / "wire.jsonl"
+        if not wire_path.is_file():
+            continue
+        stamp = state.get("updatedAt") or state.get("createdAt") or 0
+        try:
+            stamp = float(stamp) / 1000 if float(stamp) > 10**11 else float(stamp)
+        except (TypeError, ValueError):
+            stamp = 0.0
+        candidates.append((state, wire_path, stamp))
+    if not candidates:
+        return None
+    title = (title or "").strip()
+    preferred = [item for item in candidates if item[0].get("title", "").strip() == title]
+    # the live session is the newest one: several can share a cwd (and a title),
+    # and the older ones end in an aborted turn with no messages
+    pool = preferred or candidates
+    pool.sort(key=lambda item: item[2], reverse=True)
+    return pool[0][1]
+
+def hermes_outstanding(records):
+    """Hermes has no decision signal in its session file: never outstanding."""
+    return False
+
+def hermes_resolve_session_file(home, cwd, title, screen=None, hint=None):
+    """No session *file* for Hermes: sessions live in state.db, so the
+    file-based decision point cannot resolve one. Returns None."""
+    return None
+
+PROVIDER_OUTSTANDING = {
+    'claude': claude_outstanding,
+    'codex': codex_outstanding,
+    'kimi': kimi_outstanding,
+    'hermes': hermes_outstanding,
 }
 
+PROVIDER_RESOLVERS = {
+    'claude': claude_resolve_session_file,
+    'codex': codex_resolve_session_file,
+    'kimi': kimi_resolve_session_file,
+    'hermes': hermes_resolve_session_file,
+}
+# --- END GENERATED PROVIDER FACTS ---
 
 def _normalise_hook_event(raw) -> str:
     """``PermissionRequest`` / ``permission_prompt`` -> one canonical key."""
     if not isinstance(raw, str):
         return ""
     return raw.strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+
+
+# Normalised hook-event kinds. "waiting" events set waiting, "clear"
+# events clear it. Anything else is ignored (SessionStart, PreToolUse
+# and friends carry no wait signal). The per-provider kinds come from
+# the generated PROVIDER_FACTS (providers/ registry); the extras are
+# generic, not configured by any provider's hook template:
+# "agentneedsinput" is accepted so a future hook can emit it, and the
+# clearing extras are turn/session lifecycle events that end any wait.
+_HOOK_WAITING = {
+    _normalise_hook_event(name)
+    for facts in PROVIDER_FACTS.values() for name in facts["hook_waiting"]
+} | {"agentneedsinput"}
+_HOOK_CLEARING = {
+    _normalise_hook_event(name)
+    for facts in PROVIDER_FACTS.values() for name in facts["hook_clearing"]
+} | {"sessionend", "interrupt", "userpromptsubmit", "turnstarted"}
 
 
 def parse_hook_event(obj) -> dict | None:
@@ -1193,86 +1538,32 @@ def _watcher_records(path) -> list[dict]:
 
 
 def _watcher_outstanding(provider: str, records) -> bool:
-    """Port of agent_status.has_outstanding_call (same rules, stdlib only).
-
-    A tool call was issued and no result has come back — the state a
+    """A tool call was issued and no result has come back — the state a
     permission prompt lives in, because the turn-end marker never
     fires there (0/4008 in real Claude files; see needs_input.py).
+
+    The predicate is the provider's own, from the generated
+    PROVIDER_OUTSTANDING (providers/ registry). Providers without a
+    decision signal (hermes) report False.
     """
-    if provider == "claude":
-        pending: set = set()
-        for event in records:
-            kind = event.get("type")
-            if kind == "assistant":
-                content = (event.get("message") or {}).get("content") or []
-                if isinstance(content, list):
-                    for block in content:
-                        if (isinstance(block, dict) and block.get("type") == "tool_use"
-                                and block.get("id")):
-                            pending.add(block["id"])
-            elif kind == "user":
-                content = (event.get("message") or {}).get("content")
-                blocks = content if isinstance(content, list) else []
-                results = [b for b in blocks
-                           if isinstance(b, dict) and b.get("type") == "tool_result"]
-                if results:
-                    for block in results:
-                        pending.discard(block.get("tool_use_id"))
-                elif blocks or isinstance(content, str):
-                    pending.clear()
-            elif kind == "system" and event.get("subtype") in (
-                    "turn_duration", "stop_hook_summary"):
-                pending.clear()
-        return bool(pending)
-    if provider == "codex":
-        pending = set()
-        for event in records:
-            if event.get("type") == "event_msg":
-                if (event.get("payload") or {}).get("type") in (
-                        "task_complete", "turn_aborted", "task_started"):
-                    pending.clear()
-                continue
-            if event.get("type") != "response_item":
-                continue
-            payload = event.get("payload") or {}
-            key = payload.get("call_id") or payload.get("id")
-            if not key:
-                continue
-            if payload.get("type") in ("function_call", "custom_tool_call"):
-                pending.add(key)
-            elif payload.get("type") in ("function_call_output", "custom_tool_call_output"):
-                pending.discard(key)
-        return bool(pending)
-    if provider == "kimi":
-        pending = False
-        for event in records:
-            kind = event.get("type")
-            if kind == "tool.call":
-                pending = True
-            elif kind in ("prompt.completed", "turn.ended", "step.end",
-                          "prompt.submitted", "llm.request"):
-                pending = False
-            elif kind == "context.append_loop_event":
-                if (event.get("event") or {}).get("type") == "step.end":
-                    pending = False
-        return pending
-    return False
+    predicate = PROVIDER_OUTSTANDING.get((provider or "").lower())
+    if predicate is None:
+        return False
+    return bool(predicate(records))
 
 
-# Turn-end markers, same strings agent_status.IDLE_MARKERS uses.
+# Turn-end markers, from the generated PROVIDER_FACTS (providers/
+# registry). Providers with no markers (hermes) are left out, so the
+# `not in` guards below keep their old meaning.
 _WATCHER_IDLE_MARKERS = {
-    "claude": ('"subtype":"turn_duration"', '"subtype":"stop_hook_summary"'),
-    "codex": ('"type":"task_complete"', '"type":"turn_aborted"'),
-    "kimi": ('"type":"prompt.completed"', '"type":"turn.ended"'),
+    name: facts["idle_markers"] for name, facts in PROVIDER_FACTS.items()
+    if facts["idle_markers"]
 }
 _WATCHER_BUSY_MARKERS = {
-    "claude": ('"type":"user"', '"type":"assistant"'),
-    "codex": ('"type":"task_started"', '"type":"item_completed"', '"type":"token_count"'),
-    "kimi": ('"type":"prompt.submitted"', '"type":"llm.request"',
-             '"type":"llm.response"', '"type":"step.start"', '"type":"step.end"',
-             '"type":"tool.call"', '"type":"agent.message.appended"'),
+    name: facts["busy_markers"] for name, facts in PROVIDER_FACTS.items()
+    if facts["busy_markers"]
 }
-_TIGHTEN = __import__("re").compile(r'"[ \t]*:[ \t]*"')
+_TIGHTEN = re.compile(r'"[ \t]*:[ \t]*"')
 
 
 def _watcher_status_for_file(provider: str, path) -> str:
@@ -1300,79 +1591,23 @@ def _watcher_decision_point(provider: str, path) -> bool:
         return False
 
 
-def _dashify_cwd(cwd: str) -> str:
-    return __import__("re").sub(r"[^A-Za-z0-9]", "-", cwd or "")
-
-
 def _watcher_resolve_session_file(provider: str, cwd: str, title: str = "",
                                   hint: str = "", home=None):
-    """Locate a pane's session file, same rules as transcript_reader.py.
+    """Locate a pane's session file, same rules as the server.
 
-    Claude: ``~/.claude/projects/<dashified-cwd>/*.jsonl`` (newest; a
-    ``hint`` session id wins via glob). Codex:
-    ``~/.codex/sessions/**/*.jsonl`` (a ``hint`` in the file name wins,
-    else the newest file whose first record is a ``session_meta`` with
-    this cwd). Kimi: ``~/.kimi-code/sessions/wd_*/session_*/state.json``
-    with this cwd, newest ``updatedAt``, wire file
-    ``agents/main/wire.jsonl``. None when it cannot be found.
+    The resolver is the provider's own, from the generated
+    PROVIDER_RESOLVERS (providers/ registry) — the same code
+    agent_status uses, so the watcher and the server can never
+    disagree about which session is live. None when it cannot be
+    found, or when the provider has no session file (hermes).
     """
-    home = Path(home) if home is not None else Path.home()
-    provider = (provider or "").lower()
+    resolver = PROVIDER_RESOLVERS.get((provider or "").lower())
+    if resolver is None:
+        return None
     try:
-        if provider == "claude":
-            projects = home / ".claude" / "projects"
-            if hint:
-                matches = sorted(projects.glob("*/%s.jsonl" % hint))
-                if matches:
-                    return matches[0]
-            project_dir = projects / _dashify_cwd(cwd)
-            candidates = (sorted(project_dir.glob("*.jsonl"),
-                                 key=lambda p: p.stat().st_mtime, reverse=True)
-                          if project_dir.is_dir() else [])
-            return candidates[0] if candidates else None
-        if provider == "codex":
-            files = list((home / ".codex" / "sessions").rglob("*.jsonl")) \
-                if (home / ".codex" / "sessions").is_dir() else []
-            if hint:
-                matches = [p for p in files if hint in p.name]
-                if matches:
-                    return max(matches, key=lambda p: p.stat().st_mtime)
-            for path in sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
-                try:
-                    with path.open(errors="replace") as handle:
-                        first = json.loads(handle.readline())
-                except (OSError, ValueError):
-                    continue
-                payload = first.get("payload") or {}
-                if first.get("type") == "session_meta" and payload.get("cwd") == cwd:
-                    return path
-            return None
-        if provider == "kimi":
-            candidates = []
-            root = home / ".kimi-code" / "sessions"
-            for state_path in root.glob("wd_*/session_*/state.json") if root.is_dir() else []:
-                try:
-                    state = json.loads(state_path.read_text(errors="replace"))
-                except (OSError, ValueError):
-                    continue
-                if state.get("archived") or state.get("cwd") != cwd:
-                    continue
-                wire_path = state_path.parent / "agents" / "main" / "wire.jsonl"
-                if not wire_path.is_file():
-                    continue
-                stamp = state.get("updatedAt") or state.get("createdAt") or 0
-                try:
-                    stamp = float(stamp) / 1000 if float(stamp) > 10 ** 11 else float(stamp)
-                except (TypeError, ValueError):
-                    stamp = 0.0
-                candidates.append((stamp, wire_path))
-            if not candidates:
-                return None
-            candidates.sort(key=lambda item: item[0], reverse=True)
-            return candidates[0][1]
+        return resolver(home, cwd, title, hint=hint or None)
     except OSError:
         return None
-    return None
 
 
 def _tmux_argv(binary: str, *args: str) -> list[str]:

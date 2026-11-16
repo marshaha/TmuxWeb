@@ -78,6 +78,7 @@ import copy
 import threading
 
 import agent_prompts
+import providers
 
 # How many consecutive identical parses, all at a decision point, it takes to
 # light up. Two is the smallest count that kills a one-frame transient; the
@@ -86,7 +87,9 @@ STABLE_POLLS = 2
 
 # Providers whose session file carries a turn boundary (agent_status.py).
 # Anything else — hermes, shell, unknown — has no leg 1 and never fires.
-GATED_PROVIDERS = ("claude", "codex", "kimi")
+# From the providers/ registry: a provider opts in only when it has a real
+# decision signal.
+GATED_PROVIDERS = providers.gated_providers()
 
 
 def prompt_signature(prompt: dict | None) -> tuple | None:

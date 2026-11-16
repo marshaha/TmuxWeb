@@ -16,6 +16,8 @@ import os
 from pathlib import Path
 import time
 
+import providers
+
 BUSY = "busy"
 IDLE = "idle"
 UNKNOWN = "unknown"
@@ -23,18 +25,10 @@ UNKNOWN = "unknown"
 TAIL_BYTES = 65536
 
 # A record that ends a turn (idle) versus one that belongs to a running turn (busy).
-IDLE_MARKERS = {
-    "claude": ('"subtype":"turn_duration"', '"subtype":"stop_hook_summary"'),
-    "codex": ('"type":"task_complete"', '"type":"turn_aborted"'),
-    "kimi": ('"type":"prompt.completed"', '"type":"turn.ended"'),
-}
-BUSY_MARKERS = {
-    "claude": ('"type":"user"', '"type":"assistant"'),
-    "codex": ('"type":"task_started"', '"type":"item_completed"', '"type":"token_count"'),
-    "kimi": ('"type":"prompt.submitted"', '"type":"llm.request"', '"type":"llm.response"',
-             '"type":"step.start"', '"type":"step.end"', '"type":"tool.call"',
-             '"type":"agent.message.appended"'),
-}
+# From the providers/ registry — the single source of truth. These names
+# stay as module-level aliases so existing callers keep working.
+IDLE_MARKERS = {spec.name: spec.idle_markers for spec in providers.all_specs()}
+BUSY_MARKERS = {spec.name: spec.busy_markers for spec in providers.all_specs()}
 
 
 def last_complete_line(path, tail: int = TAIL_BYTES) -> str:
@@ -137,106 +131,28 @@ def _tail_records(path):
     return records
 
 
-def _outstanding_claude(records) -> bool:
-    """A tool_use id with no tool_result yet. A plain user message after the
-    call means the user intervened and the call is abandoned; a turn-end
-    marker closes everything before it."""
-    pending: set = set()
-    for event in records:
-        if not isinstance(event, dict):
-            continue
-        kind = event.get("type")
-        if kind == "assistant":
-            content = (event.get("message") or {}).get("content") or []
-            if isinstance(content, list):
-                for block in content:
-                    if (isinstance(block, dict) and block.get("type") == "tool_use"
-                            and block.get("id")):
-                        pending.add(block["id"])
-        elif kind == "user":
-            content = (event.get("message") or {}).get("content")
-            blocks = content if isinstance(content, list) else []
-            results = [block for block in blocks
-                       if isinstance(block, dict) and block.get("type") == "tool_result"]
-            if results:
-                for block in results:
-                    pending.discard(block.get("tool_use_id"))
-            elif blocks or isinstance(content, str):
-                pending.clear()
-        elif kind == "system" and event.get("subtype") in ("turn_duration", "stop_hook_summary"):
-            pending.clear()
-    return bool(pending)
-
-
-CODEX_CALL_TYPES = ("function_call", "custom_tool_call")
-CODEX_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
-
-
-def _outstanding_codex(records) -> bool:
-    """A call item with no matching output item. Codex writes NO explicit
-    approval-wait event: the permission/approval lines in a real rollout file
-    are approval_policy settings, thread_settings_applied, and content mentions
-    inside outputs — settings and quotes, not a wait event."""
-    pending: set = set()
-    for event in records:
-        if not isinstance(event, dict):
-            continue
-        if event.get("type") == "event_msg":
-            marker = (event.get("payload") or {}).get("type")
-            if marker in ("task_complete", "turn_aborted", "task_started"):
-                pending.clear()
-            continue
-        if event.get("type") != "response_item":
-            continue
-        payload = event.get("payload") or {}
-        key = payload.get("call_id") or payload.get("id")
-        if not key:
-            continue
-        if payload.get("type") in CODEX_CALL_TYPES:
-            pending.add(key)
-        elif payload.get("type") in CODEX_OUTPUT_TYPES:
-            pending.discard(key)
-    return bool(pending)
-
-
-# Kimi has no turn marker for a wait either (state.json lastTurnReason is only
-# ever 'completed'): the event stream is the signal. A tool.call opens a
-# pending call; the step/turn ending, a new prompt, or the next llm.request
-# (which only fires once the tool result is back) closes it.
-KIMI_CALL_CLOSERS = ("prompt.completed", "turn.ended", "step.end",
-                     "prompt.submitted", "llm.request")
-
-
-def _outstanding_kimi(records) -> bool:
-    pending = False
-    for event in records:
-        if not isinstance(event, dict):
-            continue
-        kind = event.get("type")
-        if kind == "tool.call":
-            pending = True
-        elif kind in KIMI_CALL_CLOSERS:
-            pending = False
-        elif kind == "context.append_loop_event":
-            if (event.get("event") or {}).get("type") == "step.end":
-                pending = False
-    return pending
+# The outstanding-call predicates live in providers/ (one per harness);
+# these names stay as aliases so existing callers keep working.
+_outstanding_claude = providers.get("claude").outstanding
+_outstanding_codex = providers.get("codex").outstanding
+_outstanding_kimi = providers.get("kimi").outstanding
 
 
 def has_outstanding_call(provider: str, path) -> bool:
-    """Is there a tool call in the session tail with no result yet?"""
+    """Is there a tool call in the session tail with no result yet?
+
+    The predicate is the provider's own, from the registry. Providers
+    without a decision signal (hermes) report False.
+    """
     provider = (provider or "").lower()
-    if provider not in ("claude", "codex", "kimi"):
+    spec = providers.get(provider)
+    if spec is None or not spec.gated:
         return False
     try:
         records = _tail_records(path)
     except OSError:
         return False
-    if provider == "claude":
-        return _outstanding_claude(records)
-    if provider == "codex":
-        return _outstanding_codex(records)
-    return _outstanding_kimi(records)
+    return bool(spec.outstanding(records))
 
 
 def decision_point_for_file(provider: str, path) -> bool:
@@ -249,32 +165,15 @@ def decision_point_for_file(provider: str, path) -> bool:
 
 
 def _session_path(provider: str, cwd: str, title: str = "", home=None, screen=None):
-    """Locate a pane's session file the way the transcript reader does,
-    including the Kimi "newest updatedAt" rule. None when it cannot be found."""
-    import transcript_reader
-
-    home = home or os.path.expanduser("~")
-    try:
-        if provider == "claude":
-            try:
-                return transcript_reader._claude_session_path(home, cwd, title, screen, None)
-            except transcript_reader.TranscriptError:
-                # several sessions, none attributable: the newest one is the live one
-                import re
-                project = (Path(home) / ".claude" / "projects"
-                           / re.sub(r"[^A-Za-z0-9]", "-", cwd or ""))
-                candidates = sorted(project.glob("*.jsonl"), key=lambda item: item.stat().st_mtime,
-                                    reverse=True) if project.is_dir() else []
-                return candidates[0] if candidates else None
-        if provider == "codex":
-            _, path = transcript_reader._codex_session_path(home, cwd, title)
-            return path
-        if provider == "kimi":
-            _, path = transcript_reader._kimi_session_path(home, cwd, title)
-            return path
-    except (OSError, ValueError, RuntimeError, transcript_reader.TranscriptError):
+    """Locate a pane's session file via the provider registry, including
+    the Kimi "newest updatedAt" rule. None when it cannot be found."""
+    spec = providers.get(provider or "")
+    if spec is None:
         return None
-    return None
+    try:
+        return spec.resolve_session_file(home, cwd, title, screen=screen)
+    except (OSError, ValueError, RuntimeError):
+        return None
 
 
 def status_for_pane(provider: str, cwd: str, title: str = "", home=None, screen=None) -> str:
@@ -305,27 +204,45 @@ def decision_point_for_pane(provider: str, cwd: str, title: str = "", home=None,
 
 
 # The same rules in POSIX shell: remote hosts must not need python3.
-STATUS_SHELL = r"""
+# status_of's marker lists are BUILT from the registry at import time,
+# so the shell cannot drift from the Python rules; decision_of stays a
+# hand-written approximation (it only checks the NEWEST call, while the
+# Python side tracks every id — fail-closed, and covered by the
+# shell-agreement tests in tests/test_agent_status.py).
+def _shell_case(markers):
+    """One case-branch alternative per marker: *'"marker"'*|..."""
+    return "|".join("*'%s'*" % marker for marker in markers)
+
+
+def _shell_grep_pattern():
+    """grep -E pattern over every decisive substring (dots escaped)."""
+    markers = []
+    for spec in providers.all_specs():
+        markers.extend(spec.idle_markers)
+        markers.extend(spec.busy_markers)
+    return "|".join(marker.replace(".", r"\.") for marker in markers)
+
+
+_STATUS_SHELL_TEMPLATE = r"""
 status_of() {  # $1 = provider, $2 = session file -> busy|idle|unknown
   _st=unknown
   if [ -n "$2" ] && [ -f "$2" ]; then
     # newest decisive record: the last line that says either "turn ended" or "turn running"
     _last=$(tail -n 200 -- "$2" 2>/dev/null | sed 's/":[[:space:]]*"/":"/g' | grep -E \
-      'turn_duration|stop_hook_summary|task_complete|turn_aborted|prompt\.completed|"type":"turn\.ended"|"type":"user"|"type":"assistant"|task_started|item_completed|token_count|prompt\.submitted|llm\.request|llm\.response|step\.start|step\.end|tool\.call|agent\.message\.appended' \
+      '__GREP_PATTERN__' \
       2>/dev/null | tail -n 1)
     case "$1" in
       claude) case "$_last" in
-                *'"subtype":"turn_duration"'*|*'"subtype":"stop_hook_summary"'*) _st=idle ;;
-                *'"type":"user"'*|*'"type":"assistant"'*) _st=busy ;;
+                __CLAUDE_IDLE__) _st=idle ;;
+                __CLAUDE_BUSY__) _st=busy ;;
               esac ;;
       codex)  case "$_last" in
-                *'"type":"task_complete"'*|*'"type":"turn_aborted"'*) _st=idle ;;
-                *'"type":"task_started"'*|*'"type":"item_completed"'*|*'"type":"token_count"'*) _st=busy ;;
+                __CODEX_IDLE__) _st=idle ;;
+                __CODEX_BUSY__) _st=busy ;;
               esac ;;
       kimi)   case "$_last" in
-                *'"type":"prompt.completed"'*|*'"type":"turn.ended"'*) _st=idle ;;
-                *'"type":"prompt.submitted"'*|*'"type":"llm.request"'*|*'"type":"llm.response"'*|\
-*'"type":"step.start"'*|*'"type":"step.end"'*|*'"type":"tool.call"'*|*'"type":"agent.message.appended"'*) _st=busy ;;
+                __KIMI_IDLE__) _st=idle ;;
+                __KIMI_BUSY__) _st=busy ;;
               esac ;;
     esac
   fi
@@ -388,3 +305,14 @@ decision_of() {  # $1 = provider, $2 = session file -> yes|no
   esac
 }
 """
+
+STATUS_SHELL = (
+    _STATUS_SHELL_TEMPLATE
+    .replace("__GREP_PATTERN__", _shell_grep_pattern())
+    .replace("__CLAUDE_IDLE__", _shell_case(providers.get("claude").idle_markers))
+    .replace("__CLAUDE_BUSY__", _shell_case(providers.get("claude").busy_markers))
+    .replace("__CODEX_IDLE__", _shell_case(providers.get("codex").idle_markers))
+    .replace("__CODEX_BUSY__", _shell_case(providers.get("codex").busy_markers))
+    .replace("__KIMI_IDLE__", _shell_case(providers.get("kimi").idle_markers))
+    .replace("__KIMI_BUSY__", _shell_case(providers.get("kimi").busy_markers))
+)
