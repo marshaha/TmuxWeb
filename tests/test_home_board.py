@@ -37,6 +37,21 @@ class HomeCardMarkdownTests(unittest.TestCase):
                      ".card-body.md a{", ".card-body.md strong{"):
             self.assertIn(rule, self.html)
 
+    def test_card_detail_panel_opens_from_the_card_and_shows_the_whole_body(self):
+        # clicking a board card opens the detail panel with the full body:
+        # the card view clamps it to six lines, the panel must not
+        self.assertIn('data-card="${esc(card.id)}"', self.html)
+        self.assertIn('<script src="/assets/home-card-detail.js"></script>', self.html)
+        self.assertIn('id="pd-body"', self.html)
+        self.assertIn('id="pd-text"', self.html)
+        self.assertIn('id="pd-foot"', self.html)
+        self.assertIn('id="pd-open-pane"', self.html)
+        self.assertIn("TmuxHomeCardDetail.openDetail(document,card", self.html)
+        self.assertIn("resetDetail(document)", self.html)
+        self.assertIn(".card-body.pd-full{display:block;overflow:visible", self.html)
+        # narrow screens: the drawer becomes a bottom sheet, like the hover panel
+        self.assertIn(".preview-drawer{left:10px;right:10px;top:auto;", self.html)
+
 
 class HomeBoardTests(unittest.TestCase):
     def setUp(self):
