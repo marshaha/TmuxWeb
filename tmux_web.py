@@ -51,6 +51,7 @@ import agent_catalog
 import agent_models
 import agent_prompts
 import needs_input
+import needs_you_inbox
 import relay
 import transcript_reader
 import transfer_tickets
@@ -136,6 +137,7 @@ CONSOLE_BUNDLE_SOURCES = (
     ("assets", "path-links.js"),
     ("assets", "prompt-card.js"),
     ("assets", "needs-you.js"),
+    ("assets", "needs-you-inbox.js"),
     ("assets", "markdown-cjk.js"),
     ("assets", "video-cards.js"),
     ("assets", "upload-cards.js"),
@@ -224,6 +226,7 @@ CONSOLE_CSS_SOURCES = (
     "upload-cards.css",
     "image-viewer.css",
     "pane-preview.css",
+    "needs-you-inbox.css",
 )
 
 
@@ -1647,6 +1650,7 @@ def create_app(
     terminal_factory=None,
     share_db: str | None = None,
     home_db: str | None = None,
+    needs_you_inbox_db: str | None = None,
     remote_store=None,
     remote_runner_factory=None,
     fed_store=None,
@@ -1772,6 +1776,13 @@ def create_app(
     login_limiter = LoginRateLimiter()
     ensure_share_schema(share_connection)
     home = HomeStore(home_db or os.environ.get("TMUX_WEB_HOME_DB") or str(BASE_DIR / "home.db"))
+    # Needs-you inbox (borrow item 7): one row per lighting, own sqlite file
+    # next to home.db — the mailbox.py store is agent-to-agent messaging and
+    # has no pane/title/resolved columns, so it is not reused (see
+    # needs_you_inbox.py for the decision).
+    inbox_store = needs_you_inbox.NeedsYouInbox(
+        needs_you_inbox_db or os.environ.get("TMUX_WEB_NEEDS_YOU_INBOX_DB")
+        or str(BASE_DIR / "needs_you_inbox.db"))
 
     mcp_auth_required = os.environ.get("TMUX_WEB_MCP_AUTH", "on").strip().lower() not in {
         "0", "off", "no", "false", "none",
@@ -2061,6 +2072,12 @@ def create_app(
     # needs_input.py — the three-legged conjunction, never parsing alone).
     needs_gate = needs_input.NeedsInputGate()
 
+    # "Needs you" inbox (borrow item 7): pane_id -> {"signature", "record_id"}
+    # for lightings still open. The row is written the first time a pane
+    # lights up and resolved when the wait clears; the history outlives the
+    # card (see needs_you_inbox.sync_lighting).
+    inbox_lit: dict = {}
+
     # Last sweep's per-phase seconds (capture / needs_input / describe),
     # for the log line: the total alone never says which phase is slow.
     pane_state_phases: dict = {}
@@ -2290,6 +2307,13 @@ def create_app(
         phases["describe"] = time.monotonic() - sweep_t0 - phases["capture"] - phases["needs"]
         pane_state_phases.update(phases)
         needs_gate.prune(state["id"] for state in states)
+        # A lighting is history, not just a card: record the first sighting,
+        # resolve it when the wait clears. A failed write must never fail the
+        # sweep — the card is the live signal, the inbox is only history.
+        try:
+            needs_you_inbox.sync_lighting(inbox_store, inbox_lit, states)
+        except (sqlite3.Error, ValueError):
+            LOGGER.warning("needs-you inbox sync failed", exc_info=True)
         # 编号在这里统一带上：relay / 主页 / MCP 拿到的 peer 都自带 #N
         try:
             numbers = home.ensure_numbers([state["id"] for state in states if state.get("id")])
@@ -3815,6 +3839,12 @@ def create_app(
     async def needs_you_script() -> FileResponse:
         """「等你回答」卡片：只渲染过门（needs_input）的菜单，答案只走 /key。"""
         return FileResponse(WEB_DIR / "assets" / "needs-you.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/needs-you-inbox.js")
+    async def needs_you_inbox_script() -> FileResponse:
+        """等你回答收件箱：亮灯历史 + 未读数，打开即标已读；也在 console bundle 里。"""
+        return FileResponse(WEB_DIR / "assets" / "needs-you-inbox.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/markdown-cjk.js")
@@ -6620,6 +6650,43 @@ def create_app(
         return {"panes": [{key: item.get(key) for key in ("id", "provider", "status", "status_source",
                                                           "needs_input", "prompt")}
                           for item in states]}
+
+    # Needs-you inbox (borrow item 7, Open WebUI routers/notifications.py):
+    # history of every lighting, newest first, id-cursor pages of 20.
+    # pane_alive comes from the pane-state cache and never triggers a sweep:
+    # a closed pane answers in place ("该 pane 已关闭") instead of a 404.
+    @app.get("/api/needs-you/inbox")
+    async def needs_you_inbox_list(request: Request, limit: int = 20, before: int | None = None):
+        require_auth(request)
+        try:
+            page = await asyncio.to_thread(inbox_store.list_items, limit=limit, before=before)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        states = await asyncio.to_thread(pane_states_cached, 0, 30.0, True)
+        alive = {state.get("id") for state in states}
+        for item in page["items"]:
+            item["pane_alive"] = item["pane_id"] in alive
+        return page
+
+    @app.get("/api/needs-you/inbox/count")
+    async def needs_you_inbox_count(request: Request):
+        require_auth(request)
+        return {"count": await asyncio.to_thread(inbox_store.unread_count)}
+
+    @app.post("/api/needs-you/inbox/open")
+    async def needs_you_inbox_open(request: Request):
+        require_auth(request)
+        marked = await asyncio.to_thread(inbox_store.mark_all_read)
+        return {"acknowledged_count": marked,
+                "count": await asyncio.to_thread(inbox_store.unread_count)}
+
+    @app.patch("/api/needs-you/inbox/{item_id}")
+    async def needs_you_inbox_read(request: Request, item_id: int):
+        require_auth(request)
+        item = await asyncio.to_thread(inbox_store.mark_read, item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="inbox item not found")
+        return item
 
     async def perform_relay_ask(payload: RelayAskRequest) -> dict:
         """Ask a pane and wait for the answer: used by the HTTP route and the MCP endpoint."""

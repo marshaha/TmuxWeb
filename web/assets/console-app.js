@@ -2057,6 +2057,20 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
   syncPromptCard();
   // 「等你回答」卡片不过实验开关：它只显示过门（needs_input）的菜单，默认就开。
   if(window.TmuxNeedsYou)TmuxNeedsYou.start(()=>state.selected);
+  // 等你回答收件箱（借鉴清单第 7 项）：亮灯历史 + 未读数，点记录跳 pane。
+  if(window.TmuxNeedsYouInbox)TmuxNeedsYouInbox.start({onJump:pane=>selectPane(pane)});
+  // 从主页按铃铛过来：?inbox=1 直接把收件箱抽屉打开，参数从地址里抹掉
+  (function openInboxFromQuery(){
+    let wanted=false;
+    try{wanted=new URLSearchParams(location.search).get('inbox')==='1';}catch{}
+    if(!wanted)return;
+    history.replaceState(null,'',location.pathname);
+    const attempt=(tries)=>{
+      if(window.TmuxNeedsYouInbox&&TmuxNeedsYouInbox.open){TmuxNeedsYouInbox.open();return;}
+      if(tries>0)setTimeout(()=>attempt(tries-1),120);
+    };
+    attempt(20);
+  })();
   fetch('/api/prefs',{credentials:'same-origin'}).then(r=>r.json()).then(data=>{
     const pauseValue=(data.prefs||{}).pause_button;
     if(pauseValue==='on'||pauseValue==='off'){
