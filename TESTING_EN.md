@@ -100,6 +100,9 @@ This document covers automated tests that do not require real AI CLIs, plus manu
   (with a 只显示最近 600 行 notice), and show an 输出过快 notice if xterm falls behind; the ⏸ button freezes the stream and ▶
   resumes it; the sidebar polls every 20s without resetting scroll; `/api/hosts` is served from a 30s snapshot unless
   `?refresh=1`. Covered by `test_hosts_list_is_snapshotted_between_polls` and the index-page marker assertions.
+  A close from the web refreshes that host's snapshot at once and localhost favourites are read live, covered by
+  `HomeSnapshotTests` (`test_closing_a_remote_pane_from_the_web_refreshes_the_snapshot`,
+  `test_a_local_pane_closed_elsewhere_reads_offline_at_once`, `test_a_failed_close_does_not_touch_the_snapshot`).
 
 - Unsaved jump host: leave the picker at 直连, type `ops@bastion.example:2222` in the field below, save — the row shows
   经由 ops@bastion.example:2222 and the generated ssh command carries a ProxyCommand for it (using the target's credential).

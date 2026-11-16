@@ -617,7 +617,7 @@ whole screen DOM, re-fit the font on every frame and let the xterm write queue g
   the font unless the container width changed
 - terminal mode batches xterm writes into one rAF and, past a 1.5MB backlog, drops the oldest data with an inline notice
 - a **pause / resume live** button in the top bar freezes the stream without losing the screen
-- `/api/hosts` serves a 30s snapshot (`?refresh=1` re-probes); the sidebar refreshes every 20s and skips identical DOM
+- `/api/hosts` serves a 30s snapshot (`?refresh=1` re-probes); the sidebar refreshes every 20s and skips identical DOM; a close from the web re-lists that host at once instead of waiting for the next cycle, and localhost favourites are always read live
 - knobs: `TMUX_WEB_STREAM_LINES`, `TMUX_WEB_STREAM_FIRST_LINES`, `TMUX_WEB_STREAM_MAX_BYTES`, `TMUX_WEB_HOSTS_TTL`
 
 Measured on a 140x40 `while true; do echo; done` pane over 10s: chat-mode main-thread time 0.69s -> **0.09s**, rendered text

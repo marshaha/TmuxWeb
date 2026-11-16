@@ -3191,6 +3191,7 @@ def create_app(
             killed = await asyncio.to_thread(tmux.kill_session, name)
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        await refresh_snapshot_after_close("localhost")
         return {"closed": killed, "session": name}
 
     @app.post("/api/fed/panes/{pane_id}/close")
@@ -3201,6 +3202,7 @@ def create_app(
             killed = await asyncio.to_thread(tmux.kill_pane, actual)
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        await refresh_snapshot_after_close("localhost")
         return {"closed": killed, "pane": actual}
 
     @app.post("/api/fed/files/zip")
@@ -3935,6 +3937,26 @@ def create_app(
         hosts_snapshot["at"] = time.time()
         return fresh
 
+    async def refresh_snapshot_after_close(host_id: str) -> None:
+        """A close the web itself performed is known at once: re-list that one
+        host into the snapshot instead of leaving the favourite card unknown
+        until the next snapshot cycle. Best effort — the kill already happened,
+        so a refresh failure must never turn the close into an error."""
+        cached = hosts_snapshot["value"]
+        if cached is None:
+            return
+        target = next((item for item in cached.get("hosts") or [] if item.get("id") == host_id), None)
+        if target is not None and target.get("kind") == "fed":
+            # a federated node's pane list does not come from remote_hosts:
+            # refresh_one_host would mistake it for a dead SSH host and mark
+            # it offline, so a fed pane closed from the web still waits out
+            # the snapshot cycle (rare; the full re-probe lists fed correctly)
+            return
+        try:
+            await refresh_one_host(host_id, cached)
+        except Exception:  # noqa: BLE001 - a stale snapshot is harmless
+            LOGGER.warning("snapshot refresh after close failed for %s", host_id, exc_info=True)
+
     def number_panes(payload):
         """给每台的每个 pane 补上短编号（跨主机唯一，首次见到时分配）。
 
@@ -4363,12 +4385,16 @@ def create_app(
             transport, actual = pane_transport(pane_id)
         except HTTPException:
             raise
+        # resolved from the same reference the kill just used, before the kill
+        # removes the pane from the number map
+        host_id, _ = split_pane_ref(resolve_pane_ref(pane_id))
         try:
             killed = await asyncio.to_thread(transport.kill_pane, actual)
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             message = str(exc)
             raise HTTPException(status_code=404 if "no such pane" in message else 503,
                                 detail=message) from exc
+        await refresh_snapshot_after_close(host_id)
         return killed
 
     def host_transport(host: str):
@@ -4419,6 +4445,7 @@ def create_app(
             if status == 422 and "session name" not in message:
                 status = 503
             raise HTTPException(status_code=status, detail=message) from exc
+        await refresh_snapshot_after_close(host_id)
         return {"session": killed.get("session", name), "host": host_id, "killed": True}
 
     @app.post("/api/remote-hosts/scan-key")
@@ -5921,7 +5948,9 @@ def create_app(
         live read fails reads ``unknown`` with no preview until the snapshot
         refreshes and drops it. With no snapshot at all (cold start) or an
         unlisted host, ``snapshot_pane`` is None and the old live ``pane_or_404``
-        path still runs.
+        path still runs. Localhost is the exception: a local list_panes is
+        milliseconds, so localhost favourites always take the live path and
+        read offline at once when the pane closes.
         """
         entry: dict = {"pane": pane_id, "note": note, "status": "offline", "provider": None,
                        "title": custom_title, "default_title": "", "custom_title": custom_title != "",
@@ -6080,7 +6109,12 @@ def create_app(
                 continue
             host_id = pane_id.split("~", 1)[0] if "~" in pane_id else "localhost"
             snapshot_pane = known.get(pane_id)
-            if snapshot_pane is None and snapshot_ready and host_id in snapshot_host_ids:
+            if host_id == "localhost":
+                # A local list_panes is milliseconds: never make a favourite
+                # wait out the 30s snapshot TTL for a pane that just closed —
+                # the live pane_or_404 check answers at once.
+                snapshot_pane = None
+            elif snapshot_pane is None and snapshot_ready and host_id in snapshot_host_ids:
                 # the snapshot lists the host but not the pane: it is gone.
                 # No thread, no SSH — offline at once, last preview restored.
                 entry = with_cached_preview(
