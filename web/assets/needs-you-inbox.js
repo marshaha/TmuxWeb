@@ -17,12 +17,16 @@
 (function () {
   const COUNT_MS = 30000;
   const PAGE = 20;
+  // 裸 fetch 没有超时：手机网络一抖、请求挂住，抽屉就一直白板。
+  // 15 秒还没回来就当失败，让正文区显示原因而不是无限等。
+  const API_TIMEOUT_MS = 15000;
 
   let onJump = null;
   let timer = null;
   let cursor = null;
   let loading = false;
   let opened = false;
+  let readMarked = false;   // 本次打开已标过已读：列表先回来也要把未读点消掉
 
   function esc(value) {
     return String(value == null ? '' : value)
@@ -79,6 +83,7 @@
   }
 
   function drawer() { return document.getElementById('inbox-drawer'); }
+  function backdrop() { return document.getElementById('inbox-backdrop'); }
   function list() { return document.getElementById('inbox-list'); }
   function badge() { return document.getElementById('inbox-badge'); }
 
@@ -95,15 +100,39 @@
     if (node) node.textContent = text || '';
   }
 
+  // 正文区状态行：载入中 / 没载入必须写在这里，只放底部小字用户看不见，
+  // 抽屉看起来就是一张白板（手机截图那次就是这个样子）。
+  function setBodyState(text) {
+    const node = document.getElementById('inbox-state');
+    if (!node) return;
+    node.textContent = text || '';
+    node.hidden = !text;
+  }
+
   async function api(path, options) {
-    const response = await fetch(path, Object.assign({credentials: 'same-origin'}, options || {}));
-    if (response.status === 401) { location = '/login'; throw new Error('登录失效'); }
-    if (!response.ok) {
-      let detail = {};
-      try { detail = await response.json(); } catch (_error) {}
-      throw new Error(detail.detail || ('HTTP ' + response.status));
+    const controller = typeof AbortController !== 'undefined'
+      ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), API_TIMEOUT_MS) : 0;
+    try {
+      const response = await fetch(path, Object.assign(
+        {credentials: 'same-origin'},
+        controller ? {signal: controller.signal} : {},
+        options || {}));
+      if (response.status === 401) { location = '/login'; throw new Error('登录失效'); }
+      if (!response.ok) {
+        let detail = {};
+        try { detail = await response.json(); } catch (_error) {}
+        throw new Error(detail.detail || ('HTTP ' + response.status));
+      }
+      return response.json();
+    } catch (error) {
+      if (error && error.name === 'AbortError') {
+        throw new Error('请求超时（15 秒），请检查网络后重试');
+      }
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-    return response.json();
   }
 
   async function refreshCount() {
@@ -116,15 +145,30 @@
     }
   }
 
+  // 标已读和拉列表是并行的，列表可能先回来：行按 read_at 渲染时会带上
+  // 未读点；标已读一成功就把已渲染行的点消掉，跟角标一致。
+  function clearUnreadDots() {
+    const box = list();
+    if (!box || !box.querySelectorAll) return;
+    box.querySelectorAll('.inbox-item.unread').forEach(row => {
+      if (row.classList) row.classList.remove('unread');
+    });
+  }
+
   async function loadPage(before) {
     if (loading) return;
+    const box = list();
+    if (!box) return;
     loading = true;
     setStatus('载入中…');
+    if (!before) {
+      const empty = document.getElementById('inbox-empty');
+      if (empty) empty.hidden = true;
+      setBodyState('载入中…');
+    }
     try {
       const query = '?limit=' + PAGE + (before ? '&before=' + encodeURIComponent(before) : '');
       const data = await api('/api/needs-you/inbox' + query);
-      const box = list();
-      if (!box) return;
       if (!before) box.innerHTML = '';
       const empty = document.getElementById('inbox-empty');
       const html = (data.items || []).map(itemHtml).join('');
@@ -137,11 +181,28 @@
       cursor = data.next_cursor || null;
       const more = document.getElementById('inbox-more');
       if (more) more.hidden = !cursor;
+      if (readMarked) clearUnreadDots();
+      setBodyState('');
       setStatus((data.items || []).length ? '' : '还没有等你回答的记录');
     } catch (error) {
       setStatus('没载入：' + error.message);
+      // 翻页失败列表里已有内容，正文区不用再写一遍；首屏失败必须写在这里。
+      if (!before) setBodyState('没载入：' + error.message);
     } finally {
       loading = false;
+    }
+  }
+
+  // 打开即标已读（Open WebUI /inbox/open 的语义），但只管发、不等：
+  // 标已读挂住不能挡着看列表，失败不挡着看列表，角标下一轮轮询再对。
+  async function markRead() {
+    try {
+      const data = await api('/api/needs-you/inbox/open', {method: 'POST'});
+      setBadge(data.count);
+      readMarked = true;
+      clearUnreadDots();
+    } catch (_error) {
+      // 标已读失败不挡着看列表：角标下一轮轮询再对
     }
   }
 
@@ -150,21 +211,21 @@
     if (!node) return;
     opened = true;
     node.hidden = false;
-    // 打开即标已读（Open WebUI /inbox/open 的语义）：先标，再拉列表，
-    // 列表回来时未读点已经消掉，角标同步清零。
-    try {
-      const data = await api('/api/needs-you/inbox/open', {method: 'POST'});
-      setBadge(data.count);
-    } catch (_error) {
-      // 标已读失败不挡着看列表：角标下一轮轮询再对
-    }
+    const shade = backdrop();
+    if (shade) shade.hidden = false;
+    // 标已读和拉列表并行：以前先 await 标已读再拉列表，手机网络一抖、
+    // 标已读请求挂住，列表就永远不拉，抽屉只有静态标题栏。
     cursor = null;
+    readMarked = false;
+    markRead();
     await loadPage(null);
   }
 
   function close() {
     const node = drawer();
     if (node) node.hidden = true;
+    const shade = backdrop();
+    if (shade) shade.hidden = true;
     opened = false;
   }
 
@@ -192,6 +253,8 @@
     if (button) button.onclick = () => { if (opened) close(); else open(); };
     const closeButton = document.getElementById('inbox-close');
     if (closeButton) closeButton.onclick = close;
+    const shade = backdrop();
+    if (shade) shade.onclick = close;
     const more = document.getElementById('inbox-more');
     if (more) more.onclick = () => loadPage(cursor);
     const box = list();

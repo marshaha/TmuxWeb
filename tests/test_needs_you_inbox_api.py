@@ -135,6 +135,8 @@ class InboxSurfaceTests(unittest.TestCase):
         self.assertIn('id="inbox-button"', page)
         self.assertIn('id="inbox-badge"', page)
         self.assertIn('id="inbox-drawer"', page)
+        self.assertIn('id="inbox-backdrop"', page)
+        self.assertIn('id="inbox-state"', page)
         self.assertIn('id="i-bell"', page)
         bundle = self.client.get("/assets/console.bundle.js").text
         self.assertIn("TmuxNeedsYouInbox", bundle)
@@ -142,6 +144,9 @@ class InboxSurfaceTests(unittest.TestCase):
         self.assertIn("/api/needs-you/inbox/open", bundle)
         css = self.client.get("/assets/console.css").text
         self.assertIn(".inbox-drawer", css)
+        # [hidden] 干不过 display:flex：没有这行 close() 设 hidden 也关不掉抽屉
+        self.assertIn(".inbox-drawer[hidden]{display:none}", css)
+        self.assertIn(".inbox-backdrop[hidden]{display:none}", css)
         script = self.client.get("/assets/needs-you-inbox.js")
         self.assertEqual(script.status_code, 200)
 

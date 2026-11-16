@@ -3,6 +3,13 @@
 .inbox-btn{position:relative}
 .inbox-badge{position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--amber,#d97706);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center}
 .inbox-drawer{position:fixed;top:0;right:0;bottom:0;width:min(420px,92vw);z-index:60;display:flex;flex-direction:column;background:var(--card);border-left:1px solid var(--line);box-shadow:-12px 0 32px rgba(0,0,0,.18)}
+/* [hidden] 干不过上面那行 display:flex —— close() 设 hidden 后抽屉必须真的消失。
+   同款坑见 console-base.css:44（.share-btn），全库十几处同款补丁。 */
+.inbox-drawer[hidden]{display:none}
+/* 遮罩：低于抽屉（z 60）、高于控制台内容，点遮罩关闭。跟 home.html 的
+   #pd-backdrop 同款（position:fixed + inset:0 + 半透明底），只换了 z-index。 */
+.inbox-backdrop{position:fixed;inset:0;z-index:55;background:rgba(32,31,28,.18)}
+.inbox-backdrop[hidden]{display:none}
 .inbox-head{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--line)}
 .inbox-head b{font-size:15px}
 .inbox-head .inbox-sub{color:var(--muted);font-size:12px}
@@ -23,3 +30,6 @@
 .inbox-foot{padding:10px 16px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px}
 .inbox-foot .prompt-state{flex:1}
 .inbox-empty{padding:32px 16px;text-align:center;color:var(--muted);font-size:13px}
+/* 正文区状态行（载入中 / 没载入）：只放底部小字用户看不见，抽屉看起来就是白板 */
+.inbox-state{padding:32px 16px;text-align:center;color:var(--muted);font-size:13px}
+.inbox-state[hidden]{display:none}
