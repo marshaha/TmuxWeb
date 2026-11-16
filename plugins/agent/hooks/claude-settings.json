@@ -1,0 +1,1 @@
+{"hooks":{"Notification":[{"hooks":[{"command":"python3 ~/.config/tmuxweb-agent/hooks/tmuxweb-hook.py permission_prompt","timeout":5,"type":"command"}],"matcher":"permission_prompt|elicitation_dialog"}],"Stop":[{"hooks":[{"command":"python3 ~/.config/tmuxweb-agent/hooks/tmuxweb-hook.py Stop","timeout":5,"type":"command"}]}]}}

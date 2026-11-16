@@ -38,6 +38,16 @@ Protocol (shared with the server-side plugin; do not change unilaterally):
   every 30 seconds.
 * v1 op allowlist is just ``"exec"``. An unknown op yields an error
   result; it never breaks the loop.
+* v1.1 adds one more op, ``"needs_input"`` (see the host-side watcher
+  below): the server sends ``{"op": "needs_input", "panes": [{"pane_id",
+  "provider", "cwd", "title"}]}`` and the agent answers with per-pane
+  waiting state ``{"ok": true, "waiting": {"%0": {"waiting": true,
+  "source": "hook", "since": <unix ts>, "decision_point": true,
+  "control_quiet": true, "hook": true}}, "agent_version": "1.1.0",
+  "control_mode": true, "events_seen": 3}``. An agent that does not
+  know the op answers with an error result, and the server treats that
+  as "no agent signal" (see ``transport.AgentTransport.needs_input_many``)
+  — the server-side gate from PR #24 stays the fallback.
 
 Standard library only (Python 3.9+). No third-party imports.
 
@@ -76,7 +86,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 AGENT_NAME = "tmuxweb-agent"
 HEARTBEAT_INTERVAL = 30.0
 DEFAULT_EXEC_TIMEOUT = 15.0
@@ -923,28 +933,31 @@ def run_exec(op: dict, resolver: TmuxResolver) -> dict:
     }
 
 
-def run_op(op, resolver: TmuxResolver) -> dict:
+def run_op(op, resolver: TmuxResolver, watcher: HostWatcher | None = None) -> dict:
     """Run one op from a batch. Unknown ops are errors, never crashes."""
     if not isinstance(op, dict):
         return {"ok": False, "error": "op must be an object"}
+    if op.get("op") == "needs_input":
+        return run_needs_input(op, resolver, watcher)
     if op.get("op") != "exec":
         return {"ok": False, "error": f"unknown op: {op.get('op')!r}"}
     return run_exec(op, resolver)
 
 
-def _run_op_guarded(op, resolver: TmuxResolver) -> dict:
+def _run_op_guarded(op, resolver: TmuxResolver, watcher: HostWatcher | None = None) -> dict:
     """run_op, with a worker crash turned into an error result.
 
     run_op/run_exec never raise by contract, but a pool worker raising
     would kill the whole batch reply — one bad op must not do that.
     """
     try:
-        return run_op(op, resolver)
+        return run_op(op, resolver, watcher)
     except Exception as exc:  # noqa: BLE001 - see above
         return {"ok": False, "error": f"op failed: {exc}"}
 
 
-def handle_batch(message: dict, resolver: TmuxResolver) -> dict:
+def handle_batch(message: dict, resolver: TmuxResolver,
+                 watcher: HostWatcher | None = None) -> dict:
     """Run a batch request; returns the reply dict.
 
     Ops run in parallel in a thread pool and the results are assembled
@@ -967,11 +980,1093 @@ def handle_batch(message: dict, resolver: TmuxResolver) -> dict:
         return {"id": request_id, "ok": False, "error": "request 'ops' must be a list"}
     if len(ops) <= 1:
         return {"id": request_id, "ok": True,
-                "results": [run_op(op, resolver) for op in ops]}
+                "results": [run_op(op, resolver, watcher) for op in ops]}
     with ThreadPoolExecutor(max_workers=min(len(ops), _BATCH_MAX_WORKERS)) as pool:
         results = list(pool.map(
-            lambda op: _run_op_guarded(op, resolver), ops))
+            lambda op: _run_op_guarded(op, resolver, watcher), ops))
     return {"id": request_id, "ok": True, "results": results}
+
+
+# ---------------------------------------------------------------------------
+# Host-side "needs you" watcher (stacks on PR #24's server gate)
+# ---------------------------------------------------------------------------
+# PR #24's server gate is a three-legged conjunction (decision point +
+# stable screen + parsed menu) and it is the fallback. This watcher is
+# the precision layer that lives on the host, next to the session files
+# and the tmux server, so it sees transitions in seconds instead of at
+# sweep cadence (~1 minute). It feeds the same gate: the server merges
+# the agent-reported waiting state with its own decision point, the
+# agent event winning when present.
+#
+# Three legs, in order of precision:
+#
+# 1. Hook events (exact). Hook scripts — one shared stdlib script,
+#    ``hooks/tmuxweb-hook.py`` — append one JSON line per event to
+#    ``~/.config/tmuxweb-agent/events.jsonl`` (next to config.json) and
+#    exit 0. The watcher tails that file. A permission event sets
+#    waiting; a result/stop event clears it. Hooks never dial out and
+#    never block the agent: write + exit 0, short timeout.
+# 2. tmux control mode (screen-quiet). One persistent ``tmux -C``
+#    client per session with decision-point panes (capped at 4 by
+#    default, see WATCHER_MAX_CONTROL_CLIENTS), sharing one
+#    last-%output table, tracks the last ``%output`` time per pane.
+#    Each client stays attached to its own session, so the quiet
+#    clock is never reset by flapping between sessions. Quiet + a
+#    session-file decision point (leg 3) means the agent is sitting
+#    at a prompt it did not announce by hook — question prompts and
+#    elicitation, which have no permission event. A dead control
+#    client degrades to "no control signal", never kills the agent.
+# 3. Session files (decision point). High-frequency mtime polling of
+#    the same files ``agent_status.py`` reads on the server (Claude
+#    ``~/.claude/projects/<dashified-cwd>/*.jsonl``, Codex
+#    ``~/.codex/sessions/**/*.jsonl``, Kimi
+#    ``~/.kimi-code/sessions/wd_*/session_*/agents/main/wire.jsonl``),
+#    with the same outstanding-call predicates ported here — the agent
+#    is deployed standalone and cannot import server modules, so the
+#    minimal predicates are copied, not shared.
+#
+# Hermes has no hook and no usable session-file wait signal (its
+# ``verification_required`` finish_reason appears twice in 43314 rows
+# and never as a session's latest message), so it stays on the
+# server-side gate plus legs 2+3 here only in the sense that leg 3
+# cannot fire for it: ``decision_point`` is False for hermes and the
+# watcher never reports it waiting. That is fail-closed by design.
+#
+# Field names are parsed tolerantly on purpose. The verified payloads
+# are: Kimi — official docs (kimi.com/code/docs, hooks page): JSON on
+# stdin with ``hook_event_name`` / ``session_id`` / ``session_title`` /
+# ``cwd``, events ``PermissionRequest`` ("just before waiting for user
+# approval"), ``PermissionResult``, ``Stop``; [[hooks]] takes exactly
+# ``event`` / ``matcher`` / ``command`` / ``timeout``. Claude — official
+# docs (code.claude.com hooks guide): common fields ``session_id`` /
+# ``transcript_path`` / ``cwd`` / ``hook_event_name``; ``Notification``
+# adds ``message`` / ``title`` / ``notification_type`` with matcher
+# ``permission_prompt`` (fires ~6s into the wait) and
+# ``elicitation_dialog``; ``Stop`` clears. Codex — no official page was
+# reachable from this sandbox; the field names used here
+# (``session_id`` / ``transcript_path`` / ``cwd`` /
+# ``hook_event_name`` / ``model``, turn events add ``turn_id``,
+# ``PermissionRequest`` adds ``tool_name`` / ``tool_input``) are the
+# ones several independent sources agree on, and the parser also
+# accepts ``sessionId`` / ``thread_id`` aliases, so a rename on
+# Codex's side degrades to a cwd match instead of a crash. Where a
+# name could not be verified, the hook command itself carries the
+# event name as its first argument (see hooks/README.md), so the
+# configured event — not a guessed payload field — is authoritative.
+# ---------------------------------------------------------------------------
+
+WATCHER_EVENT_TTL_SECONDS = 3600.0  # a permission wait older than this is stale
+WATCHER_MAX_EVENTS_BYTES = 256 * 1024  # event file cap; older lines are dropped
+WATCHER_MAX_EVENTS_KEPT = 1000
+WATCHER_QUIET_SECONDS = 5.0  # no %output for this long == screen quiet
+WATCHER_POLL_INTERVAL = 2.0  # background refresh cadence (seconds)
+WATCHER_TAIL_BYTES = 65536
+# Session-file resolution cache TTL. A pane's session file changes
+# identity only when a new session starts in the same cwd — rare
+# against the 2s snapshot cadence — so 30s bounds the staleness of
+# "which file is newest" while the Codex rglob + first-line scan
+# (36ms for 20 files on oracle) runs at most once per pane per 30s
+# instead of once per snapshot. The resolved file's mtime is checked
+# on every hit, so an appended or replaced file re-resolves at once.
+WATCHER_RESOLVE_TTL_SECONDS = 30.0
+# A miss (no session file for this pane) is cached only briefly: a
+# session file that appears — the pane's agent just started — must
+# be found within seconds, not after the full 30s.
+WATCHER_RESOLVE_MISS_TTL_SECONDS = 5.0
+# Cap on concurrent control-mode clients (one tmux -C process per
+# session with decision-point panes). 4 is the default: it bounds
+# the tmux -C processes and the %output volume on hosts with 13-18
+# sessions (localhost 17, oracle 18, macmini 13) while covering the
+# sessions that actually have decision-point panes — the ones the
+# sweep is judging right now. Sessions past the cap get no quiet
+# signal (fail-closed, same as a host with no client at all).
+# Override with TMUXWEB_WATCHER_MAX_CONTROL_CLIENTS; a bad value
+# falls back to the default, 0 disables control mode entirely.
+WATCHER_MAX_CONTROL_CLIENTS = 4
+
+
+def _watcher_max_control_clients() -> int:
+    """Cap on control-mode clients, from the environment or default."""
+    raw = os.environ.get("TMUXWEB_WATCHER_MAX_CONTROL_CLIENTS", "")
+    if not raw.strip():
+        return WATCHER_MAX_CONTROL_CLIENTS
+    try:
+        return max(0, int(raw.strip()))
+    except ValueError:
+        return WATCHER_MAX_CONTROL_CLIENTS
+
+# Normalised hook-event kinds. "waiting" events set waiting, "clear"
+# events clear it. Anything else is ignored (SessionStart, PreToolUse
+# and friends carry no wait signal).
+_HOOK_WAITING = {
+    "permissionprompt", "permissionrequest", "elicitationdialog",
+    "agentneedsinput",
+}
+_HOOK_CLEARING = {
+    "permissionresult", "stop", "sessionend", "interrupt",
+    "userpromptsubmit", "turnstarted",
+}
+
+
+def _normalise_hook_event(raw) -> str:
+    """``PermissionRequest`` / ``permission_prompt`` -> one canonical key."""
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+
+
+def parse_hook_event(obj) -> dict | None:
+    """One hook payload (any provider) -> a watcher event, or None.
+
+    Tolerant by design: every field has aliases, and a missing
+    ``session_id`` falls back to the session id in ``transcript_path``
+    (its stem) or to a cwd match. ``event`` is the configured event
+    name when the hook command passed one (see hooks/tmuxweb-hook.py);
+    otherwise it comes from the payload's own event field, and for a
+    Claude ``Notification`` from ``notification_type``.
+    """
+    if not isinstance(obj, dict):
+        return None
+    raw_event = (
+        obj.get("hook_event_name") or obj.get("event") or obj.get("type")
+        or obj.get("notification_type") or ""
+    )
+    # A Claude Notification names its kind in notification_type, not in
+    # the event field ("Notification" itself says nothing): let the
+    # kind win whenever it is present.
+    if _normalise_hook_event(raw_event) == "notification":
+        raw_event = obj.get("notification_type") or raw_event
+    kind = _normalise_hook_event(raw_event)
+    if kind in _HOOK_WAITING:
+        waiting = True
+    elif kind in _HOOK_CLEARING:
+        waiting = False
+    else:
+        return None
+    session_id = (
+        obj.get("session_id") or obj.get("sessionId") or obj.get("thread_id")
+        or obj.get("session") or ""
+    )
+    cwd = obj.get("cwd") or obj.get("working_directory") or ""
+    pane_id = obj.get("pane_id") or obj.get("pane") or ""
+    transcript = obj.get("transcript_path") or obj.get("transcript") or ""
+    if not session_id and transcript:
+        stem = os.path.basename(str(transcript))
+        session_id = stem[:-6] if stem.endswith(".jsonl") else stem
+    try:
+        timestamp = float(obj.get("timestamp") or obj.get("at") or time.time())
+    except (TypeError, ValueError):
+        timestamp = time.time()
+    return {
+        "event": raw_event, "waiting": waiting,
+        "session_id": str(session_id or ""),
+        "cwd": str(cwd or ""), "pane_id": str(pane_id or ""),
+        "timestamp": timestamp,
+    }
+
+
+def _watcher_tail_lines(path, tail: int = WATCHER_TAIL_BYTES) -> list[str]:
+    """Every complete line in the tail of a session file, oldest first."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as handle:
+            handle.seek(max(0, size - tail))
+            chunk = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    lines = chunk.splitlines()
+    if size > tail and lines:
+        lines = lines[1:]  # the first line may start mid-record
+    return [line.strip() for line in lines if line.strip().endswith("}")]
+
+
+def _watcher_records(path) -> list[dict]:
+    records = []
+    for line in _watcher_tail_lines(path):
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            records.append(parsed)
+    return records
+
+
+def _watcher_outstanding(provider: str, records) -> bool:
+    """Port of agent_status.has_outstanding_call (same rules, stdlib only).
+
+    A tool call was issued and no result has come back — the state a
+    permission prompt lives in, because the turn-end marker never
+    fires there (0/4008 in real Claude files; see needs_input.py).
+    """
+    if provider == "claude":
+        pending: set = set()
+        for event in records:
+            kind = event.get("type")
+            if kind == "assistant":
+                content = (event.get("message") or {}).get("content") or []
+                if isinstance(content, list):
+                    for block in content:
+                        if (isinstance(block, dict) and block.get("type") == "tool_use"
+                                and block.get("id")):
+                            pending.add(block["id"])
+            elif kind == "user":
+                content = (event.get("message") or {}).get("content")
+                blocks = content if isinstance(content, list) else []
+                results = [b for b in blocks
+                           if isinstance(b, dict) and b.get("type") == "tool_result"]
+                if results:
+                    for block in results:
+                        pending.discard(block.get("tool_use_id"))
+                elif blocks or isinstance(content, str):
+                    pending.clear()
+            elif kind == "system" and event.get("subtype") in (
+                    "turn_duration", "stop_hook_summary"):
+                pending.clear()
+        return bool(pending)
+    if provider == "codex":
+        pending = set()
+        for event in records:
+            if event.get("type") == "event_msg":
+                if (event.get("payload") or {}).get("type") in (
+                        "task_complete", "turn_aborted", "task_started"):
+                    pending.clear()
+                continue
+            if event.get("type") != "response_item":
+                continue
+            payload = event.get("payload") or {}
+            key = payload.get("call_id") or payload.get("id")
+            if not key:
+                continue
+            if payload.get("type") in ("function_call", "custom_tool_call"):
+                pending.add(key)
+            elif payload.get("type") in ("function_call_output", "custom_tool_call_output"):
+                pending.discard(key)
+        return bool(pending)
+    if provider == "kimi":
+        pending = False
+        for event in records:
+            kind = event.get("type")
+            if kind == "tool.call":
+                pending = True
+            elif kind in ("prompt.completed", "turn.ended", "step.end",
+                          "prompt.submitted", "llm.request"):
+                pending = False
+            elif kind == "context.append_loop_event":
+                if (event.get("event") or {}).get("type") == "step.end":
+                    pending = False
+        return pending
+    return False
+
+
+# Turn-end markers, same strings agent_status.IDLE_MARKERS uses.
+_WATCHER_IDLE_MARKERS = {
+    "claude": ('"subtype":"turn_duration"', '"subtype":"stop_hook_summary"'),
+    "codex": ('"type":"task_complete"', '"type":"turn_aborted"'),
+    "kimi": ('"type":"prompt.completed"', '"type":"turn.ended"'),
+}
+_WATCHER_BUSY_MARKERS = {
+    "claude": ('"type":"user"', '"type":"assistant"'),
+    "codex": ('"type":"task_started"', '"type":"item_completed"', '"type":"token_count"'),
+    "kimi": ('"type":"prompt.submitted"', '"type":"llm.request"',
+             '"type":"llm.response"', '"type":"step.start"', '"type":"step.end"',
+             '"type":"tool.call"', '"type":"agent.message.appended"'),
+}
+_TIGHTEN = __import__("re").compile(r'"[ \t]*:[ \t]*"')
+
+
+def _watcher_status_for_file(provider: str, path) -> str:
+    """busy / idle / unknown for one session file (agent_status.classify_lines)."""
+    if provider not in _WATCHER_IDLE_MARKERS:
+        return "unknown"
+    for record in reversed(_watcher_tail_lines(path)):
+        tightened = _TIGHTEN.sub('":"', record)
+        if any(m in tightened for m in _WATCHER_IDLE_MARKERS[provider]):
+            return "idle"
+        if any(m in tightened for m in _WATCHER_BUSY_MARKERS[provider]):
+            return "busy"
+    return "unknown"
+
+
+def _watcher_decision_point(provider: str, path) -> bool:
+    """Turn ended, or a tool call outstanding — the PR #24 leg-1 signal."""
+    if provider not in _WATCHER_IDLE_MARKERS:
+        return False
+    if _watcher_status_for_file(provider, path) == "idle":
+        return True
+    try:
+        return _watcher_outstanding(provider, _watcher_records(path))
+    except OSError:
+        return False
+
+
+def _dashify_cwd(cwd: str) -> str:
+    return __import__("re").sub(r"[^A-Za-z0-9]", "-", cwd or "")
+
+
+def _watcher_resolve_session_file(provider: str, cwd: str, title: str = "",
+                                  hint: str = "", home=None):
+    """Locate a pane's session file, same rules as transcript_reader.py.
+
+    Claude: ``~/.claude/projects/<dashified-cwd>/*.jsonl`` (newest; a
+    ``hint`` session id wins via glob). Codex:
+    ``~/.codex/sessions/**/*.jsonl`` (a ``hint`` in the file name wins,
+    else the newest file whose first record is a ``session_meta`` with
+    this cwd). Kimi: ``~/.kimi-code/sessions/wd_*/session_*/state.json``
+    with this cwd, newest ``updatedAt``, wire file
+    ``agents/main/wire.jsonl``. None when it cannot be found.
+    """
+    home = Path(home) if home is not None else Path.home()
+    provider = (provider or "").lower()
+    try:
+        if provider == "claude":
+            projects = home / ".claude" / "projects"
+            if hint:
+                matches = sorted(projects.glob("*/%s.jsonl" % hint))
+                if matches:
+                    return matches[0]
+            project_dir = projects / _dashify_cwd(cwd)
+            candidates = (sorted(project_dir.glob("*.jsonl"),
+                                 key=lambda p: p.stat().st_mtime, reverse=True)
+                          if project_dir.is_dir() else [])
+            return candidates[0] if candidates else None
+        if provider == "codex":
+            files = list((home / ".codex" / "sessions").rglob("*.jsonl")) \
+                if (home / ".codex" / "sessions").is_dir() else []
+            if hint:
+                matches = [p for p in files if hint in p.name]
+                if matches:
+                    return max(matches, key=lambda p: p.stat().st_mtime)
+            for path in sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
+                try:
+                    with path.open(errors="replace") as handle:
+                        first = json.loads(handle.readline())
+                except (OSError, ValueError):
+                    continue
+                payload = first.get("payload") or {}
+                if first.get("type") == "session_meta" and payload.get("cwd") == cwd:
+                    return path
+            return None
+        if provider == "kimi":
+            candidates = []
+            root = home / ".kimi-code" / "sessions"
+            for state_path in root.glob("wd_*/session_*/state.json") if root.is_dir() else []:
+                try:
+                    state = json.loads(state_path.read_text(errors="replace"))
+                except (OSError, ValueError):
+                    continue
+                if state.get("archived") or state.get("cwd") != cwd:
+                    continue
+                wire_path = state_path.parent / "agents" / "main" / "wire.jsonl"
+                if not wire_path.is_file():
+                    continue
+                stamp = state.get("updatedAt") or state.get("createdAt") or 0
+                try:
+                    stamp = float(stamp) / 1000 if float(stamp) > 10 ** 11 else float(stamp)
+                except (TypeError, ValueError):
+                    stamp = 0.0
+                candidates.append((stamp, wire_path))
+            if not candidates:
+                return None
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            return candidates[0][1]
+    except OSError:
+        return None
+    return None
+
+
+def _tmux_argv(binary: str, *args: str) -> list[str]:
+    """tmux invocation, honouring a non-default socket for tests.
+
+    ``TMUXWEB_AGENT_TMUX_SOCKET`` is a test seam (and a legitimate
+    escape hatch on hosts whose tmux server does not live on the
+    default socket): when set, every tmux call the watcher makes uses
+    ``-S <socket>``. Unset, tmux uses its default socket as usual.
+    """
+    argv = [binary]
+    socket_path = os.environ.get("TMUXWEB_AGENT_TMUX_SOCKET", "")
+    if socket_path:
+        argv += ["-S", socket_path]
+    argv += list(args)
+    return argv
+
+
+class _ControlModeClient:
+    """One persistent ``tmux -C`` client for one session, tracking
+    last-%output per pane.
+
+    ``%output %N <text>`` is the only line that matters: it proves the
+    pane's screen changed at that moment. Everything else (%begin /
+    %end / %session-changed / command replies) is ignored. The client
+    only starts when the host actually has tmux sessions — starting
+    ``tmux -C`` on a host with no server would create a stray session.
+    A dead client degrades to "no control signal" and is restarted
+    lazily (at most once per 10s); it never raises into the daemon.
+
+    The watcher owns one client per session (see HostWatcher), and
+    the clients share one ``last_output`` dict plus its lock: pane
+    ids are server-wide unique, and a client only ever observes
+    output for the session it is attached to, so sharing is safe —
+    and a restarted client keeps the history its predecessor
+    recorded. A standalone client owns its dict.
+    """
+
+    _RESTART_MIN_INTERVAL = 10.0
+
+    def __init__(self, tmux_path: str = "", last_output=None, lock=None) -> None:
+        self._tmux_path = tmux_path
+        self._proc = None
+        self._reader = None
+        self._lock = lock if lock is not None else threading.Lock()
+        self._last_output: dict[str, float] = (
+            last_output if last_output is not None else {})
+        self._attached_session: str | None = None
+        self._attached_at: float = 0.0
+        self._last_start_attempt: float = 0.0
+        self._started_ok: bool = False
+
+    # -- parsing (pure: unit-testable without tmux) ----------------------
+    def handle_line(self, line: str, now: float | None = None) -> None:
+        """Record one control-mode line. ``%output %N ...`` updates %N."""
+        if not line.startswith("%output "):
+            return
+        parts = line.split(" ", 2)
+        if len(parts) < 2 or not parts[1].startswith("%"):
+            return
+        with self._lock:
+            self._last_output[parts[1]] = time.time() if now is None else now
+
+    def quiet_seconds(self, pane_id: str, now: float | None = None,
+                      session: str | None = None) -> float | None:
+        """Seconds since this pane last produced output, or None.
+
+        None means "unknown": the client is not attached to this pane's
+        session (or never started), so quiet cannot be judged — the
+        caller must not treat that as quiet. ``session`` is the pane's
+        session from the watcher's list-panes map; when it is given,
+        a pane in any other session reads unknown even if a stale
+        ``%output`` entry for it survives from an earlier attachment
+        (the client only ever sees output for the session it is
+        attached to, so an entry for another session's pane is
+        unobserved since — it must not read as quiet). An entry older
+        than the current attach likewise counts as "no output while
+        attached": quiet since the attach, not since the stale entry.
+        Without ``session`` (direct unit-test use) the old behaviour
+        holds: a recorded entry wins, else quiet since attach.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            last = self._last_output.get(pane_id)
+            attached_at = self._attached_at
+            attached = self._attached_session
+        if session is not None:
+            if attached is None or attached != session:
+                return None
+            if last is not None and last >= attached_at:
+                return max(0.0, now - last)
+            if attached_at:
+                return max(0.0, now - attached_at)
+            return None
+        if last is not None:
+            return max(0.0, now - last)
+        if attached is not None and attached_at:
+            return max(0.0, now - attached_at)
+        return None
+
+    @property
+    def available(self) -> bool:
+        return self._started_ok and self._proc is not None and self._proc.poll() is None
+
+    @property
+    def attached_session(self):
+        return self._attached_session
+
+    # -- lifecycle ---------------------------------------------------------
+    def _reader_loop(self) -> None:
+        try:
+            assert self._proc is not None and self._proc.stdout is not None
+            for line in self._proc.stdout:
+                self.handle_line(line.rstrip("\n"))
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._started_ok = False
+
+    def ensure_started(self, tmux_path: str = "", session: str = "") -> bool:
+        """Start the client if it is not running. Never raises.
+
+        When ``session`` is given the client spawns already attached
+        to it (``tmux -C attach-session -t <session>``): a control-mode
+        client started with no session makes tmux create a stray
+        session for it — observed on a scratch host: sessions named
+        "1", "2", "3", each with a live shell pane, surviving after
+        the client died — so an unattached start is never done when
+        the target session is known. The probe lists the sessions
+        first, and a missing target session refuses the start
+        outright instead of spawning a client that can never attach.
+        """
+        if self.available:
+            return True
+        now = time.monotonic()
+        if now - self._last_start_attempt < self._RESTART_MIN_INTERVAL:
+            return False
+        self._last_start_attempt = now
+        binary = tmux_path or self._tmux_path
+        if not binary:
+            return False
+        try:
+            # Only start when sessions exist: `tmux -C` on a host with
+            # no server would create a stray session of its own.
+            probe = subprocess.run(
+                _tmux_argv(binary, "list-sessions", "-F", "#{session_name}"),
+                capture_output=True, text=True, timeout=5)
+            if probe.returncode != 0 or not probe.stdout.strip():
+                return False
+            if session and session not in probe.stdout.split():
+                return False
+            argv = _tmux_argv(binary, "-C")
+            if session:
+                argv += ["attach-session", "-t", session]
+            proc = subprocess.Popen(
+                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        self._proc = proc
+        self._attached_session = session or None
+        self._attached_at = time.time() if session else 0.0
+        self._started_ok = True
+        self._reader = threading.Thread(target=self._reader_loop,
+                                        name="tmuxweb-agent-control-mode",
+                                        daemon=True)
+        self._reader.start()
+        return True
+
+    def attach(self, session_name: str) -> bool:
+        """Attach the control client to a session (quoted, no shell).
+
+        This is the fallback for a client that is alive but
+        unattached (e.g. after a detach): the normal path spawns
+        already attached (see ensure_started), so it is rarely used.
+        """
+        if not self.available or not session_name:
+            return False
+        if self._attached_session == session_name:
+            return True
+        try:
+            assert self._proc is not None and self._proc.stdin is not None
+            import shlex as _shlex
+            self._proc.stdin.write(
+                "attach-session -t %s\n" % _shlex.quote(session_name))
+            self._proc.stdin.flush()
+        except (OSError, ValueError, BrokenPipeError):
+            return False
+        self._attached_session = session_name
+        self._attached_at = time.time()
+        return True
+
+    def stop(self) -> None:
+        proc, reader = self._proc, self._reader
+        self._proc = None
+        self._started_ok = False
+        self._attached_session = None
+        if proc is not None:
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.write("detach-client\n")
+                    proc.stdin.flush()
+            except (OSError, ValueError, BrokenPipeError):
+                pass
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except (OSError, subprocess.SubprocessError):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        if reader is not None:
+            reader.join(timeout=2)
+
+
+class HostWatcher:
+    """Per-pane "needs you" state from hooks + control mode + session files.
+
+    The watcher is cheap to construct and safe to use without its
+    background threads: :meth:`snapshot` computes fresh when its
+    caches are cold, so a one-shot ``needs_input`` op is fresh even
+    if the poll thread never ran. :meth:`start` adds the background
+    loop (event tail + control-mode attach + session mtimes every
+    :attr:`poll_interval`) so %output times stay warm between server
+    sweeps. Every failure mode degrades to "no signal", never to a
+    crash: a missing event file, a dead control client, an
+    unresolvable session file and an unknown provider all read as
+    "not waiting".
+
+    Caching (all fail-open to a fresh read, never to a stale "yes"):
+    the snapshot result is cached for one poll interval and keyed on
+    the pane set, so a ``needs_input`` op arriving just after the
+    poll loop reuses it; session-file resolution is cached per
+    (provider, cwd, hint) for 30s (5s for a miss) and invalidated
+    when the resolved file's mtime changes; the event file is only
+    re-parsed when its mtime/size changed, with the 1h TTL applied
+    at use time. Session-file *contents* are never cached — every
+    uncached snapshot re-reads the tail — only the "which file"
+    answer and the parsed events are.
+    """
+
+    def __init__(self, resolver: TmuxResolver, *, home=None, events_path=None,
+                 poll_interval: float = WATCHER_POLL_INTERVAL,
+                 event_ttl: float = WATCHER_EVENT_TTL_SECONDS,
+                 quiet_seconds: float = WATCHER_QUIET_SECONDS,
+                 max_control_clients: int | None = None) -> None:
+        self._resolver = resolver
+        self._home = Path(home) if home is not None else Path.home()
+        if events_path is not None:
+            self._events_path = Path(events_path)
+        else:
+            self._events_path = (self._home / ".config" / "tmuxweb-agent"
+                                 / "events.jsonl")
+        self._poll_interval = max(0.5, float(poll_interval))
+        # Snapshot cache freshness window: one poll interval. A
+        # needs_input op arriving shortly after the poll loop's
+        # snapshot reuses it instead of recomputing; a result older
+        # than this is never served. 2s of staleness is the accepted
+        # bound — the hook leg (exact, second-scale) and the server
+        # gate (the fallback) both cover the gap, and a one-shot op
+        # with a cold cache still computes fresh.
+        self._snapshot_ttl = self._poll_interval
+        self._event_ttl = float(event_ttl)
+        self._quiet_seconds = float(quiet_seconds)
+        self._max_control_clients = (
+            max(0, int(max_control_clients))
+            if max_control_clients is not None
+            else _watcher_max_control_clients())
+        self._lock = threading.Lock()
+        self._known: dict[str, dict] = {}  # pane_id -> descriptor
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        # One control-mode client per session (see _ensure_control_
+        # client), sharing one %output dict: pane ids are server-wide
+        # unique, so the dict is safe to share and a restarted client
+        # keeps its predecessor's history.
+        self._controls: dict[str, _ControlModeClient] = {}
+        self._shared_output: dict[str, float] = {}
+        self._shared_output_lock = threading.Lock()
+        self._pane_sessions: dict[str, str] = {}  # pane_id -> session name
+        self._pane_sessions_at: float = 0.0
+        self._events_seen: int = 0
+        # Snapshot cache: (pane-set key, result, monotonic timestamp).
+        self._snapshot_cache: tuple | None = None
+        # Resolution cache: (provider, cwd, hint) ->
+        # (path or None, monotonic timestamp, resolved mtime_ns or None).
+        self._resolve_cache: dict = {}
+        # Event cache: (parsed events, (mtime_ns, size) signature).
+        # The TTL is applied at use time, not at parse time, so a
+        # reused parse still expires events on schedule.
+        self._events_cache: list[dict] | None = None
+        self._events_sig: tuple | None = None
+
+    # -- event file --------------------------------------------------------
+    @property
+    def events_path(self) -> Path:
+        return self._events_path
+
+    @property
+    def events_seen(self) -> int:
+        return self._events_seen
+
+    def _read_events(self, now: float | None = None) -> list[dict]:
+        """Parsed, unexpired hook events, oldest first.
+
+        The file is re-parsed only when its (mtime_ns, size) changed
+        since the last read — the poll loop and the op path both call
+        this every ~2s, and re-parsing up to 1000 lines each time is
+        the cost this avoids. The 1h TTL is applied at use time, so
+        a reused parse still lets events expire on schedule; a
+        deleted file reads as no events (the cache is dropped).
+        """
+        now = time.time() if now is None else now
+        try:
+            stat = self._events_path.stat()
+            sig = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            self._events_cache = None
+            self._events_sig = None
+            self._events_seen = 0
+            return []
+        if sig != self._events_sig or self._events_cache is None:
+            try:
+                if stat.st_size > WATCHER_MAX_EVENTS_BYTES:
+                    self._rotate_events()
+                    stat = self._events_path.stat()
+                    sig = (stat.st_mtime_ns, stat.st_size)
+                text = self._events_path.read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError:
+                self._events_cache = None
+                self._events_sig = None
+                self._events_seen = 0
+                return []
+            parsed = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = parse_hook_event(json.loads(line))
+                except ValueError:
+                    continue
+                if event is None:
+                    continue
+                parsed.append(event)
+            self._events_cache = parsed
+            self._events_sig = sig
+        events = [e for e in (self._events_cache or [])
+                  if now - e["timestamp"] <= self._event_ttl]
+        self._events_seen = len(events)
+        return events
+
+    def _rotate_events(self) -> None:
+        """Keep only the newest lines when the file grows past the cap."""
+        try:
+            lines = self._events_path.read_text(
+                encoding="utf-8", errors="replace").splitlines()
+            kept = lines[-WATCHER_MAX_EVENTS_KEPT:]
+            tmp = self._events_path.with_name(self._events_path.name + ".tmp")
+            tmp.write_text("\n".join(kept) + ("\n" if kept else ""),
+                           encoding="utf-8")
+            os.replace(tmp, self._events_path)
+        except OSError:
+            pass
+
+    def _hook_state(self, pane: dict, events, now: float) -> tuple[bool, float | None]:
+        """(waiting, since) from hook events matching this pane.
+
+        A clearing event after the last waiting event wins; events are
+        matched by session id, then cwd, then pane id — in that order,
+        because a session id is exact and a cwd is shared by panes.
+        """
+        session_id = (pane.get("session_id") or "").strip()
+        cwd = (pane.get("cwd") or "").strip()
+        pane_id = (pane.get("pane_id") or "").strip()
+        waiting_since: float | None = None
+        for event in events:
+            if session_id and event["session_id"] == session_id:
+                match = True
+            elif cwd and event["cwd"] == cwd:
+                match = True
+            elif pane_id and event["pane_id"] == pane_id:
+                match = True
+            else:
+                match = False
+            if not match:
+                continue
+            if event["waiting"]:
+                if waiting_since is None:
+                    waiting_since = event["timestamp"]
+            else:
+                waiting_since = None
+        if waiting_since is None:
+            return False, None
+        return True, waiting_since
+
+    # -- session files -------------------------------------------------------
+    def _session_file(self, pane: dict):
+        """A pane's session file, cached per (provider, cwd, hint).
+
+        The resolver ignores ``title``, so it is not part of the key.
+        A hit is used only while its TTL holds (30s for a found file,
+        5s for a miss) and the resolved file's mtime is unchanged —
+        an appended or replaced file re-resolves at once. A brand-new
+        session file superseding the cached one for the same cwd is
+        picked up when the TTL expires (at most 30s late); the hook
+        leg and the server gate cover that window.
+        """
+        provider = (pane.get("provider") or "").lower()
+        cwd = pane.get("cwd") or ""
+        hint = pane.get("session_id") or ""
+        key = (provider, cwd, hint)
+        now_mono = time.monotonic()
+        entry = self._resolve_cache.get(key)
+        if entry is not None:
+            path, cached_at, mtime_ns = entry
+            ttl = (WATCHER_RESOLVE_TTL_SECONDS if path is not None
+                   else WATCHER_RESOLVE_MISS_TTL_SECONDS)
+            if now_mono - cached_at < ttl:
+                if path is None:
+                    return None
+                try:
+                    if path.stat().st_mtime_ns == mtime_ns:
+                        return path
+                except OSError:
+                    pass  # the file vanished: re-resolve below
+        path = _watcher_resolve_session_file(
+            provider, cwd, pane.get("title") or "", hint, home=self._home)
+        resolved_mtime = None
+        if path is not None:
+            try:
+                resolved_mtime = path.stat().st_mtime_ns
+            except OSError:
+                resolved_mtime = None
+        self._resolve_cache[key] = (path, now_mono, resolved_mtime)
+        return path
+
+    def _decision_point(self, pane: dict) -> tuple[bool, str | None]:
+        """(decision_point, session_id) — the file leg, fail-closed."""
+        path = self._session_file(pane)
+        if path is None:
+            return False, None
+        provider = (pane.get("provider") or "").lower()
+        return _watcher_decision_point(provider, path), path.stem
+
+    # -- control mode --------------------------------------------------------
+    def _refresh_pane_sessions(self) -> None:
+        """pane_id -> session name, via one list-panes (cached 30s)."""
+        now = time.monotonic()
+        if now - self._pane_sessions_at < 30 and self._pane_sessions:
+            return
+        binary = self._resolver.path if self._resolver else ""
+        if not binary:
+            return
+        try:
+            proc = subprocess.run(
+                _tmux_argv(binary, "list-panes", "-a", "-F", "#{pane_id} #{session_name}"),
+                capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return
+        if proc.returncode != 0:
+            return
+        mapping = {}
+        for line in proc.stdout.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2 and parts[0].startswith("%"):
+                mapping[parts[0]] = parts[1]
+        self._pane_sessions = mapping
+        self._pane_sessions_at = now
+
+    # -- control mode --------------------------------------------------------
+    def _ensure_control_client(self, session: str):
+        """The client for one session, or None (fail-closed).
+
+        A client is created only for a session that currently has
+        decision-point panes, and it stays attached to that session
+        for its whole life — so %output for its panes is never mixed
+        with another session's, and the quiet clock is never reset by
+        flapping between sessions (the old single client re-attached
+        on every pane and reset its clock each time). A dead client
+        restarts lazily, at most once per 10s (the client's own
+        throttle); while it is down the session reads as no signal.
+        Past the cap, no client is created and the session reads as
+        no signal.
+        """
+        if not session:
+            return None
+        binary = self._resolver.path if self._resolver else ""
+        client = self._controls.get(session)
+        if client is not None:
+            if not client.available:
+                if not client.ensure_started(binary, session):
+                    return None
+            if client.attached_session != session:
+                if not client.attach(session):
+                    return None
+            return client
+        if len(self._controls) >= self._max_control_clients:
+            return None
+        client = _ControlModeClient(
+            binary, last_output=self._shared_output,
+            lock=self._shared_output_lock)
+        if not client.ensure_started(binary, session):
+            return None
+        if client.attached_session != session:
+            if not client.attach(session):
+                client.stop()
+                return None
+        self._controls[session] = client
+        return client
+
+    def _sync_control_clients(self, sessions) -> None:
+        """Spawn clients for sessions that need one; stop the rest.
+
+        ``sessions`` is in pane order, so the cap keeps the first
+        sessions the sweep reports — the ones the server is judging
+        right now. Clients for sessions with no decision-point panes
+        are stopped, including sessions that no longer exist (they
+        drop out of the cached list-panes map within one 30s map
+        refresh), so no tmux -C process is left attached to a dead
+        session.
+        """
+        wanted: list[str] = []
+        for session in sessions:
+            if session and session not in wanted:
+                wanted.append(session)
+        for session in list(self._controls):
+            if session not in wanted:
+                self._controls[session].stop()
+                del self._controls[session]
+        for session in wanted:
+            self._ensure_control_client(session)
+
+    def _control_quiet(self, pane: dict, now: float) -> bool:
+        """True when control mode proves this pane's screen is quiet.
+
+        The pane's session comes from the cached list-panes map, and
+        quiet is judged against the client for that pane's OWN
+        session — never against another session's client. A pane
+        whose session is unknown to the map, or whose session has no
+        client (over the cap, or no decision-point panes), reads as
+        not quiet (fail-closed).
+        """
+        self._refresh_pane_sessions()
+        session = self._pane_sessions.get(pane.get("pane_id") or "")
+        if not session:
+            return False
+        client = self._ensure_control_client(session)
+        if client is None:
+            return False
+        quiet = client.quiet_seconds(pane.get("pane_id") or "", now,
+                                     session=session)
+        return quiet is not None and quiet >= self._quiet_seconds
+
+    # -- snapshot --------------------------------------------------------------
+    def snapshot(self, panes, now: float | None = None) -> dict:
+        """Per-pane waiting state for the server's ``needs_input`` op.
+
+        ``panes`` is a list of ``{"pane_id", "provider", "cwd", "title",
+        "session_id"?}``. Waiting is: a hook event says so (exact), OR
+        the session file is at a decision point AND control mode says
+        the screen is quiet (inferred — question prompts and
+        elicitation, which carry no permission event). A hook event
+        alone is enough; a decision point alone is not — that is the
+        server gate's job, and this watcher must not duplicate its
+        false-positive mode.
+
+        The result is cached for one poll interval, keyed on the pane
+        set, so a ``needs_input`` op arriving just after the poll
+        loop's snapshot reuses it instead of recomputing. A different
+        pane list, or a result older than the window, recomputes; a
+        cold cache (the poll thread never ran) computes fresh.
+        """
+        now = time.time() if now is None else now
+        normalized = []
+        for raw in panes or []:
+            if not isinstance(raw, dict):
+                continue
+            pane_id = str(raw.get("pane_id") or raw.get("id") or "")
+            if not pane_id:
+                continue
+            normalized.append({
+                "pane_id": pane_id,
+                "provider": str(raw.get("provider") or "").lower(),
+                "cwd": str(raw.get("cwd") or raw.get("path") or ""),
+                "title": str(raw.get("title") or ""),
+                "session_id": str(raw.get("session_id") or ""),
+            })
+        key = tuple(sorted(
+            (p["pane_id"], p["provider"], p["cwd"], p["title"],
+             p["session_id"]) for p in normalized))
+        cached = self._snapshot_cache
+        if (cached is not None and cached[0] == key
+                and time.monotonic() - cached[2] < self._snapshot_ttl):
+            return {pid: dict(state) for pid, state in cached[1].items()}
+        events = self._read_events(now)
+        judged = []
+        for pane in normalized:
+            pane_id = pane["pane_id"]
+            with self._lock:
+                self._known[pane_id] = pane
+            hook_waiting, hook_since = self._hook_state(pane, events, now)
+            decision, file_session = self._decision_point(pane)
+            if not pane["session_id"] and file_session:
+                pane["session_id"] = file_session
+                hook_waiting, hook_since = self._hook_state(pane, events, now)
+            judged.append((pane, hook_waiting, hook_since, decision))
+        # Clients exist only for sessions with decision-point panes
+        # right now, in pane order (so the cap keeps the sessions the
+        # sweep is judging). Sessions that lost their decision point
+        # — including sessions that no longer exist — lose their
+        # client here. Control mode is judged after this, per pane.
+        self._refresh_pane_sessions()
+        self._sync_control_clients(
+            self._pane_sessions.get(pane["pane_id"], "")
+            for pane, _, _, decision in judged if decision)
+        out: dict[str, dict] = {}
+        for pane, hook_waiting, hook_since, decision in judged:
+            control_quiet = self._control_quiet(pane, now) if decision else False
+            if hook_waiting:
+                waiting, source, since = True, "hook", hook_since
+            elif decision and control_quiet:
+                waiting, source, since = True, "control-mode", now - self._quiet_seconds
+            else:
+                waiting, source, since = False, None, None
+            out[pane["pane_id"]] = {
+                "waiting": waiting, "source": source, "since": since,
+                "decision_point": decision, "control_quiet": control_quiet,
+                "hook": hook_waiting,
+            }
+        self._snapshot_cache = (key, out, time.monotonic())
+        return out
+
+    @property
+    def control_mode_available(self) -> bool:
+        return any(client.available for client in self._controls.values())
+
+    # -- background loop -------------------------------------------------------
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._poll_loop,
+                                        name="tmuxweb-agent-watcher",
+                                        daemon=True)
+        self._thread.start()
+
+    def _poll_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                with self._lock:
+                    panes = list(self._known.values())
+                if panes:
+                    self.snapshot(panes)
+            except Exception:  # noqa: BLE001 - the watcher never kills the agent
+                log("host watcher poll failed (continuing)")
+            self._stop.wait(self._poll_interval)
+
+    def stop(self) -> None:
+        self._stop.set()
+        for client in list(self._controls.values()):
+            client.stop()
+        self._controls.clear()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=2)
+            self._thread = None
+
+
+def run_needs_input(op: dict, resolver: TmuxResolver,
+                    watcher: HostWatcher | None = None) -> dict:
+    """Answer one ``needs_input`` op. Never raises: failures become errors."""
+    panes = op.get("panes")
+    if not isinstance(panes, list):
+        return {"ok": False, "error": "needs_input op needs a list 'panes'"}
+    own_watcher = watcher is None
+    if own_watcher:
+        watcher = HostWatcher(resolver)
+    assert watcher is not None
+    try:
+        waiting = watcher.snapshot(panes)
+    except Exception as exc:  # noqa: BLE001 - the op answers, never crashes
+        return {"ok": False, "error": f"needs_input failed: {exc}"}
+    finally:
+        if own_watcher:
+            watcher.stop()
+    return {"ok": True, "waiting": waiting, "agent_version": VERSION,
+            "control_mode": watcher.control_mode_available,
+            "events_seen": watcher.events_seen}
 
 
 # ---------------------------------------------------------------------------
@@ -1034,7 +2129,8 @@ def _send_reply(conn: WSConnection, reply: dict) -> None:
             log(f"error reply also failed, connection is gone: {exc2!r}")
 
 
-def _handle_message(conn: WSConnection, text: str, resolver: TmuxResolver) -> None:
+def _handle_message(conn: WSConnection, text: str, resolver: TmuxResolver,
+                    watcher: HostWatcher | None = None) -> None:
     try:
         message = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -1048,7 +2144,7 @@ def _handle_message(conn: WSConnection, text: str, resolver: TmuxResolver) -> No
         log(f"welcome from host {who}")
         return
     if "ops" in message:
-        _send_reply(conn, handle_batch(message, resolver))
+        _send_reply(conn, handle_batch(message, resolver, watcher))
         return
     log(f"ignoring unknown message type: {message.get('type')!r}")
 
@@ -1125,7 +2221,8 @@ class _MessagePool:
 
 
 def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
-                      stop_event: threading.Event | None) -> None:
+                      stop_event: threading.Event | None,
+                      watcher: HostWatcher | None = None) -> None:
     """Hello + read loop for one connection. Raises on disconnect."""
     hello = {"type": "hello", "token": token,
              "agent": {"version": VERSION, "hostname": socket.gethostname(),
@@ -1157,7 +2254,7 @@ def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
     # server's ping, not this heartbeat.
     def _dispatch(text: str) -> None:
         try:
-            _handle_message(conn, text, resolver)
+            _handle_message(conn, text, resolver, watcher)
         except Exception as exc:  # noqa: BLE001 - a send failure is
             # answered with an error reply inside _send_reply; anything
             # reaching here is the batch itself failing, which is logged
@@ -1216,35 +2313,43 @@ def run_daemon(server: str, token: str, *, tmux: str | None = None,
     resolver.refresh()
     log(f"tmuxweb-agent {VERSION} starting (tmux={resolver.path or 'not found'})")
 
+    # The host watcher lives for the life of the daemon, across
+    # reconnects: its hook state and control-mode client survive a
+    # dropped WebSocket, and it stops only when the daemon stops.
+    watcher = HostWatcher(resolver)
+    watcher.start()
     failures = 0
-    while not stop_event.is_set():
-        try:
-            conn = WSConnection.connect(server)
-        except Exception as exc:
-            log(f"connect to {server_host(server)} failed: {exc}")
+    try:
+        while not stop_event.is_set():
+            try:
+                conn = WSConnection.connect(server)
+            except Exception as exc:
+                log(f"connect to {server_host(server)} failed: {exc}")
+                if not _sleep_interruptible(backoff_delay(failures), stop_event):
+                    break
+                failures += 1
+                continue
+            failures = 0
+            log(f"connected to {server_host(server)}")
+            try:
+                _serve_connection(conn, token, resolver, stop_event, watcher)
+            except AuthFailed as exc:
+                log(f"authentication failed: {exc}; not retrying")
+                _close_quietly(conn)
+                return 3
+            except ConnectionClosed as exc:
+                log(f"disconnected: {exc}")
+            except Exception as exc:  # noqa: BLE001 - reconnect, don't die
+                log(f"connection error: {exc!r}")
+            finally:
+                _close_quietly(conn)
+            if stop_event.is_set():
+                break
             if not _sleep_interruptible(backoff_delay(failures), stop_event):
                 break
             failures += 1
-            continue
-        failures = 0
-        log(f"connected to {server_host(server)}")
-        try:
-            _serve_connection(conn, token, resolver, stop_event)
-        except AuthFailed as exc:
-            log(f"authentication failed: {exc}; not retrying")
-            _close_quietly(conn)
-            return 3
-        except ConnectionClosed as exc:
-            log(f"disconnected: {exc}")
-        except Exception as exc:  # noqa: BLE001 - reconnect, don't die
-            log(f"connection error: {exc!r}")
-        finally:
-            _close_quietly(conn)
-        if stop_event.is_set():
-            break
-        if not _sleep_interruptible(backoff_delay(failures), stop_event):
-            break
-        failures += 1
+    finally:
+        watcher.stop()
     log("tmuxweb-agent stopped")
     return 0
 
@@ -1271,6 +2376,11 @@ def run_sh_path() -> Path:
 
 def log_path() -> Path:
     return agent_dir() / "tmuxweb-agent.log"
+
+
+def events_path() -> Path:
+    """Hook events land here (see the host watcher in this file)."""
+    return agent_dir() / "events.jsonl"
 
 
 def pid_path() -> Path:
@@ -1572,7 +2682,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
                 pass
         removed.append("unit")
     _stop_nohup()
-    for path in (config_path, run_sh_path(), log_path()):
+    for path in (config_path, run_sh_path(), log_path(), events_path()):
         try:
             path.unlink()
             removed.append(path.name)

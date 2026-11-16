@@ -40,9 +40,11 @@ from remote_hosts import ANSI_RE, PANE_ID_RE, SSHRunner, _status_chunks
 
 LOGGER = logging.getLogger("tmuxweb.agent")
 
-# The protocol only has one op in v1; both sides check, so a newer agent
-# cannot smuggle an unexpected op past the server (or vice versa).
-ALLOWED_OPS = ("exec",)
+# The protocol ops the server may send. v1 was exec-only; v1.1 adds
+# "needs_input" (the host watcher, plugins/agent/agent.py): an agent
+# that does not know it answers with an error result, and the server
+# treats that as "no agent signal" — never as a sweep failure.
+ALLOWED_OPS = ("exec", "needs_input")
 
 
 class AgentUnavailable(RuntimeError):
@@ -206,8 +208,10 @@ class AgentRegistry:
         for op in ops:
             if not isinstance(op, dict) or op.get("op") not in ALLOWED_OPS:
                 raise ValueError("unsupported op: %r" % (op.get("op") if isinstance(op, dict) else op,))
-            if not isinstance(op.get("command"), str):
+            if op.get("op") == "exec" and not isinstance(op.get("command"), str):
                 raise ValueError("exec op needs a string command")
+            if op.get("op") == "needs_input" and not isinstance(op.get("panes"), list):
+                raise ValueError("needs_input op needs a list 'panes'")
         connection = self.connection(host_id)
         if connection is None or not connection.alive:
             raise AgentUnavailable("no agent connected for host %s" % host_id)
@@ -412,6 +416,58 @@ class AgentTransport(SSHRunner):
             statuses.update(part_states)
             decisions.update(part_decisions)
         return captures, statuses, decisions
+
+    def needs_input_many(self, panes, timeout: float = 10) -> dict:
+        """Ask the host watcher which panes are waiting for the user.
+
+        ``panes`` is a list of ``{"pane_id", "provider", "cwd", "title"}``.
+        Returns ``{pane_id: {"waiting": bool, "source": "hook" |
+        "control-mode" | None, "since": <unix ts> | None, ...}}`` for the
+        panes the agent reports on, or ``{}`` when there is no agent
+        signal at all — no live agent, a timeout, a malformed reply, or
+        an old agent (pre-1.1) that answers the op with an error. Every
+        one of those degrades to the server-side gate (PR #24), never
+        to a sweep failure: this is a precision layer, not a leg the
+        gate depends on. Federation transports do not have this method
+        and are never asked.
+        """
+        host_id = str(self.host.get("id") or "")
+        descriptors = []
+        for pane in panes or []:
+            if not isinstance(pane, dict):
+                continue
+            pane_id = pane.get("pane_id") or pane.get("id")
+            if not pane_id:
+                continue
+            descriptors.append({
+                "pane_id": str(pane_id),
+                "provider": str(pane.get("provider") or ""),
+                "cwd": str(pane.get("cwd") or pane.get("path") or ""),
+                "title": str(pane.get("title") or ""),
+            })
+        if not descriptors:
+            return {}
+        try:
+            packet = self.registry.call(
+                host_id, [{"op": "needs_input", "panes": descriptors}],
+                timeout=timeout)
+        except (AgentUnavailable, RuntimeError):
+            return {}
+        except Exception:  # noqa: BLE001 - no agent signal, not a failure
+            return {}
+        if not isinstance(packet, dict) or not packet.get("ok"):
+            return {}
+        results = packet.get("results") or []
+        if len(results) != 1 or not isinstance(results[0], dict):
+            return {}
+        result = results[0]
+        if not result.get("ok"):
+            return {}  # old agent: unknown op -> error result
+        waiting = result.get("waiting")
+        if not isinstance(waiting, dict):
+            return {}
+        return {str(pane_id): entry for pane_id, entry in waiting.items()
+                if isinstance(entry, dict)}
 
     def capture_with_pane(self, pane_id: str, history: int = 500) -> tuple[dict, str]:
         """List panes and capture one pane in a single agent round trip.

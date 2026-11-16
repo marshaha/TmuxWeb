@@ -1,0 +1,1 @@
+{"hooks":{"PermissionRequest":[{"hooks":[{"command":"python3 ~/.config/tmuxweb-agent/hooks/tmuxweb-hook.py PermissionRequest","timeout":5,"type":"command"}],"matcher":""}],"Stop":[{"hooks":[{"command":"python3 ~/.config/tmuxweb-agent/hooks/tmuxweb-hook.py Stop","timeout":5,"type":"command"}]}]}}

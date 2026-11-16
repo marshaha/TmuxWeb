@@ -230,6 +230,47 @@ class SnapshotHistory:
         return "\n".join(accumulated) + ("\n" if accumulated else "")
 
 
+def effective_decision_point(surface_idle, native_decision, agent_waiting) -> bool:
+    """Leg 1 of the needs-input gate with the host watcher merged in.
+
+    The agent event wins when present: a hook firing is exact, and a
+    control-mode + file decision is the same signal the server reads
+    from the session file, only fresher. Otherwise the server's own
+    decision stands. Agent silence (no agent, old agent, failed reply)
+    changes nothing — the server gate (PR #24) remains the fallback,
+    and the gate's other two legs (stable screen, parsed menu) still
+    have to hold before anything lights up.
+    """
+    if agent_waiting:
+        return True
+    return bool(surface_idle or native_decision)
+
+
+def _agent_waiting_source(agent_entry) -> str | None:
+    """The watcher source ("hook" / "control-mode") for a pane, or None."""
+    if not isinstance(agent_entry, dict) or not agent_entry.get("waiting"):
+        return None
+    source = agent_entry.get("source")
+    return source if source in ("hook", "control-mode") else None
+
+
+def _pane_needs_input_descriptor(pane: dict) -> dict:
+    """What the host watcher needs to judge one pane."""
+    return {"pane_id": pane.get("pane_id") or pane.get("id"),
+            "provider": pane.get("provider") or "",
+            "cwd": pane.get("path") or "",
+            "title": pane.get("title") or ""}
+
+
+def _merge_agent_waiting(agent_waiting: dict, host_id: str, pane_id: str):
+    """One pane's watcher entry out of a host-scoped waiting map."""
+    if not isinstance(agent_waiting, dict):
+        return None
+    # Host-scoped only: "%0" exists on every host and means a different
+    # pane, so an unscoped fallback would cross hosts.
+    return agent_waiting.get(f"{host_id}~{pane_id}")
+
+
 class TmuxBackend:
     @staticmethod
     def _reverse_lines(path: Path, chunk_size: int = 64 * 1024, max_line: int = 8 * 1024 * 1024):
@@ -2044,6 +2085,26 @@ def create_app(
                 for key, flag in decision_listing:
                     native_decision[key] = bool(flag)
 
+        # Host watcher (agent 1.1+): one extra batch per agent host per
+        # sweep, asking the on-host watcher which panes are waiting.
+        # Duck-typed — SSH-only and federation transports have no
+        # needs_input_many and are simply not asked; an agent that does
+        # not know the op answers {} (see transport.py). Fail closed:
+        # any failure here leaves the server gate as the fallback.
+        agent_waiting: dict[str, dict] = {}
+        for _key, transport, host_id, _pane_ids, panes, _status_ids in groups.values():
+            ask = getattr(transport, "needs_input_many", None)
+            if ask is None:
+                continue
+            try:
+                waiting = ask([_pane_needs_input_descriptor(pane)
+                               for pane in panes.values()], timeout=10)
+            except Exception:  # noqa: BLE001 - no agent signal, not a failure
+                continue
+            for pane_id, entry in (waiting or {}).items():
+                if isinstance(entry, dict):
+                    agent_waiting[f"{host_id}~{pane_id}"] = entry
+
         # Ask each agent's own session file whether its turn is running: the screen lies
         # (a status bar saying "thinking: high" is a model setting, a TUI redraws while
         # idle) while the session file records the turn boundary. Remote verdicts
@@ -2112,14 +2173,21 @@ def create_app(
             # status (activity/screen fallbacks would let a streaming pane
             # light up). Remote panes get the same decision via verdicts_many /
             # capture_and_status_many in the same packet as their capture.
+            # The host watcher (agent 1.1+) merges in here: an agent event
+            # wins when present, agent silence changes nothing.
+            agent_entry = _merge_agent_waiting(agent_waiting, host_id, actual_pane_id)
+            agent_source = _agent_waiting_source(agent_entry)
             gated_prompt = needs_gate.observe(
-                pane["id"], decision_point=(surface == agent_status.IDLE
-                                            or native_decision.get(pane["id"], False)),
+                pane["id"], decision_point=effective_decision_point(
+                    surface == agent_status.IDLE,
+                    native_decision.get(pane["id"], False),
+                    bool(agent_source)),
                 screen_text=text)
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
                     "host_name": host_name, "target": target, "provider": provider,
                     "status": status, "status_source": source, "activity_age": age,
                     "needs_input": gated_prompt is not None,
+                    "agent_waiting": agent_source,
                     # Only a gated prompt ever leaves the server: an ungated
                     # parse is not shipped, so no client can render it as a
                     # "needs you" card on parsing alone.
