@@ -951,10 +951,26 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   function syncEarlierBar(){const bar=$('earlier-bar'),button=$('load-earlier');
     if(!bar)return;bar.hidden=!(state.hasMore&&state.mode==='chat'&&state.selected);
     button.disabled=!!state.loadingEarlier;button.textContent=state.loadingEarlier?'加载中…':'加载更早的消息';}
+  // The message at the top of the viewport, with its distance from the
+  // viewport top. Used to keep the reader's place across a rebuild: a
+  // scrollHeight delta cannot do that under content-visibility, where
+  // off-screen messages count their 150px intrinsic size and a rebuild
+  // forgets every remembered size (the delta can go negative and throw the
+  // reader to the top). The anchor's own position is measured live.
+  function firstVisibleMessage(){const host=$('transcript'),viewTop=scroll.getBoundingClientRect().top;
+    for(const node of host.querySelectorAll('.chat-message')){
+      const rect=node.getBoundingClientRect();
+      if(rect.bottom>viewTop+1)return {id:node.dataset.id||'',top:rect.top-viewTop};}
+    return null;}
+  function restoreAnchor(anchor){if(!anchor||!anchor.id)return;
+    const node=$('transcript').querySelector(`[data-id="${CSS.escape(anchor.id)}"]`);
+    if(!node)return;
+    const viewTop=scroll.getBoundingClientRect().top;
+    scroll.scrollTop+=node.getBoundingClientRect().top-viewTop-anchor.top;}
   async function loadEarlier(){const id=state.selected;
     if(!id||!state.hasMore||state.loadingEarlier)return;
     state.loadingEarlier=true;syncEarlierBar();
-    const previous=state.transcriptMessages.length,height=scroll.scrollHeight;
+    const previous=state.transcriptMessages.length,anchor=firstVisibleMessage();
     state.transcriptLimit=Math.min(TRANSCRIPT_PAGE_MAX,Math.max(state.transcriptLimit*2,TRANSCRIPT_PAGE));
     try{const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit}`);
       if(state.selected!==id||state.mode!=='chat')return;
@@ -962,8 +978,14 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       state.hasMore=!!d.has_more&&messages.length>previous;
       rememberTranscript(id,d);state.transcriptSig=transcriptSignature(d);state.transcriptMtime=d.mtime;
       renderTranscript(messages);
-      // keep the reader's place: only the content above changed
-      requestAnimationFrame(()=>{scroll.scrollTop+=scroll.scrollHeight-height;state.stick=false;});
+      // keep the reader's place: only the content above changed. Correct three
+      // times: each pass puts the anchor back per the live geometry, and each
+      // pass lets the messages newly next to the viewport be measured for
+      // real — their true heights differ from the 150px estimates, which
+      // would otherwise leave a few hundred px of drift.
+      requestAnimationFrame(()=>{restoreAnchor(anchor);state.stick=false;
+        requestAnimationFrame(()=>{restoreAnchor(anchor);
+          requestAnimationFrame(()=>restoreAnchor(anchor));});});
     }catch(error){if(state.selected===id)showError(error.message);}
     finally{state.loadingEarlier=false;syncEarlierBar();}}
   function cachedTranscript(id){
@@ -1115,21 +1137,36 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     return window.TmuxUploads?TmuxUploads.bubbleHtml(message.text,pane):htmlEscape(message.text);
   }
   function deliveryHtml(pending,localId){if(pending.status==='sending')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>发送中</span>`;if(pending.status==='sent')return `<span class="message-delivery sent">已发送 ✓</span>`;if(pending.status==='retrying')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>正在重试提交…</span>`;return `<span class="message-delivery failed">发送失败<button class="retry-send" type="button" data-resend="${esc(localId||'')}" title="重新发送这条消息">重发</button></span>`;}
-  function transcriptBubble(message){
+  // Borrowed from Open WebUI (src/lib/components/chat/Messages/Message.svelte:55-71,173-175):
+  // off-screen messages skip layout/paint via content-visibility:auto.
+  // Two exclusions, same as upstream: the last message is the current turn —
+  // streaming updates always land on it (mergeIncrementalMessages anchors on the
+  // last id) — and WebKit, whose content-visibility implementation has paint bugs
+  // that leave on-screen messages blank (#26712). iOS WebViews and home screen
+  // apps carry no Safari token, hence the vendor check. Pending (optimistic)
+  // bubbles are built elsewhere and never get the class.
+  function isWebKit(){return navigator.vendor==='Apple Computer, Inc.'
+    ||/^((?!chrome|android).)*safari/i.test(navigator.userAgent);}
+  function virtualizedClass(index,total){
+    if(isWebKit()||index>=total-1)return '';
+    return ' msg-virtualized';}
+  function transcriptBubble(message,index,total){
+    const virt=virtualizedClass(index,total);
     const copy=`<div class="msg-actions"><button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`;
     return message.role==='user'
-      ? `<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copy}</div></article>`
-      : `<article class="chat-message assistant" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copy}</div></article>`;
+      ? `<article class="chat-message user${virt}" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copy}</div></article>`
+      : `<article class="chat-message assistant${virt}" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copy}</div></article>`;
   }
   // A streaming agent appends one message at a time. Rebuilding every bubble (and
   // re-parsing every markdown block) for each of them is what made a long chat
   // feel heavy, so an append-only update only renders the new tail.
   function renderTranscript(messages=state.transcriptMessages){hideLoadCard();
     state.transcriptMessages=messages;
+    const prevText=state.messageText||new Map();
     state.messageText=new Map(messages.map(message=>[String(message.id),String(message.text||'')]));
     reconcilePending(messages);
     const host=$('transcript'),clockTime=ts=>{if(ts===null||ts===undefined||ts==='')return '';const numeric=typeof ts==='number'||/^\d+(\.\d+)?$/.test(String(ts).trim());const d=numeric?new Date(Number(ts)>1e12?Number(ts):Number(ts)*1000):new Date(ts);if(Number.isNaN(d.getTime()))return '';const pad=v=>String(v).padStart(2,'0'),now=new Date();return (d.toDateString()===now.toDateString()?'':`${pad(d.getMonth()+1)}-${pad(d.getDate())} `)+`${pad(d.getHours())}:${pad(d.getMinutes())}`},
-copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<span class="msg-time">${clockTime(message.timestamp)}</span>`:''}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`,formal=messages.map(message=>message.role==='user'?`<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copyButton(message)}</div></article>`:`<article class="chat-message assistant" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copyButton(message)}</div></article>`),pending=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
+copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<span class="msg-time">${clockTime(message.timestamp)}</span>`:''}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`,formal=messages.map((message,index)=>message.role==='user'?`<article class="chat-message user${virtualizedClass(index,messages.length)}" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copyButton(message)}</div></article>`:`<article class="chat-message assistant${virtualizedClass(index,messages.length)}" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copyButton(message)}</div></article>`),pending=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
       .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0))
       .map(([localId,message])=>({pending:message,html:`<article class="chat-message user pending" data-id="${esc(localId)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${deliveryHtml(message,localId)}</div></article>`}));host.classList.add('active');$('message-shell').hidden=true;
     const ids=messages.map(message=>String(message.id));
@@ -1142,11 +1179,34 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
       &&rendered.every((id,index)=>ids[index]===id);
     if(canAppend){
       const holder=document.createElement('div');
-      holder.innerHTML=messages.slice(rendered.length).map(transcriptBubble).join('');
+      holder.innerHTML=messages.slice(rendered.length).map((message,offset)=>transcriptBubble(message,rendered.length+offset,messages.length)).join('');
       enhanceBlocks(holder);rewriteLocalLinks(holder);enhancePathsLazy(host);
       const fragment=document.createDocumentFragment();
       while(holder.firstChild)fragment.appendChild(holder.firstChild);
       host.appendChild(fragment);
+      state.renderedIds=ids;
+      return;
+    }
+    // Same ids, only text changed — the streaming case: every poll grows the
+    // last message. A full innerHTML rebuild would destroy every bubble, and
+    // with content-visibility that also destroys every remembered intrinsic
+    // size, so scrollHeight collapses to estimates and a reader scrolled up
+    // loses their place on every poll. Update only the changed bubbles in
+    // place instead; the rest keep their nodes (and their sizes).
+    if(!pending.length&&rendered.length===ids.length
+        &&rendered.every((id,index)=>ids[index]===id)
+        &&domIds.length===rendered.length&&domIds.every((id,index)=>id===rendered[index])){
+      let changed=0;
+      messages.forEach((message,index)=>{
+        if((prevText.get(String(message.id))||'')===String(message.text||''))return;
+        const node=host.querySelector(`[data-id="${CSS.escape(String(message.id))}"]`);
+        if(!node)return;
+        const wrap=document.createElement('div');
+        wrap.innerHTML=formal[index];
+        node.replaceWith(...wrap.childNodes);
+        changed++;
+      });
+      if(changed){enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);}
       state.renderedIds=ids;
       return;
     }
