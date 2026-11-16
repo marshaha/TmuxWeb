@@ -1,4 +1,4 @@
-// Unit tests for the background-retry display in web/index.html and web/share.html.
+// Unit tests for the background-retry display in web/assets/console-app.js and web/share.html.
 // Run with: node --test tests/js/background-retry.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const root = path.dirname(new URL(import.meta.url).pathname);
-const indexPage = fs.readFileSync(path.join(root, '..', '..', 'web', 'index.html'), 'utf8');
+const indexPage = fs.readFileSync(path.join(root, '..', '..', 'web', 'assets', 'console-app.js'), 'utf8');
 const sharePage = fs.readFileSync(path.join(root, '..', '..', 'web', 'share.html'), 'utf8');
 
 function grab(page, name) {
