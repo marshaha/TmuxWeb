@@ -184,6 +184,11 @@
   .prompt-option.picked{border-color:var(--accent);background:rgba(201,100,66,.14)}
   .prompt-option.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
   .prompt-label{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+  .prompt-option-text{display:flex;flex:1 1 auto;flex-direction:column;gap:2px;min-width:0}
+  .prompt-option-text .prompt-label{flex:none}
+  .prompt-desc{color:var(--muted);font-weight:400;font-size:11px;line-height:1.45;overflow-wrap:anywhere}
+  .prompt-rec{display:inline-block;margin-left:6px;padding:1px 5px;border-radius:999px;background:color-mix(in srgb,var(--accent) 16%,var(--card));color:var(--accent);font-size:10px;font-weight:700;vertical-align:1px}
+  .prompt-timeout{flex:none;color:var(--muted);font-size:11px;white-space:nowrap}
   .prompt-meta{flex:none;max-width:46%;color:var(--muted);font-weight:400;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .prompt-toggles{display:flex;flex-direction:column;gap:7px;margin-top:10px;padding-top:9px;border-top:1px dashed var(--line)}
   .prompt-toggle{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
@@ -217,7 +222,7 @@
   <p class="prompt-hint" id="needs-you-card-hint" hidden></p>
   <div class="prompt-options" id="needs-you-card-options" role="listbox"></div>
   <div class="prompt-toggles" id="needs-you-card-toggles" hidden></div>
-  <div class="prompt-foot"><span class="prompt-state" id="needs-you-card-state"></span><button class="prompt-btn" id="needs-you-card-esc" type="button">Esc 取消</button></div>
+  <div class="prompt-foot"><span class="prompt-state" id="needs-you-card-state"></span><span class="prompt-timeout" id="needs-you-card-timeout"></span><button class="prompt-btn" id="needs-you-card-esc" type="button">Esc 取消</button></div>
 </div>
 <div class="prompt-card" id="prompt-card" hidden tabindex="0" role="dialog" aria-label="agent 正在等待选择">
   <div class="prompt-head"><span class="prompt-title" id="prompt-card-title"></span><button class="prompt-x" id="prompt-card-close" type="button" title="收起（不发任何键）" aria-label="收起"><svg class="ico"><use href="#i-close"/></svg></button></div>

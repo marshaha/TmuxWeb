@@ -123,6 +123,28 @@ COMPACT = """
  Enter select · Esc cancel
 """
 
+# Claude 的 AskUserQuestion 式菜单：选项下写一行缩进更深的描述
+ASK_USER_CURSOR = """
+ Which approach should I use?
+
+ ❯ Quick fix
+     Patch the bug in place
+   Full refactor
+     Restructure the module
+
+ Enter select · Esc cancel
+"""
+
+# 同上，编号列表：描述行和 label 同列，比行首更靠右
+ASK_USER_NUMBERED = """
+ What would you like to do?
+ 1. Compact and continue
+    Summarize the conversation first
+ 2. Start a new session
+ 3. Cancel
+ Enter select · Esc cancel
+"""
+
 YES_NO = """
  Apply this patch to src/app.py? [y/N]
 """
@@ -324,6 +346,70 @@ class NotAMenuTests(unittest.TestCase):
     def test_a_numbered_list_typed_in_chat_is_not_a_menu(self):
         """没有提示行的编号列表是正文，不是等待中的选择。"""
         self.assertIsNone(prompts.parse_screen(NUMBERED_CHAT_TEXT))
+
+
+class DescriptionTests(unittest.TestCase):
+    def test_a_cursor_menu_carries_the_description_under_each_option(self):
+        found = prompts.parse_screen(ASK_USER_CURSOR)
+        self.assertIsNotNone(found)
+        self.assertEqual([option["label"] for option in found["options"]],
+                         ["Quick fix", "Full refactor"])
+        self.assertEqual(found["options"][0]["description"], "Patch the bug in place")
+        self.assertEqual(found["options"][1]["description"], "Restructure the module")
+        # 描述行不能变成选项，也不能截断菜单
+        self.assertEqual(found["hint"], "Enter select · Esc cancel")
+
+    def test_a_numbered_menu_carries_descriptions_too(self):
+        found = prompts.parse_screen(ASK_USER_NUMBERED)
+        self.assertIsNotNone(found)
+        self.assertEqual([option["label"] for option in found["options"]],
+                         ["Compact and continue", "Start a new session", "Cancel"])
+        self.assertEqual(found["options"][0]["description"],
+                         "Summarize the conversation first")
+        self.assertNotIn("description", found["options"][1])
+        self.assertNotIn("description", found["options"][2])
+
+    def test_the_first_option_is_marked_recommended_and_only_it_is(self):
+        for screen in (ASK_USER_CURSOR, ASK_USER_NUMBERED, TRUST, COMPACT):
+            found = prompts.parse_screen(screen)
+            self.assertIs(found["options"][0].get("recommended"), True)
+            for option in found["options"][1:]:
+                self.assertNotIn("recommended", option)
+
+    def test_a_confirm_menu_marks_yes_recommended(self):
+        found = prompts.parse_screen(YES_NO)
+        self.assertIs(found["options"][0].get("recommended"), True)
+        self.assertEqual(found["options"][0]["label"], "是")
+        self.assertNotIn("recommended", found["options"][1])
+
+    def test_a_hint_line_is_never_a_description(self):
+        """选项行下面直接就是提示行：提示行不能被当成上一项的描述。"""
+        screen = (" What would you like to do?\n"
+                  " ❯ Quick fix\n"
+                  "   Full refactor\n"
+                  " Enter select · Esc cancel\n")
+        found = prompts.parse_screen(screen)
+        self.assertIsNotNone(found)
+        self.assertNotIn("description", found["options"][0])
+        self.assertNotIn("description", found["options"][1])
+
+    def test_an_overlong_continuation_is_not_a_description(self):
+        """描述行超过 160 字就不是描述：大概率是正文，不能吞。
+        （直接钉 _description_after：端到端里超长行会被既有的整菜单
+        合理性检查挡掉，到不了这里。）"""
+        lines = [" ❯ Quick fix", "     " + "x" * 200, "   Full refactor"]
+        self.assertEqual(prompts._description_after(lines, 0, 4), "")
+        self.assertFalse(prompts._looks_like_description(lines[1], 4))
+
+    def test_model_picker_rows_are_options_not_descriptions(self):
+        """回归：kimi 模型选择器的无标记行比 label 列深一格（给 ❯ 留位），
+        绝不能被当成上一项的描述吃掉。"""
+        found = prompts.parse_screen(MODEL_PICKER)
+        self.assertIsNotNone(found)
+        self.assertEqual(len(found["options"]), 8)
+        self.assertIn("K3.1 Pro", [option["label"] for option in found["options"]])
+        for option in found["options"]:
+            self.assertNotIn("description", option)
 
 
 class NumberedTests(unittest.TestCase):

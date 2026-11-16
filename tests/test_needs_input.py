@@ -176,6 +176,48 @@ class EnrichPromptTests(unittest.TestCase):
         self.assertIn("keys", enriched["options"][0])
         self.assertIsNone(needs_input.enrich_prompt(None))
 
+    def test_enriching_keeps_descriptions_and_the_recommended_mark(self):
+        """描述行与首选项标记随 prompt 下发，前端照单渲染，不用再算。"""
+        menu = """
+ Which approach should I use?
+
+ ❯ Quick fix
+     Patch the bug in place
+   Full refactor
+     Restructure the module
+
+ Enter select · Esc cancel
+"""
+        found = needs_input.enrich_prompt(prompts.parse_screen(menu))
+        self.assertIsNotNone(found)
+        self.assertEqual(found["options"][0]["description"], "Patch the bug in place")
+        self.assertEqual(found["options"][1]["description"], "Restructure the module")
+        self.assertIs(found["options"][0].get("recommended"), True)
+        self.assertNotIn("recommended", found["options"][1])
+        self.assertEqual(found["options"][0]["keys"][-1], "Enter")
+
+    def test_a_description_only_change_does_not_reset_stability(self):
+        """描述只是展示文本：两轮观测之间只有描述换行重排，稳定计数不能重来，
+        否则卡片永远亮不起来。"""
+        first = """
+ Which approach should I use?
+
+ ❯ Quick fix
+     Patch the bug in place
+   Full refactor
+     Restructure the module
+
+ Enter select · Esc cancel
+"""
+        second = first.replace("Patch the bug in place", "Patch it right here")
+        self.assertEqual(needs_input.prompt_signature(prompts.parse_screen(first)),
+                         needs_input.prompt_signature(prompts.parse_screen(second)))
+        gate = NeedsInputGate()
+        self.assertIsNone(gate.observe("%4", decision_point=IDLE, screen_text=first))
+        found = gate.observe("%4", decision_point=IDLE, screen_text=second)
+        self.assertIsNotNone(found, "只有描述变了，第二轮就该亮灯")
+        self.assertEqual(found["options"][0]["description"], "Patch it right here")
+
 
 if __name__ == "__main__":
     unittest.main()
