@@ -15,32 +15,22 @@ lets the user type any id by hand.
 # 值就是各 CLI 自己的 `/model` 参数：claude 认可 opus/sonnet/haiku 这类别名，
 # kimi 认的是 /model 菜单里显示的名字（K3、K3-256k、K3.1 Pro …），codex 认模型 id。
 # 清单只是几个常用项，"自定义" 覆盖其余；真正权威的是 agent 自己的 /model 菜单。
-PRESETS = {
-    "claude": ("opus", "sonnet", "haiku"),
-    "codex": ("gpt-5.6-sol", "gpt-5-codex", "o3"),
-    "kimi": ("K3.1 Pro", "K3", "K3-256k", "K2.7 Code Highspeed"),
-    "hermes": (),
-}
+# All three tables come from the providers/ registry — one place to add a
+# harness's models.
+import providers as _providers
 
-# How to ask that CLI to switch model.  Kimi Code only understands the
+PRESETS = {spec.name: spec.model_presets for spec in _providers.all_specs()}
+SWITCH_TEMPLATES = {spec.name: spec.model_switch_template
+                    for spec in _providers.all_specs()}
+PROVIDER_LABELS = {spec.name: spec.provider_label
+                   for spec in _providers.all_specs()}
+
+# How to ask that CLI to switch model. Kimi Code only understands the
 # argument-less form: `/model <anything>` answers "Unknown model alias", so we
-# open its own picker and let the user choose there.
-SWITCH_TEMPLATES = {
-    "claude": "/model {model}",
-    "codex": "/model {model}",
-    "hermes": "/model {model}",
-    "kimi": "/model",
-}
-PICKER_ONLY = {"kimi"}
-
-
-# 下拉里按 provider 分组显示：模型属于哪家，是切模型时最先要看清的东西。
-PROVIDER_LABELS = {
-    "claude": "Anthropic",
-    "codex": "OpenAI",
-    "kimi": "Kimi Code",
-    "hermes": "Hermes",
-}
+# open its own picker and let the user choose there. A provider whose
+# template takes no {model} is picker-only.
+PICKER_ONLY = {name for name, template in SWITCH_TEMPLATES.items()
+               if "{model}" not in template}
 
 
 def provider_label(provider: str, configured: str = "") -> str:

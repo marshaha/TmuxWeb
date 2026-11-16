@@ -56,8 +56,10 @@ file, now version 1.1.0) gains a `HostWatcher`:
    `~/.claude/projects/<dashified-cwd>/*.jsonl`, Codex
    `~/.codex/sessions/**/*.jsonl`, Kimi
    `~/.kimi-code/sessions/wd_*/session_*/agents/main/wire.jsonl`,
-   with the outstanding-call predicates ported (the agent is deployed
-   standalone and cannot import server modules).
+   with the outstanding-call predicates and session resolvers from
+   the providers/ registry, generated into the agent program (the
+   agent is deployed as one file and cannot import server modules —
+   see providers/README.md).
 
 Waiting is: hook event says so (exact), OR decision point AND screen
 quiet (inferred). A decision point alone is **not** waiting — that is

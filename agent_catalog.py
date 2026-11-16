@@ -13,12 +13,24 @@ import shlex
 import shutil
 from pathlib import Path
 
+import providers
+
 # name -> what to look for.  Order is the order the UI shows.
+# The four supported harnesses come from the providers/ registry (bins
+# and labels); opencode and gemini stay catalog-only — a binary on PATH
+# and nothing else — because no other layer honors them: opencode has
+# no verified transcript source yet, and gemini has no working binary
+# on any host (see providers/README.md). Do not "support" them by
+# listing them here; add a real provider module instead.
 AGENTS = (
-    {"name": "hermes", "label": "Hermes", "bins": ("hermes",)},
-    {"name": "claude", "label": "Claude Code", "bins": ("claude",)},
-    {"name": "codex", "label": "Codex", "bins": ("codex",)},
-    {"name": "kimi", "label": "Kimi Code", "bins": ("kimi",)},
+    {"name": "hermes", "label": providers.get("hermes").label,
+     "bins": providers.get("hermes").bins},
+    {"name": "claude", "label": providers.get("claude").label,
+     "bins": providers.get("claude").bins},
+    {"name": "codex", "label": providers.get("codex").label,
+     "bins": providers.get("codex").bins},
+    {"name": "kimi", "label": providers.get("kimi").label,
+     "bins": providers.get("kimi").bins},
     {"name": "opencode", "label": "OpenCode", "bins": ("opencode",)},
     {"name": "gemini", "label": "Gemini CLI", "bins": ("gemini",)},
 )
