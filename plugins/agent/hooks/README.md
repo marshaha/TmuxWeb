@@ -3,7 +3,7 @@
 These files are **templates only**. Nothing in this PR installs them:
 installing a hook changes what runs inside a real agent session, so
 it is a deployment action the user does by hand, host by host, after
-the agent 1.1.0 is deployed. The agent works without hooks (the
+the agent 1.2.0 is deployed. The agent works without hooks (the
 session-file + control-mode legs still report); hooks only make the
 signal exact.
 

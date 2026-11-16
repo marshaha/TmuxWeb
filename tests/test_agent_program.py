@@ -146,6 +146,56 @@ def _handshake_101(conn: _MiniConn) -> str:
     return request
 
 
+def _welcome(conn: _MiniConn, next_seq: int = 1) -> None:
+    """Send a protocol-1.2.0 welcome, as the real server does."""
+    conn.send_text(json.dumps({
+        "type": "welcome", "host_id": "h1", "host_name": "h1",
+        "protocol": "1.2.0", "next_seq": next_seq}))
+
+
+class _MiniWSMulti:
+    """Like _MiniWS, but serves several connections in turn.
+
+    The reconnect tests need the daemon to dial twice: the first
+    handler runs the first connection, the second handler the next
+    one, and so on. Each handler gets its own _MiniConn.
+    """
+
+    def __init__(self, handlers):
+        self.handlers = list(handlers)
+        self.sock = socket.socket()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        self.sock.listen(len(self.handlers))
+        self.sock.settimeout(20.0)
+        self.error = None
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+
+    def _serve(self):
+        try:
+            for handler in self.handlers:
+                conn, _ = self.sock.accept()
+                try:
+                    handler(_MiniConn(conn))
+                finally:
+                    conn.close()
+        except Exception as exc:  # noqa: BLE001 - surfaced to the test
+            self.error = exc
+        finally:
+            self.sock.close()
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.thread.join(timeout=25)
+        if self.error is not None:
+            raise self.error
+        return False
+
+
 class _PacedReader:
     """Reads WebSocket frames off a socket at ~``rate_bps``.
 
@@ -971,8 +1021,9 @@ class DaemonTests(unittest.TestCase):
             _handshake_101(conn)
             opcode, payload = conn.read_frame()
             seen["hello"] = json.loads(payload.decode("utf-8"))
+            _welcome(conn)
             conn.send_text(json.dumps({
-                "id": "req-1",
+                "id": "req-1", "seq": 1,
                 "ops": [{"op": "exec", "command": "echo hello-agent",
                          "timeout": 5}]}))
             opcode, payload = conn.read_frame()
@@ -985,8 +1036,11 @@ class DaemonTests(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertEqual(seen["hello"]["type"], "hello")
         self.assertEqual(seen["hello"]["token"], "good-token")
+        self.assertEqual(seen["hello"]["cursor"], 0)
+        self.assertEqual(seen["hello"]["agent"]["version"], "1.2.0")
         reply = seen["reply"]
         self.assertEqual(reply["id"], "req-1")
+        self.assertEqual(reply["seq"], 1)
         self.assertEqual(reply["ok"], True)
         self.assertEqual(
             base64.b64decode(reply["results"][0]["stdout_b64"]), b"hello-agent\n")
@@ -1102,11 +1156,12 @@ class ConcurrentDaemonTests(unittest.TestCase):
             opcode, payload = conn.read_frame()
             self.assertEqual(json.loads(payload.decode("utf-8"))["type"],
                              "hello")
+            _welcome(conn)
             sent_at = time.monotonic()
-            conn.send_text(json.dumps({"id": "slow-1", "ops": [
+            conn.send_text(json.dumps({"id": "slow-1", "seq": 1, "ops": [
                 {"op": "exec", "command": "sleep 5; echo slow",
                  "timeout": 10}]}))
-            conn.send_text(json.dumps({"id": "fast-1", "ops": [
+            conn.send_text(json.dumps({"id": "fast-1", "seq": 2, "ops": [
                 {"op": "exec", "command": "echo fast", "timeout": 5}]}))
             deadline = sent_at + 10
             while len(arrivals) < 2 and time.monotonic() < deadline:
@@ -1139,8 +1194,9 @@ class ConcurrentDaemonTests(unittest.TestCase):
         def handler(conn):
             _handshake_101(conn)
             conn.read_frame()  # hello
-            for job_id, delay, word in jobs:
-                conn.send_text(json.dumps({"id": job_id, "ops": [
+            _welcome(conn)
+            for seq, (job_id, delay, word) in enumerate(jobs, start=1):
+                conn.send_text(json.dumps({"id": job_id, "seq": seq, "ops": [
                     {"op": "exec",
                      "command": f"sleep {delay}; echo {word}",
                      "timeout": 5}]}))
@@ -1176,7 +1232,8 @@ class ConcurrentDaemonTests(unittest.TestCase):
             def handler(conn):
                 _handshake_101(conn)
                 conn.read_frame()  # hello
-                conn.send_text(json.dumps({"id": "slow-hb", "ops": [
+                _welcome(conn)
+                conn.send_text(json.dumps({"id": "slow-hb", "seq": 1, "ops": [
                     {"op": "exec", "command": "sleep 3; echo slow",
                      "timeout": 5}]}))
                 deadline = time.monotonic() + 2.5
@@ -1210,11 +1267,13 @@ class ConcurrentDaemonTests(unittest.TestCase):
         def handler(conn):
             _handshake_101(conn)
             conn.read_frame()  # hello
-            conn.send_text(json.dumps({"id": "slow-chain", "ops": [
+            _welcome(conn)
+            conn.send_text(json.dumps({"id": "slow-chain", "seq": 1, "ops": [
                 {"op": "exec", "command": "sleep 1; echo slow",
                  "timeout": 5}]}))
-            for step, word in (("c1", "one"), ("c2", "two")):
-                conn.send_text(json.dumps({"id": step, "ops": [
+            for seq, (step, word) in enumerate(
+                    (("c1", "one"), ("c2", "two")), start=2):
+                conn.send_text(json.dumps({"id": step, "seq": seq, "ops": [
                     {"op": "exec",
                      "command": f"printf '%s\\n' {word} >> '{marker}'",
                      "timeout": 5}]}))
@@ -1228,7 +1287,7 @@ class ConcurrentDaemonTests(unittest.TestCase):
                     msg = json.loads(payload.decode("utf-8"))
                     if "id" in msg:
                         seen[msg["id"]] = msg
-            conn.send_text(json.dumps({"id": "c3", "ops": [
+            conn.send_text(json.dumps({"id": "c3", "seq": 4, "ops": [
                 {"op": "exec", "command": f"cat '{marker}'",
                  "timeout": 5}]}))
             while "c3" not in seen:
@@ -1254,8 +1313,9 @@ class ConcurrentDaemonTests(unittest.TestCase):
         def handler(conn):
             _handshake_101(conn)
             conn.read_frame()  # hello
-            conn.send_text(json.dumps({"id": "bad-1", "ops": "not-a-list"}))
-            conn.send_text(json.dumps({"id": "good-1", "ops": [
+            _welcome(conn)
+            conn.send_text(json.dumps({"id": "bad-1", "seq": 1, "ops": "not-a-list"}))
+            conn.send_text(json.dumps({"id": "good-1", "seq": 2, "ops": [
                 {"op": "exec", "command": "echo good", "timeout": 5}]}))
             deadline = time.monotonic() + 10
             while len(replies) < 2 and time.monotonic() < deadline:
@@ -1287,7 +1347,8 @@ class ConcurrentDaemonTests(unittest.TestCase):
         def handler(conn):
             _handshake_101(conn)
             conn.read_frame()  # hello
-            conn.send_text(json.dumps({"id": "slow-stop", "ops": [
+            _welcome(conn)
+            conn.send_text(json.dumps({"id": "slow-stop", "seq": 1, "ops": [
                 {"op": "exec", "command": "sleep 5; echo slow",
                  "timeout": 10}]}))
             deadline = time.monotonic() + 10
@@ -1316,7 +1377,8 @@ class ConcurrentDaemonTests(unittest.TestCase):
         def handler(conn):
             _handshake_101(conn)
             conn.read_frame()  # hello
-            conn.send_text(json.dumps({"id": "slow-disc", "ops": [
+            _welcome(conn)
+            conn.send_text(json.dumps({"id": "slow-disc", "seq": 1, "ops": [
                 {"op": "exec", "command": "sleep 3; echo slow",
                  "timeout": 5}]}))
             time.sleep(0.2)  # let the agent pick the message up
@@ -1358,7 +1420,8 @@ class ConcurrentDaemonTests(unittest.TestCase):
             opcode, payload = conn.read_frame()
             self.assertEqual(json.loads(payload.decode("utf-8"))["type"],
                              "hello")
-            conn.send_text(json.dumps({"id": "big-1", "ops": [
+            _welcome(conn)
+            conn.send_text(json.dumps({"id": "big-1", "seq": 1, "ops": [
                 {"op": "exec",
                  "command": "python3 -c \"import sys; "
                             "sys.stdout.write('x'*300000)\"",
@@ -1412,6 +1475,238 @@ class ConcurrentDaemonTests(unittest.TestCase):
         self.assertTrue(reply["ok"])
         out = base64.b64decode(reply["results"][0]["stdout_b64"])
         self.assertEqual(out, b"x" * 300000)
+
+
+# ---------------------------------------------------------------------------
+# Sequencing (protocol 1.2.0): the sequencer, and the daemon's gate
+# ---------------------------------------------------------------------------
+
+class SequencerTests(unittest.TestCase):
+    def test_accept_in_order_then_duplicate_then_gap(self):
+        seq = agent_program._Sequencer()
+        self.assertEqual(seq.cursor, 0)
+        self.assertEqual(seq.accept(1), "ok")
+        self.assertEqual(seq.accept(1), "duplicate")
+        self.assertEqual(seq.accept(3), "gap")
+        self.assertEqual(seq.expected, 2)
+        self.assertEqual(seq.accept(2), "ok")
+        self.assertEqual(seq.accept(3), "ok")
+        self.assertEqual(seq.expected, 4)
+
+    def test_accept_rejects_unsequenced_frames(self):
+        seq = agent_program._Sequencer()
+        for bad in (None, "1", 0, -2, True, 1.5):
+            self.assertEqual(seq.accept(bad), "gap")
+        self.assertEqual(seq.expected, 1)
+
+    def test_cursor_moves_only_over_the_contiguous_acked_prefix(self):
+        seq = agent_program._Sequencer()
+        for number in (1, 2, 3):
+            self.assertEqual(seq.accept(number), "ok")
+        seq.mark_completed(3)
+        seq.mark_completed(1)
+        self.assertEqual(seq.cursor, 0)  # 2 is missing: nothing is acked yet
+        seq.mark_acked(3)
+        self.assertEqual(seq.cursor, 0)  # acked 3, but 1-2 are not acked
+        seq.mark_acked(1)
+        self.assertEqual(seq.cursor, 1)
+        seq.mark_completed(2)
+        seq.mark_acked(2)
+        self.assertEqual(seq.cursor, 3)
+
+    def test_ack_for_an_uncompleted_reply_is_ignored(self):
+        seq = agent_program._Sequencer()
+        self.assertEqual(seq.accept(1), "ok")
+        seq.mark_acked(1)  # no reply was ever completed for seq 1
+        self.assertEqual(seq.cursor, 0)
+        seq.mark_completed(1)
+        seq.mark_acked(1)
+        self.assertEqual(seq.cursor, 1)
+
+    def test_sync_resumes_skips_and_resets(self):
+        seq = agent_program._Sequencer()
+        self.assertEqual(seq.sync(1), "reset")  # fresh epoch
+        self.assertEqual(seq.accept(1), "ok")
+        self.assertEqual(seq.sync(2), "ok")
+        # The server sent seq 2-4 while this agent was away: skip ahead.
+        self.assertEqual(seq.sync(5), "resumed:3")
+        self.assertEqual(seq.accept(5), "ok")
+        self.assertEqual(seq.accept(6), "ok")
+        # A fresh server epoch resets everything, cursor included.
+        seq.mark_completed(5)
+        seq.mark_acked(5)
+        self.assertEqual(seq.sync(1), "reset")
+        self.assertEqual(seq.cursor, 0)
+        self.assertEqual(seq.accept(1), "ok")
+
+
+class SequencingDaemonTests(unittest.TestCase):
+    """Gap / duplicate / 4409 / old-server / cursor resume, end to end."""
+
+    def _run_daemon(self, handler):
+        with _MiniWS(handler) as server:
+            return agent_program.run_daemon(
+                f"ws://127.0.0.1:{server.port}/ws/agent", "good-token")
+
+    def _collect_replies(self, conn, wanted, timeout=10):
+        replies = {}
+        deadline = time.monotonic() + timeout
+        while len(replies) < len(wanted) and time.monotonic() < deadline:
+            frame = conn.read_frame()
+            if frame is None:
+                break
+            opcode, payload = frame
+            if opcode != agent_program.OP_TEXT:
+                continue
+            msg = json.loads(payload.decode("utf-8"))
+            if "id" in msg:
+                replies[msg["id"]] = msg
+        return replies
+
+    def test_gap_is_an_error_and_never_executes(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        marker = os.path.join(tmp, "gap.txt")
+        replies = {}
+
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            _welcome(conn)
+            conn.send_text(json.dumps({"id": "g1", "seq": 1, "ops": [
+                {"op": "exec", "command": "echo one", "timeout": 5}]}))
+            conn.send_text(json.dumps({"id": "g2", "seq": 3, "ops": [
+                {"op": "exec",
+                 "command": f"printf 'x\\n' >> '{marker}'",
+                 "timeout": 5}]}))
+            conn.send_text(json.dumps({"id": "g3", "seq": 2, "ops": [
+                {"op": "exec", "command": "echo two", "timeout": 5}]}))
+            conn.send_text(json.dumps({"id": "g4", "seq": 3, "ops": [
+                {"op": "exec",
+                 "command": f"printf 'x\\n' >> '{marker}'",
+                 "timeout": 5}]}))
+            replies.update(self._collect_replies(
+                conn, {"g1", "g2", "g3", "g4"}))
+            conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+
+        code = self._run_daemon(handler)
+        self.assertEqual(code, 3)
+        self.assertEqual(replies["g1"]["ok"], True)
+        self.assertEqual(replies["g1"]["seq"], 1)
+        self.assertEqual(replies["g2"]["ok"], False)
+        self.assertEqual(replies["g2"]["code"], "sequence_gap")
+        self.assertEqual(replies["g2"]["seq"], 3)
+        self.assertEqual(replies["g3"]["ok"], True)
+        self.assertEqual(replies["g4"]["ok"], True)
+        # The gapped batch never ran: the marker has exactly the one
+        # line the re-sent seq 3 wrote, not two.
+        with open(marker, "rb") as handle:
+            self.assertEqual(handle.read(), b"x\n")
+
+    def test_duplicate_is_an_error_and_runs_only_once(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        marker = os.path.join(tmp, "dup.txt")
+        replies = {}
+
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            _welcome(conn)
+            append = {"op": "exec",
+                      "command": f"printf 'x\\n' >> '{marker}'",
+                      "timeout": 5}
+            conn.send_text(json.dumps(
+                {"id": "d1", "seq": 1, "ops": [append]}))
+            conn.send_text(json.dumps(
+                {"id": "d2", "seq": 1, "ops": [append]}))
+            conn.send_text(json.dumps({"id": "d3", "seq": 2, "ops": [
+                {"op": "exec", "command": "echo after", "timeout": 5}]}))
+            replies.update(self._collect_replies(conn, {"d1", "d2", "d3"}))
+            conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+
+        code = self._run_daemon(handler)
+        self.assertEqual(code, 3)
+        self.assertEqual(replies["d1"]["ok"], True)
+        self.assertEqual(replies["d2"]["ok"], False)
+        self.assertEqual(replies["d2"]["code"], "sequence_duplicate")
+        self.assertEqual(replies["d3"]["ok"], True)
+        with open(marker, "rb") as handle:
+            self.assertEqual(handle.read(), b"x\n")
+
+    def test_unsequenced_request_is_a_gap_not_an_execution(self):
+        replies = {}
+
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            _welcome(conn)
+            conn.send_text(json.dumps({"id": "u1", "ops": [
+                {"op": "exec", "command": "echo no-seq", "timeout": 5}]}))
+            conn.send_text(json.dumps({"id": "u2", "seq": 1, "ops": [
+                {"op": "exec", "command": "echo seq-one", "timeout": 5}]}))
+            replies.update(self._collect_replies(conn, {"u1", "u2"}))
+            conn.send_close(agent_program.CLOSE_AUTH_FAILED)
+
+        code = self._run_daemon(handler)
+        self.assertEqual(code, 3)
+        self.assertEqual(replies["u1"]["ok"], False)
+        self.assertEqual(replies["u1"]["code"], "sequence_gap")
+        self.assertEqual(replies["u2"]["ok"], True)
+        out = base64.b64decode(replies["u2"]["results"][0]["stdout_b64"])
+        self.assertEqual(out, b"seq-one\n")
+
+    def test_server_closing_with_4409_stops_the_daemon_with_code_4(self):
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            conn.send_close(agent_program.CLOSE_AGENT_TOO_OLD)
+
+        code = self._run_daemon(handler)
+        self.assertEqual(code, 4)
+
+    def test_welcome_without_next_seq_stops_the_daemon_with_code_4(self):
+        def handler(conn):
+            _handshake_101(conn)
+            conn.read_frame()  # hello
+            # An old server's welcome: no next_seq, no protocol.
+            conn.send_text(json.dumps({"type": "welcome", "host_id": "h1"}))
+
+        code = self._run_daemon(handler)
+        self.assertEqual(code, 4)
+
+    def test_ack_advances_the_cursor_across_a_reconnect(self):
+        hellos = {}
+
+        def first(conn):
+            _handshake_101(conn)
+            opcode, payload = conn.read_frame()
+            hellos["first"] = json.loads(payload.decode("utf-8"))
+            _welcome(conn)
+            conn.send_text(json.dumps({"id": "r1", "seq": 1, "ops": [
+                {"op": "exec", "command": "echo resumed", "timeout": 5}]}))
+            opcode, payload = conn.read_frame()
+            reply = json.loads(payload.decode("utf-8"))
+            self.assertEqual(reply["id"], "r1")
+            self.assertEqual(reply["seq"], 1)
+            # The server acks the reply; the connection then dies.
+            conn.send_text(json.dumps({"type": "ack", "seq": 1}))
+            # Returning closes the socket: the daemon must reconnect
+            # (first retry after ~1s) and report cursor 1 in hello.
+
+        def second(conn):
+            _handshake_101(conn)
+            opcode, payload = conn.read_frame()
+            hellos["second"] = json.loads(payload.decode("utf-8"))
+            conn.send_close(agent_program.CLOSE_AGENT_TOO_OLD)
+
+        with _MiniWSMulti([first, second]) as server:
+            code = agent_program.run_daemon(
+                f"ws://127.0.0.1:{server.port}/ws/agent", "good-token")
+        self.assertEqual(code, 4)
+        self.assertEqual(hellos["first"]["cursor"], 0)
+        self.assertEqual(hellos["second"]["cursor"], 1)
+        self.assertEqual(hellos["second"]["agent"]["version"], "1.2.0")
 
 
 if __name__ == "__main__":

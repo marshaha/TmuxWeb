@@ -105,12 +105,18 @@ class FakeAgent:
     ``silent=True`` for an agent that receives but never answers.
     """
 
-    def __init__(self, ws_url, token, *, silent=False, exec_handler=None):
+    def __init__(self, ws_url, token, *, silent=False, exec_handler=None,
+                 cursor=0, reply_fn=None):
         self.ws_url = ws_url
         self.token = token
         self.silent = silent
         self.exec_handler = exec_handler
+        self.cursor = cursor
+        # reply_fn(data) overrides _reply: a test can answer with a
+        # protocol error (e.g. sequence_gap) instead of a real result.
+        self.reply_fn = reply_fn
         self.received = []
+        self.acks = []
         self.welcome = None
         self.pasted = ""
         self.submitted = False
@@ -131,7 +137,8 @@ class FakeAgent:
                 self._ws = ws
                 await ws.send(json.dumps({
                     "type": "hello", "token": self.token,
-                    "agent": {"version": "1.0.0", "hostname": "fake",
+                    "cursor": self.cursor,
+                    "agent": {"version": "1.2.0", "hostname": "fake",
                               "tmux": "/usr/bin/tmux"}}))
                 try:
                     self.welcome = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
@@ -142,10 +149,16 @@ class FakeAgent:
                 await ws.send(json.dumps({"type": "heartbeat", "at": time.time()}))
                 async for message in ws:
                     data = json.loads(message)
+                    if data.get("type") == "ack":
+                        # Acks are not requests: they go to their own
+                        # list, so `received` keeps counting batches.
+                        self.acks.append(data.get("seq"))
+                        continue
                     self.received.append(data)
                     if self.silent:
                         continue
-                    reply = self._reply(data)
+                    reply = (self.reply_fn(data) if self.reply_fn is not None
+                             else self._reply(data))
                     if reply is not None:
                         await ws.send(json.dumps(reply))
         except Exception:
@@ -162,7 +175,8 @@ class FakeAgent:
                 continue
             handler = self.exec_handler or self._default_exec
             results.append(handler(op))
-        return {"id": data.get("id"), "ok": True, "results": results}
+        return {"id": data.get("id"), "seq": data.get("seq"),
+                "ok": True, "results": results}
 
     def _default_exec(self, op):
         command = op["command"]
@@ -325,6 +339,28 @@ class AgentTokenStoreTests(unittest.TestCase):
         self.assertEqual(reopened.get_host("aabbccddeeff0011")["transport"], "ssh")
 
 
+class VersionParseTests(unittest.TestCase):
+    """The hello version gate: what counts as old, current, or future."""
+
+    def test_parse_agent_version(self):
+        import plugin as agent_plugin
+
+        self.assertEqual(agent_plugin._parse_agent_version("1.2.0"), (1, 2))
+        self.assertEqual(agent_plugin._parse_agent_version("1.2"), (1, 2))
+        self.assertEqual(agent_plugin._parse_agent_version("1.3.0"), (1, 3))
+        self.assertEqual(agent_plugin._parse_agent_version("2.0.0"), (2, 0))
+        self.assertEqual(agent_plugin._parse_agent_version("1.1.0"), (1, 1))
+        self.assertEqual(agent_plugin._parse_agent_version("1.0.0"), (1, 0))
+        for bad in (None, "", "x", "1", "1.x", "-1.2", "1.-2", 12, {"v": 1}):
+            self.assertIsNone(agent_plugin._parse_agent_version(bad))
+        self.assertGreaterEqual(
+            agent_plugin._parse_agent_version("1.3.0"),
+            agent_plugin.MIN_AGENT_VERSION)
+        self.assertLess(
+            agent_plugin._parse_agent_version("1.1.9"),
+            agent_plugin.MIN_AGENT_VERSION)
+
+
 class AgentRegistryUnitTests(unittest.TestCase):
     """The registry on its own: no server, no socket."""
 
@@ -344,7 +380,87 @@ class AgentRegistryUnitTests(unittest.TestCase):
     def test_status_defaults_for_an_unknown_host(self):
         self.assertEqual(self.registry.status("nope"), {
             "agent_online": False, "agent_last_seen": None,
-            "last_transport": None, "last_transport_at": None})
+            "last_transport": None, "last_transport_at": None,
+            "agent_version": None, "agent_seq_gap": None})
+
+    def test_sequence_assignment_gap_detection_and_resume(self):
+        registry = self.registry
+        self.assertEqual(registry.assign_seq("h1"), 1)
+        self.assertEqual(registry.assign_seq("h1"), 2)
+        self.assertEqual(registry.seq_next("h1"), 3)
+        registry.note_sent("h1", 1)
+        registry.note_sent("h1", 2)
+        # Nothing sent yet on a fresh host is not a gap.
+        registry.note_hello("h2", "1.2.0", 5)
+        self.assertIsNone(registry.status("h2")["agent_seq_gap"])
+        # The agent only got through seq 1 of 2 sent: a gap is recorded.
+        registry.note_hello("h1", "1.2.0", 1)
+        gap = registry.status("h1")["agent_seq_gap"]
+        self.assertEqual(gap["completed_through"], 1)
+        self.assertEqual(gap["sent_through"], 2)
+        self.assertIsNotNone(gap["at"])
+        self.assertEqual(registry.status("h1")["agent_version"], "1.2.0")
+        # A later clean reconnect clears it.
+        registry.note_hello("h1", "1.2.0", 2)
+        self.assertIsNone(registry.status("h1")["agent_seq_gap"])
+        # A non-integer cursor is treated as 0, not a crash.
+        registry.note_hello("h1", "1.2.0", "all")
+        gap = registry.status("h1")["agent_seq_gap"]
+        self.assertEqual(gap["completed_through"], 0)
+        self.assertEqual(gap["sent_through"], 2)
+
+    def test_deliver_drops_a_reply_with_the_wrong_sequence(self):
+        ws = _FakeWS()
+        loop = asyncio.new_event_loop()
+
+        async def _go():
+            connection = self.registry.register("h1", ws)
+            task = asyncio.ensure_future(self.registry._do_call(
+                connection, "req-1",
+                [{"op": "exec", "command": "echo hi"}], timeout=5))
+            await asyncio.sleep(0.05)
+            sent = ws.sent[-1]
+            self.assertEqual(sent["seq"], 1)
+            # A reply echoing the wrong sequence is dropped: the
+            # caller is still waiting, and no future is completed.
+            self.assertFalse(self.registry.deliver(
+                "h1", "req-1",
+                {"id": "req-1", "seq": 99, "ok": True, "results": []}))
+            self.assertFalse(task.done())
+            # The reply with the right sequence delivers.
+            self.assertTrue(self.registry.deliver(
+                "h1", "req-1",
+                {"id": "req-1", "seq": 1, "ok": True, "results": []}))
+            self.assertEqual(await asyncio.wait_for(task, timeout=2),
+                             {"id": "req-1", "seq": 1, "ok": True,
+                              "results": []})
+            self.registry.disconnect("h1")
+            await asyncio.sleep(0.05)
+
+        loop.run_until_complete(_go())
+        loop.close()
+
+    def test_sequence_gap_reply_is_unavailable_not_a_timeout(self):
+        ws = _FakeWS()
+        loop = asyncio.new_event_loop()
+
+        async def _go():
+            connection = self.registry.register("h1", ws)
+            task = asyncio.ensure_future(self.registry._do_call(
+                connection, "req-1",
+                [{"op": "exec", "command": "echo hi"}], timeout=5))
+            await asyncio.sleep(0.05)
+            self.assertTrue(self.registry.deliver(
+                "h1", "req-1",
+                {"id": "req-1", "seq": 1, "ok": False,
+                 "code": "sequence_gap", "error": "expected 1, got 3"}))
+            with self.assertRaises(agent_transport.AgentUnavailable):
+                await asyncio.wait_for(task, timeout=2)
+            self.registry.disconnect("h1")
+            await asyncio.sleep(0.05)
+
+        loop.run_until_complete(_go())
+        loop.close()
 
     def test_call_from_the_connections_own_loop_raises(self):
         ws = _FakeWS()
@@ -1095,6 +1211,136 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
             self.assertEqual(anonymous.get("/agent/agent.py").status_code, 404)
         finally:
             self.plugin.agent_file = original
+
+
+class AgentSequencingTests(unittest.TestCase, _UvicornServer):
+    """Protocol 1.2.0 end to end: seq, ack, cursor resume, 4409, gaps.
+
+    Reuses the AgentTransportTests fixture (real app on a real socket,
+    FakeAgent as the counterparty).
+    """
+
+    setUp = AgentTransportTests.setUp
+    tearDown = AgentTransportTests.tearDown
+    # Helpers live on AgentTransportTests; bind them here without
+    # inheriting the class (inheriting would re-run all its tests).
+    _issue_token = AgentTransportTests._issue_token
+    _connect_agent = AgentTransportTests._connect_agent
+    _wait_online = AgentTransportTests._wait_online
+    _transport = AgentTransportTests._transport
+
+    def _wait_acks(self, agent, wanted, timeout=5):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if agent.acks == wanted:
+                return True
+            time.sleep(0.05)
+        return agent.acks == wanted
+
+    def _hello_with_version(self, version):
+        """One raw hello; returns the close code, or the welcome dict."""
+        agent_field = {} if version is None else {"version": version}
+
+        async def _go():
+            async with websockets.connect(self.ws_url, open_timeout=5) as ws:
+                await ws.send(json.dumps({
+                    "type": "hello", "token": self._issue_token(),
+                    "agent": agent_field}))
+                try:
+                    message = await asyncio.wait_for(ws.recv(), timeout=5)
+                except websockets.exceptions.ConnectionClosed as exc:
+                    return _close_code(exc)
+                return json.loads(message)
+
+        return _run(_go())
+
+    def test_welcome_carries_protocol_and_next_seq(self):
+        agent = self._connect_agent()
+        self.assertEqual(agent.welcome["protocol"], "1.2.0")
+        self.assertEqual(agent.welcome["next_seq"], 1)
+        self.assertEqual(self.registry.status(self.host_id)["agent_version"],
+                         "1.2.0")
+        self.assertIsNone(self.registry.status(self.host_id)["agent_seq_gap"])
+        self._transport().run("printf hello", timeout=5)
+        agent.stop()
+        self.assertTrue(self._wait_online(self.host_id, False))
+        # The next connection resumes the numbering where it left off.
+        second = self._connect_agent()
+        self.assertEqual(second.welcome["next_seq"], 2)
+
+    def test_requests_carry_increasing_sequences_and_replies_are_acked(self):
+        agent = self._connect_agent()
+        self._transport().run("printf one", timeout=5)
+        self._transport().run("printf two", timeout=5)
+        self.assertEqual([packet["seq"] for packet in agent.received], [1, 2])
+        self.assertTrue(self._wait_acks(agent, [1, 2]),
+                        "server did not ack both replies: %r" % (agent.acks,))
+
+    def test_old_agent_versions_get_4409(self):
+        for old in ("1.1.0", "1.0.0", "0.9", "x"):
+            self.assertEqual(self._hello_with_version(old), 4409, old)
+        self.assertEqual(self._hello_with_version(None), 4409)
+        self.assertFalse(self.registry.is_online(self.host_id))
+        for ok_version in ("1.2.0", "1.2", "1.3.0", "2.0.0"):
+            welcome = self._hello_with_version(ok_version)
+            self.assertIsInstance(welcome, dict, ok_version)
+            self.assertEqual(welcome["protocol"], "1.2.0", ok_version)
+
+    def test_silent_batch_then_reconnect_records_a_sequence_gap(self):
+        silent = self._connect_agent(silent=True)
+        self.assertTrue(self._wait_online(self.host_id, True))
+        # Seq 1 goes out and is never answered: the caller times out
+        # (the agent is alive, so this is a timeout, not a fallback).
+        with self.assertRaises(RuntimeError):
+            self.registry.call(
+                self.host_id, [{"op": "exec", "command": "echo hi"}],
+                timeout=2)
+        silent.stop()
+        self.assertTrue(self._wait_online(self.host_id, False))
+        # The agent reconnects having completed nothing: the gap is
+        # recorded (completed through 0, sent through 1) and visible
+        # in the host status.
+        resumed = self._connect_agent(cursor=0)
+        self.assertTrue(self._wait_online(self.host_id, True))
+        gap = self.registry.status(self.host_id)["agent_seq_gap"]
+        self.assertEqual(gap["completed_through"], 0)
+        self.assertEqual(gap["sent_through"], 1)
+        self.assertIsNotNone(gap["at"])
+        # Seq 2 runs fine on the resumed connection.
+        result = self._transport().run("printf after", timeout=5)
+        self.assertEqual(result.stdout, b"out:printf after")
+        resumed.stop()
+        self.assertTrue(self._wait_online(self.host_id, False))
+        # A reconnect that reports cursor 2 (both batches acked) is a
+        # clean resume: the gap clears.
+        clean = self._connect_agent(cursor=2)
+        self.assertTrue(self._wait_online(self.host_id, True))
+        self.assertIsNone(self.registry.status(self.host_id)["agent_seq_gap"])
+        self.assertEqual(clean.welcome["next_seq"], 3)
+
+    def test_sequence_gap_reply_falls_back_to_ssh(self):
+        def _gap(data):
+            return {"id": data.get("id"), "seq": data.get("seq"),
+                    "ok": False, "code": "sequence_gap",
+                    "error": "expected seq 1, got 3"}
+
+        self._connect_agent(reply_fn=_gap)
+        calls = []
+
+        def fake_ssh_run(self, remote_command, *, input_bytes=None, timeout=15,
+                         resolve_tmux=True):
+            calls.append(remote_command)
+            return subprocess.CompletedProcess(args=remote_command, returncode=0,
+                                               stdout=b"via-ssh", stderr=b"")
+
+        with mock.patch.object(SSHRunner, "run", fake_ssh_run):
+            result = self._transport().run("echo hi", timeout=5)
+        # The op provably never ran on the agent, so SSH fallback is
+        # safe — and it happened, instead of a timeout error.
+        self.assertEqual(result.stdout, b"via-ssh")
+        self.assertEqual(calls, ["echo hi"])
+        self.assertEqual(self.registry.status(self.host_id)["last_transport"],
+                         "ssh")
 
 
 class AgentCaptureEndpointTests(unittest.TestCase, _UvicornServer):

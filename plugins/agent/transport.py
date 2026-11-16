@@ -9,6 +9,22 @@ This module is the server side of that deal:
 * :class:`AgentTransport` — an :class:`SSHRunner` that tries the agent
   first and falls back to SSH when the agent is not there.
 
+Protocol 1.2.0 (sequenced; borrowed from Open WebUI's
+``TerminalTransport._pump``): every request carries a per-host
+monotonically increasing ``seq`` and every reply echoes it; the
+server acks each delivered reply, and the agent's hello carries a
+``cursor`` — the highest contiguous run of acked sequences. On
+reconnect the server compares the cursor with the last sequence it
+actually sent: equal is a clean resume, lower records a sequence gap
+(the batches in between have an unknown outcome — their callers
+already failed over to SSH, see below — and the gap is logged and
+kept in the host status instead of vanishing silently). A request
+whose sequence the agent never saw, or saw twice, is answered with
+a ``sequence_gap`` / ``sequence_duplicate`` error and never
+executed, so the call fails as :class:`AgentUnavailable` (safe to
+run over SSH: the op provably did not run) rather than as a timeout
+(which must never be re-run).
+
 Two failure kinds, kept apart on purpose:
 
 * :class:`AgentUnavailable` — there is no live connection, or the
@@ -55,13 +71,19 @@ class _Connection:
     """One live agent WebSocket, plus the futures waiting on its replies."""
 
     __slots__ = ("host_id", "websocket", "loop", "pending", "connected_at",
-                 "last_seen", "alive")
+                 "last_seen", "alive", "send_lock")
 
     def __init__(self, host_id: str, websocket) -> None:
         self.host_id = host_id
         self.websocket = websocket
         self.loop = asyncio.get_running_loop()
-        self.pending: dict[str, asyncio.Future] = {}
+        # request_id -> (future, seq): the seq a reply must echo to be
+        # accepted (see deliver). The send lock serialises seq
+        # assignment with the send, so send order is seq order even
+        # when several callers queue at once; it is created lazily
+        # (first send) so no loop is bound at construction time.
+        self.pending: dict[str, tuple[asyncio.Future, int]] = {}
+        self.send_lock: asyncio.Lock | None = None
         now = time.time()
         self.connected_at = now
         self.last_seen = now
@@ -110,7 +132,7 @@ class AgentRegistry:
 
     def _close(self, connection: _Connection) -> None:
         connection.alive = False
-        for future in list(connection.pending.values()):
+        for future, _seq in list(connection.pending.values()):
             if not future.done():
                 connection.loop.call_soon_threadsafe(
                     future.set_exception,
@@ -168,10 +190,14 @@ class AgentRegistry:
             record["last_transport_at"] = time.time()
 
     def status(self, host_id: str) -> dict:
-        """``{agent_online, agent_last_seen, last_transport, last_transport_at}``.
+        """``{agent_online, agent_last_seen, last_transport, last_transport_at,
+        agent_version, agent_seq_gap}``.
 
         Unknown hosts get the all-default shape, so callers never have to
-        special-case a host that never had an agent.
+        special-case a host that never had an agent. ``agent_seq_gap`` is
+        None on a clean resume, else ``{completed_through, sent_through,
+        at}`` — the batches between the two have an unknown outcome
+        (sent, no reply received; their callers already failed over).
         """
         with self._lock:
             record = dict(self._records.get(host_id) or {})
@@ -181,15 +207,108 @@ class AgentRegistry:
             "agent_last_seen": record.get("last_seen"),
             "last_transport": record.get("last_transport"),
             "last_transport_at": record.get("last_transport_at"),
+            "agent_version": record.get("agent_version"),
+            "agent_seq_gap": record.get("agent_seq_gap"),
         }
 
+    # -- sequencing (protocol 1.2.0) --------------------------------------
+    def assign_seq(self, host_id: str) -> int:
+        """Take the next request sequence for this host (starts at 1).
+
+        The counter lives in the per-host record, not on the
+        connection, so it survives reconnects; only a server restart
+        resets it (a fresh epoch — the agent resets on welcome
+        ``next_seq`` 1). The counter advances at assignment time even
+        if the send then fails: the connection is dead by then, and
+        the next welcome carries the counter, so the agent skips the
+        hole instead of tripping a false gap.
+        """
+        with self._lock:
+            record = self._records.setdefault(host_id, {})
+            seq = int(record.get("agent_seq_next", 1))
+            record["agent_seq_next"] = seq + 1
+            return seq
+
+    def seq_next(self, host_id: str) -> int:
+        """The sequence the next request for this host will carry."""
+        with self._lock:
+            record = self._records.get(host_id) or {}
+            return int(record.get("agent_seq_next", 1))
+
+    def note_sent(self, host_id: str, seq: int) -> None:
+        """A request with ``seq`` actually went out on the wire."""
+        with self._lock:
+            record = self._records.setdefault(host_id, {})
+            if seq > int(record.get("agent_seq_last_sent", 0)):
+                record["agent_seq_last_sent"] = seq
+
+    def note_hello(self, host_id: str, version, cursor) -> None:
+        """Record a hello's version and cursor; detect a sequence gap.
+
+        ``cursor`` is the last contiguous acked sequence the agent
+        reports. When the server sent more than that, the batches in
+        between (``cursor``, ``last_sent``] have an unknown outcome:
+        they were sent, no reply arrived, and their callers already
+        failed over to SSH — so the gap is logged and kept in the
+        host status instead of vanishing. A fresh server epoch
+        (nothing sent yet) is not a gap: the agent resets on welcome.
+        A cursor ahead of what was sent cannot happen inside one
+        epoch; the record adopts it rather than recording a gap for
+        a state that should not exist.
+        """
+        if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0:
+            cursor = 0
+        now = time.time()
+        with self._lock:
+            record = self._records.setdefault(host_id, {})
+            record["agent_version"] = version if isinstance(version, str) else None
+            last_sent = int(record.get("agent_seq_last_sent", 0))
+            if last_sent == 0:
+                record["agent_seq_gap"] = None
+                return
+            if cursor < last_sent:
+                record["agent_seq_gap"] = {
+                    "completed_through": cursor,
+                    "sent_through": last_sent,
+                    "at": now,
+                }
+                LOGGER.warning(
+                    "agent %s reconnected with a sequence gap: "
+                    "completed through %d, sent through %d "
+                    "(outcome of seq %d..%d unknown)",
+                    host_id, cursor, last_sent, cursor + 1, last_sent)
+            elif cursor > last_sent:
+                LOGGER.warning(
+                    "agent %s reports cursor %d ahead of last sent %d; "
+                    "adopting the agent's numbering", host_id, cursor, last_sent)
+                record["agent_seq_last_sent"] = cursor
+                record["agent_seq_next"] = cursor + 1
+                record["agent_seq_gap"] = None
+            else:
+                record["agent_seq_gap"] = None
+
     def deliver(self, host_id: str, request_id: str, message: dict) -> bool:
-        """Hand a reply packet to the future waiting for ``request_id``."""
+        """Hand a reply packet to the future waiting for ``request_id``.
+
+        The reply must echo the sequence its request carried: a reply
+        with the wrong (or no) sequence is dropped and logged, never
+        delivered — it is a stale or mismatched frame, and the real
+        reply may still arrive. Returns False when nothing was
+        delivered (unknown id, done future, or sequence mismatch).
+        """
         connection = self.connection(host_id)
         if connection is None:
             return False
-        future = connection.pending.get(request_id)
-        if future is None or future.done():
+        pending = connection.pending.get(request_id)
+        if pending is None:
+            return False
+        future, seq = pending
+        if future.done():
+            return False
+        if message.get("seq") != seq:
+            LOGGER.warning(
+                "agent %s replied to %s with seq %r, expected %d; dropping",
+                host_id, request_id, message.get("seq"), seq)
             return False
         future.set_result(message)
         return True
@@ -238,21 +357,44 @@ class AgentRegistry:
                        ops: list[dict], timeout: float) -> dict:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-        connection.pending[request_id] = future
+        if connection.send_lock is None:
+            connection.send_lock = asyncio.Lock()
         try:
+            # Assign the sequence and send under one lock: several
+            # callers queueing at once must still go out in sequence
+            # order, or the agent would see a gap that never happened.
+            # The future wait happens outside the lock, so a slow batch
+            # never holds up the next send.
+            async with connection.send_lock:
+                seq = self.assign_seq(connection.host_id)
+                connection.pending[request_id] = (future, seq)
+                try:
+                    await connection.websocket.send_json(
+                        {"id": request_id, "seq": seq, "ops": ops})
+                except Exception as exc:                # send on a dead socket
+                    raise AgentUnavailable(
+                        "agent connection broke while sending: %s" % exc) from exc
+                self.note_sent(connection.host_id, seq)
             try:
-                await connection.websocket.send_json({"id": request_id, "ops": ops})
-            except Exception as exc:                    # send on a dead socket
-                raise AgentUnavailable(
-                    "agent connection broke while sending: %s" % exc) from exc
-            try:
-                return await asyncio.wait_for(asyncio.shield(future), timeout)
+                result = await asyncio.wait_for(asyncio.shield(future), timeout)
             except asyncio.TimeoutError as exc:
                 if connection.alive and self.connection(connection.host_id) is connection:
                     raise RuntimeError(
                         "agent %s did not answer within %ss" % (connection.host_id, timeout)) from exc
                 raise AgentUnavailable(
                     "agent %s went away while waiting for a reply" % connection.host_id) from exc
+            # The agent refused to run this batch: the sequence shows a
+            # request was lost (gap) or this one arrived twice
+            # (duplicate). Either way the op provably did not run, so
+            # it is safe to fall back to SSH — unlike a timeout, which
+            # must never be re-run.
+            if (isinstance(result, dict) and not result.get("ok")
+                    and result.get("code") in ("sequence_gap", "sequence_duplicate")):
+                raise AgentUnavailable(
+                    "agent %s refused seq %d (%s): %s"
+                    % (connection.host_id, seq, result.get("code"),
+                       result.get("error") or "sequence error"))
+            return result
         finally:
             connection.pending.pop(request_id, None)
 

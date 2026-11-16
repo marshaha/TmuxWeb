@@ -11,7 +11,7 @@ decision point, the agent event winning when present.
 ## How it works
 
 The agent program (`plugins/agent/agent.py`, stdlib-only, single
-file, now version 1.1.0) gains a `HostWatcher`:
+file, now version 1.2.0) gains a `HostWatcher`:
 
 1. **Hook events (exact).** Hook scripts — one shared stdlib script,
    `plugins/agent/hooks/tmuxweb-hook.py` — append one JSON line per
@@ -144,7 +144,7 @@ within one map refresh.
 
 ## Deployment (manual — nothing in this PR installs anything)
 
-1. Deploy agent 1.1.0 to each host (normal agent update path).
+1. Deploy agent 1.2.0 to each host (normal agent update path).
 2. Copy `plugins/agent/hooks/tmuxweb-hook.py` to
    `~/.config/tmuxweb-agent/hooks/` on each host and `chmod +x` it.
 3. Per provider, install the template in
