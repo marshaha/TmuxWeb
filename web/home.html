@@ -166,6 +166,24 @@
   .pd-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600}
   .pd-head iframe{flex:1}
   #pd-frame{flex:1;width:100%;min-height:0;border:0;background:var(--bg)}
+  /* board card detail: same drawer, text body instead of the pane iframe.
+     The card view clamps the body to six lines, so the panel must not clamp
+     it again — .pd-full lifts the -webkit-box clamp off .card-body. */
+  .pd-body{flex:1;min-height:0;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+  .pd-body[hidden]{display:none}
+  .pd-meta{display:flex;align-items:center;gap:8px}
+  .pd-foot{display:flex;gap:8px;margin-top:auto;padding-top:4px}
+  .pd-foot[hidden]{display:none}
+  #pd-console[hidden]{display:none}
+  .card-body.pd-full{display:block;overflow:visible;-webkit-line-clamp:unset}
+  @media(max-width:860px){
+    /* narrow screens: the drawer becomes a bottom sheet, same as the hover
+       panel in pane-preview.css. Pane previews never reach here — below
+       PREVIEW_WIDE they navigate to the /preview page instead. */
+    .preview-drawer{left:10px;right:10px;top:auto;bottom:calc(10px + env(safe-area-inset-bottom));
+      width:auto;min-width:0;max-height:min(70vh,560px);border:1px solid var(--line);border-radius:16px;
+      transform:translateY(12px)}
+  }
   .pd-backdrop{position:fixed;inset:0;z-index:35;background:rgba(32,31,28,.18)}
   .pd-backdrop[hidden]{display:none}
   .rename-dialog{width:min(430px,calc(100vw - 28px));padding:0;border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink);box-shadow:0 18px 50px rgba(32,31,28,.18)}
@@ -302,6 +320,11 @@
     <button class="card-btn" id="pd-close" title="关闭预览" aria-label="关闭预览"><svg class="ico"><use href="#i-close"/></svg></button>
   </div>
   <iframe id="pd-frame" title="对话预览" referrerpolicy="same-origin"></iframe>
+  <div class="pd-body" id="pd-body" hidden>
+    <div class="pd-meta"><span class="kind" id="pd-kind"></span><span class="card-meta" id="pd-time"></span></div>
+    <div class="card-body md pd-full" id="pd-text"></div>
+    <div class="pd-foot" id="pd-foot" hidden><a class="chip-btn primary" id="pd-open-pane" href="/">在控制台打开会话</a></div>
+  </div>
 </aside>
 <div class="pd-backdrop" id="pd-backdrop" hidden></div>
 <div class="toast shell-toast" id="toast"></div>
@@ -325,6 +348,7 @@
 </script>
 <script src="/assets/recents.js"></script>
 <script src="/assets/pane-preview.js"></script>
+<script src="/assets/home-card-detail.js"></script>
 <script src="/assets/shell.js"></script>
 <script>
   const $=id=>document.getElementById(id);
@@ -478,7 +502,7 @@
   }
 
   function cardHtml(card){
-    return `<article class="card" ${card.pane_id?`data-open="${esc(card.pane_id)}"`:''}>
+    return `<article class="card" data-card="${esc(card.id)}" ${card.pane_id?`data-open="${esc(card.pane_id)}"`:''}>
       <div class="card-top"><span class="kind ${esc(card.kind)}">${esc(card.kind)}</span>
         <span class="card-meta" style="margin-left:auto">${esc(ago(card.created_at))}</span>
         <button class="card-btn" data-del="${esc(card.id)}" title="删除卡片" aria-label="删除卡片"><svg class="ico"><use href="#i-trash"/></svg></button>
@@ -575,6 +599,22 @@
     const rename=event.target.closest('[data-rename]');
     if(rename){event.preventDefault();event.stopPropagation();openRename(rename.dataset.rename);return;}
     if(event.target.closest('.card-body a'))return;   // 卡片正文里的 md 链接：交给浏览器
+    // Board result/alert/note cards: click opens the detail panel with the
+    // full body. They have no pane preview, and cards with a pane_id keep
+    // their link inside the panel — so this runs before the [data-open]
+    // branch below. Favorites/recent rows have no data-card and are untouched.
+    const detail=event.target.closest('[data-card]');
+    if(detail){
+      event.preventDefault();
+      const card=window.TmuxHomeCardDetail
+        ?TmuxHomeCardDetail.findCard(state.board&&state.board.cards||[],detail.dataset.card)
+        :null;
+      if(card){
+        TmuxHomeCardDetail.openDetail(document,card,{
+          mdCard:value=>window.mdCard(value),consoleUrl,formatTime:ago});
+      }
+      return;
+    }
     const open=event.target.closest('[data-open]');
     if(open){
       // a card previews, it never navigates: the panel holds the ways in
@@ -596,6 +636,11 @@
     drawerPane=paneId;
     $('pd-title').textContent=favorite?favorite.title||favorite.pane_title||paneId:paneId;
     $('pd-console').href=consoleUrl(paneId);
+    $('pd-console').hidden=false;
+    // a card detail may have hidden the frame and the console link: hand the
+    // drawer back to the pane preview before showing the iframe again
+    $('pd-body').hidden=true;
+    drawerFrame.hidden=false;
     drawerFrame.src=`/preview?pane=${encodeURIComponent(paneId)}`;
     drawer.hidden=false;
     requestAnimationFrame(()=>drawer.classList.add('open'));
@@ -607,7 +652,12 @@
     drawer.classList.remove('open');
     drawerBackdrop.hidden=true;
     document.body.classList.remove('drawer-open');
-    setTimeout(()=>{drawer.hidden=true;drawerFrame.src='about:blank';drawerPane=null;},160);
+    // a close followed by a quick reopen must not blank the new panel: the
+    // reset only runs if the drawer is still closed when the timer fires
+    setTimeout(()=>{if(drawer.classList.contains('open'))return;
+      drawer.hidden=true;drawerFrame.src='about:blank';drawerPane=null;
+      if(window.TmuxHomeCardDetail)window.TmuxHomeCardDetail.resetDetail(document);
+    },160);
   }
   $('pd-close').onclick=closeFullPreview;
   drawerBackdrop.onclick=closeFullPreview;
