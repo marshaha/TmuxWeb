@@ -181,6 +181,33 @@ CONSOLE_APP_BYTES = (WEB_DIR / "assets" / "console-app.js").read_bytes()
 CONSOLE_APP_HASH = hashlib.sha1(CONSOLE_APP_BYTES).hexdigest()[:12]
 
 
+def _resolve_server_version() -> str:
+    """The deployed version the console compares against /api/version.
+
+    The deployed worktree is a git checkout, so HEAD is the deploy marker:
+    a pull + service restart moves it, a bare restart does not. Outside a
+    git checkout (a tarball install) the tmux_web.py content hash plays the
+    same role: it moves exactly when the server code changes. Either way
+    the value is computed once at startup, so a running process always
+    reports the version it booted with — which is what an already-open
+    console page needs to notice a redeploy.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=BASE_DIR, capture_output=True, text=True, timeout=10,
+        )
+        head = (result.stdout or "").strip()
+        if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{7,40}", head or ""):
+            return head
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return hashlib.sha1((BASE_DIR / "tmux_web.py").read_bytes()).hexdigest()[:12]
+
+
+SERVER_VERSION = _resolve_server_version()
+
+
 # The console styles: the 42KB <style> that used to sit in <head> plus the
 # eight console stylesheets, concatenated once at startup in the order the
 # cascade used to see them (head style first, then the links in document
@@ -2493,6 +2520,22 @@ def create_app(
             response.set_cookie(THEME_COOKIE, theme, samesite="lax", max_age=60 * 60 * 24 * 365, path="/")
         return response
 
+    @app.get("/api/version")
+    async def server_version(request: Request):
+        """The deployed server version, for the console's new-version toast.
+
+        Borrowed from Open WebUI (svelte.config.js pollInterval: 60000 +
+        src/routes/+layout.svelte:111): the client polls the version and
+        notices a redeploy by itself. The response must never be cached —
+        Cloudflare included — or the poll keeps seeing the old version:
+        no-cache forces revalidation, no-store forbids storing it at all.
+        Same-version polls are cheap (a ~30 byte JSON body, no tmux call),
+        so the console checks on its existing 20s pane-list rhythm.
+        """
+        require_auth(request)
+        return JSONResponse({"version": SERVER_VERSION},
+                            headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
     @app.get("/api/prefs")
     async def read_prefs(request: Request):
         require_auth(request)
@@ -2817,6 +2860,7 @@ def create_app(
         html = html.replace("__CONSOLE_BUNDLE_HASH__", CONSOLE_BUNDLE_HASH)
         html = html.replace("__CONSOLE_APP_HASH__", CONSOLE_APP_HASH)
         html = html.replace("__CONSOLE_CSS_HASH__", CONSOLE_CSS_HASH)
+        html = html.replace("__SERVER_VERSION__", SERVER_VERSION)
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     @app.get("/shares")

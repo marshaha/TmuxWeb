@@ -2,7 +2,7 @@ import {AnsiUp} from '/assets/ansi_up.js?v=1';
 import {marked} from '/assets/marked.esm.js?v=1';
 (() => {
   const ansi=new AnsiUp();
-  const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptFailures:0,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},kbShift:false,kbSymbols:false,viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,restored:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0};
+  const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptFailures:0,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},kbShift:false,kbSymbols:false,viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,restored:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0,serverVersion:'',versionToast:{shownFor:'',dismissedFor:'',visible:false},versionPollRound:0};
   const $=id=>document.getElementById(id),list=$('pane-list'),term=$('terminal'),scroll=$('scroll'),input=$('input'),send=$('send');
   try{const saved=JSON.parse(localStorage.getItem('tmux-tree-open')||'[]');if(Array.isArray(saved))state.treeOpen=new Set(saved.filter(key=>typeof key==='string'));}catch{localStorage.removeItem('tmux-tree-open');}
   function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -83,9 +83,59 @@ import {marked} from '/assets/marked.esm.js?v=1';
     [140,400,800].forEach(delay=>setTimeout(()=>{syncVisualViewport();fitCapture();scheduleTerminalFit();},delay));}
   function keyboardWanted(){const a=document.activeElement;return !!(a&&(a.id==='terminal-input'||a.closest?.('.composer')));}
   function setComposing(active){if(!isMobile())return;document.querySelector('.app').classList.toggle('mobile-composing',active);settleViewport();if(active)setTimeout(()=>{input.scrollIntoView({block:'nearest'});input.setSelectionRange(input.value.length,input.value.length);},60);}
-  function toast(message,ms=2600){const el=$('toast');if(!el)return;el.textContent=message;el.hidden=false;
+  function toast(message,ms=2600){const el=$('toast');if(!el)return;state.versionToast.visible=false;el.classList.remove('has-action');el.textContent=message;el.hidden=false;
     requestAnimationFrame(()=>el.classList.add('show'));clearTimeout(toast.timer);
     toast.timer=setTimeout(()=>{el.classList.remove('show');setTimeout(()=>{el.hidden=true;},200);},ms);}
+  // ---- 版本轮询（借 Open WebUI：svelte.config.js pollInterval:60000 + src/routes/+layout.svelte:111——
+  // 服务端发版后，旧客户端自己发现并提示刷新。TmuxWeb 不学它静默强制刷新：用户可能正在输入或看输出，
+  // 整页刷新会丢草稿与滚动位置，所以只弹 toast，给刷新按钮；点“稍后”后同一版本不再打扰。
+  // 节奏复用现有的 20s 一轮 loadPanes：每 3 轮查一次版本 ≈ 60s，与 Open WebUI 的 60s 轮询同频，
+  // 不另起定时器；切到后台标签时 loadPanes 本来就跳过，版本检查也跟着停。
+  const VERSION_CHECK_EVERY_ROUNDS=3;
+  function serverVersionBaseline(){
+    const meta=document.querySelector('meta[name="server-version"]');
+    const value=meta?String(meta.content||'').trim():'';
+    return value&&!value.startsWith('__')?value:'';
+  }
+  function shouldCheckVersion(round,every){return round>0&&round%every===0;}
+  function shouldShowVersionToast(baseline,fetched,shownFor,dismissedFor,visible){
+    if(!baseline||!fetched||baseline===fetched)return false;
+    if(dismissedFor===fetched)return false;
+    if(shownFor===fetched&&visible)return false;
+    return true;
+  }
+  function showVersionToast(version){
+    const el=$('toast');if(!el)return;
+    clearTimeout(toast.timer); // 别让一条普通 toast 的隐藏定时器半路收走这个常驻提示
+    state.versionToast.shownFor=version;state.versionToast.visible=true;
+    el.classList.add('has-action');
+    el.textContent='';
+    const label=document.createElement('span');
+    label.textContent='服务端已更新，刷新后使用新版';
+    const refresh=document.createElement('button');
+    refresh.type='button';refresh.textContent='立即刷新';
+    refresh.onclick=()=>{location.reload();};
+    const later=document.createElement('button');
+    later.type='button';later.textContent='稍后';later.classList.add('ghost');
+    later.onclick=()=>{state.versionToast.dismissedFor=version;state.versionToast.visible=false;el.classList.remove('show');setTimeout(()=>{el.hidden=true;},200);};
+    el.append(label,refresh,later);
+    el.hidden=false;
+    requestAnimationFrame(()=>el.classList.add('show'));
+  }
+  async function checkServerVersion(){
+    // 不走 api()：它在 401 时会直接跳登录页、非 200 时抛错；版本检查必须在旧服务端
+    // （404，无此端点）、会话过期（401）、网络失败时都静默跳过，下轮再查。
+    try{
+      const response=await fetch('/api/version',{headers:{'Cache-Control':'no-cache'}});
+      if(!response.ok)return;
+      const data=await response.json();
+      const fetched=typeof data?.version==='string'?data.version.trim():'';
+      if(!fetched)return;
+      if(!state.serverVersion){state.serverVersion=fetched;return;} // 页面没带基线：认领当前版，不提示
+      if(!shouldShowVersionToast(state.serverVersion,fetched,state.versionToast.shownFor,state.versionToast.dismissedFor,state.versionToast.visible))return;
+      showVersionToast(fetched);
+    }catch{/* 网络失败或响应不是 JSON：静默跳过，下轮再查 */}
+  }
   // ---- 网络状态灯：绿=通畅，黄=吃力，红=不通
   const netWatch={samples:[],offline:false};
   function netSample(ms,ok){
@@ -1994,7 +2044,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
     };
     attempt(20);
   })();
-  paintCachedHosts();loadPanes();setInterval(()=>{if(!document.hidden)loadPanes();},20000);
+  paintCachedHosts();state.serverVersion=serverVersionBaseline();loadPanes();setInterval(()=>{if(!document.hidden){loadPanes();state.versionPollRound++;if(shouldCheckVersion(state.versionPollRound,VERSION_CHECK_EVERY_ROUNDS))checkServerVersion();}},20000);
   // agent 的交互菜单（kimi 选择器、claude 权限确认）是实验性功能：
   // 设置里打开才轮询 /prompt，否则连请求都不发（读屏识别偶尔会误判）
   let promptCardOn=false;
