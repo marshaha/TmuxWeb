@@ -1018,9 +1018,12 @@ class DaemonNeedsInputTests(_TempHome):
             _handshake_101(conn)
             opcode, payload = conn.read_frame()
             seen["hello"] = json.loads(payload.decode("utf-8"))
-            self.assertEqual(seen["hello"]["agent"]["version"], "1.1.0")
+            self.assertEqual(seen["hello"]["agent"]["version"], "1.2.0")
             conn.send_text(json.dumps({
-                "id": "req-ni",
+                "type": "welcome", "host_id": "h1", "host_name": "h1",
+                "protocol": "1.2.0", "next_seq": 1}))
+            conn.send_text(json.dumps({
+                "id": "req-ni", "seq": 1,
                 "ops": [{"op": "needs_input", "panes": [
                     {"pane_id": "%0", "provider": "claude", "cwd": "/proj",
                      "session_id": "sess-1"}]}]}))

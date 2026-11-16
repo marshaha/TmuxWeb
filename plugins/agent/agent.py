@@ -6,36 +6,74 @@ the TmuxWeb host over a persistent WebSocket, and executes the shell
 commands the server sends it, so one connection replaces one SSH round
 trip per operation.
 
-Protocol (shared with the server-side plugin; do not change unilaterally):
+Protocol (shared with the server-side plugin; do not change unilaterally).
+Version 1.2.0 is sequenced (borrowed from Open WebUI's
+``TerminalTransport._pump`` in
+``backend/open_webui/utils/agents/transport.py``: every frame carries a
+``sequence``, output ``sequence != cursor + 1`` means a frame was lost,
+every frame is acked, reconnect replays from the cursor):
 
 * JSON over WebSocket text frames.
 * After connecting, the agent sends ``hello``::
 
-      {"type": "hello", "token": "<token>",
-       "agent": {"version": "1.0.0", "hostname": "<hostname>",
+      {"type": "hello", "token": "<token>", "cursor": <last acked seq>,
+       "agent": {"version": "1.2.0", "hostname": "<hostname>",
                  "tmux": "<tmux path or empty string>"}}
 
   The server replies ``{"type": "welcome", "host_id": ...,
-  "host_name": ...}``; a wrong token gets the connection closed with
-  code 4403.
-* Server requests are always batch-shaped::
+  "host_name": ..., "protocol": "1.2.0", "next_seq": <int>}``; a wrong
+  token gets the connection closed with code 4403, an agent older than
+  1.2.0 with code 4409 ("upgrade required"). A welcome without
+  ``next_seq`` means an old server: the agent exits (code 4) instead
+  of silently running unsequenced.
+* Server requests are always batch-shaped and carry a per-host
+  monotonically increasing ``seq`` (1, 2, 3, ...; assigned by the
+  server, resumed across reconnects from the welcome's ``next_seq``)::
 
-      {"id": "<uuid>", "ops": [{"op": "exec", "command": "<shell>",
-                                "input_b64": "<base64 or empty>",
-                                "timeout": 15}]}
+      {"id": "<uuid>", "seq": 7,
+       "ops": [{"op": "exec", "command": "<shell>",
+                "input_b64": "<base64 or empty>",
+                "timeout": 15}]}
 
   v1 sends one op per batch, but a batch may hold several ops and they
-  run in order. Reply::
+  run in order. Reply echoes the sequence::
 
-      {"id": "...", "ok": true,
+      {"id": "...", "seq": 7, "ok": true,
        "results": [{"ok": true, "stdout_b64": "...", "stderr_b64": "...",
                     "returncode": 0}]}
 
   A single failing op is ``{"ok": false, "error": "..."}`` inside
   ``results``; a malformed whole batch is ``{"id": "...", "ok": false,
-  "error": "..."}``.
+  "error": "..."}``. A sequence problem is an error reply that is
+  never executed, with ``"code": "sequence_gap"`` (a request was
+  lost: expected N, got M > N) or ``"code": "sequence_duplicate"``
+  (seq <= the last accepted one: a stale re-send).
+* The server acks every reply it delivers,
+  ``{"type": "ack", "seq": 7}``. The agent's ``cursor`` is the highest
+  *contiguous* run of acked sequences: a reply that was sent but never
+  acked (connection died in between) does not advance the cursor, so
+  the server can tell, on the next hello, which batches have an
+  unknown outcome instead of assuming they landed. Batches complete
+  out of order (the message pool runs them concurrently), so the
+  cursor only moves over the contiguous acked prefix.
+* Cursor / resume semantics — what the cursor does and does not mean.
+  The agent is a stateless screen reader: there is no session stream
+  to replay, and an ``exec`` op (``tmux send-keys``, ``load-buffer``)
+  is not idempotent, so a batch whose outcome is unknown is NEVER
+  re-run on reconnect. On reconnect the agent sends its cursor, the
+  server compares it with the last sequence it actually sent, and:
+  equal means a clean resume (numbering just continues); lower means
+  the batches in between are recorded as a sequence gap (server log +
+  host status), their callers having already failed over to SSH per
+  the existing AgentUnavailable rule; a fresh server epoch (welcome
+  ``next_seq`` 1) resets the numbering on both sides. Reconnect
+  itself is unchanged: exponential backoff 1s..60s, first retry well
+  inside Open WebUI's 60s window, and — unlike Open WebUI, which
+  gives up after 60s — the daemon keeps retrying, because it is a
+  supervised long-lived daemon, not one chat's transport.
 * The agent sends ``{"type": "heartbeat", "at": <unix timestamp>}``
-  every 30 seconds.
+  every 30 seconds (Open WebUI heartbeats every 20s; the liveness
+  signal here is the server's WebSocket ping, so 30s stands).
 * v1 op allowlist is just ``"exec"``. An unknown op yields an error
   result; it never breaks the loop.
 * v1.1 adds one more op, ``"needs_input"`` (see the host-side watcher
@@ -43,7 +81,7 @@ Protocol (shared with the server-side plugin; do not change unilaterally):
   "provider", "cwd", "title"}]}`` and the agent answers with per-pane
   waiting state ``{"ok": true, "waiting": {"%0": {"waiting": true,
   "source": "hook", "since": <unix ts>, "decision_point": true,
-  "control_quiet": true, "hook": true}}, "agent_version": "1.1.0",
+  "control_quiet": true, "hook": true}}, "agent_version": "1.2.0",
   "control_mode": true, "events_seen": 3}``. An agent that does not
   know the op answers with an error result, and the server treats that
   as "no agent signal" (see ``transport.AgentTransport.needs_input_many``)
@@ -87,7 +125,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 AGENT_NAME = "tmuxweb-agent"
 HEARTBEAT_INTERVAL = 30.0
 DEFAULT_EXEC_TIMEOUT = 15.0
@@ -147,6 +185,12 @@ OP_PONG = 0xA
 
 # Close code the server uses to reject a bad token.
 CLOSE_AUTH_FAILED = 4403
+# Close code the server uses to reject an agent older than 1.2.0:
+# the sequenced protocol cannot run against it, so it is refused
+# outright instead of silently served unsequenced.
+CLOSE_AGENT_TOO_OLD = 4409
+# The protocol version the server must speak (see the welcome frame).
+PROTOCOL_VERSION = "1.2.0"
 
 
 def log(message: str) -> None:
@@ -2312,6 +2356,139 @@ class AuthFailed(Exception):
     """The server closed the connection with 4403: the token is wrong."""
 
 
+class ProtocolError(Exception):
+    """The sequenced protocol cannot run against this peer.
+
+    Raised when the server closes the connection with 4409 (this agent
+    is too old for it — upgrade the agent) or when the welcome frame
+    has no ``next_seq`` (the server is too old for this agent —
+    upgrade the server). Either way retrying the same pair cannot
+    help, so the daemon exits with code 4 instead of reconnecting.
+    """
+
+
+class _Sequencer:
+    """Per-host request sequencing for one agent daemon (protocol 1.2.0).
+
+    One instance lives for the life of the daemon, across reconnects:
+    the server's numbering resumes where it left off (welcome
+    ``next_seq``), and this is what remembers where that is.
+
+    * ``expected`` — the next request ``seq`` to accept. A request
+      with a higher seq means one was lost in transit (gap); a lower
+      or equal one is a stale re-send (duplicate). Neither is ever
+      executed: the caller gets an error reply instead.
+    * ``cursor`` — the highest *contiguous* run of acked sequences,
+      i.e. the last batch the server confirmed receiving a reply for.
+      It is what hello reports, and what the server compares against
+      its own last-sent sequence to find the batches whose outcome is
+      unknown. Replies complete out of order (the message pool), so
+      ``completed`` / ``acked`` are sets and the cursor only moves
+      over the contiguous prefix; entries leave the sets as the
+      prefix advances, so they stay tiny.
+
+    All methods take the lock: the main loop accepts sequences
+    serially at dispatch time, while pool workers mark completions
+    and the loop marks acks.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.expected = 1
+        self._completed: set[int] = set()
+        self._completed_prefix = 0
+        self._acked: set[int] = set()
+        self._acked_prefix = 0
+
+    @property
+    def cursor(self) -> int:
+        """Last contiguous acked sequence (0 when nothing is acked)."""
+        with self._lock:
+            return self._acked_prefix
+
+    def reset(self, next_seq: int) -> None:
+        """Forget everything: a fresh server epoch starts at ``next_seq``."""
+        with self._lock:
+            self.expected = next_seq
+            self._completed.clear()
+            self._completed_prefix = 0
+            self._acked.clear()
+            self._acked_prefix = 0
+
+    def sync(self, next_seq: int) -> str:
+        """Adopt the server's ``next_seq`` from a welcome frame.
+
+        Returns what happened, for the log: ``"ok"`` (already in
+        step), ``"resumed"`` (the server sent requests this agent
+        never saw — their callers already failed over, they will
+        never arrive, so skip ahead), or ``"reset"`` (a fresh server
+        epoch: ``next_seq`` 1, or the server somehow behind this
+        agent — numbering restarts from what the server says).
+        """
+        with self._lock:
+            if next_seq == 1 or next_seq < self.expected:
+                self.expected = next_seq
+                self._completed.clear()
+                self._completed_prefix = 0
+                self._acked.clear()
+                self._acked_prefix = 0
+                return "reset"
+            if next_seq == self.expected:
+                return "ok"
+            skipped = next_seq - self.expected
+            self.expected = next_seq
+            return "resumed:%d" % skipped
+
+    def accept(self, seq) -> str:
+        """Check one incoming request ``seq``.
+
+        Returns ``"ok"`` (and advances ``expected``), ``"gap"``
+        (``seq`` is ahead of ``expected``: something was lost), or
+        ``"duplicate"`` (``seq`` is behind ``expected``: a stale
+        re-send). A non-integer seq is a ``"gap"`` — the frame is not
+        sequenced at all, so it is not executed either.
+        """
+        with self._lock:
+            if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
+                return "gap"
+            if seq == self.expected:
+                self.expected += 1
+                return "ok"
+            if seq > self.expected:
+                return "gap"
+            return "duplicate"
+
+    def mark_completed(self, seq: int) -> None:
+        """A reply for ``seq`` was sent. Advances the completed prefix."""
+        with self._lock:
+            if seq <= self._completed_prefix:
+                return
+            self._completed.add(seq)
+            while self._completed_prefix + 1 in self._completed:
+                self._completed_prefix += 1
+                self._completed.discard(self._completed_prefix)
+
+    def mark_acked(self, seq) -> None:
+        """The server acked the reply for ``seq``. Advances the cursor."""
+        with self._lock:
+            if not isinstance(seq, int) or isinstance(seq, bool):
+                return
+            if seq <= self._acked_prefix:
+                return
+            if seq > self._completed_prefix and seq not in self._completed:
+                # An ack for a reply this agent never completed is a
+                # server bug (or a stale ack from a previous epoch):
+                # ignore it rather than letting the cursor jump over
+                # batches whose replies never went out. A reply that
+                # completed out of order is in the set even when the
+                # prefix has not reached it yet, so membership counts.
+                return
+            self._acked.add(seq)
+            while self._acked_prefix + 1 in self._acked:
+                self._acked_prefix += 1
+                self._acked.discard(self._acked_prefix)
+
+
 def backoff_delay(failures: int) -> float:
     """1s, 2s, 4s, 8s, 16s, 32s, then capped at 60s."""
     if failures < 0:
@@ -2341,7 +2518,7 @@ def _sleep_interruptible(seconds: float, stop_event: threading.Event | None) -> 
         time.sleep(min(0.1, remaining))
 
 
-def _send_reply(conn: WSConnection, reply: dict) -> None:
+def _send_reply(conn: WSConnection, reply: dict) -> bool:
     """Send a computed reply; on failure, answer with an error result.
 
     A reply whose send fails must never be dropped silently: the old
@@ -2351,37 +2528,58 @@ def _send_reply(conn: WSConnection, reply: dict) -> None:
     already gone it fails too, and the server then learns it from the
     disconnect (which fails the pending op immediately instead of
     timing it out). Either way the caller gets an answer, not silence.
+    Returns True when a reply went out (so the caller may mark the
+    sequence completed); False when nothing could be sent.
     """
     try:
         conn.send_text(json.dumps(reply))
+        return True
     except Exception as exc:  # noqa: BLE001 - answer, don't drop
         log(f"reply send failed ({exc!r}); attempting error reply")
         try:
             conn.send_text(json.dumps({
-                "id": reply.get("id", ""), "ok": False,
+                "id": reply.get("id", ""), "seq": reply.get("seq"),
+                "ok": False,
                 "error": f"agent could not send reply: {exc}"}))
+            return True
         except Exception as exc2:  # noqa: BLE001 - connection is gone
             log(f"error reply also failed, connection is gone: {exc2!r}")
+            return False
 
 
 def _handle_message(conn: WSConnection, text: str, resolver: TmuxResolver,
-                    watcher: HostWatcher | None = None) -> None:
+                    watcher: HostWatcher | None = None) -> bool:
+    """Handle one incoming message. Returns True when a reply went out.
+
+    The sequence gate lives in the main loop (see _serve_connection),
+    not here: pool workers run concurrently, so only the loop can
+    check sequences in arrival order. By the time a batch reaches
+    here its sequence was accepted, and the reply it sends echoes
+    that sequence.
+    """
     try:
         message = json.loads(text)
     except json.JSONDecodeError as exc:
         log(f"ignoring non-JSON message: {exc}")
-        return
+        return False
     if not isinstance(message, dict):
         log("ignoring non-object message")
-        return
+        return False
     if message.get("type") == "welcome":
         who = message.get("host_name") or message.get("host_id") or "?"
         log(f"welcome from host {who}")
-        return
+        return False
+    if message.get("type") == "ack":
+        # The loop handles acks inline (it owns the sequencer); a pool
+        # worker only ever sees one if a test calls this directly.
+        return False
     if "ops" in message:
-        _send_reply(conn, handle_batch(message, resolver, watcher))
-        return
+        reply = handle_batch(message, resolver, watcher)
+        if isinstance(message.get("seq"), int):
+            reply["seq"] = message["seq"]
+        return _send_reply(conn, reply)
     log(f"ignoring unknown message type: {message.get('type')!r}")
+    return False
 
 
 class _MessagePool:
@@ -2457,9 +2655,23 @@ class _MessagePool:
 
 def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
                       stop_event: threading.Event | None,
-                      watcher: HostWatcher | None = None) -> None:
-    """Hello + read loop for one connection. Raises on disconnect."""
+                      watcher: HostWatcher | None = None,
+                      sequencer: _Sequencer | None = None) -> None:
+    """Hello + read loop for one connection. Raises on disconnect.
+
+    The loop owns the sequence gate: it parses each incoming message
+    in arrival order, handles welcome/ack inline, checks a batch
+    request's ``seq`` against the sequencer, and only then hands the
+    batch to the pool. A gap or a duplicate is answered with an error
+    reply right here and never executed — the pool runs workers
+    concurrently, so it cannot check sequences in order. A worker
+    marks its sequence completed after its reply went out, and the
+    server's ack (handled inline here) advances the cursor.
+    """
+    if sequencer is None:
+        sequencer = _Sequencer()
     hello = {"type": "hello", "token": token,
+             "cursor": sequencer.cursor,
              "agent": {"version": VERSION, "hostname": socket.gethostname(),
                        "tmux": resolver.path}}
     conn.send_text(json.dumps(hello))
@@ -2487,14 +2699,27 @@ def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
     # The heartbeat may wait behind a big reply in the sender's queue
     # (same as it waited on the old send lock); liveness is the
     # server's ping, not this heartbeat.
-    def _dispatch(text: str) -> None:
+    def _dispatch(item) -> None:
+        text, seq = item
         try:
-            _handle_message(conn, text, resolver, watcher)
+            sent = _handle_message(conn, text, resolver, watcher)
         except Exception as exc:  # noqa: BLE001 - a send failure is
             # answered with an error reply inside _send_reply; anything
             # reaching here is the batch itself failing, which is logged
             # and never takes the worker (or the pool) down with it.
             log(f"message worker failed: {exc!r}")
+            return
+        if sent and seq is not None:
+            sequencer.mark_completed(seq)
+
+    def _sequence_error(message: dict, code: str, detail: str) -> None:
+        """Answer a gap/duplicate without executing it. Never raises."""
+        log(f"sequence {code}: {detail}")
+        _send_reply(conn, {
+            "id": message.get("id", "") if isinstance(message.get("id"), str) else "",
+            "seq": message.get("seq"),
+            "ok": False, "code": code,
+            "error": f"agent protocol sequence {code}: {detail}"})
 
     pool = _MessagePool(_MESSAGE_MAX_WORKERS, _dispatch)
     try:
@@ -2509,11 +2734,54 @@ def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
             if kind == "closed":
                 if item.code == CLOSE_AUTH_FAILED:
                     raise AuthFailed("server rejected the token (close 4403)")
+                if item.code == CLOSE_AGENT_TOO_OLD:
+                    raise ProtocolError(
+                        "server requires agent >= 1.2.0 (close 4409); "
+                        "upgrade this agent and restart it")
                 raise item
             if kind == "error":
                 raise item
             if kind == "message":
-                if not pool.submit(item):
+                try:
+                    parsed = json.loads(item)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    parsed = None
+                if isinstance(parsed, dict) and parsed.get("type") == "welcome":
+                    next_seq = parsed.get("next_seq")
+                    if not isinstance(next_seq, int) or isinstance(next_seq, bool):
+                        raise ProtocolError(
+                            "server welcome has no next_seq: the server is "
+                            "older than agent protocol 1.2.0; upgrade the "
+                            "server, this agent will not run unsequenced")
+                    outcome = sequencer.sync(next_seq)
+                    who = parsed.get("host_name") or parsed.get("host_id") or "?"
+                    if outcome == "reset":
+                        log(f"welcome from host {who}: sequence reset "
+                            f"(server next_seq {next_seq})")
+                    elif outcome.startswith("resumed:"):
+                        log(f"welcome from host {who}: resumed at seq "
+                            f"{next_seq} ({outcome.split(':', 1)[1]} request(s) "
+                            f"never arrived)")
+                    else:
+                        log(f"welcome from host {who}")
+                elif isinstance(parsed, dict) and parsed.get("type") == "ack":
+                    sequencer.mark_acked(parsed.get("seq"))
+                elif isinstance(parsed, dict) and "ops" in parsed:
+                    verdict = sequencer.accept(parsed.get("seq"))
+                    if verdict == "ok":
+                        if not pool.submit((item, parsed.get("seq"))):
+                            log("dropping message: connection closing")
+                    elif verdict == "gap":
+                        _sequence_error(
+                            parsed, "sequence_gap",
+                            "expected seq %d, got %r"
+                            % (sequencer.expected, parsed.get("seq")))
+                    else:
+                        _sequence_error(
+                            parsed, "sequence_duplicate",
+                            "seq %r was already accepted (expected %d)"
+                            % (parsed.get("seq"), sequencer.expected))
+                elif not pool.submit((item, None)):
                     log("dropping message: connection closing")
             if time.monotonic() - last_heartbeat >= HEARTBEAT_INTERVAL:
                 conn.send_text(json.dumps({"type": "heartbeat", "at": int(time.time())}))
@@ -2538,7 +2806,10 @@ def run_daemon(server: str, token: str, *, tmux: str | None = None,
     """Connect, hello, serve, reconnect with backoff until stopped.
 
     Returns 0 on a clean stop, 3 when the server rejects the token
-    (4403: retrying with the same token cannot help).
+    (4403: retrying with the same token cannot help), 4 when the
+    sequenced protocol cannot run against the server (4409, or a
+    welcome without ``next_seq``: upgrade the agent or the server,
+    retrying the same pair cannot help).
     """
     if stop_event is None:
         stop_event = threading.Event()
@@ -2553,6 +2824,10 @@ def run_daemon(server: str, token: str, *, tmux: str | None = None,
     # dropped WebSocket, and it stops only when the daemon stops.
     watcher = HostWatcher(resolver)
     watcher.start()
+    # The sequencer likewise lives for the life of the daemon, across
+    # reconnects: the cursor it reports in hello is what lets the
+    # server tell a clean resume from a lost batch.
+    sequencer = _Sequencer()
     failures = 0
     try:
         while not stop_event.is_set():
@@ -2567,11 +2842,16 @@ def run_daemon(server: str, token: str, *, tmux: str | None = None,
             failures = 0
             log(f"connected to {server_host(server)}")
             try:
-                _serve_connection(conn, token, resolver, stop_event, watcher)
+                _serve_connection(conn, token, resolver, stop_event, watcher,
+                                  sequencer)
             except AuthFailed as exc:
                 log(f"authentication failed: {exc}; not retrying")
                 _close_quietly(conn)
                 return 3
+            except ProtocolError as exc:
+                log(f"protocol mismatch: {exc}; not retrying")
+                _close_quietly(conn)
+                return 4
             except ConnectionClosed as exc:
                 log(f"disconnected: {exc}")
             except Exception as exc:  # noqa: BLE001 - reconnect, don't die

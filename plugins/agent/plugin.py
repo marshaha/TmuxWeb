@@ -7,7 +7,11 @@ The server side:
 
 * ``/ws/agent`` — the callback: peer check, hello + token check, then
   batched exec requests and replies (see ``transport.py`` for the
-  protocol notes).
+  protocol notes). Protocol 1.2.0 is sequenced: requests carry a
+  per-host ``seq``, replies echo it, the server acks each delivered
+  reply, and hello carries the agent's ``cursor`` for resume
+  comparison. An agent older than 1.2.0 is closed with 4409 instead
+  of silently served unsequenced.
 * ``GET /agent/agent.py`` — the agent program itself, public, no secrets.
 * ``POST /api/hosts/{id}/agent-token`` — issue/rotate the host's token.
 * ``DELETE /api/hosts/{id}/agent-token`` — revoke it, and drop any live
@@ -65,6 +69,35 @@ DEFAULT_TAILNET_CIDR = "100.64.0.0/10"
 # already encrypts the link, and an IP has no TLS certificate). Override
 # with TMUX_WEB_AGENT_PORT when the service listens elsewhere.
 DEFAULT_AGENT_PORT = 8787
+
+# Agent protocol 1.2.0 is sequenced (see transport.py): an agent that
+# does not speak it is refused outright, never silently served
+# unsequenced. 4409 is a private-use close code, like the 4403/4408
+# already in use on this socket.
+CLOSE_AGENT_TOO_OLD = 4409
+PROTOCOL_VERSION = "1.2.0"
+MIN_AGENT_VERSION = (1, 2)
+
+
+def _parse_agent_version(value):
+    """``"1.2.0"`` -> ``(1, 2)``; anything unparseable -> None.
+
+    Only major/minor are compared: a 1.3.0 agent still speaks the
+    1.2.0 frames, and a 2.0.0 one is assumed forward compatible
+    until the protocol says otherwise.
+    """
+    if not isinstance(value, str):
+        return None
+    parts = value.strip().split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        major, minor = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if major < 0 or minor < 0:
+        return None
+    return (major, minor)
 
 
 def _tailnet_network(cidr):
@@ -259,6 +292,25 @@ class AgentPlugin(Plugin):
             if host_id is None:
                 await websocket.close(code=4403)
                 return
+            # Protocol 1.2.0 is sequenced: an older agent cannot take
+            # part, and serving it unsequenced would run half the
+            # semantics (no gap detection, no cursor resume) while
+            # looking fine. Refuse it loudly — the agent log tells
+            # the operator to upgrade — and let the host fall back
+            # to SSH until it is upgraded.
+            agent_info = hello.get("agent")
+            version = (agent_info.get("version")
+                       if isinstance(agent_info, dict) else None)
+            parsed_version = _parse_agent_version(version)
+            if parsed_version is None or parsed_version < MIN_AGENT_VERSION:
+                log.warning("agent for host %s refused: version %r is older "
+                            "than protocol %s", host_id, version,
+                            PROTOCOL_VERSION)
+                await websocket.close(
+                    code=CLOSE_AGENT_TOO_OLD,
+                    reason="agent %s is too old; upgrade to >= %s"
+                    % (version, PROTOCOL_VERSION))
+                return
             try:
                 host = store.get_host(host_id)
             except KeyError:
@@ -267,6 +319,10 @@ class AgentPlugin(Plugin):
             connection = registry.register(host_id, websocket)
             now = time.time()
             registry.touch(host_id, now)
+            # The cursor is the agent's last contiguous acked sequence:
+            # compare it with what this server sent, and record a gap
+            # when batches went unanswered (see note_hello).
+            registry.note_hello(host_id, version, hello.get("cursor"))
             try:
                 store.touch_agent_last_seen(host_id, now)
             except (KeyError, AttributeError, OSError, ValueError):
@@ -275,6 +331,8 @@ class AgentPlugin(Plugin):
                 "type": "welcome",
                 "host_id": host_id,
                 "host_name": host.get("name") or host_id,
+                "protocol": PROTOCOL_VERSION,
+                "next_seq": registry.seq_next(host_id),
             })
             log.info("agent connected for host %s", host_id)
             try:
@@ -291,7 +349,17 @@ class AgentPlugin(Plugin):
                         continue
                     request_id = message.get("id")
                     if request_id is not None:
-                        registry.deliver(host_id, request_id, message)
+                        if registry.deliver(host_id, request_id, message):
+                            # The reply landed: ack it, so the agent's
+                            # cursor can advance past this sequence.
+                            # Best effort — if the send fails, the
+                            # connection is dying anyway and the agent
+                            # will report the gap on its next hello.
+                            try:
+                                await websocket.send_json(
+                                    {"type": "ack", "seq": message.get("seq")})
+                            except Exception:
+                                pass
             except WebSocketDisconnect:
                 pass
             except Exception:
