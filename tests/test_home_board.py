@@ -914,5 +914,238 @@ class HomeBoardTests(unittest.TestCase):
         self.assertTrue(missing["result"]["isError"])
 
 
+class HomeSnapshotTests(unittest.TestCase):
+    """收藏卡片的存在判断走 /api/hosts 快照，不再每张卡 live list_panes。
+
+    语义（用户已接受）：快照里有的 pane，元数据取快照、屏幕和 transcript
+    仍 live 读；快照列出了主机但没有这个 pane，卡直接读 offline（保留最后
+    预览）；快照还残留刚关掉的 pane 时 live 读失败，卡读 unknown 且没有预览，
+    等快照刷新掉它才变回 offline。没有快照（冷启动）或主机不在快照里时，
+    仍走老路 pane_or_404。
+    """
+
+    def setUp(self):
+        # never serve a cached good entry: every board read re-evaluates the
+        # snapshot, so the unknown/offline transitions below are real reads
+        self.env = mock.patch.dict("os.environ", {"TMUX_WEB_HOME_ENTRY_SECONDS": "0"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.tmux = FakeTmux()
+        self.store = FakeRemoteStore()
+        self.client = TestClient(create_app(
+            self.tmux,
+            password=PASSWORD,
+            session_secret="test-secret",
+            terminal_factory=FakeTerminalFactory(),
+            share_db=":memory:",
+            home_db=":memory:",
+            remote_store=self.store,
+            remote_runner_factory=FakeSSHRunner,
+        ))
+        self.client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+
+    def add_remote_host(self, name="oracle"):
+        created = self.client.post("/api/remote-hosts", json={
+            "name": name, "hostname": "10.0.0.1", "port": 22, "username": "u",
+            "auth_type": "agent", "verify": False})
+        self.assertEqual(created.status_code, 201, created.text)
+        return created.json()["id"]
+
+    def warm_snapshot(self, refresh=False):
+        # a plain poll inside the 30s TTL serves the cached snapshot; only
+        # ?refresh=1 re-probes and picks up a pane that just closed
+        params = {"refresh": 1} if refresh else {}
+        resp = self.client.get("/api/hosts", params=params)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return resp.json()
+
+    def board_entry(self, pane):
+        board = self.client.get("/api/home").json()
+        return next(item for item in board["favorites"] if item["pane"] == pane)
+
+    def test_a_favourite_reads_from_the_snapshot_without_listing_panes(self):
+        """快照暖了之后，/api/home 一次 list_panes 都不调，卡照样有标题和预览。"""
+        host_id = self.add_remote_host()
+        pane = f"{host_id}~%9"      # FakeSSHRunner 的 claude pane
+        self.assertEqual(self.client.post("/api/home/favorites", json={"pane": pane}).status_code, 201)
+        self.warm_snapshot()
+
+        calls = {"count": 0}
+        original = FakeSSHRunner.list_panes
+
+        def counting(self, timeout=15):
+            calls["count"] += 1
+            return original(self, timeout=timeout)
+
+        with mock.patch.object(FakeSSHRunner, "list_panes", counting):
+            entry = self.board_entry(pane)
+        self.assertEqual(calls["count"], 0, "the board must not live-list panes once the snapshot is warm")
+        self.assertIn(entry["status"], {"idle", "busy"})
+        self.assertEqual(entry["provider"], "claude")
+        self.assertEqual(entry["pane_title"], "Remote Claude")
+        self.assertEqual(entry["session"], "remote")
+        self.assertIsNotNone(entry["preview"])
+
+    def test_a_cold_snapshot_falls_back_to_a_live_lookup(self):
+        """冷启动（没调过 /api/hosts）时仍走 pane_or_404，卡正常。"""
+        host_id = self.add_remote_host()
+        pane = f"{host_id}~%9"
+        self.assertEqual(self.client.post("/api/home/favorites", json={"pane": pane}).status_code, 201)
+
+        calls = {"count": 0}
+        original = FakeSSHRunner.list_panes
+
+        def counting(self, timeout=15):
+            calls["count"] += 1
+            return original(self, timeout=timeout)
+
+        with mock.patch.object(FakeSSHRunner, "list_panes", counting):
+            entry = self.board_entry(pane)
+        self.assertGreater(calls["count"], 0, "cold start must still live-list once")
+        self.assertIn(entry["status"], {"idle", "busy"})
+        self.assertIsNotNone(entry["preview"])
+
+    def test_a_favourite_on_an_unlisted_host_falls_back_to_a_live_lookup(self):
+        """快照里没有这台主机（建快照后才加的主机），不能误判 pane 已关。"""
+        self.warm_snapshot()        # 只有 localhost
+        host_id = self.add_remote_host()
+        pane = f"{host_id}~%9"
+        self.assertEqual(self.client.post("/api/home/favorites", json={"pane": pane}).status_code, 201)
+
+        entry = self.board_entry(pane)
+        self.assertIn(entry["status"], {"idle", "busy"})
+        self.assertIsNotNone(entry["preview"])
+
+    def test_a_just_closed_pane_reads_unknown_then_offline(self):
+        """刚关掉的 pane：快照还残留它时读 unknown 且没有预览；快照刷新掉它
+        后读 offline，并恢复最后预览。"""
+        host_id = self.add_remote_host()
+        pane = f"{host_id}~%9"
+        self.assertEqual(self.client.post("/api/home/favorites", json={"pane": pane}).status_code, 201)
+        self.warm_snapshot()
+        online = self.board_entry(pane)
+        self.assertIn(online["status"], {"idle", "busy"})
+        self.assertIsNotNone(online["preview"])
+
+        # pane 关了：快照还残留它，但 live 抓屏和 transcript 都失败
+        def gone_list(self, timeout=15):
+            return []
+
+        def gone_capture(self, pane_id, history=5000, pane=None, visible_only=False):
+            raise RuntimeError("remote pane not found")
+
+        def gone_transcript(self, pane_id, limit=200, refresh=False, pane=None):
+            raise RuntimeError("remote pane not found")
+
+        with mock.patch.object(FakeSSHRunner, "list_panes", gone_list), \
+                mock.patch.object(FakeSSHRunner, "capture", gone_capture), \
+                mock.patch.object(FakeSSHRunner, "transcript", gone_transcript):
+            stale = self.board_entry(pane)
+            self.assertEqual(stale["status"], "unknown")
+            self.assertIsNone(stale["preview"])
+            self.assertIsNone(stale["agent_preview"])
+            # the unknown entry is not a last known answer, so it never enters
+            # the cache: a second read re-evaluates and still reads unknown
+            again = self.board_entry(pane)
+            self.assertEqual(again["status"], "unknown")
+            self.assertIsNone(again["preview"])
+
+        # 快照刷新（主机重探已看不到它），之后重读 → offline
+        with mock.patch.object(FakeSSHRunner, "list_panes", gone_list):
+            self.warm_snapshot(refresh=True)
+        offline = self.board_entry(pane)
+        self.assertEqual(offline["status"], "offline")
+        self.assertTrue(offline.get("cached"), offline)
+        self.assertEqual(offline["preview"]["text"], online["preview"]["text"])
+
+    def test_a_pane_missing_from_the_snapshot_reads_offline_at_once(self):
+        """快照列出了主机但没有这个 pane：不等预算、不占线程，直接 offline。"""
+        host_id = self.add_remote_host()
+        pane = f"{host_id}~%9"
+        self.assertEqual(self.client.post("/api/home/favorites", json={"pane": pane}).status_code, 201)
+        self.warm_snapshot()
+        online = self.board_entry(pane)
+        self.assertIn(online["status"], {"idle", "busy"})
+
+        # 主机重探已看不到它（快照刷新后），卡直接 offline
+        with mock.patch.object(FakeSSHRunner, "list_panes", lambda self, timeout=15: []):
+            self.warm_snapshot(refresh=True)
+        calls = {"count": 0}
+        original = FakeSSHRunner.list_panes
+
+        def counting(self, timeout=15):
+            calls["count"] += 1
+            return original(self, timeout=timeout)
+
+        with mock.patch.object(FakeSSHRunner, "list_panes", counting):
+            entry = self.board_entry(pane)
+        self.assertEqual(entry["status"], "offline")
+        self.assertEqual(calls["count"], 0, "a gone pane must not trigger a live list")
+        self.assertTrue(entry.get("cached"), entry)
+        self.assertEqual(entry["preview"]["text"], online["preview"]["text"])
+
+
+class HostsSnapshotTtlTests(unittest.TestCase):
+    """ /api/hosts 快照 TTL 默认 30s：20s 一轮询，约每两轮才重探一次。"""
+
+    def setUp(self):
+        self.tmux = FakeTmux()
+        self.client = TestClient(create_app(
+            self.tmux,
+            password=PASSWORD,
+            session_secret="test-secret",
+            terminal_factory=FakeTerminalFactory(),
+            share_db=":memory:",
+            home_db=":memory:",
+            remote_store=FakeRemoteStore(),
+            remote_runner_factory=FakeSSHRunner,
+        ))
+        self.client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+
+    def test_the_default_ttl_survives_a_six_second_gap(self):
+        """默认 30s：6 秒后的第二轮仍是快照（旧的 5s 会重探）。"""
+        calls = {"count": 0}
+        original = self.tmux.list_panes
+
+        def counting(*args, **kwargs):
+            calls["count"] += 1
+            return original(*args, **kwargs)
+
+        self.tmux.list_panes = counting
+        self.assertEqual(self.client.get("/api/hosts").status_code, 200)
+        first = calls["count"]
+        self.assertGreaterEqual(first, 1)
+        time.sleep(6)
+        self.assertEqual(self.client.get("/api/hosts").status_code, 200)
+        self.assertEqual(calls["count"], first, "a poll 6s later must still be served from the snapshot")
+
+    def test_an_expired_snapshot_reprobes(self):
+        """TTL 本身仍生效：TMUX_WEB_HOSTS_TTL=1 时 1.2 秒后就重探。"""
+        import os
+        from unittest.mock import patch
+        tmux = FakeTmux()
+        calls = {"count": 0}
+        original = tmux.list_panes
+
+        def counting(*args, **kwargs):
+            calls["count"] += 1
+            return original(*args, **kwargs)
+
+        tmux.list_panes = counting
+        with patch.dict(os.environ, {"TMUX_WEB_HOSTS_TTL": "1"}):
+            client = TestClient(create_app(
+                tmux, password=PASSWORD, session_secret="test-secret",
+                terminal_factory=FakeTerminalFactory(), share_db=":memory:",
+                home_db=":memory:", remote_store=FakeRemoteStore(),
+                remote_runner_factory=FakeSSHRunner))
+        client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+        self.assertEqual(client.get("/api/hosts").status_code, 200)
+        first = calls["count"]
+        self.assertGreaterEqual(first, 1)
+        time.sleep(1.2)
+        self.assertEqual(client.get("/api/hosts").status_code, 200)
+        self.assertGreater(calls["count"], first, "an expired snapshot must re-probe")
+
+
 if __name__ == "__main__":
     unittest.main()

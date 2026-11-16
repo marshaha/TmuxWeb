@@ -98,7 +98,7 @@ This document covers automated tests that do not require real AI CLIs, plus manu
 
 - Firehose pane: with a log pane selected the console must stay above ~50fps, render only the last few hundred lines
   (with a 只显示最近 600 行 notice), and show an 输出过快 notice if xterm falls behind; the ⏸ button freezes the stream and ▶
-  resumes it; the sidebar polls every 20s without resetting scroll; `/api/hosts` is served from a 5s snapshot unless
+  resumes it; the sidebar polls every 20s without resetting scroll; `/api/hosts` is served from a 30s snapshot unless
   `?refresh=1`. Covered by `test_hosts_list_is_snapshotted_between_polls` and the index-page marker assertions.
 
 - Unsaved jump host: leave the picker at 直连, type `ops@bastion.example:2222` in the field below, save — the row shows

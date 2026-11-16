@@ -2365,7 +2365,16 @@ def create_app(
             return pane_state_cache["states"]
 
     hosts_snapshot: dict = {"at": 0.0, "value": None,
-                            "ttl": float(os.environ.get("TMUX_WEB_HOSTS_TTL", "5"))}
+                            # 30s: the sidebar/console poll /api/hosts every 20s, so a
+                            # 30s TTL (1.5x the poll interval) means a refresh at
+                            # roughly every other poll instead of every poll, while
+                            # pane lists, titles and host online state lag at most
+                            # one TTL. A cold re-probe costs the slowest host's
+                            # list_panes (1.3-7.7s live); a warm snapshot answers
+                            # in ~10ms. Same freshness class as the 30s pane-state
+                            # cache and close to the 25s home-entry TTL. ?refresh=1
+                            # and per-host refresh still force a re-probe.
+                            "ttl": float(os.environ.get("TMUX_WEB_HOSTS_TTL", "30"))}
     relay_log: deque[dict] = deque(maxlen=100)
     relay_locks: dict[str, asyncio.Lock] = {}
 
@@ -3945,7 +3954,7 @@ def create_app(
     @app.get("/api/hosts")
     async def list_hosts(request: Request, refresh: int = 0, host: str = ""):
         require_auth(request)
-        # every 5s poll used to re-probe each remote host over SSH; a 5s snapshot
+        # every 20s poll used to re-probe each remote host over SSH; a 30s snapshot
         # keeps the sidebar fresh without hammering them (?refresh=1 forces it,
         # &host=<id> re-lists only that host so one click stays cheap)
         cached = hosts_snapshot["value"]
@@ -5898,15 +5907,35 @@ def create_app(
                 "window": "", "host": host_name, "command": "", "preview": None, "agent_preview": None,
                 "waiting": False, "favorite": True, "pending": True}
 
-    def home_entry(pane_id: str, note: str = "", custom_title: str = "") -> dict:
-        """Everything a Home card needs about one pane; failures degrade to offline."""
+    def home_entry(pane_id: str, note: str = "", custom_title: str = "",
+                   snapshot_pane: dict | None = None, snapshot_says_gone: bool = False) -> dict:
+        """Everything a Home card needs about one pane; failures degrade to offline.
+
+        The pane's existence comes from the /api/hosts snapshot, not a live
+        ``list_panes`` per card (one SSH round trip each, 15s timeout on a hung
+        host): ``snapshot_pane`` carries the metadata, and only the screen
+        (``relay.inspect``) and the transcript are still read live. When the
+        snapshot lists the host but not the pane, ``snapshot_says_gone`` answers
+        offline at once — no thread, no SSH — and the caller restores the last
+        preview from the entry cache. A pane the snapshot still lists but whose
+        live read fails reads ``unknown`` with no preview until the snapshot
+        refreshes and drops it. With no snapshot at all (cold start) or an
+        unlisted host, ``snapshot_pane`` is None and the old live ``pane_or_404``
+        path still runs.
+        """
         entry: dict = {"pane": pane_id, "note": note, "status": "offline", "provider": None,
                        "title": custom_title, "default_title": "", "custom_title": custom_title != "",
                        "pane_title": "", "path": "", "session": "", "window": "", "host": "",
                        "command": "", "preview": None, "agent_preview": None,
                        "waiting": False, "favorite": True}
+        if snapshot_says_gone:
+            return entry
         try:
-            pane = pane_or_404(pane_id)
+            if snapshot_pane is not None:
+                # a copy: the snapshot dict is shared with /api/hosts readers
+                pane = dict(snapshot_pane)
+            else:
+                pane = pane_or_404(pane_id)
             transport, actual_pane_id = pane_transport(pane_id)
         except HTTPException:
             return entry
@@ -5981,7 +6010,13 @@ def create_app(
 
     def remember_home_entry(pane_id: str, entry: dict) -> None:
         # a failed read (unknown/offline, no preview) is retried soon instead of
-        # being trusted for the full TTL
+        # being trusted for the full TTL — except an unknown entry never enters
+        # the cache at all: it is not a last known answer, and remembering it
+        # would overwrite the previous good entry's preview, so a pane that
+        # closes (unknown while the snapshot still lists it, offline once the
+        # snapshot drops it) would come back offline with no preview to restore
+        if entry.get("status") == "unknown":
+            return
         ttl = HOME_ENTRY_TTL if (entry.get("preview") or entry.get("status") in ("busy", "idle")) else 5.0
         HOME_ENTRY_CACHE[pane_id] = (time.time(), entry, ttl)
         if len(HOME_ENTRY_CACHE) > 200:  # bounded
@@ -6021,18 +6056,44 @@ def create_app(
 
     async def build_home_payload() -> dict:
         started = time.time()
+        phases: dict[str, float] = {}
         favorites = await asyncio.to_thread(home.favorites)
+        phases["fav"] = time.time() - started
+        # The /api/hosts snapshot is the existence check for favourites (see
+        # home_entry): titles/hosts come from it too, so build it once here and
+        # reuse it for the recent rows below instead of building it twice.
+        known: dict[str, dict] = {}
+        snapshot_host_ids: set[str] = set()
+        for host in (hosts_snapshot["value"] or {}).get("hosts") or []:
+            snapshot_host_ids.add(str(host.get("id") or ""))
+            for pane in host.get("panes") or []:
+                known[pane.get("id")] = {**pane, "host_name": host.get("name") or host.get("id")}
+        snapshot_ready = hosts_snapshot["value"] is not None
         loop = asyncio.get_running_loop()
         slots: list = [None] * len(favorites)
         futures: dict = {}
         for index, row in enumerate(favorites):
-            hit = HOME_ENTRY_CACHE.get(row["pane_id"])
+            pane_id = row["pane_id"]
+            hit = HOME_ENTRY_CACHE.get(pane_id)
             if hit and (time.time() - hit[0]) < (hit[2] if len(hit) > 2 else HOME_ENTRY_TTL):
                 slots[index] = hit[1]
                 continue
-            future = loop.run_in_executor(None, home_entry, row["pane_id"],
-                                          row.get("note") or "", row.get("title") or "")
+            host_id = pane_id.split("~", 1)[0] if "~" in pane_id else "localhost"
+            snapshot_pane = known.get(pane_id)
+            if snapshot_pane is None and snapshot_ready and host_id in snapshot_host_ids:
+                # the snapshot lists the host but not the pane: it is gone.
+                # No thread, no SSH — offline at once, last preview restored.
+                entry = with_cached_preview(
+                    pane_id, home_entry(pane_id, row.get("note") or "", row.get("title") or "",
+                                        snapshot_says_gone=True))
+                remember_home_entry(pane_id, entry)
+                slots[index] = entry
+                continue
+            future = loop.run_in_executor(None, home_entry, pane_id,
+                                          row.get("note") or "", row.get("title") or "",
+                                          snapshot_pane)
             futures[future] = index
+        wait_t0 = time.time()
         if futures:
             done, _ = await asyncio.wait(futures, timeout=HOME_ENTRY_BUDGET)
             for future in done:
@@ -6052,22 +6113,21 @@ def create_app(
                 row = favorites[futures[future]]
                 slots[futures[future]] = with_cached_preview(row["pane_id"], home_entry_skeleton(row))
                 future.add_done_callback(lambda fut, pane=row["pane_id"]: collect_home_entry(fut, pane))
+        phases["wait"] = time.time() - wait_t0
         cards = await asyncio.to_thread(home.cards)
+        phases["cards"] = time.time() - started - sum(phases.values())
         # counters may lag a few seconds; the favourites above are always live
         states = await asyncio.to_thread(pane_states_cached, 0.4, 30.0)
+        phases["states"] = time.time() - started - sum(phases.values())
         elapsed = time.time() - started
         (LOGGER.warning if elapsed > 2 else LOGGER.info)(
-            "home payload in %.2fs (%d favourites, %d pending)", elapsed, len(favorites),
-            sum(1 for entry in slots if entry and entry.get("pending")))
+            "home payload in %.2fs (%d favourites, %d pending; fav %.2fs, wait %.2fs, "
+            "cards %.2fs, states %.2fs)", elapsed, len(favorites),
+            sum(1 for entry in slots if entry and entry.get("pending")),
+            phases["fav"], phases["wait"], phases["cards"], phases["states"])
         busy = sum(1 for state in states if state.get("status") == "busy")
         recent_rows = await asyncio.to_thread(home.recent, 4)
         by_id = {state["id"]: state for state in states}
-        # titles/hosts come from the /api/hosts snapshot too: it is cheap and warm
-        # even when the status sweep has not run yet
-        known: dict[str, dict] = {}
-        for host in (hosts_snapshot["value"] or {}).get("hosts") or []:
-            for pane in host.get("panes") or []:
-                known[pane.get("id")] = {**pane, "host_name": host.get("name") or host.get("id")}
         recent = []
         for row in recent_rows:
             pane_id = row["pane_id"]
