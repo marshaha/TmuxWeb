@@ -921,7 +921,9 @@ class HomeSnapshotTests(unittest.TestCase):
     仍 live 读；快照列出了主机但没有这个 pane，卡直接读 offline（保留最后
     预览）；快照还残留刚关掉的 pane 时 live 读失败，卡读 unknown 且没有预览，
     等快照刷新掉它才变回 offline。没有快照（冷启动）或主机不在快照里时，
-    仍走老路 pane_or_404。
+    仍走老路 pane_or_404。两个例外：web 自己关的 pane，关闭成功后立即刷新
+    对应主机的快照（D），卡直接读 offline；localhost 的卡永远走 live 检查
+    （B），终端里关掉也立刻读 offline。远端主机上、非 web 发起的关闭仍等快照。
     """
 
     def setUp(self):
@@ -1083,6 +1085,92 @@ class HomeSnapshotTests(unittest.TestCase):
         self.assertEqual(calls["count"], 0, "a gone pane must not trigger a live list")
         self.assertTrue(entry.get("cached"), entry)
         self.assertEqual(entry["preview"]["text"], online["preview"]["text"])
+
+    def snapshot_panes(self, host_id):
+        hosts = self.client.get("/api/hosts").json()["hosts"]
+        host = next(item for item in hosts if item["id"] == host_id)
+        return [pane["id"] for pane in host.get("panes") or []]
+
+    def favourite_local_claude_pane(self):
+        # FakeTmux.transcript 只认 command == "claude" 的 pane，没有它卡就没有预览
+        self.tmux.panes[0]["command"] = "claude"
+        self.assertEqual(self.client.post("/api/home/favorites", json={"pane": "%4"}).status_code, 201)
+        self.warm_snapshot()
+        online = self.board_entry("%4")
+        self.assertIn(online["status"], {"idle", "busy"})
+        self.assertIsNotNone(online["preview"])
+        return online
+
+    def test_closing_a_remote_pane_from_the_web_refreshes_the_snapshot(self):
+        """D：web 关掉远端 pane，关闭成功后立即重列该主机，快照里不再有它，
+        卡直接读 offline（带最后预览），不等下一个快照周期。"""
+        host_id = self.add_remote_host()
+        pane = f"{host_id}~%9"
+        self.assertEqual(self.client.post("/api/home/favorites", json={"pane": pane}).status_code, 201)
+        self.warm_snapshot()
+        online = self.board_entry(pane)
+        self.assertIn(online["status"], {"idle", "busy"})
+        self.assertIsNotNone(online["preview"])
+
+        # 主机上 pane 真的没了：关闭接口里的刷新重列时就看不到它
+        def gone_list(self, timeout=15):
+            return []
+
+        with mock.patch.object(FakeSSHRunner, "list_panes", gone_list):
+            deleted = self.client.delete(f"/api/panes/{host_id}~%259")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(FakeSSHRunner.killed_pane, "%9")
+        self.assertEqual(self.snapshot_panes(host_id), [])
+        offline = self.board_entry(pane)
+        self.assertEqual(offline["status"], "offline")
+        self.assertTrue(offline.get("cached"), offline)
+        self.assertEqual(offline["preview"]["text"], online["preview"]["text"])
+
+    def test_closing_a_local_pane_from_the_web_refreshes_the_snapshot(self):
+        """D：web 关掉本地 pane，关闭成功后立即重列 localhost，快照里不再有它。"""
+        online = self.favourite_local_claude_pane()
+        deleted = self.client.delete("/api/panes/%254")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(self.snapshot_panes("localhost"), [])
+        offline = self.board_entry("%4")
+        self.assertEqual(offline["status"], "offline")
+        self.assertTrue(offline.get("cached"), offline)
+        self.assertEqual(offline["preview"]["text"], online["preview"]["text"])
+
+    def test_closing_a_local_session_from_the_web_refreshes_the_snapshot(self):
+        """D：web 关掉本地会话，关闭成功后同样刷新 localhost 快照。"""
+        online = self.favourite_local_claude_pane()
+        deleted = self.client.delete("/api/sessions/codex")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(self.snapshot_panes("localhost"), [])
+        offline = self.board_entry("%4")
+        self.assertEqual(offline["status"], "offline")
+        self.assertTrue(offline.get("cached"), offline)
+        self.assertEqual(offline["preview"]["text"], online["preview"]["text"])
+
+    def test_a_local_pane_closed_elsewhere_reads_offline_at_once(self):
+        """B：localhost 的卡永远走 live 检查——终端里关掉 pane，快照还残留它，
+        下一轮 /api/home 也立刻读 offline（带最后预览），不等快照刷新。"""
+        online = self.favourite_local_claude_pane()
+        self.assertEqual(self.snapshot_panes("localhost"), ["%4"])
+        self.tmux.kill_pane("%4")  # 终端里关的，不走 web，没有快照刷新
+        self.assertEqual(self.snapshot_panes("localhost"), ["%4"],
+                         "the snapshot must still list the pane: this test isolates B, not D")
+        offline = self.board_entry("%4")
+        self.assertEqual(offline["status"], "offline")
+        self.assertTrue(offline.get("cached"), offline)
+        self.assertEqual(offline["preview"]["text"], online["preview"]["text"])
+
+    def test_a_failed_close_does_not_touch_the_snapshot(self):
+        """kill 失败（404）时不许碰快照：刷新没发生，快照内容原样不动。"""
+        self.warm_snapshot()
+        self.assertEqual(self.snapshot_panes("localhost"), ["%4"])
+        self.tmux.panes.append({**self.tmux.panes[0], "id": "%5", "target": "codex:0.1",
+                                "window_name": "shell", "command": "zsh"})
+        failed = self.client.delete("/api/panes/%25999")
+        self.assertEqual(failed.status_code, 404, failed.text)
+        self.assertEqual(self.snapshot_panes("localhost"), ["%4"],
+                         "a failed close must not refresh: %5 would appear after a re-list")
 
 
 class HostsSnapshotTtlTests(unittest.TestCase):
