@@ -1947,6 +1947,39 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.json()["prefs"]["pause_button"], "on")
         self.assertEqual(self.client.put("/api/prefs", json={"pause_button": "maybe"}).status_code, 400)
 
+    def test_input_completion_borrows_open_webui_at_and_slash_without_rich_text(self):
+        """Borrowed from Open WebUI MessageInput.svelte (3164 lines, 0.13.3):
+        '@' -> AtCommands and '/' -> SlashCommands, rendered by
+        getSuggestionRenderer(CommandSuggestionList). Only the interaction
+        is borrowed: the textarea stays plain text, completion only deletes
+        a token, inserts plain text, or switches pane; sendInput is untouched
+        and the text goes to tmux verbatim. No Tiptap, no rich text."""
+        page = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
+        app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
+        self.assertIn('id="input-complete"', page)
+        self.assertIn("@ 跳 pane · / 插指令", page)
+        self.assertIn(".input-complete{", page)
+        self.assertIn("function matchInputCompletion(", app)
+        self.assertIn("function filterPaneCompletions(", app)
+        self.assertIn("function filterCommandCompletions(", app)
+        self.assertIn("function applyCompletion(", app)
+        self.assertIn("function acceptInputComplete(", app)
+        self.assertIn("function inputCommands(){", app)
+        self.assertIn("data-msg-resend", app)
+        # Red line: no rich-text editor anywhere in the console bundle.
+        self.assertNotIn("@tiptap", app)
+        self.assertNotIn("RichTextInput", app)
+        # Accepting a completion must never send: no send path in the
+        # accept function, and no fetch/api call either.
+        start = app.index("  function acceptInputComplete(")
+        end = app.index("\n  async function createShare(", start)
+        self.assertNotIn("sendInput(", app[start:end])
+        self.assertNotIn("api(", app[start:end])
+        # The resend button only refills the input; it never sends by itself.
+        self.assertIn("input.dispatchEvent(new Event('input'))", app)
+        resend = app.index("data-msg-resend")
+        self.assertNotIn("sendInput(", app[resend:resend + 600])
+
     def test_remote_loading_shows_in_the_status_line_not_a_floating_card(self):
         """加载时 idle/thinking 本来没有意义：状态就画在那一行，别弹浮层。"""
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()

@@ -771,6 +771,10 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     if(resend){event.preventDefault();resendPending(resend.dataset.resend);return;}
     const messageCopy=event.target.closest('[data-msg-copy]');
     if(messageCopy){const text=(state.messageText&&state.messageText.get(messageCopy.dataset.msgCopy))||'';copyText(text,messageCopy);return;}
+    // 再次发送（借自 Open WebUI 的 regenerate/edit）：只把原文填回输入框，
+    // 不自动发送——用户可改完再回车，避免对 agent 重复执行同一条指令。
+    const messageResend=event.target.closest('[data-msg-resend]');
+    if(messageResend){const text=(state.messageText&&state.messageText.get(messageResend.dataset.msgResend))||'';if(!text||!state.selected||input.disabled)return;input.value=text;input.dispatchEvent(new Event('input'));input.focus();input.setSelectionRange(input.value.length,input.value.length);return;}
     const localLink=event.target.closest('a[href]');
     if(localLink&&looksLikeMarkdownLink(localLink)&&!event.metaKey&&!event.ctrlKey&&!event.shiftKey){
       event.preventDefault();openMarkdownViewer(localLink.getAttribute('href'),localLink.textContent.trim()||'');return;}
@@ -1198,11 +1202,16 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   function isWebKit(){return navigator.vendor==='Apple Computer, Inc.'
     ||/^((?!chrome|android).)*safari/i.test(navigator.userAgent);}
   function virtualizedClass(index,total){
+    if(!Number.isFinite(index)||!Number.isFinite(total))return '';
     if(isWebKit()||index>=total-1)return '';
     return ' msg-virtualized';}
+  function msgResendButton(message){
+    if(!message||message.role!=='user')return '';
+    return `<button class="msg-copy" type="button" data-msg-resend="${esc(message.id)}" title="把这条消息填回输入框，可修改后再发送"><svg class="ico"><use href="#i-refresh"/></svg><span class="btn-label">再次发送</span></button>`;
+  }
   function transcriptBubble(message,index,total){
     const virt=virtualizedClass(index,total);
-    const copy=`<div class="msg-actions"><button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`;
+    const copy=`<div class="msg-actions">${msgResendButton(message)}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`;
     return message.role==='user'
       ? `<article class="chat-message user${virt}" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copy}</div></article>`
       : `<article class="chat-message assistant${virt}" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copy}</div></article>`;
@@ -1248,7 +1257,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     state.messageText=new Map(messages.map(message=>[String(message.id),String(message.text||'')]));
     reconcilePending(messages);
     const host=$('transcript'),clockTime=ts=>{if(ts===null||ts===undefined||ts==='')return '';const numeric=typeof ts==='number'||/^\d+(\.\d+)?$/.test(String(ts).trim());const d=numeric?new Date(Number(ts)>1e12?Number(ts):Number(ts)*1000):new Date(ts);if(Number.isNaN(d.getTime()))return '';const pad=v=>String(v).padStart(2,'0'),now=new Date();return (d.toDateString()===now.toDateString()?'':`${pad(d.getMonth()+1)}-${pad(d.getDate())} `)+`${pad(d.getHours())}:${pad(d.getMinutes())}`},
-copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<span class="msg-time">${clockTime(message.timestamp)}</span>`:''}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`,formal=messages.map((message,index)=>message.role==='user'?`<article class="chat-message user${virtualizedClass(index,messages.length)}" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copyButton(message)}</div></article>`:`<article class="chat-message assistant${virtualizedClass(index,messages.length)}" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copyButton(message)}</div></article>`),pending=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
+copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<span class="msg-time">${clockTime(message.timestamp)}</span>`:''}${msgResendButton(message)}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`,formal=messages.map((message,index)=>message.role==='user'?`<article class="chat-message user${virtualizedClass(index,messages.length)}" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copyButton(message)}</div></article>`:`<article class="chat-message assistant${virtualizedClass(index,messages.length)}" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copyButton(message)}</div></article>`),pending=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
       .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0))
       .map(([localId,message])=>({pending:message,html:`<article class="chat-message user pending" data-id="${esc(localId)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${deliveryHtml(message,localId)}</div></article>`}));host.classList.add('active');$('message-shell').hidden=true;
     const ids=messages.map(message=>String(message.id));
@@ -1976,6 +1985,107 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     // 再放一份到输入框，用户会以为要重打一遍，也容易连发两条相同的。
     if(!isMobile())input.focus();
   }finally{send.disabled=!state.selected;}}
+  // ---- 输入框补全：借自 Open WebUI MessageInput.svelte 的 @ / / 补全 ----
+  // 只借交互，不借 Tiptap 富文本：textarea 仍是纯文本，补全只做三件事——
+  // 删 token、插纯文本、切 pane；sendInput 一字不改，内容原样进 tmux。
+  // @pane：@ 后过滤 pane，选中即切 pane（Open WebUI @ 选模型/文件的
+  // 平移：选中产生结构化效果，token 本身不进文本）。
+  // /命令：选中后把预设指令文本换进输入框，不自动发送（Open WebUI
+  // replaceSlashRangeWithPrompt 的行为）；动作型命令不借。
+  function inputCommands(){return [
+    {key:'jixu',label:'继续',text:'继续'},
+    {key:'zongjie',label:'总结',text:'总结一下目前的进展：已完成什么、正在做什么、还剩什么'},
+    {key:'jiancha',label:'检查',text:'检查一下有没有错误或遗漏，有问题先说清楚再改'},
+    {key:'xiubaocuo',label:'修报错',text:'这个报错是什么原因？先定位根因再修，不要只改表面'},
+    {key:'jieshi',label:'解释',text:'解释一下这段代码是做什么的，关键逻辑讲清楚'},
+    {key:'zicha',label:'自查',text:'提交前自查一遍：测试跑过没有、有没有多余改动、有没有漏掉的需求'},
+  ];}
+  function matchInputCompletion(text,cursor){
+    // 光标前的当前词：@ 或 / 开头，前面是行首或空白，中间无空白。
+    // 邮箱（a@b）、路径（http://x）、算式（3/4）里的 @ / 前面不是
+    // 空白，不触发；词后打了空格也视为已放弃补全。
+    const value=String(text==null?'':text),at=cursor==null?value.length:cursor;
+    const before=value.slice(0,at);
+    const match=/(^|\s)([@\/])([^\s@\/]*)$/.exec(before);
+    if(!match)return null;
+    return {kind:match[2]==='@'?'pane':'command',start:match.index+match[1].length,query:match[3]||''};
+  }
+  function filterPaneCompletions(panes,query){
+    const q=String(query||'').trim().toLowerCase();
+    return (panes||[]).filter(p=>p&&p.id).filter(p=>{
+      if(!q)return true;
+      const hay=[p.title,p.target,p.command,p.id,paneLabel(p),p.number==null?'':String(p.number)].join(' ').toLowerCase();
+      return hay.includes(q);
+    }).slice(0,8);
+  }
+  function filterCommandCompletions(query){
+    const q=String(query||'').trim().toLowerCase();
+    return inputCommands().filter(c=>!q||c.label.toLowerCase().includes(q)||c.key.includes(q));
+  }
+  function applyCompletion(text,cursor,match,replacement){
+    // 把 [match.start, cursor) 的 token 换成 replacement，返回新文本与新光标。
+    const value=String(text==null?'':text),at=cursor==null?value.length:cursor;
+    const next=value.slice(0,match.start)+replacement+value.slice(at);
+    return {text:next,cursor:match.start+replacement.length};
+  }
+  let completeMatch=null,completeItems=[],completeIndex=0,completeOpen=false,completeSuppressed=false;
+  function closeInputComplete(){
+    completeMatch=null;completeItems=[];completeIndex=0;completeOpen=false;
+    const box=$('input-complete');if(box)box.hidden=true;
+  }
+  function paintCompleteSelection(){
+    const box=$('input-complete');if(!box)return;
+    box.querySelectorAll('[data-complete-index]').forEach(node=>{
+      node.classList.toggle('selected',Number(node.dataset.completeIndex)===completeIndex);
+      node.setAttribute('aria-selected',String(Number(node.dataset.completeIndex)===completeIndex));
+    });
+  }
+  function completeMove(step){
+    if(!completeItems.length)return;
+    completeIndex=(completeIndex+step+completeItems.length)%completeItems.length;
+    paintCompleteSelection();
+  }
+  function renderInputComplete(){
+    const box=$('input-complete');if(!box){completeOpen=false;return;}
+    if(!completeMatch||completeSuppressed){box.hidden=true;completeOpen=false;return;}
+    const items=completeMatch.kind==='pane'
+      ?filterPaneCompletions(state.panes,completeMatch.query).map(p=>({kind:'pane',id:p.id,label:p.title||p.target||p.id,sub:`${paneLabel(p)}${p.command?' · '+p.command:''}`}))
+      :filterCommandCompletions(completeMatch.query).map(c=>({kind:'command',label:c.label,text:c.text,sub:c.text}));
+    completeItems=items;completeIndex=0;
+    if(!items.length){box.hidden=true;completeOpen=false;return;}
+    box.innerHTML=items.map((item,i)=>`<button type="button" class="complete-item${i===0?' selected':''}" data-complete-index="${i}" role="option" aria-selected="${i===0}"><span class="complete-label">${esc(item.label)}</span><span class="complete-sub">${esc(item.sub||'')}</span></button>`).join('');
+    box.hidden=false;completeOpen=true;
+  }
+  function refreshInputComplete(fromTyping){
+    if(fromTyping)completeSuppressed=false;
+    if(completeSuppressed){closeInputComplete();return;}
+    const pos=input.selectionStart;
+    if(pos==null){closeInputComplete();return;}
+    completeMatch=matchInputCompletion(input.value,pos);
+    renderInputComplete();
+  }
+  function acceptInputComplete(item){
+    const match=completeMatch;if(!match||!item)return;
+    if(item.kind==='pane'){
+      // @token 只从当前 pane 的草稿里删掉，不进 tmux；再切 pane。
+      const cleaned=applyCompletion(input.value,input.selectionStart,match,'');
+      const target=item.id,stay=target===state.selected;
+      if(state.selected)state.drafts.set(state.selected,cleaned.text);
+      input.value=cleaned.text;
+      input.dispatchEvent(new Event('input'));
+      input.setSelectionRange(cleaned.cursor,cleaned.cursor);
+      closeInputComplete();
+      if(!stay)selectPane(target);
+      if(!isMobile())input.focus();
+      return;
+    }
+    const done=applyCompletion(input.value,input.selectionStart,match,item.text);
+    closeInputComplete();
+    input.value=done.text;
+    input.dispatchEvent(new Event('input'));
+    input.setSelectionRange(done.cursor,done.cursor);
+    if(!isMobile())input.focus();
+  }
   async function createShare(e){e.preventDefault();const result=$('share-result');result.textContent='创建中…';try{const d=await api('/api/shares',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane_id:state.selected,slug:$('share-slug').value.trim(),password:$('share-password').value,expires_in:Number($('share-expiry').value),allow_input:$('share-allow-input').checked})});const url=new URL(d.url,location.origin).href;try{await navigator.clipboard.writeText(url);result.textContent=`已创建并复制：${url}`;}catch{result.textContent=`已创建：${url}`;}}catch(error){result.textContent=error.message;}}
   list.addEventListener('click',e=>{const add=e.target.closest('[data-new-session]');if(!add)return;
     e.preventDefault();e.stopPropagation();state.sessionHost=add.dataset.newSession;
@@ -1999,8 +2109,25 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   }
   try{applyPauseButton(localStorage.getItem('tmux-pause-button')==='on');}catch{applyPauseButton(false);}
   window.addEventListener('tmuxweb:pause-button',event=>applyPauseButton(!!event.detail));$('fav-toggle').onclick=()=>{if(state.selected)toggleFavorite(state.selected);};
-  $('model-toggle').onclick=()=>openModelMenu($('model-menu').hidden);$('model-filter').oninput=event=>filterModels(event.target.value);document.addEventListener('click',event=>{if($('model-menu').hidden)return;const wrap=$('model-pick-wrap');if(!wrap.contains(event.target))openModelMenu(false);});document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('model-menu').hidden)openModelMenu(false);});$('route-switch').onclick=cycleRoute;paintRoute(currentRoute());window.addEventListener('tmux-route-change',()=>paintRoute(currentRoute()));$('pane-close').onclick=()=>openPaneCloseDialog();$('pane-close-cancel').onclick=()=>$('pane-close-dialog').close();$('pane-close-confirm').onclick=()=>closeSelectedPane();$('refresh').onclick=()=>{if(state.selected&&state.mode==='chat')refreshTranscript(state.selected,{force:true,refresh:true});loadPanes(true);};$('menu').onclick=openSidebar;$('sidebar-close').onclick=closeSidebar;$('drawer-backdrop').onclick=closeSidebar;$('chat-mode').onclick=()=>setMode('chat');$('terminal-mode-button').onclick=()=>setMode('terminal');$('fullscreen').onclick=toggleFullscreen;$('share-button').onclick=()=>{$('share-result').textContent='';$('share-slug').value=`share-${Date.now().toString(36)}`;$('share-dialog').showModal();};$('share-cancel').onclick=()=>$('share-dialog').close();$('share-form').onsubmit=createShare;document.addEventListener('fullscreenchange',syncFullscreen);document.addEventListener('visibilitychange',()=>{clearTimeout(state.hiddenTimer);if(document.hidden&&state.mode==='terminal')state.hiddenTimer=setTimeout(()=>{if(document.hidden&&state.mode==='terminal')setMode('chat');},15000);});window.addEventListener('beforeunload',closeConnections);document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('sidebar').classList.contains('open'))closeSidebar();else if($('main').classList.contains('fullscreen-fallback'))toggleFullscreen();}});send.onclick=()=>{if(state.mode==='chat'&&state.selected&&agentWorking()&&!input.value.trim()){stopAgent();return;}sendInput();};input.addEventListener('focus',()=>setComposing(true));input.addEventListener('blur',()=>setTimeout(()=>setComposing(keyboardWanted()),120));input.oninput=()=>{syncSendButton();input.style.height='auto';input.style.height=Math.min(input.scrollHeight,82)+'px';if(state.selected)state.drafts.set(state.selected,input.value);};input.onkeydown=e=>{if(e.key==='Escape'&&state.mode==='chat'&&state.selected&&agentWorking()){e.preventDefault();stopAgent();return;}
-    if(e.key!=='Enter'||e.shiftKey||e.isComposing||isMobile())return;e.preventDefault();sendInput();};scroll.addEventListener('wheel',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.addEventListener('touchmove',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.onscroll=()=>{state.stick=atBottom();
+  $('model-toggle').onclick=()=>openModelMenu($('model-menu').hidden);$('model-filter').oninput=event=>filterModels(event.target.value);document.addEventListener('click',event=>{if($('model-menu').hidden)return;const wrap=$('model-pick-wrap');if(!wrap.contains(event.target))openModelMenu(false);});document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('model-menu').hidden)openModelMenu(false);});$('route-switch').onclick=cycleRoute;paintRoute(currentRoute());window.addEventListener('tmux-route-change',()=>paintRoute(currentRoute()));$('pane-close').onclick=()=>openPaneCloseDialog();$('pane-close-cancel').onclick=()=>$('pane-close-dialog').close();$('pane-close-confirm').onclick=()=>closeSelectedPane();$('refresh').onclick=()=>{if(state.selected&&state.mode==='chat')refreshTranscript(state.selected,{force:true,refresh:true});loadPanes(true);};$('menu').onclick=openSidebar;$('sidebar-close').onclick=closeSidebar;$('drawer-backdrop').onclick=closeSidebar;$('chat-mode').onclick=()=>setMode('chat');$('terminal-mode-button').onclick=()=>setMode('terminal');$('fullscreen').onclick=toggleFullscreen;$('share-button').onclick=()=>{$('share-result').textContent='';$('share-slug').value=`share-${Date.now().toString(36)}`;$('share-dialog').showModal();};$('share-cancel').onclick=()=>$('share-dialog').close();$('share-form').onsubmit=createShare;document.addEventListener('fullscreenchange',syncFullscreen);document.addEventListener('visibilitychange',()=>{clearTimeout(state.hiddenTimer);if(document.hidden&&state.mode==='terminal')state.hiddenTimer=setTimeout(()=>{if(document.hidden&&state.mode==='terminal')setMode('chat');},15000);});window.addEventListener('beforeunload',closeConnections);document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('sidebar').classList.contains('open'))closeSidebar();else if($('main').classList.contains('fullscreen-fallback'))toggleFullscreen();}});send.onclick=()=>{if(state.mode==='chat'&&state.selected&&agentWorking()&&!input.value.trim()){stopAgent();return;}sendInput();};input.addEventListener('focus',()=>setComposing(true));input.addEventListener('blur',()=>setTimeout(()=>setComposing(keyboardWanted()),120));input.oninput=()=>{syncSendButton();input.style.height='auto';input.style.height=Math.min(input.scrollHeight,82)+'px';if(state.selected)state.drafts.set(state.selected,input.value);refreshInputComplete(true);};input.onkeydown=e=>{
+    // 补全弹窗打开时，方向键/Enter/Tab/Esc 归补全；Esc 只关弹窗，不停 agent。
+    if(completeOpen){
+      if(e.key==='Escape'){e.preventDefault();completeSuppressed=true;closeInputComplete();return;}
+      if(e.key==='ArrowDown'){e.preventDefault();completeMove(1);return;}
+      if(e.key==='ArrowUp'){e.preventDefault();completeMove(-1);return;}
+      if((e.key==='Enter'&&!e.shiftKey&&!e.isComposing)||e.key==='Tab'){e.preventDefault();acceptInputComplete(completeItems[completeIndex]);return;}
+    }
+    if(e.key==='Escape'&&state.mode==='chat'&&state.selected&&agentWorking()){e.preventDefault();stopAgent();return;}
+    if(e.key!=='Enter'||e.shiftKey||e.isComposing||isMobile())return;e.preventDefault();sendInput();};
+  // 光标移动（方向键/鼠标点选）也可能移进或移出一个 @ / / 词：跟着刷新；
+  // mousedown 抢在 blur 之前接住点选，否则输入框一失焦弹窗就没了。
+  input.addEventListener('keyup',()=>refreshInputComplete(false));
+  input.addEventListener('click',()=>refreshInputComplete(false));
+  input.addEventListener('blur',()=>closeInputComplete());
+  document.addEventListener('click',event=>{if(!completeOpen)return;const box=$('input-complete');if(box&&!box.contains(event.target)&&event.target!==input)closeInputComplete();});
+  {const box=$('input-complete');
+  if(box){box.addEventListener('mousedown',event=>{const item=event.target.closest('[data-complete-index]');if(!item)return;event.preventDefault();acceptInputComplete(completeItems[Number(item.dataset.completeIndex)]);});
+  box.addEventListener('mouseover',event=>{const item=event.target.closest('[data-complete-index]');if(!item)return;completeIndex=Number(item.dataset.completeIndex);paintCompleteSelection();});}}scroll.addEventListener('wheel',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.addEventListener('touchmove',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.onscroll=()=>{state.stick=atBottom();
     if(scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier)loadEarlier();$('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
 // 会跨页面加载记住的偏好。以前这里会读 localStorage，于是你上次开着文件面板，之后每次
 // 进 chat（主页卡片、多窗口、直接链接）侧栏都先弹文件管理，看起来像是随机的。

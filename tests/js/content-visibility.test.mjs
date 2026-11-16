@@ -24,7 +24,7 @@ function grab(name) {
   throw new Error(`unbalanced ${name}`);
 }
 
-const src = [grab('isWebKit'), grab('virtualizedClass'), grab('esc'), grab('transcriptBubble')].join('\n');
+const src = [grab('isWebKit'), grab('virtualizedClass'), grab('esc'), grab('msgResendButton'), grab('transcriptBubble')].join('\n');
 const virtualizedClass = new Function(src + '\nreturn virtualizedClass;')();
 const isWebKit = new Function(src + '\nreturn isWebKit;')();
 const bubble = new Function(
