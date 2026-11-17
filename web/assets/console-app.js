@@ -555,7 +555,10 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     // 「最近」块是 recents.js 挂载时生成的，这里等它出现再绑（同一份面板逻辑）
     if(!window.TmuxPanePreview||!TmuxPanePreview.hoverable)return;
     const list=$('recent-list');
-    if(list)TmuxPanePreview.bind(list,{selector:'.recent-row',paneOf:element=>element.dataset.row});
+    // steadyDelay：最近的行是一行里好几个小块（编号/圆点/标题/时间/动作），
+    // 鼠标从编号滑到标题会连跨几个子元素；不加这个，每次跨界都重计延时，
+    // 只有把鼠标停在某一个子元素上满 2 秒才出预览。会话树那边保持原样。
+    if(list)TmuxPanePreview.bind(list,{selector:'.recent-row',paneOf:element=>element.dataset.row,steadyDelay:true});
   }
 
   function setupFiles(){$('files-toggle').onclick=()=>{state.filesMode=!state.filesMode;syncFilesPanel();if(state.filesMode)openFiles(state.filesPane===state.selected?state.filesPath:null);};

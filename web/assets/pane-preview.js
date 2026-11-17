@@ -9,7 +9,7 @@
  *     render: text => html,                  // 宿主自己的 markdown 渲染器
  *     onChat: pane => …, onFull: pane => …,  // 面板底部两个按钮
  *   });
- *   TmuxPanePreview.bind(container, {selector, paneOf, stickyClick})
+ *   TmuxPanePreview.bind(container, {selector, paneOf, stickyClick, steadyDelay})
  *
  * 手机 web 默认关闭：只有 (hover:hover) and (pointer:fine) 才绑定，
  * 触摸设备上悬停预览本来就会挡住第一次点击。
@@ -30,6 +30,9 @@
   let sticky = false;
   let showTimer = 0;
   let hideTimer = 0;
+  // 正在等延时的那一次悬停：哪个 pane、落在行里哪个位置（只用来摆面板位置）
+  let pendingPane = null;
+  let pendingAnchor = null;
 
   function ago(ts) {
     if (!ts) return '';
@@ -212,11 +215,18 @@
   }
 
   function hide() {
-    clearTimeout(showTimer);
+    clearPending();
     clearTimeout(hideTimer);
     if (panel) panel.hidden = true;
     currentPane = null;
     sticky = false;
+  }
+
+  function clearPending() {
+    clearTimeout(showTimer);
+    showTimer = 0;
+    pendingPane = null;
+    pendingAnchor = null;
   }
 
   function cancelHide() {
@@ -240,7 +250,10 @@
   }
 
   /* 把一组元素绑成「悬停 N 秒出预览」。
-   * selector 决定哪些行、paneOf 从行里取 pane id；同一个容器可以绑多次（去重）。 */
+   * selector 决定哪些行、paneOf 从行里取 pane id；同一个容器可以绑多次（去重）。
+   * steadyDelay（默认关）：延时从第一次进入这一行开始算，行内换子元素不重计；
+   * 关掉时每次 pointerover 都重计——行里子元素小而多时，很难把鼠标停在某一个
+   * 子元素上满整个延时。 */
   function bind(container, config) {
     if (!container || container.dataset.panePreviewBound === '1') return;
     // 手机 web：默认关闭（没有悬停，预览会挡住第一次点击）。
@@ -250,6 +263,7 @@
     const selector = (config && config.selector) || '[data-pane]';
     const paneOf = (config && config.paneOf) || (element => element.dataset.pane || element.dataset.recent || element.dataset.row);
     const stickyClick = !!(config && config.stickyClick);
+    const steadyDelay = !!(config && config.steadyDelay);
 
     container.addEventListener('pointerover', event => {
       if (event.pointerType && event.pointerType !== 'mouse') return;
@@ -257,18 +271,35 @@
       if (!row || !container.contains(row)) return;
       const paneId = paneOf(row);
       if (!paneId) return;
-      clearTimeout(showTimer);
       const wait = delaySetting();
       if (wait === null) return;                      // 设置里关掉了
       if (wait <= 0) { show(row, paneId); return; }
-      showTimer = setTimeout(() => show(row, paneId), wait);
+      // steadyDelay：同一 pane 内换子元素不重计延时。行里编号/圆点/标题/时间
+      // 都是小块，鼠标从编号滑到标题会连跨几个边界；每次都重计的话，
+      // 要把鼠标在某一个子元素上停满整个延时才出预览——和 pointerout 那边
+      // “行内移动算还在悬停”也不对称。换了 pane（或上一次已取消）才重计。
+      if (steadyDelay && paneId === pendingPane && showTimer) {
+        pendingAnchor = row;
+        return;
+      }
+      clearTimeout(showTimer);
+      pendingPane = paneId;
+      pendingAnchor = row;
+      showTimer = setTimeout(() => {
+        const anchor = pendingAnchor;
+        const pane = pendingPane;
+        showTimer = 0;
+        pendingPane = null;
+        pendingAnchor = null;
+        show(anchor, pane);
+      }, wait);
     });
     container.addEventListener('pointerout', event => {
       if (event.pointerType && event.pointerType !== 'mouse') return;
       const row = event.target.closest && event.target.closest(selector);
       if (!row) return;
       if (event.relatedTarget && row.contains(event.relatedTarget)) return;
-      clearTimeout(showTimer);
+      clearPending();
       scheduleHide();
     });
     if (stickyClick) {

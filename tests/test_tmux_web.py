@@ -4502,6 +4502,7 @@ class TmuxWebTests(unittest.TestCase):
                        "localStorage.getItem('tmux-preview-delay')",
                        "seconds*1000", "TmuxPanePreview.bind($('pane-list')",
                        "selector:'.recent-row',paneOf:element=>element.dataset.row",
+                       "steadyDelay:true",
                        "new URLSearchParams(location.search).has('preview')",
                        "previewFromTranscript(data)"):
             self.assertIn(marker, page)
@@ -4510,6 +4511,7 @@ class TmuxWebTests(unittest.TestCase):
         for marker in ("const canHover = !!(window.matchMedia", "(hover: hover) and (pointer: fine)",
                        "function previewFor(paneId)", "function bind(container, config)",
                        "if (!canHover && !options.force) return;", "FETCH_TTL = 60_000",
+                       "steadyDelay", "pendingPane",
                        "function previewFromTranscript(data)", "完整预览", "data-hp=\"full\""):
             self.assertIn(marker, module)
         css = self.client.get("/assets/pane-preview.css").text
