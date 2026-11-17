@@ -235,6 +235,26 @@ provider_hint() {
   done
   return 1
 }
+# pane 里真正跑 hermes 的进程：hermes 由 python 引导 hermes_cli.main，
+# 也可能是 `hermes ...` 壳包一层。pane_pid 是壳（zsh）——拿它的启动时间当锚点，
+# agent 在 pane 里重启后会配到旧会话（壳的时间还是 pane 建的那天）。
+# gateway 也是 hermes_cli.main，但它不是会话，别拿它当锚点。
+hermes_agent_pid() {  # $1=pane_pid
+  root=${1:-0}
+  [ -n "$root" ] || return 1
+  kids=$(pgrep -P "$root" 2>/dev/null)
+  grand=$(for child in $kids; do pgrep -P "$child" 2>/dev/null; done)
+  great=$(for child in $grand; do pgrep -P "$child" 2>/dev/null; done)
+  for pid in $root $kids $grand $great; do
+    [ -n "$pid" ] || continue
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+    case "$args" in
+      *gateway\ run*) continue ;;
+      *hermes_cli.main*) printf '%s' "$pid"; return 0 ;;
+    esac
+  done
+  return 1
+}
 args_match() {  # $1=args $2=agent 名
   case "$1" in
     *"/$2 "*|*"/$2"|*"/$2-"*|"$2 "*|"$2"|"$2-"*) return 0 ;;
@@ -471,8 +491,13 @@ fi
 if [ -n "$sqlite_bin" ] && [ -f "$HOME/.hermes/state.db" ] \
     && "$sqlite_bin" -readonly -json :memory: 'select 1' >/dev/null 2>&1; then
   cwd_sql=$(printf '%s' "$cwd" | sed "s/'/''/g")
-  # pane 启动的绝对时间：挑会话时用来判断「哪个会话是这个窗口的」
-  pane_elapsed=$(ps -o etime= -p "$pane_pid" 2>/dev/null | tr -d ' ' | awk -F'[-:]' '
+  # 锚点必须是 agent 进程自己的启动时间：pane_pid 是壳，agent 在 pane 里重启后
+  # 壳的时间还是 pane 建的那天，"最近启动" 就会配到旧会话。找不到 agent 进程
+  # （比如刚退出）才回落到 pane 的启动时间。
+  anchor_pid=$(hermes_agent_pid "$pane_pid") || anchor_pid=""
+  [ -n "$anchor_pid" ] || anchor_pid=$pane_pid
+  # agent 启动的绝对时间：挑会话时用来判断「哪个会话是这个窗口的」
+  pane_elapsed=$(ps -o etime= -p "$anchor_pid" 2>/dev/null | tr -d ' ' | awk -F'[-:]' '
     { if (NF==4) s=$1*86400+$2*3600+$3*60+$4
       else if (NF==3) s=$1*3600+$2*60+$3
       else if (NF==2) s=$1*60+$2
@@ -2009,8 +2034,10 @@ class SSHRunner:
             buffer, remainder = (payload[cut:], "") if cut > 0 else ("", payload)
         else:
             buffer, remainder = payload, ""
+        # relocated_at 只在（重）发现时刷新：每次跟读都重置它的话，30 秒重定位
+        # 永远等不到，session 换了也只能靠标题变化才发现。
         state = {**state, "offset": offset, "buffer": buffer, "remainder": remainder,
-                 "at": time.monotonic(), "relocated_at": time.monotonic()}
+                 "at": time.monotonic()}
         store_transcript_state(host_id, pane_id, state)
         header = {
             "TMUXWEB_PROVIDER": state.get("provider", ""),

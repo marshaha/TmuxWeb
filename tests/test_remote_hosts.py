@@ -777,6 +777,49 @@ class RemoteHostTests(unittest.TestCase):
             runner.transcript("%9", 20)
         self.assertIn("pane=$1", calls[-1])  # discovery ran again instead of the tail
 
+    def test_follow_keeps_the_relocation_clock(self):
+        """每次跟读都把 relocated_at 重置回现在的话，30 秒重定位永远等不到：
+        session 换了也只能靠标题变化才发现。"""
+        runner = self.make_runner()
+        line = json.dumps({"role": "assistant", "content": "内容"}) + "\n"
+        discovery = (
+            "TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_SESSION<::>s1\nTMUXWEB_FORMAT<::>hermes-jsonl\n"
+            "TMUXWEB_TITLE<::>任务\nTMUXWEB_PRIMARY<::>/home/user/.hermes/sessions/s1.jsonl\n"
+            f"TMUXWEB_STAMP<::>1793000000 {len(line.encode())}\nTMUXWEB_PAYLOAD\n" + line
+        ).encode()
+        follow = (
+            "TMUXWEB_MODE<::>append\nTMUXWEB_TRUNCATED<::>0\nTMUXWEB_ENCODING<::>none\n"
+            "TMUXWEB_TITLE<::>任务\n"
+            f"TMUXWEB_STAMP<::>1793000000 {len(line.encode())}\nTMUXWEB_PAYLOAD\n"
+        ).encode()
+        calls = []
+
+        class Result:
+            def __init__(self, stdout):
+                self.stdout, self.stderr, self.returncode = stdout, b"", 0
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if "tail -c +" in command:
+                return Result(follow)
+            return Result(discovery)
+
+        runner.run = fake_run
+        clock = {"now": 1000.0}
+        with mock.patch("time.monotonic", side_effect=lambda: clock["now"]):
+            runner.transcript("%9", 20)  # discovery at t=1000
+            TRANSCRIPT_CACHE.clear()
+            state = TRANSCRIPT_STATE[("0123456789abcdef", "%9")]
+            self.assertEqual(state["relocated_at"], 1000.0)
+            clock["now"] = 1005.0
+            runner.transcript("%9", 20)  # follow at t=1005
+            TRANSCRIPT_CACHE.clear()
+            state = TRANSCRIPT_STATE[("0123456789abcdef", "%9")]
+            self.assertEqual(state["relocated_at"], 1000.0, "跟读不该刷新重定位时钟")
+            clock["now"] = 1000.0 + 31.0
+            runner.transcript("%9", 20)  # 30 秒到了：重发现
+            self.assertIn("pane=$1", calls[-1])
+
     def test_refresh_drops_the_incremental_state(self):
         runner = self.make_runner()
         line = json.dumps({"role": "assistant", "content": "内容"}) + "\n"
