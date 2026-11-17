@@ -559,7 +559,7 @@
         <div class="hit-title">${highlight(s.session,query)}</div></div>`).join(''):'<div class="empty">没有命中的 session</div>';
       html+=`<h2>pane <span class="count">${panes.length}</span></h2>`;
       html+=panes.length?panes.map(p=>`<div class="hit" data-open="${esc(p.id)}">
-        <div class="hit-top">${stateBadge(p.status)}${p.provider?`<span>${esc(p.provider)}</span>`:''}<span>${esc(p.host_name||'')}</span><span>${esc(p.session||'')}</span></div>
+        <div class="hit-top">${stateBadge(p.status)}${p.number?`<span>#${esc(String(p.number))}</span>`:''}${p.provider?`<span>${esc(p.provider)}</span>`:''}<span>${esc(p.host_name||'')}</span><span>${esc(p.session||'')}</span></div>
         <div class="hit-title">${highlight(p.title||p.target||p.id,query)}</div>
         <div class="hit-snippet">${highlight(p.path||'',query)}</div></div>`).join(''):'<div class="empty">没有命中的 pane</div>';
       html+=`<h2>对话内容 <span class="count">${messages.length}</span></h2>`;

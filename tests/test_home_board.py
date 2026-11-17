@@ -833,6 +833,29 @@ class HomeBoardTests(unittest.TestCase):
 
         self.assertEqual(self.client.get("/api/home/search", params={"q": "  "}).json()["messages"], [])
 
+    def test_search_matches_a_pane_by_its_number(self):
+        # the fake pane is the only pane, so it gets the first number in the
+        # fresh home db; read it back instead of assuming the assignment
+        by_title = self.client.get("/api/home/search", params={"q": "Review", "messages": "0"}).json()
+        self.assertEqual([pane["id"] for pane in by_title["panes"]], ["%4"])
+        number = by_title["panes"][0]["number"]
+        self.assertIsInstance(number, int)
+
+        # the id is "%4": it contains neither the number nor "#<number>", so
+        # both hits prove the number field itself is in the match haystack
+        by_number = self.client.get("/api/home/search", params={"q": str(number), "messages": "0"}).json()
+        self.assertEqual([pane["id"] for pane in by_number["panes"]], ["%4"])
+        by_handle = self.client.get("/api/home/search", params={"q": f"#{number}", "messages": "0"}).json()
+        self.assertEqual([pane["id"] for pane in by_handle["panes"]], ["%4"])
+
+        missing = self.client.get("/api/home/search", params={"q": "99999", "messages": "0"}).json()
+        self.assertEqual(missing["panes"], [])
+
+    def test_search_results_show_the_pane_number(self):
+        from pathlib import Path as _Path
+        html = _Path(__file__).resolve().parent.parent.joinpath("web/home.html").read_text()
+        self.assertIn("p.number", html)
+
     def test_search_puts_servers_and_sessions_before_messages(self):
         self.tmux.panes[0]["command"] = "claude"
         self.tmux.panes[0]["session"] = "codex-work"
