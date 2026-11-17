@@ -6532,13 +6532,16 @@ def create_app(
                                      "panes": sum(1 for other in states
                                                   if other.get("session") == session
                                                   and other.get("host_id") == state.get("host_id"))})
+                # 编号也要进匹配：id 是 host~%143 这种形式，搜 39 / #39 都命中不了；
+                # number / handle（#39）才是 pane 的编号
                 name_hit = matcher(" ".join(str(state.get(key_) or "") for key_ in
-                                            ("title", "target", "provider", "id", "window")))
+                                            ("title", "target", "provider", "id", "window",
+                                             "number", "handle")))
                 path_hit = matcher(str(state.get("path") or ""))
                 if name_hit or path_hit:
                     panes.append({**{key_: state.get(key_) for key_ in
                                      ("id", "host_id", "host_name", "target", "session", "provider",
-                                      "status", "title", "path", "window")},
+                                      "status", "title", "path", "window", "number")},
                                   "match": "name" if name_hit else "path"})
 
             # 4) conversations, from the message cache where possible. Transcript

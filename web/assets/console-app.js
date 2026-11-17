@@ -585,17 +585,52 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     panel.addEventListener('dragover',e=>{e.preventDefault();});
     panel.addEventListener('dragleave',e=>{e.preventDefault();depth=Math.max(0,depth-1);if(!depth)panel.classList.remove('dragging');});
     panel.addEventListener('drop',e=>{e.preventDefault();depth=0;panel.classList.remove('dragging');const files=Array.from(e.dataTransfer.files||[]);if(files.length)uploadFiles(files,state.filesPath||'');});}
-  function treeDetails(key,label,children,kind,count,extra='',tail=''){const open=state.treeOpen.has(key)?' open':'';return `<details class="tree-group tree-${kind}" data-tree="${esc(key)}"${open}><summary>${extra}<span class="tree-label">${esc(label)}</span><span class="tree-count">${count}</span>${tail}</summary><div class="tree-children">${children}</div></details>`;}
-  function renderList(){const html=state.hosts.map(host=>{const sessions=new Map();for(const p of host.panes||[]){if(!sessions.has(p.session))sessions.set(p.session,new Map());const windows=sessions.get(p.session),windowKey=`${p.window}:${p.window_name||''}`;if(!windows.has(windowKey))windows.set(windowKey,[]);windows.get(windowKey).push(p);}const sessionHtml=[...sessions].map(([session,windows])=>{const windowHtml=[...windows].map(([windowKey,panes])=>{const first=panes[0],label=`${first.window}${first.window_name?': '+first.window_name:''}`,leaves=[...panes].sort((a,b)=>((state.needsInput&&state.needsInput.has(b.id)?1:0)-(state.needsInput&&state.needsInput.has(a.id)?1:0))).map(p=>`<button class="pane ${p.id===state.selected?'selected':''}${state.needsInput&&state.needsInput.has(p.id)?' needs-you':''}" data-pane="${esc(p.id)}"><div class="pane-row"><span class="dot ${p.active?'active':''}"></span><span class="pane-num">${paneLabel(p)}</span>${state.needsInput&&state.needsInput.has(p.id)?'<span class="pane-need">等你</span>':''}<span class="pane-target">pane ${esc(p.index)} · ${esc(p.command)}</span><span class="pane-star ${state.favorites.has(p.id)?'on':''}" data-star="${esc(p.id)}" role="button" tabindex="-1" title="${state.favorites.has(p.id)?'取消收藏':'收藏到主页'}"><svg class="ico"><use href="#i-${state.favorites.has(p.id)?'star-fill':'star'}"/></svg></span><span class="pane-state ${state.paneState.get(p.id)||'unknown'}"></span></div><div class="pane-title">${esc(p.title||'(无标题)')}</div><div class="pane-meta">${esc(p.path)}</div></button>`).join('');return treeDetails(`${host.id}/${session}/${windowKey}`,label,leaves,'window',`${panes.length}`,'',
-      `<button class="tree-tool tree-rename" type="button" data-rename-window="${esc(first.id)}" data-rename-value="${esc(first.window_name||'')}" title="改窗口名" aria-label="改窗口名"><svg class="ico"><use href="#i-pencil"/></svg></button>`);}).join('');
+  // 侧边栏搜索：本地即时过滤，不调接口、不搜对话全文。匹配字段和 HOME
+  // 的 /api/home/search 同一套口径（编号/服务器/harness/标题/路径/session），
+  // 只是这里是子串匹配、大小写不敏感，多词之间是 AND；搜不到的 pane 不画出来。
+  let paneSearchQuery='';
+  function parsePaneSearchTerms(query){return String(query||'').toLowerCase().split(/\s+/).filter(Boolean);}
+  function paneSearchHaystack(pane,host,prompt){
+    const parts=[pane.title,pane.target,pane.command,pane.provider,pane.id,pane.path,
+      pane.session,pane.window,pane.window_name,host&&host.name,host&&host.id];
+    if(pane.number!=null&&pane.number!==''){parts.push(String(pane.number),(pane.prefix?pane.prefix+'#':'#')+pane.number);}
+    if(prompt){parts.push(prompt.title,prompt.hint);
+      for(const option of prompt.options||[]){parts.push(option.label,option.description);}
+      for(const toggle of prompt.toggles||[]){parts.push(toggle.label);}}
+    return parts.map(value=>value==null?'':String(value)).join(' ').toLowerCase();}
+  function paneMatchesSearch(pane,host,terms,prompt){
+    if(!terms||!terms.length)return true;
+    const hay=paneSearchHaystack(pane,host,prompt);
+    return terms.every(term=>hay.includes(term));}
+  function filterHostsForSearch(hosts,terms,needsInput){
+    if(!terms||!terms.length)return {hosts:hosts,matched:0};
+    let matched=0;const filtered=[];
+    for(const host of hosts||[]){
+      const panes=(host.panes||[]).filter(pane=>{
+        const prompt=needsInput&&needsInput.get?needsInput.get(pane.id):undefined;
+        const ok=paneMatchesSearch(pane,host,terms,prompt);
+        if(ok)matched++;
+        return ok;});
+      if(panes.length)filtered.push({...host,panes});}
+    return {hosts:filtered,matched};}
+  function treeDetails(key,label,children,kind,count,extra='',tail='',forceOpen=false){const open=(forceOpen||state.treeOpen.has(key))?' open':'';return `<details class="tree-group tree-${kind}" data-tree="${esc(key)}"${open}><summary>${extra}<span class="tree-label">${esc(label)}</span><span class="tree-count">${count}</span>${tail}</summary><div class="tree-children">${children}</div></details>`;}
+  function renderList(){const terms=parsePaneSearchTerms(paneSearchQuery);const searching=terms.length>0;
+    const view=searching?filterHostsForSearch(state.hosts,terms,state.needsInput):{hosts:state.hosts,matched:0};
+    const html=view.hosts.map(host=>{const sessions=new Map();for(const p of host.panes||[]){if(!sessions.has(p.session))sessions.set(p.session,new Map());const windows=sessions.get(p.session),windowKey=`${p.window}:${p.window_name||''}`;if(!windows.has(windowKey))windows.set(windowKey,[]);windows.get(windowKey).push(p);}const sessionHtml=[...sessions].map(([session,windows])=>{const windowHtml=[...windows].map(([windowKey,panes])=>{const first=panes[0],label=`${first.window}${first.window_name?': '+first.window_name:''}`,leaves=[...panes].sort((a,b)=>((state.needsInput&&state.needsInput.has(b.id)?1:0)-(state.needsInput&&state.needsInput.has(a.id)?1:0))).map(p=>`<button class="pane ${p.id===state.selected?'selected':''}${state.needsInput&&state.needsInput.has(p.id)?' needs-you':''}" data-pane="${esc(p.id)}"><div class="pane-row"><span class="dot ${p.active?'active':''}"></span><span class="pane-num">${paneLabel(p)}</span>${state.needsInput&&state.needsInput.has(p.id)?'<span class="pane-need">等你</span>':''}<span class="pane-target">pane ${esc(p.index)} · ${esc(p.command)}</span><span class="pane-star ${state.favorites.has(p.id)?'on':''}" data-star="${esc(p.id)}" role="button" tabindex="-1" title="${state.favorites.has(p.id)?'取消收藏':'收藏到主页'}"><svg class="ico"><use href="#i-${state.favorites.has(p.id)?'star-fill':'star'}"/></svg></span><span class="pane-state ${state.paneState.get(p.id)||'unknown'}"></span></div><div class="pane-title">${esc(p.title||'(无标题)')}</div><div class="pane-meta">${esc(p.path)}</div></button>`).join('');return treeDetails(`${host.id}/${session}/${windowKey}`,label,leaves,'window',`${panes.length}`,'',
+      `<button class="tree-tool tree-rename" type="button" data-rename-window="${esc(first.id)}" data-rename-value="${esc(first.window_name||'')}" title="改窗口名" aria-label="改窗口名"><svg class="ico"><use href="#i-pencil"/></svg></button>`,searching);}).join('');
       return treeDetails(`${host.id}/${session}`,session,windowHtml,'session',`${windows.size} windows`,'',
-      `<button class="tree-tool tree-rename" type="button" data-rename-session="${esc(session)}" data-rename-host="${esc(host.id)}" title="改会话名" aria-label="改会话名"><svg class="ico"><use href="#i-pencil"/></svg></button>`);}).join('');const firstPath=(host.panes&&host.panes[0]&&host.panes[0].path)||'';
+      `<button class="tree-tool tree-rename" type="button" data-rename-session="${esc(session)}" data-rename-host="${esc(host.id)}" title="改会话名" aria-label="改会话名"><svg class="ico"><use href="#i-pencil"/></svg></button>`,searching);}).join('');const firstPath=(host.panes&&host.panes[0]&&host.panes[0].path)||'';
   return treeDetails(host.id,host.name||host.id,sessionHtml,'host',`${(host.panes||[]).length}`,
     `<span class="host-icon"><svg class="ico"><use href="#i-server"/></svg></span><span class="host-status"></span>`,
     `<button class="host-add" type="button" data-new-session="${esc(host.id)}" data-session-path="${esc(firstPath)}"`
     + ` title="在该主机新建 tmux 会话" aria-label="新建 tmux 会话"><svg class="ico"><use href="#i-plus"/></svg></button>`
     + `<button class="host-refresh" type="button" data-refresh-host="${esc(host.id)}"`
-    + ` title="刷新这台主机的 pane 列表" aria-label="刷新主机"><svg class="ico"><use href="#i-refresh"/></svg></button>`);}).join('');
+    + ` title="刷新这台主机的 pane 列表" aria-label="刷新主机"><svg class="ico"><use href="#i-refresh"/></svg></button>`,searching);}).join('');
+    const countEl=$('pane-search-count');
+    if(countEl){countEl.hidden=!searching;if(searching)countEl.textContent=`命中 ${view.matched} 个`;}
+    if(searching&&!view.matched){
+      if(list.dataset.sig!=='search-empty'){list.dataset.sig='search-empty';list.innerHTML='<div class="tree-empty">没有匹配的会话</div>';}
+      return;}
     // replacing an identical tree swallows clicks and resets the scroll position
     if(list.dataset.sig!==html){list.dataset.sig=html;list.innerHTML=html;}
     if(window.TmuxRecents){TmuxRecents.markActive(state.selected||null);}}
@@ -2098,7 +2133,13 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     const renameWindow=e.target.closest('[data-rename-window]');
     if(renameWindow){e.preventDefault();e.stopPropagation();
       renameTmuxWindow(renameWindow.dataset.renameWindow,renameWindow.dataset.renameValue);return;}
-    const star=e.target.closest('[data-star]');if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}const refresh=e.target.closest('[data-refresh-host]');if(refresh){e.preventDefault();e.stopPropagation();refreshHost(refresh.dataset.refreshHost,refresh);return;}const b=e.target.closest('[data-pane]');if(b){selectPane(b.dataset.pane);if(isMobile())closeSidebar();}};function saveTree(){try{localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));}catch{}}function treeKeys(){const keys=[];for(const host of state.hosts||[]){keys.push(host.id);for(const p of host.panes||[]){keys.push(`${host.id}/${p.session}`);keys.push(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}return keys;}$('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();renderList();};$('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();renderList();};$('grid-add').onclick=()=>{if(!state.selected){showError('先选择一个 pane');return;}location='/grid?add='+encodeURIComponent(state.selected);};$('session-form').onsubmit=e=>{e.preventDefault();submitSessionForm();};$('session-cancel').onclick=()=>$('session-dialog').close();$('session-agent').onchange=()=>{const on=!!$('session-agent').value;$('session-args-field').hidden=!on;syncAgentHint();if(on)$('session-args').focus();};
+    const star=e.target.closest('[data-star]');if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}const refresh=e.target.closest('[data-refresh-host]');if(refresh){e.preventDefault();e.stopPropagation();refreshHost(refresh.dataset.refreshHost,refresh);return;}const b=e.target.closest('[data-pane]');if(b){selectPane(b.dataset.pane);if(isMobile())closeSidebar();}};function saveTree(){try{localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));}catch{}}function treeKeys(){const keys=[];for(const host of state.hosts||[]){keys.push(host.id);for(const p of host.panes||[]){keys.push(`${host.id}/${p.session}`);keys.push(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}return keys;}$('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();renderList();};$('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();renderList();};
+  function syncPaneSearchClear(){const clear=$('pane-search-clear');if(clear)clear.hidden=!$('pane-search').value;}
+  function clearPaneSearch(){const field=$('pane-search');if(field)field.value='';paneSearchQuery='';syncPaneSearchClear();renderList();}
+  $('pane-search').addEventListener('input',event=>{paneSearchQuery=event.target.value;syncPaneSearchClear();renderList();});
+  // Esc 只清搜索：不 stopPropagation 的话，全局那个 Esc 处理会把手机抽屉也关了
+  $('pane-search').addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();clearPaneSearch();}});
+  $('pane-search-clear').onclick=()=>{clearPaneSearch();};$('grid-add').onclick=()=>{if(!state.selected){showError('先选择一个 pane');return;}location='/grid?add='+encodeURIComponent(state.selected);};$('session-form').onsubmit=e=>{e.preventDefault();submitSessionForm();};$('session-cancel').onclick=()=>$('session-dialog').close();$('session-agent').onchange=()=>{const on=!!$('session-agent').value;$('session-args-field').hidden=!on;syncAgentHint();if(on)$('session-args').focus();};
   mountComposerFiles();
   $('live-toggle').onclick=()=>{state.livePaused?resumeLive():pauseLive();};
   // 「暂停实时刷新」是实验性功能：默认藏起来，设置里打开才显示

@@ -1609,7 +1609,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("treeDetails", page)
         self.assertIn("treeOpen:new Set()", page)
         self.assertIn("tmux-tree-open", page)
-        self.assertIn("state.treeOpen.has(key)?' open':''", page)
+        self.assertIn("(forceOpen||state.treeOpen.has(key))?' open':''", page)
         self.assertIn("tree-host", page)
         self.assertIn("e.isComposing||isMobile()", page)
         self.assertIn('id="terminal-keys"', page)
@@ -1915,6 +1915,25 @@ class TmuxWebTests(unittest.TestCase):
         # .share-btn 是 display:inline-grid，光有 hidden 属性压不住，按钮会照旧显示
         base = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-base.css").read_text()
         self.assertIn(".share-btn[hidden]", base)
+
+    def test_the_sidebar_has_a_search_box_that_filters_the_pane_tree(self):
+        html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
+        self.assertIn('id="pane-search"', html)
+        self.assertIn('id="pane-search-clear"', html)
+        self.assertIn('id="pane-search-count"', html)
+        self.assertIn('.tree-search input{', html, "搜索框沿用侧边栏既有样式")
+        self.assertIn('.tree-empty{', html, "无命中时显示空状态")
+        app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
+        for marker in ("parsePaneSearchTerms", "paneMatchesSearch", "filterHostsForSearch",
+                       "paneSearchQuery", "没有匹配的会话",
+                       "$('pane-search').addEventListener('input'",
+                       "event.stopPropagation();clearPaneSearch()"):
+            self.assertIn(marker, app)
+        # searching force-opens the matching ancestors at render time only;
+        # it must not write state.treeOpen, or clearing would lose the user's
+        # manual expand/collapse state
+        self.assertIn("forceOpen=false", app)
+        self.assertIn(",searching);}).join('');", app)
 
     def test_off_screen_transcript_messages_are_virtualized_like_open_webui(self):
         """Borrowed from Open WebUI Message.svelte (message-virtualized):
