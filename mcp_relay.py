@@ -28,7 +28,9 @@ Check an install without an agent in the loop:
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import io
 import json
 import os
 import sys
@@ -208,32 +210,65 @@ class RelayTools:
                 "session": result.get("session", name), "killed": True}
 
     def send_file(self, arguments: dict) -> dict:
-        """Copy a local file into the target pane's ``upload_files/``.
+        """Copy a file into the target pane's ``upload_files/``.
+
+        Two ways to supply the bytes: a local ``path`` (read off this
+        machine's disk, streamed 1MB at a time, never read whole into
+        memory) or base64 ``content`` (already in memory, as the
+        server-side /mcp endpoint receives it). When both are given,
+        ``content`` wins — the same rule the server-side /mcp applies.
 
         Cross-host by design: the bytes travel through the console (the only
         thing both hosts can reach), land next to the target's working directory,
         and the target is told the absolute path - it never needs a mount or an
         ssh key of its own.
 
-        Chunked like the browser uploader: the file is streamed off disk 1MB
-        at a time (never read whole into memory), each chunk is a PUT with
+        Chunked like the browser uploader: each chunk is a PUT with
         ``total``/``offset``/``token``, and a dropped chunk is retried or
         resumed from the offset the server reports with 409.
         """
         target = self._target(arguments)
-        source = str(arguments.get("path") or "").strip()
-        if not source:
-            raise ValueError("path is required (a file readable by this agent)")
-        if not os.path.isfile(source):
-            raise ValueError("no such file: %s" % source)
-        name = str(arguments.get("name") or "").strip() or os.path.basename(source)
-        if not name or "/" in name or "\\" in name or name in {".", ".."}:
-            raise ValueError("invalid file name: %s" % name)
-        limit = int(os.environ.get("TMUXWEB_SEND_FILE_MAX") or 64 * 1024 * 1024)
-        stat = os.stat(source)
-        size = stat.st_size
-        if size > limit:
-            raise ValueError("file is %d bytes, over the %d limit" % (size, limit))
+        content = arguments.get("content")
+        data: bytes | None = None
+        source = ""
+        if content is not None:
+            try:
+                data = base64.b64decode(str(content), validate=True)
+            except ValueError:
+                raise ValueError("content is not valid base64")
+            name = str(arguments.get("name") or "").strip()
+            if not name:
+                raise ValueError("name is required with content")
+            if "/" in name or "\\" in name or name in {".", ".."}:
+                raise ValueError("invalid file name: %s" % name)
+            limit = int(os.environ.get("TMUXWEB_SEND_FILE_MAX") or 64 * 1024 * 1024)
+            size = len(data)
+            if size > limit:
+                raise ValueError("file is %d bytes, over the %d limit" % (size, limit))
+            # 和服务端 /mcp 的 content 分支同一条 tag 算法：同一份字节、同一个
+            # 名字，两边算出同一个 .part，换边重试也能续上。
+            tag = "mc" + hashlib.sha1(
+                ("%s:%d:%s" % (name, size, hashlib.sha256(data).hexdigest())
+                 ).encode()).hexdigest()[:16]
+        else:
+            source = str(arguments.get("path") or "").strip()
+            if not source:
+                raise ValueError(
+                    "path or content is required (a local file path, or base64 file bytes)")
+            if not os.path.isfile(source):
+                raise ValueError("no such file: %s" % source)
+            name = str(arguments.get("name") or "").strip() or os.path.basename(source)
+            if not name or "/" in name or "\\" in name or name in {".", ".."}:
+                raise ValueError("invalid file name: %s" % name)
+            limit = int(os.environ.get("TMUXWEB_SEND_FILE_MAX") or 64 * 1024 * 1024)
+            stat = os.stat(source)
+            size = stat.st_size
+            if size > limit:
+                raise ValueError("file is %d bytes, over the %d limit" % (size, limit))
+            # token 只认字母数字/-/_：取文件身份的哈希，同一份文件重试能找回同一个
+            # .part 续传，换了内容（mtime 变了）就不会错续到旧文件上。
+            tag = "mc" + hashlib.sha1(
+                ("%s:%d:%d" % (name, size, stat.st_mtime_ns)).encode()).hexdigest()[:16]
         directory = ""
         try:
             peers = request("/api/relay/peers").get("peers", [])
@@ -245,16 +280,17 @@ class RelayTools:
                     break
         except RelayError:
             directory = ""
-        # token 只认字母数字/-/_：取文件身份的哈希，同一份文件重试能找回同一个
-        # .part 续传，换了内容（mtime 变了）就不会错续到旧文件上。
-        tag = "mc" + hashlib.sha1(
-            ("%s:%d:%d" % (name, size, stat.st_mtime_ns)).encode()).hexdigest()[:16]
         if size == 0:
             query = urllib.parse.urlencode({"name": name, **({"dir": directory} if directory else {})})
             result = request_raw(pane_path(target, f"/files/upload?{query}"), b"",
                                  timeout=SEND_CHUNK_TIMEOUT)
+        elif data is not None:
+            result = self._send_file_chunked(target, name, directory,
+                                             io.BytesIO(data), size, tag, name)
         else:
-            result = self._send_file_chunked(target, name, directory, source, size, tag)
+            with open(source, "rb") as handle:
+                result = self._send_file_chunked(target, name, directory,
+                                                 handle, size, tag, source)
         note = str(arguments.get("note") or "").strip()
         message = note or f'user uploaded file "{name}" ({size} bytes)'
         sent = False
@@ -269,55 +305,60 @@ class RelayTools:
                 "notified": sent}
 
     def _send_file_chunked(self, target: str, name: str, directory: str,
-                           source: str, size: int, tag: str) -> dict:
-        """PUT the file 1MB at a time; returns the server's final response."""
+                           handle: BinaryIO, size: int, tag: str,
+                           source_label: str) -> dict:
+        """PUT the bytes 1MB at a time; returns the server's final response.
+
+        ``handle`` is any seekable binary stream (a file opened off disk, or
+        a BytesIO over base64-decoded content); ``source_label`` only names
+        the source in the shrink error.
+        """
         offset = 0
         chunk_size = SEND_CHUNK
         attempts = 0
         result: dict = {}
-        with open(source, "rb") as handle:
-            while offset < size:
-                handle.seek(offset)
-                data = handle.read(chunk_size)
-                if not data:
-                    raise RelayError("file shrank while uploading: %s" % source)
-                query = urllib.parse.urlencode({
-                    "name": name, **({"dir": directory} if directory else {}),
-                    "offset": str(offset), "total": str(size), "token": tag,
-                })
-                try:
-                    result = request_raw(pane_path(target, f"/files/upload?{query}"), data,
-                                         timeout=SEND_CHUNK_TIMEOUT)
-                except RelayError as exc:
-                    if exc.status == 409 and exc.offset is not None:
-                        # 对面已经有的字节和我们的预期不一致：从它那里接着传
-                        offset = int(exc.offset)
-                        attempts = 0
-                        continue
-                    if exc.status == 0:
-                        # 连不上 console（URLError）：同一块退避重试，不从头再来
-                        attempts += 1
-                        if attempts > SEND_CHUNK_RETRIES:
-                            raise
-                        chunk_size = max(SEND_CHUNK_MIN, chunk_size // 2)
-                        time.sleep(0.5 * attempts)
-                        continue
-                    raise
-                except (TimeoutError, OSError) as exc:
-                    # 慢链路上一块没能在 90s 内发完：块减半再试，而不是整个文件重来
+        while offset < size:
+            handle.seek(offset)
+            data = handle.read(chunk_size)
+            if not data:
+                raise RelayError("file shrank while uploading: %s" % source_label)
+            query = urllib.parse.urlencode({
+                "name": name, **({"dir": directory} if directory else {}),
+                "offset": str(offset), "total": str(size), "token": tag,
+            })
+            try:
+                result = request_raw(pane_path(target, f"/files/upload?{query}"), data,
+                                     timeout=SEND_CHUNK_TIMEOUT)
+            except RelayError as exc:
+                if exc.status == 409 and exc.offset is not None:
+                    # 对面已经有的字节和我们的预期不一致：从它那里接着传
+                    offset = int(exc.offset)
+                    attempts = 0
+                    continue
+                if exc.status == 0:
+                    # 连不上 console（URLError）：同一块退避重试，不从头再来
                     attempts += 1
                     if attempts > SEND_CHUNK_RETRIES:
-                        raise RelayError("upload stalled: %s" % exc) from exc
+                        raise
                     chunk_size = max(SEND_CHUNK_MIN, chunk_size // 2)
                     time.sleep(0.5 * attempts)
                     continue
-                attempts = 0
-                if isinstance(result, dict) and result.get("status") == "uploaded":
-                    offset = size
-                elif isinstance(result, dict) and result.get("offset") is not None:
-                    offset = int(result["offset"])
-                else:
-                    offset += len(data)
+                raise
+            except (TimeoutError, OSError) as exc:
+                # 慢链路上一块没能在 90s 内发完：块减半再试，而不是整个文件重来
+                attempts += 1
+                if attempts > SEND_CHUNK_RETRIES:
+                    raise RelayError("upload stalled: %s" % exc) from exc
+                chunk_size = max(SEND_CHUNK_MIN, chunk_size // 2)
+                time.sleep(0.5 * attempts)
+                continue
+            attempts = 0
+            if isinstance(result, dict) and result.get("status") == "uploaded":
+                offset = size
+            elif isinstance(result, dict) and result.get("offset") is not None:
+                offset = int(result["offset"])
+            else:
+                offset += len(data)
         return result
 
     def read_agent(self, arguments: dict) -> dict:
@@ -542,16 +583,19 @@ def tool_schemas() -> list[dict]:
                             "(its upload_files/ folder) and tell that agent the absolute path. "
                             "Works across hosts: the bytes go through the console, so the two "
                             "machines need no shared mount and no ssh trust between them. "
-                            "The stdio relay reads a local `path`; the server-side /mcp endpoint "
-                            "cannot see the caller's disk, so it takes base64 `content` instead."),
+                            "Supply the bytes as a local `path` (read by the stdio relay) or as "
+                            "base64 `content` (accepted on both sides; the only form the "
+                            "server-side /mcp endpoint accepts, since it cannot see the caller's "
+                            "disk). When both are given, `content` wins."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "target": target,
                     "path": {"type": "string",
-                             "description": "local file to send (absolute path, read by the stdio relay)"},
+                             "description": "local file to send (absolute path, read by the stdio "
+                                            "relay; rejected by the server-side /mcp)"},
                     "content": {"type": "string",
-                                "description": "base64 file bytes (server-side /mcp only)"},
+                                "description": "base64 file bytes (accepted on both sides)"},
                     "name": {"type": "string", "description": "name at the destination (default: the same basename)"},
                     "note": {"type": "string", "description": "text to send along with the file"},
                     "notify": {"type": "boolean", "default": True,
@@ -663,6 +707,13 @@ def tool_schemas() -> list[dict]:
 _TOOL_SCHEMAS: list[dict] = tool_schemas()
 
 
+# The three tools the server also runs in-process (PR #46) report REST
+# failures with the HTTP status prefixed ("409: ..."); the other tools
+# report the bare message. This mirrors tmux_web.py's mcp_http_error,
+# which only those three branches use — ask_agent/read_agent errors stay
+# bare on both sides (see test_busy_pane_errors_keep_the_pane_tail).
+_STATUS_PREFIXED_TOOLS = frozenset({"create_session", "kill_session", "send_file"})
+
 
 class MCPServer:
     def __init__(self, tools: RelayTools):
@@ -706,7 +757,11 @@ class MCPServer:
                         "result": self._result({"error": str(exc)}, is_error=True)}
             return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": str(exc)}}
         except RelayError as exc:
-            detail: dict[str, Any] = {"error": str(exc)}
+            text = str(exc)
+            tool_name = str(((request_payload.get("params") or {}).get("name") or ""))
+            if tool_name in _STATUS_PREFIXED_TOOLS and 400 <= (exc.status or 0) < 600:
+                text = "%s: %s" % (exc.status, text)
+            detail: dict[str, Any] = {"error": text}
             if getattr(exc, "tail", ""):
                 detail["pane_tail"] = exc.tail
             return {"jsonrpc": "2.0", "id": request_id, "result": self._result(detail, is_error=True)}

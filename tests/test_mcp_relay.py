@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import os
@@ -235,6 +236,123 @@ class ToolTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 tools.send_file({"target": "abc~%3", "path": str(Path(directory) / "missing")})
 
+    def test_send_file_accepts_base64_content(self):
+        """content（base64）和 path 是同一条上传：字节一致、有 [file] 通知。"""
+        recorder = Recorder({"/api/relay/peers": {"peers": [
+            {"id": "abc~%3", "handle": "#12", "number": 12, "path": "/srv/work"}]},
+            "/api/relay/message": {"pane": "abc~%3"}})
+        raw_calls = []
+
+        def raw(path, data, **kwargs):
+            raw_calls.append((path, data))
+            return {"status": "uploaded", "path": "/srv/work/upload_files/plan.md",
+                    "size": len(data)}
+
+        with patch.object(mcp_relay, "request", recorder), \
+                patch.object(mcp_relay, "request_raw", raw):
+            result = mcp_relay.RelayTools().send_file({
+                "target": "abc~%3", "name": "plan.md",
+                "content": base64.b64encode(b"hello").decode()})
+        self.assertEqual(raw_calls[0][1], b"hello")
+        self.assertIn("name=plan.md", raw_calls[0][0])
+        self.assertEqual(result["path"], "/srv/work/upload_files/plan.md")
+        self.assertEqual(result["size"], 5)
+        self.assertTrue(result["notified"])
+        message = [call for call in recorder.calls if call[0] == "/api/relay/message"][0][1]
+        self.assertIn("/srv/work/upload_files/plan.md", message["text"])
+
+    def test_send_file_content_chunks_a_large_file(self):
+        """2.5MB 的 content 也按 1MB 切块，和 path 走同一条分块上传。"""
+        recorder = Recorder({"/api/relay/peers": {"peers": [
+            {"id": "abc~%3", "handle": "#12", "number": 12, "path": "/srv/work"}]},
+            "/api/relay/message": {"pane": "abc~%3"}})
+        calls = []
+        plan = [
+            {"status": "partial", "offset": 1024 * 1024, "size": 2621440},
+            {"status": "partial", "offset": 2 * 1024 * 1024, "size": 2621440},
+            {"status": "uploaded", "path": "/srv/work/upload_files/big.bin",
+             "size": 2621440},
+        ]
+
+        def raw(path, data, **kwargs):
+            calls.append((path, data))
+            return plan[len(calls) - 1]
+
+        data = bytes(range(256)) * 10240
+        self.assertEqual(len(data), 2621440)
+        with patch.object(mcp_relay, "request", recorder), \
+                patch.object(mcp_relay, "request_raw", raw):
+            result = mcp_relay.RelayTools().send_file({
+                "target": "abc~%3", "name": "big.bin",
+                "content": base64.b64encode(data).decode()})
+        self.assertEqual([len(chunk) for _path, chunk in calls],
+                         [1024 * 1024, 1024 * 1024, 512 * 1024])
+        self.assertEqual(b"".join(chunk for _path, chunk in calls), data)
+        self.assertEqual(result["size"], 2621440)
+        self.assertTrue(result["notified"])
+
+    def test_send_file_content_writes_an_empty_file(self):
+        """空 content 走单次上传，和空 path 一样。"""
+        recorder = Recorder({"/api/relay/peers": {"peers": [
+            {"id": "abc~%3", "handle": "#12", "number": 12, "path": "/srv/work"}]},
+            "/api/relay/message": {"pane": "abc~%3"}})
+        raw_calls = []
+
+        def raw(path, data, **kwargs):
+            raw_calls.append((path, data))
+            return {"status": "uploaded", "path": "/srv/work/upload_files/empty.txt", "size": 0}
+
+        with patch.object(mcp_relay, "request", recorder), \
+                patch.object(mcp_relay, "request_raw", raw):
+            result = mcp_relay.RelayTools().send_file({
+                "target": "abc~%3", "name": "empty.txt",
+                "content": base64.b64encode(b"").decode()})
+        self.assertEqual(raw_calls[0][1], b"")
+        self.assertEqual(result["size"], 0)
+
+    def test_send_file_content_rejects_bad_base64(self):
+        """不是合法 base64 的 content 直接报错，和服务端 /mcp 同一个文案。"""
+        with self.assertRaises(ValueError) as caught:
+            mcp_relay.RelayTools().send_file({
+                "target": "abc~%3", "name": "x.bin", "content": "!!!not-base64!!!"})
+        self.assertEqual(str(caught.exception), "content is not valid base64")
+
+    def test_send_file_content_requires_a_name(self):
+        """content 没有名字可推断（不像 path 有 basename），必须显式给 name。"""
+        with self.assertRaises(ValueError) as caught:
+            mcp_relay.RelayTools().send_file({
+                "target": "abc~%3",
+                "content": base64.b64encode(b"hello").decode()})
+        self.assertEqual(str(caught.exception), "name is required with content")
+
+    def test_send_file_content_wins_over_path(self):
+        """path 和 content 都给了：content 赢，path 碰都不碰（和服务端一致）。"""
+        recorder = Recorder({"/api/relay/peers": {"peers": [
+            {"id": "abc~%3", "handle": "#12", "number": 12, "path": "/srv/work"}]},
+            "/api/relay/message": {"pane": "abc~%3"}})
+
+        def raw(path, data, **kwargs):
+            return {"status": "uploaded", "path": "/srv/work/upload_files/x.bin",
+                    "size": len(data)}
+
+        with patch.object(mcp_relay, "request", recorder), \
+                patch.object(mcp_relay, "request_raw", raw):
+            result = mcp_relay.RelayTools().send_file({
+                "target": "abc~%3", "name": "x.bin",
+                "path": "/does/not/exist.txt",
+                "content": base64.b64encode(b"hello").decode()})
+        self.assertEqual(result["size"], 5)
+        self.assertTrue(result["notified"])
+
+    def test_send_file_content_over_limit(self):
+        """content 超过 TMUXWEB_SEND_FILE_MAX 就拒，和 path 同一个上限。"""
+        with patch.dict("os.environ", {"TMUXWEB_SEND_FILE_MAX": "10"}):
+            with self.assertRaises(ValueError) as caught:
+                mcp_relay.RelayTools().send_file({
+                    "target": "abc~%3", "name": "x.bin",
+                    "content": base64.b64encode(b"0123456789x").decode()})
+        self.assertIn("over the 10 limit", str(caught.exception))
+
     def test_read_agent_uses_capture_or_transcript(self):
         recorder = Recorder({"/capture": {"content": "screen text"},
                              "/transcript": {"provider": "codex", "session_id": "s1",
@@ -304,6 +422,71 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(response["result"]["isError"])
         self.assertEqual(payload["error"], "pane looks busy")
         self.assertEqual(payload["pane_tail"], "esc to interrupt")
+
+    def test_rest_errors_carry_the_status_prefix_for_the_unified_tools(self):
+        """create_session / kill_session / send_file 的 REST 失败带状态前缀，
+        和服务端 /mcp 的 mcp_http_error 同一个格式（"409: ..."）。"""
+        cases = [
+            ("create_session", {"name": "dev"}, 409, "session already exists: dev"),
+            ("kill_session", {"session": "nope"}, 404, "no such session: nope"),
+        ]
+        for name, arguments, status, message in cases:
+            def failing(path, payload=None, *, timeout=30.0, method=None,
+                        _s=status, _m=message):
+                raise RelayError(_m, status=_s)
+
+            with patch.object(mcp_relay, "request", failing):
+                response = self.server.handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                                               "params": {"name": name, "arguments": arguments}})
+            payload = json.loads(response["result"]["content"][0]["text"])
+            self.assertTrue(response["result"]["isError"])
+            self.assertEqual(payload["error"], "%s: %s" % (status, message))
+
+        # send_file：peers 查询失败会被吞掉（目录回退为空），真正逃出来的是
+        # 上传那一步的 REST 失败，同样带前缀。
+        recorder = Recorder({"/api/relay/peers": {"peers": [
+            {"id": "%7", "handle": "#4", "number": 4, "path": "/srv/work"}]},
+            "/api/relay/message": {"pane": "%7"}})
+
+        def failing_raw(path, data, **kwargs):
+            raise RelayError("agent not installed on this host: hermes", status=422)
+
+        with patch.object(mcp_relay, "request", recorder), \
+                patch.object(mcp_relay, "request_raw", failing_raw):
+            response = self.server.handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                                           "params": {"name": "send_file",
+                                                      "arguments": {
+                                                          "target": "%7", "name": "x.bin",
+                                                          "content": base64.b64encode(b"hi").decode()}}})
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(payload["error"], "422: agent not installed on this host: hermes")
+
+    def test_kill_session_error_matches_the_server_side_text(self):
+        """同一失败、两边同一文本：服务端那边的断言在
+        tests/test_tmux_web.py test_mcp_kill_session_reports_a_missing_session
+       （error 里含 "404" 和 "no such session"），这里钉死逐字相同的文本。"""
+        def failing(path, payload=None, *, timeout=30.0, method=None):
+            raise RelayError("no such session: nope", status=404)
+
+        with patch.object(mcp_relay, "request", failing):
+            response = self.server.handle({"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                                           "params": {"name": "kill_session",
+                                                      "arguments": {"session": "nope"}}})
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertEqual(payload["error"], "404: no such session: nope")
+
+    def test_rest_errors_without_a_status_stay_bare(self):
+        """连不上 console（status 0）这种没有 HTTP 状态的失败不加前缀。"""
+        def failing(path, payload=None, *, timeout=30.0, method=None):
+            raise RelayError("cannot reach http://127.0.0.1:8787: refused")
+
+        with patch.object(mcp_relay, "request", failing):
+            response = self.server.handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                                           "params": {"name": "kill_session",
+                                                      "arguments": {"session": "nope"}}})
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertEqual(payload["error"], "cannot reach http://127.0.0.1:8787: refused")
 
     def test_invalid_arguments_become_tool_errors(self):
         response = self.server.handle({"jsonrpc": "2.0", "id": 6, "method": "tools/call",
