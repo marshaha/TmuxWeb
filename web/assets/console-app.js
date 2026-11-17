@@ -2134,12 +2134,11 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     if(renameWindow){e.preventDefault();e.stopPropagation();
       renameTmuxWindow(renameWindow.dataset.renameWindow,renameWindow.dataset.renameValue);return;}
     const star=e.target.closest('[data-star]');if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}const refresh=e.target.closest('[data-refresh-host]');if(refresh){e.preventDefault();e.stopPropagation();refreshHost(refresh.dataset.refreshHost,refresh);return;}const b=e.target.closest('[data-pane]');if(b){selectPane(b.dataset.pane);if(isMobile())closeSidebar();}};function saveTree(){try{localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));}catch{}}function treeKeys(){const keys=[];for(const host of state.hosts||[]){keys.push(host.id);for(const p of host.panes||[]){keys.push(`${host.id}/${p.session}`);keys.push(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}return keys;}$('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();renderList();};$('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();renderList();};
-  function syncPaneSearchClear(){const clear=$('pane-search-clear');if(clear)clear.hidden=!$('pane-search').value;}
-  function clearPaneSearch(){const field=$('pane-search');if(field)field.value='';paneSearchQuery='';syncPaneSearchClear();renderList();}
-  $('pane-search').addEventListener('input',event=>{paneSearchQuery=event.target.value;syncPaneSearchClear();renderList();});
+  function clearPaneSearch(){const field=$('pane-search');if(field)field.value='';paneSearchQuery='';renderList();}
+  $('pane-search').addEventListener('input',event=>{paneSearchQuery=event.target.value;renderList();});
   // Esc 只清搜索：不 stopPropagation 的话，全局那个 Esc 处理会把手机抽屉也关了
   $('pane-search').addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();clearPaneSearch();}});
-  $('pane-search-clear').onclick=()=>{clearPaneSearch();};$('grid-add').onclick=()=>{if(!state.selected){showError('先选择一个 pane');return;}location='/grid?add='+encodeURIComponent(state.selected);};$('session-form').onsubmit=e=>{e.preventDefault();submitSessionForm();};$('session-cancel').onclick=()=>$('session-dialog').close();$('session-agent').onchange=()=>{const on=!!$('session-agent').value;$('session-args-field').hidden=!on;syncAgentHint();if(on)$('session-args').focus();};
+  $('grid-add').onclick=()=>{if(!state.selected){showError('先选择一个 pane');return;}location='/grid?add='+encodeURIComponent(state.selected);};$('session-form').onsubmit=e=>{e.preventDefault();submitSessionForm();};$('session-cancel').onclick=()=>$('session-dialog').close();$('session-agent').onchange=()=>{const on=!!$('session-agent').value;$('session-args-field').hidden=!on;syncAgentHint();if(on)$('session-args').focus();};
   mountComposerFiles();
   $('live-toggle').onclick=()=>{state.livePaused?resumeLive():pauseLive();};
   // 「暂停实时刷新」是实验性功能：默认藏起来，设置里打开才显示

@@ -191,3 +191,42 @@ test('with a prompt, its option text counts as a match field', () => {
   assert.equal(view.matched, 2);
   assert.deepEqual(view.hosts[0].panes.map((pane) => pane.id), [HERMES_39.id, KIMI_42.id]);
 });
+
+// Layout + wiring: the input lives in the header row (会话 | 搜索框 | 展开 |
+// 收起), the custom × clear button is gone, and clearing relies on the
+// native search cancel button and Esc. Content assertions over the files
+// the console actually serves; there is no browser in this repo's tests.
+const html = fs.readFileSync(path.join(root, '..', '..', 'web', 'index.html'), 'utf8');
+const base = fs.readFileSync(path.join(root, '..', '..', 'web', 'assets', 'console-base.css'), 'utf8');
+
+test('the input sits in the header row, right of 会话, with no custom clear button', () => {
+  const tools = html.indexOf('<div class="tree-tools">');
+  const input = html.indexOf('id="pane-search"');
+  const expand = html.indexOf('id="tree-expand"');
+  assert.notEqual(tools, -1, 'missing .tree-tools row');
+  assert.ok(tools < input && input < expand, 'input must sit between the 会话 label and the expand button');
+  assert.equal(html.includes('pane-search-clear'), false);
+  assert.equal(html.includes('tree-search-clear'), false);
+  assert.equal(html.includes('class="tree-search"'), false);
+  assert.equal(html.includes('<input id="pane-search" type="search"'), true);
+  assert.equal(html.includes('placeholder="搜索…"'), true);
+  assert.equal(html.includes('title="搜索编号、服务器、模型、标题…"'), true);
+  // the hit count stays, but as its own line above the tree, not in the row
+  assert.equal(html.includes('<div class="tree-search-count" id="pane-search-count" hidden></div>'), true);
+  assert.ok(html.indexOf('id="pane-search-count"') > expand, 'count must come after the header row');
+});
+
+test('the header input flexes while the label and tree buttons stay fixed', () => {
+  assert.equal(html.includes('.tree-tools input{flex:1;min-width:0'), true);
+  assert.equal(html.includes('.tree-tools input{height:34px;font-size:15px}'), true);
+  assert.equal(html.includes('.tree-search input{'), false);
+  assert.equal(base.includes('.tree-tools-label{flex:none'), true);
+  assert.equal(base.includes('.tree-tools-label{flex:1'), false);
+});
+
+test('clearing needs no custom button: Esc still clears, the input stays type=search', () => {
+  assert.equal(page.includes('syncPaneSearchClear'), false);
+  assert.equal(page.includes('pane-search-clear'), false);
+  assert.equal(page.includes('function clearPaneSearch()'), true);
+  assert.equal(page.includes("event.stopPropagation();clearPaneSearch()"), true);
+});
