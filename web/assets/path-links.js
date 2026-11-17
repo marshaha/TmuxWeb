@@ -18,7 +18,7 @@
   // 绝对/家目录路径，或"带扩展名的相对路径"（results/out.md、src/main.py）。
   // 后者故意要求"斜杠 + 扩展名"，免得把 and/or 之类的普通词也变成链接。
   const BOUNDARY = "[\\s(（\\[【<\"'`：:，、；;！？!?）】」』》>]";
-  const ABSOLUTE = new RegExp('(^|' + BOUNDARY + ')((?:~|\\.{1,2})?\\/[^\\s\"' + '`<>|，。；：、）)】]+)', 'g');
+  const ABSOLUTE = new RegExp('(^|' + BOUNDARY + ')((?:~|\\.{1,2})?\\/[^\\s\"' + '`<>|，。；：、）)】（【《》」』]+)', 'g');
   // 扩展名至少两个字符：`12.5/12.8s`、`a/b.c` 这种不是文件
   const RELATIVE = new RegExp('(^|' + BOUNDARY + ')((?:\\.{1,2}\\/)?(?:[\\w@%+.-]+\\/)+[\\w@%+.-]+\\.[A-Za-z][A-Za-z0-9]{1,7})', 'g');
   const SKIP_TAGS = new Set(['A', 'PRE', 'SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'BUTTON', 'SVG']);
