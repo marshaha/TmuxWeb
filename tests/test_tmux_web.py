@@ -1918,10 +1918,20 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_the_sidebar_has_a_search_box_that_filters_the_pane_tree(self):
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
-        self.assertIn('id="pane-search"', html)
-        self.assertIn('id="pane-search-clear"', html)
-        self.assertIn('id="pane-search-count"', html)
-        self.assertIn('.tree-search input{', html, "搜索框沿用侧边栏既有样式")
+        # the input lives in the header row, right of 会话, between the label
+        # and the expand/collapse buttons — no own row, no custom × button
+        tools_start = html.index('<div class="tree-tools">')
+        tools = html[tools_start:html.index('</div>', tools_start)]
+        self.assertIn('id="pane-search"', tools)
+        self.assertIn('placeholder="搜索…"', tools, "窄侧边栏里 placeholder 要短，完整提示放 title")
+        self.assertIn('title="搜索编号、服务器、模型、标题…"', tools)
+        self.assertNotIn('id="pane-search-count"', tools, "命中数不在标题行里，单独放树列表上方")
+        self.assertIn('id="pane-search-count"', html, "命中数指示保留")
+        self.assertNotIn('pane-search-clear', html, "自定义 × 已去掉：原生 search 清除 + Esc 才是清空路径")
+        self.assertNotIn('tree-search-clear', html)
+        self.assertNotIn('class="tree-search"', html)
+        self.assertIn('.tree-tools input{', html, "搜索框沿用侧边栏既有样式")
+        self.assertNotIn('.tree-search input{', html)
         self.assertIn('.tree-empty{', html, "无命中时显示空状态")
         app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
         for marker in ("parsePaneSearchTerms", "paneMatchesSearch", "filterHostsForSearch",
@@ -1929,11 +1939,16 @@ class TmuxWebTests(unittest.TestCase):
                        "$('pane-search').addEventListener('input'",
                        "event.stopPropagation();clearPaneSearch()"):
             self.assertIn(marker, app)
+        self.assertNotIn("syncPaneSearchClear", app, "× 按钮连同它的 handler 一起删掉")
+        self.assertNotIn("pane-search-clear", app)
         # searching force-opens the matching ancestors at render time only;
         # it must not write state.treeOpen, or clearing would lose the user's
         # manual expand/collapse state
         self.assertIn("forceOpen=false", app)
         self.assertIn(",searching);}).join('');", app)
+        base = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-base.css").read_text()
+        self.assertIn(".tree-tools-label{flex:none", base, "标签固定宽度，输入框才能吃掉标题行剩余空间")
+        self.assertNotIn(".tree-tools-label{flex:1", base)
 
     def test_off_screen_transcript_messages_are_virtualized_like_open_webui(self):
         """Borrowed from Open WebUI Message.svelte (message-virtualized):
