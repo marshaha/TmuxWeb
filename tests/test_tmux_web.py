@@ -3417,18 +3417,20 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("enterButton.onclick = () => chooseByKey('enter')", script)
         self.assertIn("data.kind === 'toggle'", script, "开关类界面总要确认按钮")
 
-    def test_a_click_paints_before_the_round_trip(self):
-        """点下去先在卡片上生效（乐观），再等 pane 的真实状态对齐。"""
+    def test_a_click_closes_the_card_before_the_round_trip(self):
+        """点下去卡片先收起来，后台再发键：手机上等 POST + 跟进轮询要好几秒，卡片一直杵着像卡住了。"""
         root = Path(__file__).resolve().parents[1]
         script = (root / "web" / "assets" / "prompt-card.js").read_text()
-        self.assertIn("let optimistic = null", script)
-        self.assertIn("optimistic = {toggle: toggleIndex, value, at: Date.now()}", script)
-        self.assertIn("paintOptimistic()", script)
-        self.assertIn("settleOptimistic(", script)
-        # 过了窗口还没对上就退回真值，并且说清楚
-        self.assertIn("屏幕没有变化，再点一次或切到终端", script)
+        # 涂抹式乐观（先在卡片上标“已发送”再等屏幕对齐）已经让位给乐观关闭
+        self.assertNotIn("let optimistic = null", script)
+        self.assertNotIn("paintOptimistic()", script)
+        self.assertNotIn("settleOptimistic(", script)
+        self.assertNotIn("屏幕没有变化，再点一次或切到终端", script)
+        # 点下先记签名、收卡；失败恢复出来、清签名，poll 才不压住重弹
+        self.assertIn("answeredSignature = signatureOf(prompt)", script)
+        self.assertIn("没送到，再试一次", script)
         page = (root / "web" / "index.html").read_text()
-        self.assertIn(".prompt-option.picked", page)
+        self.assertNotIn(".prompt-option.picked", page)
 
     def test_the_prompt_card_is_off_until_the_preference_says_on(self):
         """实验性功能：默认关闭时连 /prompt 都不该解析，choose 直接 409。"""
