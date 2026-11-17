@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import hashlib
 import hmac
@@ -42,7 +43,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, RedirectResponse,
                                Response, StreamingResponse)
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 import file_browser
 from home_store import HomeStore
 import mcp_relay
@@ -4133,6 +4134,71 @@ def create_app(
         hosts_snapshot["at"] = time.time()
         return payload
 
+    def mcp_validation_error(exc: ValidationError) -> McpToolError:
+        """Pydantic input errors are tool errors, not 500s."""
+        details = "; ".join(
+            "%s: %s" % (".".join(str(part) for part in error["loc"]), error["msg"])
+            for error in exc.errors())
+        return McpToolError(details or str(exc))
+
+    def resolve_mcp_host(value: str) -> str:
+        """Accept a host id, a host name or "localhost" - names are friendlier.
+
+        Same resolution RelayTools._resolve_host does over HTTP, but in-process.
+        Unknown values pass through untouched so the caller still reports them;
+        federated nodes are not in the remote-hosts store, so they pass through
+        too and the session helpers' fed_node check still sees them.
+        """
+        wanted = (value or "").strip()
+        if wanted in ("", "localhost"):
+            return "localhost"
+        try:
+            hosts = remote_hosts.list_hosts()
+        except (RuntimeError, OSError):
+            return wanted
+        for host in hosts:
+            if wanted in (host.get("id"), (host.get("name") or "")):
+                return host.get("id") or wanted
+        for host in hosts:
+            if (host.get("name") or "").lower() == wanted.lower():
+                return host.get("id") or wanted
+        return wanted
+
+    def mcp_http_error(exc: HTTPException) -> McpToolError:
+        """Keep the REST status in the tool error text.
+
+        JSON-RPC has no status channel, so a bare message would collapse the
+        409/422/503 distinction the REST routes make; prefix it instead.
+        """
+        return McpToolError("%s: %s" % (exc.status_code, exc.detail))
+
+    async def mcp_send_file_chunked(target: str, file_name: str, directory: str,
+                                    data: bytes, tag: str) -> dict:
+        """Feed bytes through the shared chunked upload, 1MB at a time.
+
+        Same chunk size, token and 409-resume semantics as the browser uploader
+        and the stdio relay: a chunk the far side already has is answered with
+        its offset, and the loop resumes from there instead of starting over.
+        """
+        offset = 0
+        size = len(data)
+        result: dict = {}
+        while offset < size:
+            out = await upload_response(target, file_name, directory, offset, size, tag,
+                                        data[offset:offset + 1024 * 1024])
+            if isinstance(out, JSONResponse):
+                if out.status_code != 409:
+                    raise HTTPException(status_code=out.status_code,
+                                        detail="upload failed with status %s" % out.status_code)
+                offset = int(json.loads(out.body).get("offset") or 0)
+                continue
+            result = out
+            if out.get("status") == "partial":
+                offset = int(out.get("offset") or 0)
+                continue
+            break
+        return result
+
     async def perform_mcp_tool(name: str, arguments: dict) -> dict:
         """Same semantics as mcp_relay.py, but executed in-process (no python3 on the client)."""
         arguments = arguments or {}
@@ -4175,17 +4241,20 @@ def create_app(
             auth_type = str(arguments.get("auth_type") or "agent").strip() or "agent"
             if auth_type not in AUTH_TYPES:
                 raise McpToolError("auth_type must be agent, password or key")
-            payload = RemoteHostCreateRequest(
-                name=str(arguments.get("name") or "").strip(),
-                hostname=str(arguments.get("hostname") or "").strip(),
-                username=str(arguments.get("username") or "").strip(),
-                port=int(arguments.get("port") or 22),
-                auth_type=auth_type,
-                credential=str(arguments.get("credential") or ""),
-                jump_host_id=str(arguments.get("jump_host") or "").strip(),
-                jump_spec=str(arguments.get("jump") or "").strip(),
-                verify=bool(arguments.get("verify", True)),
-            )
+            try:
+                payload = RemoteHostCreateRequest(
+                    name=str(arguments.get("name") or "").strip(),
+                    hostname=str(arguments.get("hostname") or "").strip(),
+                    username=str(arguments.get("username") or "").strip(),
+                    port=int(arguments.get("port") or 22),
+                    auth_type=auth_type,
+                    credential=str(arguments.get("credential") or ""),
+                    jump_host_id=str(arguments.get("jump_host") or "").strip(),
+                    jump_spec=str(arguments.get("jump") or "").strip(),
+                    verify=bool(arguments.get("verify", True)),
+                )
+            except ValidationError as exc:
+                raise mcp_validation_error(exc) from exc
             try:
                 created = await store_remote_host(payload)
             except HTTPException as exc:
@@ -4292,6 +4361,109 @@ def create_app(
                 return {"target": target, "content": content}
             except (TmuxError, RuntimeError, OSError, ValueError) as exc:
                 raise McpToolError(str(exc)) from exc
+        if name == "create_session":
+            try:
+                payload = SessionCreateRequest(
+                    host=resolve_mcp_host(str(arguments.get("host") or "localhost")),
+                    name=str(arguments.get("name") or ""),
+                    path=str(arguments.get("path") or ""),
+                    agent=str(arguments.get("agent") or ""),
+                    agent_args=str(arguments.get("agent_args") or ""),
+                    create_dir=bool(arguments.get("create_dir", True)),
+                    keep_open=bool(arguments.get("keep_open", True)),
+                )
+            except ValidationError as exc:
+                raise mcp_validation_error(exc) from exc
+            try:
+                result = await create_session_impl(payload)
+            except HTTPException as exc:
+                raise mcp_http_error(exc) from exc
+            session = result.get("session") or {}
+            panes = result.get("panes") or []
+            pane_id = panes[0].get("id") if panes else None
+            number = panes[0].get("number") if panes else None
+            return {"host": result.get("host", payload.host),
+                    "session": session.get("session", payload.name),
+                    "path": session.get("path", payload.path),
+                    "created_dir": session.get("created_dir", False),
+                    "command": session.get("command", ""),
+                    "pane": pane_id, "number": number,
+                    "handle": f"#{number}" if number else pane_id}
+        if name == "kill_session":
+            pane = str(arguments.get("pane") or "").strip()
+            if pane:
+                try:
+                    killed = await kill_pane_impl(pane)
+                except HTTPException as exc:
+                    raise mcp_http_error(exc) from exc
+                return {"scope": "pane", "pane": killed.get("pane", pane),
+                        "session": killed.get("session", ""),
+                        "session_alive": killed.get("session_alive", False), "killed": True}
+            session_name = str(arguments.get("session") or "").strip()
+            if not session_name:
+                raise McpToolError("pane or session is required")
+            try:
+                killed = await kill_session_impl(
+                    session_name, resolve_mcp_host(str(arguments.get("host") or "localhost")))
+            except HTTPException as exc:
+                raise mcp_http_error(exc) from exc
+            return {"scope": "session", "host": killed.get("host", ""),
+                    "session": killed.get("session", session_name), "killed": True}
+        if name == "send_file":
+            target = str(arguments.get("target") or "").strip()
+            if not target:
+                raise McpToolError("target is required")
+            content = arguments.get("content")
+            if content is None:
+                if arguments.get("path"):
+                    raise McpToolError(
+                        "server-side /mcp cannot read a file from the caller's machine: "
+                        "send base64 `content` instead of `path`")
+                raise McpToolError("content is required (base64 file bytes)")
+            try:
+                data = base64.b64decode(str(content), validate=True)
+            except ValueError as exc:
+                raise McpToolError("content is not valid base64") from exc
+            file_name = str(arguments.get("name") or "").strip()
+            if not file_name:
+                raise McpToolError("name is required with content")
+            limit = int(os.environ.get("TMUXWEB_SEND_FILE_MAX") or 64 * 1024 * 1024)
+            if len(data) > limit:
+                raise McpToolError("file is %d bytes, over the %d limit" % (len(data), limit))
+            try:
+                _transport, _actual, pane = await file_target(target)
+                base = pane.get("path") or ""
+                directory = base.rstrip("/") + "/upload_files" if base else ""
+            except HTTPException as exc:
+                raise mcp_http_error(exc) from exc
+            # token 只认字母数字/-/_：取文件身份的哈希，同一份文件重试能找回同一个
+            # .part 续传，换了内容就不会错续到旧文件上（和 stdio relay 同一算法）。
+            tag = "mc" + hashlib.sha1(
+                ("%s:%d:%s" % (file_name, len(data),
+                               hashlib.sha256(data).hexdigest())).encode()).hexdigest()[:16]
+            try:
+                if len(data) == 0:
+                    out = await upload_response(target, file_name, directory, 0, 0, "", b"")
+                    result = out if isinstance(out, dict) else {"path": None, "size": 0}
+                else:
+                    result = await mcp_send_file_chunked(target, file_name, directory, data, tag)
+            except HTTPException as exc:
+                raise mcp_http_error(exc) from exc
+            note = str(arguments.get("note") or "").strip()
+            message = note or f'user uploaded file "{file_name}" ({len(data)} bytes)'
+            sent = False
+            if arguments.get("notify", True):
+                try:
+                    transport, pane_id = await asyncio.to_thread(pane_transport, target)
+                    await asyncio.to_thread(
+                        transport.send, pane_id,
+                        f"[file] {result.get('path') or file_name} "
+                        f"({len(data)} bytes) — {message}", True)
+                    sent = True
+                except (TmuxError, RuntimeError, OSError, ValueError):
+                    sent = False
+            return {"target": target, "path": result.get("path"),
+                    "size": result.get("size", len(data)), "notified": sent}
         raise McpToolError("unknown tool: %s" % name)
 
     def require_mcp_auth(request: Request) -> None:
@@ -4379,15 +4551,15 @@ def create_app(
         agents = await agents_for(host_id, refresh=refresh)
         return {"host": host_id, "agents": agents}
 
-    @app.post("/api/sessions", status_code=201)
-    async def create_session(request: Request, payload: SessionCreateRequest):
+    async def create_session_impl(payload: SessionCreateRequest) -> dict:
         """Create a detached tmux session on the local host or a remote one.
 
         ``agent`` is optional: when given (and installed on that host) the session
         starts with the agent instead of a bare shell, with ``agent_args`` passed
-        through as extra argv.
+        through as extra argv. Shared by the REST route and the MCP tool, so both
+        raise the same HTTPExceptions (409 duplicate / 422 agent or path / 503
+        transport) and the MCP side can map them the same way.
         """
-        require_auth(request)
         if payload.host in ("", "localhost"):
             transport, host_id = tmux, "localhost"
         elif fed_node(payload.host):
@@ -4451,10 +4623,22 @@ def create_app(
                     pane["handle"] = f"#{number}"
         return {"session": created, "host": host_id, "panes": fresh}
 
-    @app.delete("/api/panes/{pane_id}")
-    async def delete_pane(request: Request, pane_id: str):
-        """Close one pane only - the session stays if it has other panes."""
+    @app.post("/api/sessions", status_code=201)
+    async def create_session(request: Request, payload: SessionCreateRequest):
+        """Create a detached tmux session on the local host or a remote one.
+
+        ``agent`` is optional: when given (and installed on that host) the session
+        starts with the agent instead of a bare shell, with ``agent_args`` passed
+        through as extra argv.
+        """
         require_auth(request)
+        return await create_session_impl(payload)
+
+    async def kill_pane_impl(pane_id: str) -> dict:
+        """Close one pane only - the session stays if it has other panes.
+
+        Shared by the REST route and the MCP kill_session tool.
+        """
         try:
             transport, actual = pane_transport(pane_id)
         except HTTPException:
@@ -4470,6 +4654,12 @@ def create_app(
                                 detail=message) from exc
         await refresh_snapshot_after_close(host_id)
         return killed
+
+    @app.delete("/api/panes/{pane_id}")
+    async def delete_pane(request: Request, pane_id: str):
+        """Close one pane only - the session stays if it has other panes."""
+        require_auth(request)
+        return await kill_pane_impl(pane_id)
 
     def host_transport(host: str):
         """按 host 取 transport：本机 / 子节点 / SSH 主机。"""
@@ -4497,10 +4687,11 @@ def create_app(
         return {"host": host_id, "session": renamed.get("session", payload.name),
                 "old": renamed.get("old", payload.session)}
 
-    @app.delete("/api/sessions/{name}")
-    async def delete_session(request: Request, name: str, host: str = "localhost"):
-        """Close one tmux session (all of its windows and panes)."""
-        require_auth(request)
+    async def kill_session_impl(name: str, host: str = "localhost") -> dict:
+        """Close one tmux session (all of its windows and panes).
+
+        Shared by the REST route and the MCP kill_session tool.
+        """
         if host in ("", "localhost"):
             transport, host_id = tmux, "localhost"
         elif fed_node(host):
@@ -4521,6 +4712,12 @@ def create_app(
             raise HTTPException(status_code=status, detail=message) from exc
         await refresh_snapshot_after_close(host_id)
         return {"session": killed.get("session", name), "host": host_id, "killed": True}
+
+    @app.delete("/api/sessions/{name}")
+    async def delete_session(request: Request, name: str, host: str = "localhost"):
+        """Close one tmux session (all of its windows and panes)."""
+        require_auth(request)
+        return await kill_session_impl(name, host)
 
     @app.post("/api/remote-hosts/scan-key")
     async def scan_remote_key(request: Request):
