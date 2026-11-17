@@ -687,6 +687,16 @@ TRANSCRIPT_STATE_LOCK = threading.Lock()
 TRANSCRIPT_STATE: dict[tuple, dict] = {}
 TRANSCRIPT_STATE_SIZE = 64
 TRANSCRIPT_BUFFER_BYTES = 4 * 1024 * 1024
+# Formats whose primary is a plain-text transcript file, so the follow path
+# may tail it for appended bytes. hermes-rows pins a SQLite database as its
+# primary: tailing it appends binary pages to the JSON buffer, and every
+# follow poll then fails to parse ("remote message rows are not valid JSON").
+# Rows always re-run discovery (a fresh sqlite query) instead.
+TAILABLE_TRANSCRIPT_FORMATS = frozenset({"jsonl", "hermes-jsonl"})
+# A torn rows payload must not blank the chat when the previous poll was
+# fine: serve the last good parse while it is fresh. Past this age the
+# error surfaces, so a persistent failure is never hidden.
+ROWS_STALE_FALLBACK_SECONDS = 60.0
 
 
 def transcript_state(host_id: str, pane_id: str) -> dict | None:
@@ -1906,7 +1916,10 @@ class SSHRunner:
         header: dict[str, str] = {}
         payload = b""
         poll_started = time.monotonic()
-        if state and state.get("primary"):
+        # 跟读只对纯文本 transcript 有效：hermes-rows 的 primary 是 SQLite 库，
+        # tail 它会把二进制页追加进 JSON 缓冲，下一次解析必坏。
+        if (state and state.get("primary")
+                and state.get("format") in TAILABLE_TRANSCRIPT_FORMATS):
             try:
                 header, payload, state = self._follow_transcript(host_id, pane_id, state)
             except RuntimeError:
@@ -1952,10 +1965,20 @@ class SSHRunner:
             }
             if state["primary"]:
                 store_transcript_state(host_id, pane_id, state)
-        data = transcript_reader.parse_remote_payload(
-            header.get("TMUXWEB_PROVIDER", ""), header.get("TMUXWEB_FORMAT", "jsonl"),
-            state.get("buffer", payload), limit, header.get("TMUXWEB_SESSION", ""), 0,
-        )
+        try:
+            data = transcript_reader.parse_remote_payload(
+                header.get("TMUXWEB_PROVIDER", ""), header.get("TMUXWEB_FORMAT", "jsonl"),
+                state.get("buffer", payload), limit, header.get("TMUXWEB_SESSION", ""), 0,
+            )
+        except transcript_reader.TranscriptError:
+            # hermes-rows 才有这个回退：取坏的包（比如传输中途截断）不该直接把
+            # 对话清空挂粉条。上一次取好的结果还新鲜就先顶着，下一次轮询会
+            # 重新发现；超过 ROWS_STALE_FALLBACK_SECONDS 就让报错浮出来，
+            # 持久失败不会被一直藏着。
+            if (header.get("TMUXWEB_FORMAT") == "hermes-rows" and entry
+                    and now - entry.get("at", 0) < ROWS_STALE_FALLBACK_SECONDS):
+                return copy.deepcopy(entry["data"])
+            raise
         note_transcript_latency(host_id, time.monotonic() - poll_started)
         if not data.get("messages"):
             raise RuntimeError("this session has no messages yet")

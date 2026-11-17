@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 from unittest.mock import patch
@@ -15,6 +16,7 @@ def relay_status(text):
 from pathlib import Path
 
 import remote_hosts
+import transcript_reader
 
 from remote_hosts import (PROCESS_TABLE_MARK, FIELD_SEPARATOR, REMOTE_LIST_SCRIPT,
                           REMOTE_TRANSCRIPT_TAIL_SCRIPT, TRANSCRIPT_CACHE,
@@ -1551,6 +1553,97 @@ class RemoteHostTests(unittest.TestCase):
         TRANSCRIPT_CACHE[key]["at"] = 0
         runner.transcript("%9", 20)
         self.assertIn("state.db-wal", probed[-1])
+
+    @staticmethod
+    def _rows_body(rows: str, stamp: str = "1793000100 4096") -> bytes:
+        return ("TMUXWEB_PROVIDER<::>hermes\nTMUXWEB_SESSION<::>s1\nTMUXWEB_FORMAT<::>hermes-rows\n"
+                "TMUXWEB_PRIMARY<::>/home/u/.hermes/state.db\n"
+                f"TMUXWEB_STAMP<::>{stamp}\nTMUXWEB_PAYLOAD\n" + rows).encode()
+
+    def _hermes_rows_runner(self, bodies, tail_body=b""):
+        """Fake runner serving hermes-rows discovery bodies in order.
+
+        stat probes always report a changed stamp, so each poll past the TTL
+        refetches instead of serving the cache. The tail script, if invoked,
+        answers with ``tail_body``.
+        """
+        calls = []
+        state = {"discoveries": 0}
+
+        class Result:
+            def __init__(self, stdout=b"", returncode=0):
+                self.stdout, self.stderr, self.returncode = stdout, b"", returncode
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if command.startswith("stat "):
+                return Result(b"1793000200 8192\n")
+            if "tail -c +" in command:
+                return Result(tail_body)
+            index = min(state["discoveries"], len(bodies) - 1)
+            state["discoveries"] += 1
+            return Result(bodies[index])
+
+        runner = self.make_runner()
+        runner.run = fake_run
+        return runner, calls
+
+    def test_hermes_rows_never_tails_the_database(self):
+        """#57：跟读把 state.db 的二进制页追加进 JSON 缓冲，下一轮解析必坏。
+        rows 的 primary 是库不是文本文件，所以永远不走跟读，只重发现。"""
+        first_rows = json.dumps([
+            {"id": 2, "role": "assistant", "content": "回答一", "timestamp": "t"},
+            {"id": 1, "role": "user", "content": "问题一", "timestamp": "t"},
+        ])
+        second_rows = json.dumps([
+            {"id": 3, "role": "assistant", "content": "回答二", "timestamp": "t"},
+            {"id": 2, "role": "assistant", "content": "回答一", "timestamp": "t"},
+            {"id": 1, "role": "user", "content": "问题一", "timestamp": "t"},
+        ])
+        tail = (b"TMUXWEB_MODE<::>append\nTMUXWEB_STAMP<::>1793000200 8192\n"
+                b"TMUXWEB_PAYLOAD\n" + b"\x00\x01SQLite format 3\x00binary\xff\n")
+        runner, calls = self._hermes_rows_runner(
+            [self._rows_body(first_rows), self._rows_body(second_rows)], tail_body=tail)
+        first = runner.transcript("%9", 20)
+        self.assertEqual([item["text"] for item in first["messages"]], ["问题一", "回答一"])
+        key = next(iter(TRANSCRIPT_CACHE))
+        TRANSCRIPT_CACHE[key]["at"] = 0  # expire the entry: next poll must refetch
+        second = runner.transcript("%9", 20)
+        self.assertEqual([item["text"] for item in second["messages"]],
+                         ["问题一", "回答一", "回答二"])
+        self.assertFalse(any("tail -c +" in command for command in calls),
+                         "the follow path must never tail a database primary")
+
+    def test_hermes_rows_bad_payload_serves_the_last_good_parse_while_fresh(self):
+        """取坏的包（传输截断）不该直接清空对话挂粉条：上一次取好的还新鲜就先顶着。"""
+        good_rows = json.dumps([
+            {"id": 2, "role": "assistant", "content": "回答一", "timestamp": "t"},
+            {"id": 1, "role": "user", "content": "问题一", "timestamp": "t"},
+        ])
+        runner, _calls = self._hermes_rows_runner(
+            [self._rows_body(good_rows), self._rows_body(good_rows[:30])])
+        first = runner.transcript("%9", 20)
+        self.assertEqual([item["text"] for item in first["messages"]], ["问题一", "回答一"])
+        key = next(iter(TRANSCRIPT_CACHE))
+        # TTL 已过（要走到重新发现），但上一次成功还在 60 秒回退窗口里
+        TRANSCRIPT_CACHE[key]["at"] = time.monotonic() - 30
+        second = runner.transcript("%9", 20)
+        self.assertEqual([item["text"] for item in second["messages"]],
+                         [item["text"] for item in first["messages"]])
+
+    def test_hermes_rows_bad_payload_still_errors_once_the_last_good_parse_ages_out(self):
+        """持久失败不能一直藏着：上一次成功超过 60 秒，报错必须浮出来。"""
+        good_rows = json.dumps([
+            {"id": 2, "role": "assistant", "content": "回答一", "timestamp": "t"},
+            {"id": 1, "role": "user", "content": "问题一", "timestamp": "t"},
+        ])
+        runner, _calls = self._hermes_rows_runner(
+            [self._rows_body(good_rows), self._rows_body(good_rows[:30])])
+        runner.transcript("%9", 20)
+        key = next(iter(TRANSCRIPT_CACHE))
+        TRANSCRIPT_CACHE[key]["at"] = time.monotonic() - 3600
+        with self.assertRaises(transcript_reader.TranscriptError):
+            runner.transcript("%9", 20)
 
     def test_invalid_pane_refs_are_rejected(self):
         for value in ["host~bad", "../%4", "host/name~%4", "host~%x"]:

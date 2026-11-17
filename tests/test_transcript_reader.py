@@ -306,6 +306,40 @@ class PagingTests(unittest.TestCase):
         self.assertFalse(transcript_reader.parse_hermes_rows(rows, 50)["has_more"])
 
 
+class ParseRemotePayloadTests(unittest.TestCase):
+    """hermes-rows 是一整包 JSON：坏一点就整包失败，解析层保持严格，
+    容错放在调用方（重发现 + 新鲜缓存回退），而不是悄悄吞掉坏数据。"""
+
+    ROWS = json.dumps([
+        {"id": 2, "role": "assistant", "content": "回答", "timestamp": "t"},
+        {"id": 1, "role": "user", "content": "问题", "timestamp": "t"},
+    ])
+
+    def test_hermes_rows_parses_a_valid_payload(self):
+        page = transcript_reader.parse_remote_payload("hermes", "hermes-rows", self.ROWS, 20, "s1")
+        self.assertEqual([message["text"] for message in page["messages"]], ["问题", "回答"])
+
+    def test_hermes_rows_truncated_payload_still_errors(self):
+        with self.assertRaisesRegex(transcript_reader.TranscriptError,
+                                    "remote message rows are not valid JSON"):
+            transcript_reader.parse_remote_payload("hermes", "hermes-rows", self.ROWS[:40], 20, "s1")
+
+    def test_hermes_rows_payload_with_trailing_garbage_still_errors(self):
+        # 跟读把 state.db 的二进制页追加进 JSON 缓冲后，就是这个形状
+        with self.assertRaisesRegex(transcript_reader.TranscriptError,
+                                    "remote message rows are not valid JSON"):
+            transcript_reader.parse_remote_payload(
+                "hermes", "hermes-rows", self.ROWS + "\n\x00\x01binary\xff", 20, "s1")
+
+    def test_hermes_rows_empty_payload_means_no_rows(self):
+        page = transcript_reader.parse_remote_payload("hermes", "hermes-rows", "", 20, "s1")
+        self.assertEqual(page["messages"], [])
+
+    def test_hermes_rows_non_list_payload_still_errors(self):
+        with self.assertRaisesRegex(transcript_reader.TranscriptError, "unexpected shape"):
+            transcript_reader.parse_remote_payload("hermes", "hermes-rows", '{"a": 1}', 20, "s1")
+
+
 class ReaderCliTests(unittest.TestCase):
     def test_main_prints_json_payload_for_an_unsupported_command(self):
         import io
