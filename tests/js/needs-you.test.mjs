@@ -138,7 +138,7 @@ const MENU = {kind: 'menu', title: 'Which approach should I use?', hint: 'Enter 
   ],
   toggles: []};
 
-function loadCard({prompt = MENU, timeoutMs, reshowCooldownMs} = {}) {
+function loadCard({prompt = MENU, timeoutMs, reshowCooldownMs, keyHandler} = {}) {
   const clock = makeClock();
   const doc = makeDocument();
   let current = prompt;
@@ -149,6 +149,7 @@ function loadCard({prompt = MENU, timeoutMs, reshowCooldownMs} = {}) {
       return {ok: true, status: 200,
         json: async () => ({panes: current ? [{id: '%1', needs_input: true, prompt: current}] : [{id: '%1'}]})};
     }
+    if (url.includes('/key') && keyHandler) return keyHandler(url, options);
     return {ok: true, status: 200, json: async () => ({})};
   };
   const sandbox = {
@@ -273,4 +274,87 @@ test('when the wait is gone the card stays hidden and the cooldown is cleared', 
   clock.advance(10000);
   await flush();
   assert.equal(card().hidden, false);
+});
+
+// ---- 乐观关闭：点下立刻收卡，后台再发键 ----
+
+function click(el) {
+  for (const fn of el._listeners.click || []) fn();
+}
+
+function keyCalls(calls) {
+  return calls.filter(call => call.url.includes('/key'));
+}
+
+test('clicking an option hides the card at once, before the keys finish sending', async () => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const {api, clock, card, optionsEl, calls} = loadCard({keyHandler: () => pending});
+  api.start(() => '%1');
+  await flush();
+  assert.equal(card().hidden, false);
+  click(optionsEl().children[1]);   // 'Full refactor'，keys ['Down', 'Enter']
+  // 同步断言：还没等任何网络回来，卡片已经收了
+  assert.equal(card().hidden, true);
+  assert.equal(keyCalls(calls).length, 1);
+  // 第一个键回来、60ms 间隔过去，第二个键才发出；卡片一直收着
+  release({ok: true, status: 200, json: async () => ({})});
+  await flush();
+  clock.advance(60);
+  await flush();
+  assert.equal(keyCalls(calls).length, 2);
+  assert.equal(card().hidden, true);
+  clock.advance(60);
+  await flush();
+  // 两个键都发出去了：1.5 秒后跟进 poll 看一眼，门控还在也不重弹
+  const statusBefore = calls.filter(call => call.url === '/api/panes/status').length;
+  clock.advance(1500);
+  await flush();
+  assert.equal(calls.filter(call => call.url === '/api/panes/status').length, statusBefore + 1,
+    '成功后 1.5 秒跟进 poll 还在');
+  assert.equal(card().hidden, true, '同一道题还没被 sweep 换掉，不重弹');
+});
+
+test('a failed send brings the card back with the error, and the question can show again', async () => {
+  const {api, card, optionsEl, doc, calls} = loadCard({
+    keyHandler: async () => ({ok: false, status: 503, json: async () => ({detail: 'no agent'})}),
+  });
+  api.start(() => '%1');
+  await flush();
+  assert.equal(card().hidden, false);
+  click(optionsEl().children[0]);   // 'Quick fix'，keys ['Enter']
+  assert.equal(card().hidden, true, '点下立刻收卡，不等发送结果');
+  await flush();
+  // 恢复：卡片重新出现，显示失败原因，选项是点之前那份 prompt
+  assert.equal(card().hidden, false);
+  assert.equal(doc._byId['needs-you-card-state'].textContent, '没送到，再试一次：no agent');
+  assert.equal(doc._byId['needs-you-card-state'].classList.contains('bad'), true);
+  assert.equal(optionsEl().children.length, 2);
+  assert.equal(keyCalls(calls).length, 1, '失败只发了一次');
+  // 签名已清：refresh 后 poll 不再压住同一道题，卡片重新出现
+  api.refresh();
+  await flush();
+  assert.equal(card().hidden, false);
+});
+
+test('a second attempt while the first send is still in flight is blocked', async () => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const {api, clock, card, optionsEl, doc, calls} = loadCard({keyHandler: () => pending});
+  api.start(() => '%1');
+  await flush();
+  const buttons = optionsEl().children;
+  click(buttons[0]);   // 第一发：挂起
+  assert.equal(keyCalls(calls).length, 1);
+  // 卡片已收，但再点一次（Esc 那条路也一样）不能另起一发
+  doc._byId['needs-you-card-esc'].onclick();
+  click(buttons[1]);
+  assert.equal(keyCalls(calls).length, 1, '忙时不另起发送');
+  assert.equal(doc._byId['needs-you-card-state'].textContent, '上一条还在发送，稍等一下…');
+  // 第一发走完，忙锁放开，也没有补发第二发
+  release({ok: true, status: 200, json: async () => ({})});
+  await flush();
+  clock.advance(60);
+  await flush();
+  assert.equal(keyCalls(calls).length, 1);
 });

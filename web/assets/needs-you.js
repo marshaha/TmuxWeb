@@ -11,6 +11,11 @@
  * 发送路径。答完之后卡片先自己收起来：sweep 一分钟才重扫一轮，/status 里
  * 的旧菜单还会挂一会儿，照着旧签名继续弹等于让人对着已经答过的题再答一次。
  *
+ * 点下的一刻卡片就收起来（乐观关闭），按键在后台发：手机上走 Cloudflare，
+ * 逐个 POST 要好几秒，卡片一直杵在“已发送（等屏幕刷新…）”上看着像卡住了。
+ * 发失败了卡片会恢复出来、显示原因，可以再点一次；恢复时签名清掉，poll
+ * 才不会以为这道题已经答过、压住重弹。
+ *
  * 超时（对标 Open WebUI ask_user 的 timeout_ms，默认 120 秒自动取消）：
  * 卡片亮起 timeoutMs 后自动收起，不作答、不发任何键；收起后进入
  * reshowCooldownMs 冷却，冷却期内就算门控仍成立也不重弹，冷却一过、
@@ -276,17 +281,21 @@
     if (!option.keys || !option.keys.length) { setState('这个选项没有可发的按键', true); return; }
     if (busy) { setState('上一条还在发送，稍等一下…'); return; }
     busy = true;
-    cursor = index;
-    paintCursor();
-    setState('已发送：' + (option.label || '') + '（等屏幕刷新…）', false);
+    // 乐观关闭：先记签名、再收卡、清掉状态文字，按键放后台发。
+    const saved = prompt;
+    answeredSignature = signatureOf(prompt);
+    hide();
+    setState('');
     try {
       await sendKeys(option.keys);
-      answeredSignature = signatureOf(prompt);
-      hide();
       setState('');
       clearTimeout(followUpTimer);
       followUpTimer = setTimeout(poll, 1500);   // 下一轮 sweep 前先看一眼
     } catch (error) {
+      // 没送到：把卡片恢复出来，让用户能重试；签名清掉，poll 才不会以为
+      // 这道题已经答过、压住重弹。恢复用点之前那份 prompt（hide() 会置空）。
+      answeredSignature = '';
+      render(saved);
       setState('没送到，再试一次：' + error.message, true);
     } finally {
       busy = false;
@@ -301,15 +310,18 @@
     if (!keys.length) { setState('这个开关值没有可发的按键', true); return; }
     if (busy) { setState('上一条还在发送，稍等一下…'); return; }
     busy = true;
-    setState('已发送（等屏幕刷新…）', false);
+    const saved = prompt;
+    answeredSignature = signatureOf(prompt);
+    hide();
+    setState('');
     try {
       await sendKeys(keys);
-      answeredSignature = signatureOf(prompt);
-      hide();
       setState('');
       clearTimeout(followUpTimer);
       followUpTimer = setTimeout(poll, 1500);
     } catch (error) {
+      answeredSignature = '';
+      render(saved);
       setState('没送到，再试一次：' + error.message, true);
     } finally {
       busy = false;
@@ -319,14 +331,18 @@
   async function chooseByKey(key) {
     if (busy) { setState('上一条还在发送，稍等一下…'); return; }
     busy = true;
+    const saved = prompt;
+    answeredSignature = signatureOf(prompt);
+    hide();
+    setState('');
     try {
       await sendKeys([key]);
-      answeredSignature = signatureOf(prompt);
-      hide();
       setState('');
       clearTimeout(followUpTimer);
       followUpTimer = setTimeout(poll, 1500);
     } catch (error) {
+      answeredSignature = '';
+      if (saved) render(saved);
       setState('没送到，再试一次：' + error.message, true);
     } finally {
       busy = false;

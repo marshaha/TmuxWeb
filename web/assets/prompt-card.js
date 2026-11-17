@@ -38,11 +38,13 @@
   let prompt = null;
   let cursor = 0;
   let hiddenByUser = false;      // 用户点了 ✕：这一轮别再弹
-  // 乐观交互：点下去先在卡片上生效，再等服务器/pane 的真实状态来对齐。
-  // 否则每次点击都要等一个往返 + 一次轮询，远端面板上就是"卡一下"。
-  let optimistic = null;         // {toggle, value, at} 或 {index, at}
+  // 乐观关闭：点下去卡片先收起来，请求在后台跑；失败了卡片恢复出来、显示
+  // 原因，可以再点一次。以前卡片一直杵在“已发送（等屏幕刷新…）”上等 POST
+  // + 跟进轮询，手机上走 Cloudflare 要好几秒，看着像卡住了。
+  // 答过的题记一个签名：sweep 更新之前 poll 别再把它弹出来（和 needs-you.js
+  // 的 answeredSignature 一个意思）；失败恢复时签名清掉，不然没法重试。
+  let answeredSignature = '';
   let lastScreen = [];
-  const OPTIMISTIC_TTL = 3000;
 
   const $ = id => document.getElementById(CARD + '-' + id);
 
@@ -56,6 +58,17 @@
   }
 
   function card() { return document.getElementById(CARD); }
+
+  function signatureOf(found) {
+    if (!found) return '';
+    // 和 needs-you.js 同款形状：标题 + 选项 + 开关当前值 + 光标，描述不进签名。
+    return JSON.stringify([
+      found.kind || '', found.title || '',
+      (found.options || []).map(option => [option.label, option.meta, option.number]),
+      (found.toggles || []).map(toggle => [toggle.label, toggle.active]),
+      found.selected,
+    ]);
+  }
 
   function hide() {
     const node = card();
@@ -159,54 +172,6 @@
     paintCursor();
   }
 
-  function paintOptimistic() {
-    if (!optimistic || !prompt) return;
-    if (optimistic.toggle != null) {
-      const rows = document.querySelectorAll('#' + CARD + '-toggles .prompt-toggle');
-      const group = rows[optimistic.toggle];
-      if (group) {
-        [...group.querySelectorAll('.prompt-toggle-btn')].forEach((button, index) => {
-          const on = index === optimistic.value;
-          button.classList.toggle('on', on);
-          button.setAttribute('aria-pressed', on ? 'true' : 'false');
-        });
-      }
-    }
-    if (optimistic.index != null) {
-      const rows = document.querySelectorAll('#' + CARD + '-options .prompt-option');
-      rows.forEach((row, index) => {
-        row.classList.toggle('picked', index === optimistic.index);
-        if (index === optimistic.index && !row.dataset.sent) {
-          row.dataset.sent = '1';
-          row.dataset.label = row.innerHTML;
-          // 用选项自己的文案（row.textContent 会把右边的 meta 也拼进来，变成「继续Enter」）
-          const label = (prompt.options && prompt.options[index] && prompt.options[index].label)
-            || row.textContent.trim();
-          row.innerHTML = esc(label) + ' · 已发送';
-          row.disabled = true;
-        }
-      });
-    }
-  }
-
-  function settleOptimistic(found) {
-    if (!optimistic) return;
-    const agrees = found && (
-      (optimistic.toggle != null && (found.toggles || [])
-        .some(item => item.index === optimistic.toggle && item.active === optimistic.value))
-      || (optimistic.index != null && found.selected === optimistic.index));
-    if (agrees) {
-      optimistic = null;
-      setState('');                    // 屏幕已经对上了，别把"等刷新…"留在那儿
-      return;
-    }
-    if (Date.now() - optimistic.at < OPTIMISTIC_TTL) return;   // 还在路上
-    // 过了窗口还没对齐：把卡片退回服务器的真实状态，并说清楚
-    optimistic = null;
-    render(found || prompt, lastScreen);
-    setState('屏幕没有变化，再点一次或切到终端', true);
-  }
-
   async function post(url, body) {
     const response = await fetch(url, {
       method: 'POST', credentials: 'same-origin',
@@ -216,47 +181,31 @@
     return {ok: response.ok, status: response.status, data};
   }
 
-  async function followUp() {
-    for (const delay of [120, 300, 700, 1400]) {
-      await new Promise(resolve => setTimeout(resolve, delay));
-      const before = prompt && prompt.title;
-      await poll();
-      if (!prompt) {                      // 菜单没了：回执照旧留着，1.2 秒后收起
-        const box = card();
-        if (box) box.hidden = false;
-        setTimeout(() => { if (!prompt) hide(); }, 1200);
-        return;
-      }
-      if (!before || prompt.title !== before) return;   // 换题了，交给卡片自己显示
-    }
-  }
-
-  function optionLabel(index) {
-    if (!prompt || !prompt.options || !prompt.options[index]) return String(index + 1);
-    return prompt.options[index].label || String(index + 1);
-  }
-
   async function chooseByIndex(index) {
     const pane = paneNow();
     if (!pane) return;
     if (busy) { setState('上一条还在发送，稍等一下…'); return; }   // 别静默吞掉点击
-    optimistic = {index, at: Date.now()};
-    cursor = index;
-    paintCursor();
-    paintOptimistic();
-    setState('已发送：' + optionLabel(index) + '（等屏幕刷新…）', false);
+    // 乐观关闭：点下的一刻就收卡，请求在后台跑（和 needs-you.js 一个做法）。
+    const saved = prompt;
+    const savedScreen = lastScreen;
+    answeredSignature = signatureOf(prompt);
+    hide();
+    setState('');
     lockBusy();
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {index});
       if (!result.ok) {
-        optimistic = null;
-        render(prompt, lastScreen);
+        answeredSignature = '';
+        if (saved) render(saved, savedScreen);
         setState(result.data.detail || `HTTP ${result.status}`, true);
         return;
       }
-      unlockBusy();                     // 先放开锁：followUp 里的 poll 靠它判断
-      await followUp();
+      setState('');
+      unlockBusy();                     // 先放开锁：跟进 poll 靠它判断
+      setTimeout(poll, 1500);           // 下一轮 poll 前先看一眼
     } catch (error) {
+      answeredSignature = '';
+      if (saved) render(saved, savedScreen);
       setState('没送到，再试一次：' + error.message, true);
     } finally {
       unlockBusy();
@@ -272,30 +221,34 @@
       setState('已经是这个值了');
       return;
     }
-    // 先让卡片跟着手走（下一帧生效），请求在后台跑
-    optimistic = {toggle: toggleIndex, value, at: Date.now()};
-    paintOptimistic();
-    setState('已发送（等屏幕刷新…）', false);
+    const saved = prompt;
+    const savedScreen = lastScreen;
+    answeredSignature = signatureOf(prompt);
+    hide();
+    setState('');
     lockBusy();
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`,
         {toggle: toggleIndex, value});
       if (!result.ok) {
-        optimistic = null;
-        render(prompt, lastScreen);
+        answeredSignature = '';
+        if (saved) render(saved, savedScreen);
         setState(result.data.detail || `HTTP ${result.status}`, true);
         return;
       }
       if (result.data.unchanged) {
-        optimistic = null;
-        render(prompt, lastScreen);
+        // 服务端说值没变：菜单还在，把卡片恢复出来说清楚
+        answeredSignature = '';
+        if (saved) render(saved, savedScreen);
         setState('已经是这个值了');
         return;
       }
-      setState('已发送（等屏幕刷新…）', false);
-      unlockBusy();                     // 先放开锁：followUp 里的 poll 靠它判断
-      await followUp();
+      setState('');
+      unlockBusy();                     // 先放开锁：跟进 poll 靠它判断
+      setTimeout(poll, 1500);
     } catch (error) {
+      answeredSignature = '';
+      if (saved) render(saved, savedScreen);
       setState('没送到，再试一次：' + error.message, true);
     } finally {
       unlockBusy();
@@ -306,14 +259,26 @@
     const pane = paneNow();
     if (!pane) return;
     if (busy) { setState('上一条还在发送，稍等一下…'); return; }
+    const saved = prompt;
+    const savedScreen = lastScreen;
+    answeredSignature = signatureOf(prompt);
+    hide();
+    setState('');
     lockBusy();
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {key});
-      if (!result.ok) { setState(result.data.detail || `HTTP ${result.status}`, true); return; }
-      setState('已发送', false);
-      unlockBusy();                     // 先放开锁：followUp 里的 poll 靠它判断
-      await followUp();
+      if (!result.ok) {
+        answeredSignature = '';
+        if (saved) render(saved, savedScreen);
+        setState(result.data.detail || `HTTP ${result.status}`, true);
+        return;
+      }
+      setState('');
+      unlockBusy();                     // 先放开锁：跟进 poll 靠它判断
+      setTimeout(poll, 1500);
     } catch (error) {
+      answeredSignature = '';
+      if (saved) render(saved, savedScreen);
       setState('没送到，再试一次：' + error.message, true);
     } finally {
       unlockBusy();
@@ -336,12 +301,15 @@
       const response = await fetch(`/api/panes/${encodeURIComponent(pane)}/prompt`, {credentials: 'same-origin'});
       if (!response.ok) { if (prompt) hide(); return; }
       const data = await response.json();
-      if (!data.prompt) { if (prompt) hide(); return; }
+      if (!data.prompt) { answeredSignature = ''; if (prompt) hide(); return; }
       if (hiddenByUser) return;
+      // 答过的题：sweep 更新之前别再弹（点下那一刻就记了签名，卡片已经先收了）。
+      const sig = signatureOf(data.prompt);
+      if (sig === answeredSignature) return;
+      answeredSignature = '';
       // 同一个菜单就别重绘（会打断用户正在按的方向键）。
       // 开关的"当前值"也要算进比较：只比标题/选项数/光标的话，←→ 切完之后卡片上的
       // 高亮永远停在旧值，人以为键盘没生效。
-      settleOptimistic(data.prompt);
       const toggleKey = (found) => JSON.stringify((found && found.toggles || [])
         .map(item => [item.label, item.active]));
       if (prompt && prompt.title === data.prompt.title
