@@ -236,9 +236,11 @@
 <div class="inbox-drawer" id="inbox-drawer" hidden role="dialog" aria-label="等你回答收件箱">
   <div class="inbox-head"><b>等你回答</b><span class="inbox-sub">亮灯历史 · 打开即标已读</span><button class="prompt-x" id="inbox-close" type="button" title="关闭" aria-label="关闭"><svg class="ico"><use href="#i-close"/></svg></button></div>
   <div class="inbox-list" id="inbox-list"></div>
+  <div class="inbox-state" id="inbox-state" hidden></div>
   <div class="inbox-empty" id="inbox-empty" hidden>还没有等你回答的记录</div>
   <div class="inbox-foot"><span class="prompt-state" id="inbox-status"></span><button class="prompt-btn" id="inbox-more" type="button" hidden>更多</button></div>
 </div>
+<div class="inbox-backdrop" id="inbox-backdrop" hidden></div>
 <div class="prompt-card" id="prompt-card" hidden tabindex="0" role="dialog" aria-label="agent 正在等待选择">
   <div class="prompt-head"><span class="prompt-title" id="prompt-card-title"></span><button class="prompt-x" id="prompt-card-close" type="button" title="收起（不发任何键）" aria-label="收起"><svg class="ico"><use href="#i-close"/></svg></button></div>
   <p class="prompt-hint" id="prompt-card-hint" hidden></p>
