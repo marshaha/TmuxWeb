@@ -3605,6 +3605,156 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("mcp-ok", payload["stdout"])
         self.assertFalse(call["result"].get("isError"))
 
+    def mcp_call(self, name, arguments):
+        """tools/call 一次调用，返回 (解析后的 content, isError)。"""
+        response = self.client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}}).json()
+        text = response["result"]["content"][0]["text"]
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            payload = text
+        return payload, bool(response["result"].get("isError"))
+
+    def test_mcp_create_session_matches_the_rest_endpoint(self):
+        """走 /mcp 也要能建会话：和 POST /api/sessions 同一条后端。"""
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            payload, is_error = self.mcp_call(
+                "create_session", {"name": "mcp-dev", "path": directory})
+        self.assertFalse(is_error, payload)
+        self.assertEqual(payload["session"], "mcp-dev")
+        self.assertEqual(payload["host"], "localhost")
+        self.assertEqual(payload["pane"], "%12")
+        self.assertEqual(self.tmux.created, [("mcp-dev", directory)])
+
+    def test_mcp_create_session_rejects_a_duplicate_name(self):
+        """重名走 409：和 REST 的错误映射一致。"""
+        self.login()
+        payload, is_error = self.mcp_call("create_session", {"name": "codex"})
+        self.assertTrue(is_error)
+        self.assertIn("409", payload["error"])
+        self.assertIn("already exists", payload["error"])
+
+    def test_mcp_create_session_rejects_an_uninstalled_agent(self):
+        """目标主机上没装的 agent 走 422，不建会话。"""
+        self.login()
+        payload, is_error = self.mcp_call(
+            "create_session", {"name": "mcp-agent", "agent": "definitely-not-an-agent"})
+        self.assertTrue(is_error)
+        self.assertIn("422", payload["error"])
+        self.assertIn("agent not installed", payload["error"])
+        self.assertEqual(self.tmux.created, [])
+
+    def test_mcp_create_session_starts_an_installed_agent(self):
+        """已安装的 agent 按探测到的绝对路径启动，参数原样传过去。"""
+        self.login()
+        with mock.patch("agent_catalog.probe_local",
+                        return_value=[{"name": "hermes", "path": "/usr/local/bin/hermes"}]):
+            payload, is_error = self.mcp_call(
+                "create_session", {"name": "mcp-hermes", "agent": "hermes",
+                                   "agent_args": "--resume abc"})
+        self.assertFalse(is_error, payload)
+        self.assertEqual(self.tmux.created_commands[-1],
+                         ("mcp-hermes", ["/usr/local/bin/hermes", "--resume", "abc"]))
+
+    def test_mcp_kill_session_closes_one_pane(self):
+        """pane 分支只关一个 pane，会话里没 pane 了才算结束。"""
+        self.login()
+        payload, is_error = self.mcp_call("kill_session", {"pane": "%4"})
+        self.assertFalse(is_error, payload)
+        self.assertEqual(payload, {"scope": "pane", "pane": "%4", "session": "codex",
+                                   "session_alive": False, "killed": True})
+        self.assertEqual(self.tmux.panes, [])
+
+    def test_mcp_kill_session_closes_a_whole_session(self):
+        """session 分支关掉整个会话。"""
+        self.login()
+        payload, is_error = self.mcp_call("kill_session", {"session": "codex"})
+        self.assertFalse(is_error, payload)
+        self.assertEqual(payload["scope"], "session")
+        self.assertEqual(payload["session"], "codex")
+        self.assertTrue(payload["killed"])
+        self.assertEqual(self.tmux.panes, [])
+        self.assertIn("codex", self.tmux.killed)
+
+    def test_mcp_kill_session_reports_a_missing_session(self):
+        """没有的会话走 404，和 DELETE /api/sessions 一致。"""
+        self.login()
+        payload, is_error = self.mcp_call("kill_session", {"session": "nope"})
+        self.assertTrue(is_error)
+        self.assertIn("404", payload["error"])
+        self.assertIn("no such session", payload["error"])
+
+    def test_mcp_send_file_writes_through_the_chunked_upload(self):
+        """2.5MB 走 3 块 1MB 分块上传：和浏览器上传同一条 .part 机制。"""
+        import base64
+
+        self.login()
+        data = bytes(range(256)) * 10000
+        self.assertGreater(len(data), 2 * 1024 * 1024)
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            payload, is_error = self.mcp_call(
+                "send_file", {"target": "%4", "name": "notes.bin",
+                              "content": base64.b64encode(data).decode()})
+            self.assertFalse(is_error, payload)
+            self.assertEqual(payload["size"], len(data))
+            self.assertEqual(payload["path"], os.path.join(directory, "upload_files", "notes.bin"))
+            self.assertTrue(payload["notified"])
+            self.assertEqual((Path(directory) / "upload_files" / "notes.bin").read_bytes(), data)
+            self.assertFalse(list(Path(directory).glob("**/*.part")))
+            self.assertIn("[file]", self.tmux.sent[-1][1])
+            self.assertIn("notes.bin", self.tmux.sent[-1][1])
+
+    def test_mcp_send_file_writes_an_empty_file(self):
+        """空文件走单次上传，不经过分块。"""
+        import base64
+
+        self.login()
+        with tempfile.TemporaryDirectory() as directory:
+            self.tmux.panes[0]["path"] = directory
+            payload, is_error = self.mcp_call(
+                "send_file", {"target": "%4", "name": "empty.txt",
+                              "content": base64.b64encode(b"").decode()})
+            self.assertFalse(is_error, payload)
+            self.assertEqual(payload["size"], 0)
+            self.assertEqual((Path(directory) / "upload_files" / "empty.txt").read_bytes(), b"")
+
+    def test_mcp_send_file_rejects_a_caller_side_path(self):
+        """服务端 /mcp 读不到调用方机器上的文件：必须传 base64 content。"""
+        self.login()
+        payload, is_error = self.mcp_call(
+            "send_file", {"target": "%4", "path": "/etc/passwd"})
+        self.assertTrue(is_error)
+        self.assertIn("content", payload["error"])
+
+    def test_mcp_send_file_rejects_bad_content(self):
+        """不是合法 base64 的 content 直接报错，不写文件。"""
+        self.login()
+        payload, is_error = self.mcp_call(
+            "send_file", {"target": "%4", "name": "x.bin", "content": "!!!not-base64!!!"})
+        self.assertTrue(is_error)
+        self.assertIn("base64", payload["error"])
+
+    def test_mcp_tools_list_matches_what_the_server_can_execute(self):
+        """tools/list 宣称的每个工具都必须能执行：宣称即能执行。
+
+        空参数调一遍：要么成功，要么是参数校验错——但绝不能是 unknown tool。
+        """
+        self.login()
+        listing = self.client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()
+        names = [tool["name"] for tool in listing["result"]["tools"]]
+        self.assertEqual(len(names), 14)
+        for name in names:
+            call = self.client.post("/mcp", json={
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": name, "arguments": {}}}).json()
+            text = call["result"]["content"][0]["text"]
+            self.assertNotIn("unknown tool", text, name)
+
     def test_exec_rejects_unknown_hosts(self):
         self.login()
         response = self.client.post("/api/exec", json={"command": "echo hi", "host": "nope-1234"})

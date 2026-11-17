@@ -541,18 +541,24 @@ def tool_schemas() -> list[dict]:
             "description": ("Copy a file from this machine into another agent's working directory "
                             "(its upload_files/ folder) and tell that agent the absolute path. "
                             "Works across hosts: the bytes go through the console, so the two "
-                            "machines need no shared mount and no ssh trust between them."),
+                            "machines need no shared mount and no ssh trust between them. "
+                            "The stdio relay reads a local `path`; the server-side /mcp endpoint "
+                            "cannot see the caller's disk, so it takes base64 `content` instead."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "target": target,
-                    "path": {"type": "string", "description": "local file to send (absolute path)"},
+                    "path": {"type": "string",
+                             "description": "local file to send (absolute path, read by the stdio relay)"},
+                    "content": {"type": "string",
+                                "description": "base64 file bytes (server-side /mcp only)"},
                     "name": {"type": "string", "description": "name at the destination (default: the same basename)"},
                     "note": {"type": "string", "description": "text to send along with the file"},
                     "notify": {"type": "boolean", "default": True,
                                "description": "also type a one-line notice into the target's pane"},
                 },
-                "required": ["target", "path"],
+                "required": ["target"],
+                "anyOf": [{"required": ["path"]}, {"required": ["content"]}],
                 "additionalProperties": False,
             },
         },
