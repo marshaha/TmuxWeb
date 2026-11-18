@@ -265,6 +265,10 @@ busy/idle/offline 变；点一下就切过去，切过去的会话会自动顶�
 显示文件名 + `1:1`（缩放）/ `原图` / `关闭`；双指捏合缩放、放大后单指拖动、双击在 1:1 与 2 倍之间切换，
 点空白或系统返回都能退出。文件已经不在了的缩略图点了不会有任何跳转。
 
+`/api/fed/ping` 在服务启动时就把本机地址算好（`warm_addresses`），重启后第一次探测不会回空列表；
+QEMU / VirtualBox 的 user-mode NAT 段（`10.0.2.0/24`）永远不会出现在地址表里——外面连不上，
+列出来只会让人点进去等超时；真要用这段当局域网的，`TMUX_WEB_ADDRESS_SKIP` 里可以自行覆盖。
+
 聊天里的远端视频（openlist / 对象存储的直链）现在由服务端代取一次再播：那些链接常常回
 `application/octet-stream` + `Content-Disposition: attachment`，浏览器拿到就判成"放不了"，
 签名又改不了。`GET /api/media/proxy?url=…` 只放行公网 http(s)（内网、回环、云元数据地址一律 400），

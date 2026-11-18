@@ -465,6 +465,8 @@ class TmuxWebTests(unittest.TestCase):
             "3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\n"
             "4: br-9c1    inet 172.18.0.1/16 brd 172.18.255.255 scope global br-9c1\n"
             "5: veth12ab    inet 172.19.0.7/16 brd 172.19.255.255 scope global veth12ab\n"
+            # 云主机里的 QEMU/VirtualBox user-mode NAT：外面连不上
+            "6: enp0s6    inet 10.0.2.12/24 brd 10.0.2.255 scope global dynamic enp0s6\n"
         )
 
     def _patch_addresses(self, serve="No serve config", json_dns="robo.neko-chroma.ts.net."):
@@ -1934,6 +1936,16 @@ class TmuxWebTests(unittest.TestCase):
                                headers={"Range": "bytes=-8"})
         self.assertEqual(tail.status_code, 206)
         self.assertEqual(len(tail.content), 8)
+
+    def test_virtual_machine_nat_addresses_are_never_listed(self):
+        """10.0.2.0/24 是 QEMU/VirtualBox 的 NAT：只有虚拟机自己看得见，列出来就是让人去等超时。"""
+        self.login()
+        patcher, _ = self._patch_addresses()
+        with patcher:
+            payload = self.client.get("/api/system/addresses").json()
+        urls = [item["url"] for item in payload["addresses"]]
+        self.assertNotIn("http://10.0.2.12:8787", urls)
+        self.assertIn("http://10.168.236.31:8787", urls, "真实局域网地址不能被误杀")
 
     def test_the_pause_button_is_hidden_until_the_pref_turns_it_on(self):
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()

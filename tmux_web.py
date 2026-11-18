@@ -115,6 +115,26 @@ def safe_next_url(value: str, default: str = "/") -> str:
 # 本机地址列表 + 缓存：ip/tailscale 子进程在云主机上能跑 6 秒，不能每次请求都问一遍
 ADDRESS_CACHE: dict = {"at": 0.0, "value": []}
 ADDRESS_TTL = 60.0
+# 永远不要列出来的地址段：虚拟机 NAT（QEMU/VirtualBox 的 10.0.2.0/24）。
+# 用 `TMUX_WEB_ADDRESS_SKIP=10.9.0.0/16,192.168.70.0/24` 追加自定义段。
+ADDRESS_SKIP = ("10.0.2.0/24",)
+
+
+def address_in_cidr(address: str, cidr: str) -> bool:
+    try:
+        return ipaddress.ip_address(address) in ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+
+
+def address_skip_list() -> list[str]:
+    extra = (os.environ.get("TMUX_WEB_ADDRESS_SKIP") or "").strip()
+    ranges = list(ADDRESS_SKIP)
+    for item in extra.split(","):
+        item = item.strip()
+        if item and item not in ranges:
+            ranges.append(item)
+    return ranges
 
 COOKIE_NAME = "tmux_web_session"
 THEME_COOKIE = "tmux_theme"      # readable by scripts: pages paint in the account's theme before any fetch
@@ -2663,6 +2683,11 @@ def create_app(
                 continue
             address = parts[3].split("/")[0]
             if address.startswith(("169.254.", "172.17.")):
+                continue
+            # QEMU / VirtualBox 的 user-mode NAT 固定是 10.0.2.0/24（网关 .2，宿主 .1）：
+            # 只有虚拟机自己看得见，外面永远连不上，列在「直连地址」里只会让人点进去等超时。
+            # 真的把 10.0.2.0/24 当局域网用的，用 TMUX_WEB_ADDRESS_SKIP 覆盖。
+            if any(address_in_cidr(address, cidr) for cidr in address_skip_list()):
                 continue
             add(f"http://{address}:{port}", "lan", f"局域网 · {address}")
         try:
