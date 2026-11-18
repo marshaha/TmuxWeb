@@ -432,6 +432,10 @@ class TmuxWebTests(unittest.TestCase):
             remote_store=self.remote_store,
             remote_runner_factory=FakeSSHRunner,
         ))
+        # 地址缓存是模块级的：上一个用例（或 startup 预热）算出来的东西会漏到下一个用例，
+        # 让"我替换了 ip/tailscale 的几个用例"读到的其实是真机地址。每个用例从冷开始。
+        import tmux_web
+        tmux_web.ADDRESS_CACHE.update({"at": 0.0, "value": []})
 
     def login(self):
         response = self.client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
@@ -464,9 +468,16 @@ class TmuxWebTests(unittest.TestCase):
         )
 
     def _patch_addresses(self, serve="No serve config", json_dns="robo.neko-chroma.ts.net."):
-        """直连地址端点靠外部命令取地址，测试里把 subprocess.run 换掉。"""
+        """直连地址端点靠外部命令取地址，测试里把 subprocess.run 换掉。
+
+        缓存要先清掉：startup 事件会真的跑一遍 ip/tailscale（见 warm_addresses），
+        不清的话这些用例读到的是跑测试那台机器的真实地址，跟假输出对不上。
+        """
         from types import SimpleNamespace
         import subprocess
+        import tmux_web
+
+        tmux_web.ADDRESS_CACHE.update({"at": 0.0, "value": []})
 
         calls = []
 
