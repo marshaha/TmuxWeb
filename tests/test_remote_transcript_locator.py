@@ -222,6 +222,13 @@ class HermesAnchorEndToEndTests(unittest.TestCase):
         self.cwd.mkdir(parents=True)
         self.bindir = base / "bin"
         self.bindir.mkdir()
+        # 脚本在沙箱 PATH 里找工具：sqlite3 不在 /usr/bin 的机器（conda 装的）上，
+        # 只有测试进程自己的 PATH 有 → skipUnless 通过、脚本却回落到 python 读库，
+        # 挑会话的规则也跟着变。把真身链进来，跑的就和线上同一条逻辑。
+        for tool in ("sqlite3", "gzip"):
+            found = shutil.which(tool)
+            if found:
+                (self.bindir / tool).symlink_to(found)
         self._write_stub("tmux", (
             "#!/bin/sh\n"
             "case \"$5\" in\n"
@@ -296,7 +303,9 @@ class HermesAnchorEndToEndTests(unittest.TestCase):
         head, _, tail = result.stdout.partition(b"TMUXWEB_PAYLOAD\n")
         header = dict(line.split("<::>", 1) for line in head.decode().splitlines()
                       if "<::>" in line)
-        return header, gzip.decompress(tail)
+        # 远端有没有 gzip 是运行时决定的，脚本自己会报 TMUXWEB_ENCODING（remote_hosts.py 也照它解）
+        encoded = header.get("TMUXWEB_ENCODING") == "gzip"
+        return header, (gzip.decompress(tail) if encoded else tail)
 
     def test_picks_the_restarted_agent_session_not_the_old_one(self):
         header, payload = self.run_discovery()

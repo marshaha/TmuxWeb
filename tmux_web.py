@@ -7091,6 +7091,19 @@ def create_app(
     app.state.plugins = manager
     app.router.add_event_handler("shutdown", manager.shutdown)
 
+    async def warm_addresses():
+        """启动后先把本机地址算好。
+
+        `fed_ping` 只读缓存（不能为了探测等 6 秒的子进程），所以刚重启的那一分钟
+        它回的 addresses 是空的 —— 父节点以为这台机器没有直连地址，就一直走 Cloudflare。
+        """
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, lambda: cached_addresses(True))
+        except Exception:                                   # noqa: BLE001 - 探测失败不影响启动
+            logging.getLogger(__name__).debug("address warm-up failed", exc_info=True)
+
+    app.router.add_event_handler("startup", warm_addresses)
+
     return app
 
 

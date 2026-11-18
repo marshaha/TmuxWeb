@@ -1861,6 +1861,23 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.content[:4], b"\x89PNG")
 
+    def test_startup_warms_the_address_cache(self):
+        """重启后第一次 /api/fed/ping 不能回空地址：父节点会以为这台机器没有直连地址。
+
+        它只读缓存（不能为探测等 6 秒子进程），所以必须靠启动事件先算一遍。
+        """
+        import tmux_web
+
+        tmux_web.ADDRESS_CACHE.update({"at": 0.0, "value": []})
+        app = create_app(self.tmux, password="unit-test-admin-password",
+                         session_secret="test-secret", terminal_factory=self.terminals,
+                         share_db=":memory:", remote_store=self.remote_store,
+                         remote_runner_factory=FakeSSHRunner)
+        with TestClient(app):                     # 进 with 才会触发 startup 事件
+            self.assertGreater(tmux_web.ADDRESS_CACHE["at"], 0.0, "启动时没预热地址缓存")
+            payload = self.client.get("/api/fed/ping").json()
+        self.assertTrue(payload["tmuxweb"])
+
     def test_an_openlist_link_without_d_still_plays(self):
         """openlist 少了 /d/ 会回自己的网页(200 + text/html)，不是文件 —— 代理要补一次。"""
         import tmux_web
