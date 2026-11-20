@@ -1187,6 +1187,13 @@ class FileDeleteRequest(BaseModel):
     recursive: bool = False
 
 
+class ClientTraceRequest(BaseModel):
+    pane: str = ""
+    last_id: str = ""
+    rendered: int = 0
+    note: str = ""
+
+
 class ExecRequest(BaseModel):
     """一口气跑完一条命令并拿到输出 —— 给远程调试的 agent 用（比抢一个交互 shell 快得多）。"""
     command: str = Field(min_length=1, max_length=20000)
@@ -2723,6 +2730,19 @@ def create_app(
         value = local_addresses()
         ADDRESS_CACHE.update({"at": time.time(), "value": value})
         return copy.deepcopy(value)
+
+    @app.post("/api/client-trace")
+    async def client_trace(payload: ClientTraceRequest):
+        """前端渲染崩溃时唯一留下的线索：崩之前它画到了哪条消息。
+
+        Chrome 的 STATUS_BREAKPOINT 是整页崩溃，DevTools 里什么也留不下；
+        所以每渲染一批就回一条，服务端日志里能看到最后一条是哪条消息。
+        """
+        # 走 uvicorn 的 logger：service.log 里只配了这个 handler，别的 logger 会被 INFO 过滤掉
+        logging.getLogger("uvicorn.error").info(
+            "render pane=%s last_id=%s rendered=%s note=%s",
+            payload.pane or "-", payload.last_id or "-", payload.rendered, payload.note or "-")
+        return {"ok": True}
 
     @app.get("/api/media/proxy")
     async def media_proxy(request: Request, url: str = Query(..., min_length=8, max_length=4096)):

@@ -28,6 +28,8 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 .block-wrap{position:relative;margin:10px 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface2);max-width:100%;min-width:0}
 .block-bar{display:flex;align-items:center;gap:6px;padding:5px 8px;border-bottom:1px solid var(--line);background:var(--card-hover)}
 .block-kind{margin-right:auto;color:var(--faint);font:10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em;text-transform:uppercase}
+/* ?plain=1：不解析 markdown，原样显示（排查渲染器崩溃时用） */
+.plain-message{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 .block-wrap pre{margin:0;padding:10px 12px;overflow:auto;background:transparent;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
 .block-source{white-space:pre;color:var(--muted);max-height:420px}
 .mermaid-target{display:grid;place-items:center;padding:12px;overflow:auto;background:var(--card)}

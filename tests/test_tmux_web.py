@@ -1874,6 +1874,19 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.content[:4], b"\x89PNG")
 
+    def test_a_renderer_crash_leaves_a_trace_of_what_was_painted(self):
+        """Chrome 整页崩溃什么都不会留下：前端每画一批就回一条，日志里能看到最后一条消息。"""
+        self.login()
+        response = self.client.post("/api/client-trace",
+                                    json={"pane": "%443", "last_id": "45102", "rendered": 72,
+                                          "note": "full"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["ok"], True)
+        # 排查开关必须在页面脚本里（?safe=1 关后处理、?plain=1 不解析 markdown）
+        app_js = self.client.get("/assets/console-app.js").text
+        for marker in ("SAFE_MODE", "PLAIN_MODE", "clientTrace("):
+            self.assertIn(marker, app_js)
+
     def test_startup_warms_the_address_cache(self):
         """重启后第一次 /api/fed/ping 不能回空地址：父节点会以为这台机器没有直连地址。
 

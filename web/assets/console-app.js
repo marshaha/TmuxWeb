@@ -844,7 +844,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   // 长会话一下子上百条消息，逐条扫文本太费；改成"碰到哪条处理哪条"：
   // 鼠标移入 / 手指按下 时才扫这一条，结果打上 data-paths 不重复处理。
   function enhancePathsLazy(container, force){
-    if(!container)return;
+    if(!container||SAFE_MODE)return;
     if(container.dataset.pathsBound==='1'&&!force)return;
     if(container.dataset.pathsBound==='1'){eagerPass(container);return;}
     container.dataset.pathsBound='1';
@@ -904,7 +904,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       image.setAttribute('src',next);image.dataset.localFile='1';image.classList.add('local-image');
       image.title=image.title||'本地图片';});
     enhanceVideos(root);}
-  function enhanceVideos(root){if(window.TmuxVideo)window.TmuxVideo.enhance(root);}
+  function enhanceVideos(root){if(window.TmuxVideo&&!SAFE_MODE)window.TmuxVideo.enhance(root);}
   const MD_VIEWER_EXTS=/^(md|markdown|mdx|txt|log|json|ya?ml|csv)$/i;
   function markdownViewerBase(href){try{const url=new URL(href,location.origin);
     const path=url.searchParams.get('path')||'';return path.replace(/[^/]*$/,'');}catch(_error){return '';}}
@@ -1186,7 +1186,30 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   // code block ("-->" became "--&gt;"), which also broke mermaid sources.
   const mdEscape=value=>String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   marked.use({renderer:{html(token){return mdEscape(token&&(token.text!=null?token.text:token.raw));}}});
+  // 渲染器崩溃排查用：`?safe=1` 关掉所有后处理（路径链接/视频卡片/交互卡片/mermaid），
+  // `?plain=1` 连 markdown 都不解析。Chrome 的 STATUS_BREAKPOINT 是整页崩溃，控制台里
+  // 什么都看不到，只能靠这两个开关把范围切小。
+  const URL_FLAGS=new URLSearchParams(location.search);
+  const SAFE_MODE=URL_FLAGS.get('safe')==='1';
+  const PLAIN_MODE=URL_FLAGS.get('plain')==='1';
+  window.__tmuxSafeMode=SAFE_MODE;
+  // 崩溃取线索：每渲染一批就报一条"画到哪了"，服务端日志里能看到最后一次是哪条消息。
+  // 用 sendBeacon 不占请求队列；页面对同一个 pane 的同一批只报一次。
+  let traceAt=0, traceKey='';
+  function clientTrace(messages, note){
+    try{
+      if(!state.selected)return;
+      const last=(messages&&messages.length)?messages[messages.length-1]:null;
+      const key=`${state.selected}|${last?last.id:''}|${messages?messages.length:0}`;
+      if(key===traceKey&&Date.now()-traceAt<4000)return;
+      traceKey=key;traceAt=Date.now();
+      const body=JSON.stringify({pane:state.selected,last_id:last?String(last.id):'',rendered:messages?messages.length:0,note:note||''});
+      if(navigator.sendBeacon)navigator.sendBeacon('/api/client-trace',new Blob([body],{type:'application/json'}));
+      else fetch('/api/client-trace',{method:'POST',headers:{'Content-Type':'application/json'},body,keepalive:true});
+    }catch{}
+  }
   function markdown(value){const raw=String(value==null?'':value);
+    if(PLAIN_MODE||window.__tmuxPlainMode)return `<pre class="plain-message">${mdEscape(raw)}</pre>`;
     // 中文加粗的 CommonMark 围栏问题：**任务：**它 → 不渲染，见 assets/markdown-cjk.js
     const fixed=window.TmuxMarkdownCjk?window.TmuxMarkdownCjk.fix(raw):raw;
     const html=marked.parse(fixed,{gfm:true,breaks:false,async:false});
@@ -1335,7 +1358,8 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
         node.replaceWith(...wrap.childNodes);
         changed++;
       });
-      if(changed){enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);}
+      if(changed){enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);
+        clientTrace(state.transcriptMessages,'append');}
       state.renderedIds=ids;
       return;
     }
@@ -1344,7 +1368,8 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     for(const item of pending){const index=Math.min(messages.length,pendingAnchorIndex(messages,item.pending));slots[index]=slots[index]||[];slots[index].push(item.html);}
     const ordered=messages.map((message,index)=>(slots[index]||[]).join('')+formal[index]).join('')
       +(slots[messages.length]||[]).join('');
-    host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);}
+    host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);
+    clientTrace(state.transcriptMessages,'full');}
   const CODE_LANG_RE=/language-([\w+#-]+)/;
   async function copyText(text,button){const value=String(text==null?'':text);let ok=false;
     try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);ok=true;}}catch{}
@@ -2221,6 +2246,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
   try{promptCardOn=localStorage.getItem('tmux-prompt-card')==='on';}catch{}
   function syncPromptCard(){
     if(!window.TmuxPrompt)return;
+    if(SAFE_MODE){TmuxPrompt.stop();return;}
     if(promptCardOn)TmuxPrompt.start(()=>state.selected);
     else TmuxPrompt.stop();
   }
