@@ -60,6 +60,17 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 .gp-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
 .gp-when{flex:none;color:var(--faint);font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
 .gp-empty{color:var(--muted);font-size:12px}
+.gp-message{width:100%;min-height:52px;max-height:120px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;
+  background:var(--surface2);color:var(--ink);font:12.5px/1.5 inherit;resize:vertical}
+.gp-message:focus{outline:none;border-color:var(--accent)}
+.gp-commit-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.gp-commit-actions .chip-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.gp-result{margin:8px 0 0;padding:7px 9px;border-radius:9px;background:var(--surface2);color:var(--muted);font-size:12px;line-height:1.55;overflow-wrap:anywhere}
+.gp-result.bad{background:color-mix(in srgb,var(--danger) 10%,var(--surface2));color:var(--danger)}
+.gp-result a{color:var(--accent)}
+.gp-result-detail{color:var(--faint);font:11px ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}
+.gp-changes li[data-gp-path]{cursor:pointer}
+@media(max-width:760px){.gp-message{font-size:16px}.gp-commit-actions .chip-btn{flex:1 1 auto;min-width:0}}
 .gp-diff{margin:0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);color:var(--ink);font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;overflow:auto;max-height:46vh}
 @media(max-width:760px){
   .git-panel{padding:0;place-items:stretch}

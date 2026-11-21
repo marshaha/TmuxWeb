@@ -278,6 +278,16 @@
         <ul class="gp-list" id="gp-changes"><li class="gp-empty">加载中…</li></ul></section>
       <section class="gp-section"><h3>检查点</h3>
         <ul class="gp-list" id="gp-checkpoints"><li class="gp-empty">还没有检查点</li></ul></section>
+      <section class="gp-section" id="gp-commit-wrap">
+        <h3>提交 <span class="gp-sub" id="gp-branch"></span></h3>
+        <textarea class="gp-message" id="gp-message" rows="2" placeholder="提交说明（留空就用上面那句）"></textarea>
+        <div class="gp-commit-actions">
+          <button class="chip-btn primary" id="gp-commit" type="button">提交</button>
+          <button class="chip-btn" id="gp-commit-push" type="button">提交并推送</button>
+          <button class="chip-btn" id="gp-commit-pr" type="button">提交并开 PR</button>
+        </div>
+        <p class="gp-result" id="gp-commit-result" hidden></p>
+      </section>
       <section class="gp-section" id="gp-diff-wrap" hidden>
         <h3>diff <span class="gp-sub" id="gp-diff-base"></span></h3>
         <pre class="gp-diff" id="gp-diff"></pre></section>

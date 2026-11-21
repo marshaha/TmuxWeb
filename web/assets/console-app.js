@@ -580,13 +580,18 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       sub.textContent=(count?`${count} 个文件有改动`:'工作区干净')+` · ${data.root}`;
       sub.title=data.root||'';
     }
+    const message=$('gp-message');
+    if(message&&data.repo&&!message.dataset.touched){message.value=data.suggested_message||'';}
+    $('gp-branch').textContent=data.repo&&data.branch?`· ${data.branch}`:'';
     const changes=$('gp-changes'),checkpoints=$('gp-checkpoints');
     $('gp-changes-count').textContent=data.repo?`(${(data.changes||[]).length})`:'';
     if(!data.repo){changes.innerHTML='<li class="gp-empty">不是仓库，没什么可看的</li>';}
     else if(!(data.changes||[]).length){changes.innerHTML='<li class="gp-empty">工作区干净</li>';}
     else{
       changes.innerHTML=data.changes.map(item=>
-        `<li><span class="gp-code">${esc(item.code)}</span><span class="gp-path" title="${esc(item.path)}">${esc(item.path)}</span></li>`).join('');
+        `<li data-gp-path="${esc(item.path)}" title="看这个文件的 diff">`
+        +`<span class="gp-code">${esc(item.code)}</span>`
+        +`<span class="gp-path">${esc(item.path)}</span></li>`).join('');
     }
     const list=data.checkpoints||[];
     if(!list.length){checkpoints.innerHTML='<li class="gp-empty">还没有检查点</li>';}
@@ -606,6 +611,8 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     if(!state.selected){toast('先选一个窗格');return;}
     $('git-panel').hidden=false;
     $('gp-diff-wrap').hidden=true;
+    $('gp-commit-result').hidden=true;
+    if($('gp-message'))delete $('gp-message').dataset.touched;
     $('gp-changes').innerHTML='<li class="gp-empty">加载中…</li>';
     $('gp-checkpoints').innerHTML='<li class="gp-empty">加载中…</li>';
     await loadGitPanel();
@@ -618,6 +625,34 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       loadGitPanel();
     }catch(error){toast(error.message||'建立检查点失败',4000);}
   }
+  function gpCommitResult(result){
+    const box=$('gp-commit-result');box.hidden=false;
+    const bits=[];
+    if(result.sha)bits.push(`已提交 ${result.sha}`);
+    if(result.pushed)bits.push('已推送');
+    if(result.pr_url)bits.push('PR 已开');
+    const head=bits.length?bits.join(' · '):'什么都没做';
+    box.innerHTML=esc(head)+(result.pr_url?` · <a href="${esc(result.pr_url)}" target="_blank" rel="noopener noreferrer">打开 PR</a>`:'')
+      +(result.detail?`<br><span class="gp-result-detail">${esc(result.detail)}</span>`:'');
+    box.className='gp-result'+(result.exit?' bad':'');
+  }
+  async function gpCommit(push, pr){
+    if(!state.selected)return;
+    const message=($('gp-message').value||'').trim();
+    const button=$(pr?'gp-commit-pr':push?'gp-commit-push':'gp-commit');
+    const label=button.textContent;button.disabled=true;button.textContent='提交中…';
+    try{
+      const result=await api(gitUrl('/commit'),{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({message,push:!!push||!!pr,pr:!!pr})});
+      gpCommitResult(result);
+      await loadGitPanel();
+      if(state.filesMode&&state.filesPath)openFiles(state.filesPath);
+    }catch(error){
+      $('gp-commit-result').hidden=false;$('gp-commit-result').className='gp-result bad';
+      $('gp-commit-result').textContent=error.message||'提交失败';
+    }finally{button.disabled=false;button.textContent=label;}
+  }
   async function gpWorktree(){
     const name=prompt('给这份 worktree 起个名字（会建分支 wt/<名字>）','task');
     if(!name)return;
@@ -628,11 +663,14 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       loadGitPanel();
     }catch(error){toast(error.message||'worktree 创建失败',4000);}
   }
-  async function gpDiff(base){
-    const wrap=$('gp-diff-wrap');wrap.hidden=false;$('gp-diff-base').textContent=base||'(工作区 vs HEAD)';
+  async function gpDiff(base, path){
+    const wrap=$('gp-diff-wrap');wrap.hidden=false;
+    $('gp-diff-base').textContent=[base||'(工作区 vs HEAD)',path].filter(Boolean).join(' · ');
     $('gp-diff').textContent='加载中…';
     try{
-      const data=await api(gitUrl(`/diff${base?`?base=${encodeURIComponent(base)}`:''}`));
+      const params=[];if(base)params.push(`base=${encodeURIComponent(base)}`);
+      if(path)params.push(`path=${encodeURIComponent(path)}`);
+      const data=await api(gitUrl(`/diff${params.length?'?'+params.join('&'):''}`));
       const body=String(data.patch||'').trim();
       $('gp-diff').textContent=[data.stat,body].filter(Boolean).join('\n\n')
         ||'没有已跟踪文件的差异（未跟踪文件不在 git diff 里，用文件面板看）';
@@ -713,7 +751,15 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     panel.addEventListener('click',event=>{if(event.target===panel)panel.hidden=true;});
     $('gp-checkpoint').addEventListener('click',gpCheckpoint);
     $('gp-worktree').addEventListener('click',gpWorktree);
-    $('gp-changes').addEventListener('click',()=>gpDiff(''));
+    $('gp-changes').addEventListener('click',event=>{
+      const row=event.target.closest('[data-gp-path]');
+      gpDiff('',row?row.dataset.gpPath:'');
+    });
+    const message=$('gp-message');
+    if(message)message.addEventListener('input',()=>{message.dataset.touched='1';});
+    $('gp-commit').addEventListener('click',()=>gpCommit(false,false));
+    $('gp-commit-push').addEventListener('click',()=>gpCommit(true,false));
+    $('gp-commit-pr').addEventListener('click',()=>gpCommit(true,true));
     $('gp-checkpoints').addEventListener('click',event=>{
       const button=event.target.closest('[data-gp-restore]');
       if(button)gpRestore(button.dataset.gpRestore);

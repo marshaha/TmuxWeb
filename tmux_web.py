@@ -1199,6 +1199,13 @@ class GitCheckpointRequest(BaseModel):
     label: str = ""
 
 
+class GitCommitRequest(BaseModel):
+    message: str = ""
+    paths: list[str] = []
+    push: bool = False
+    pr: bool = False
+
+
 class GitRestoreRequest(BaseModel):
     ref: str
 
@@ -5617,6 +5624,7 @@ def create_app(
         return {
             "repo": True,
             "pane": pane_id,
+            "suggested_message": git_tools.suggest_commit_message(parsed["changes"]),
             "root": parsed["root"],
             "branch": parsed["branch"],
             "clean": not parsed["changes"],
@@ -5654,11 +5662,37 @@ def create_app(
         data = {"ref": payload.ref, **parsed}
         return data
 
-    @app.get("/api/panes/{pane_id}/git/diff")
-    async def pane_git_diff(request: Request, pane_id: str, base: str = ""):
+    @app.get("/api/panes/{pane_id}/git/branch")
+    async def pane_git_branch(request: Request, pane_id: str):
+        """要推到哪个远端、领先几个提交、gh 有没有登录 —— 提交前先问清楚。"""
         require_auth(request)
         _host, cwd = await git_target(pane_id)
-        result = await run_git(pane_id, git_tools.build_diff(cwd, base), timeout=45)
+        result = await run_git(pane_id, git_tools.build_branch_info(cwd))
+        if result.get("exit"):
+            raise HTTPException(status_code=400, detail="这个目录不是 git 仓库")
+        return {"pane": pane_id, **git_tools.parse_branch_info(result.get("stdout") or "")}
+
+    @app.post("/api/panes/{pane_id}/git/commit")
+    async def pane_git_commit(request: Request, pane_id: str, payload: GitCommitRequest):
+        """暂存 → 提交 → 推送 → 开 PR，一步一步来，哪步失败就停在哪步。"""
+        require_auth(request)
+        _host, cwd = await git_target(pane_id)
+        command = git_tools.build_commit_and_push(cwd, payload.message, payload.push,
+                                                  payload.pr, payload.paths or None)
+        result = await run_git(pane_id, command, timeout=120)
+        parsed = git_tools.parse_commit_result(result.get("stdout") or "", result.get("exit") or 0)
+        parsed["exit"] = result.get("exit")
+        parsed["pane"] = pane_id
+        if parsed["needs_gh"] and not parsed["pr_url"]:
+            parsed["detail"] = (parsed["detail"] + "\n没找到 gh（或没登录）：分支已经推上去了，"
+                                "PR 需要自己在网页上开").strip()
+        return parsed
+
+    @app.get("/api/panes/{pane_id}/git/diff")
+    async def pane_git_diff(request: Request, pane_id: str, base: str = "", path: str = ""):
+        require_auth(request)
+        _host, cwd = await git_target(pane_id)
+        result = await run_git(pane_id, git_tools.build_diff(cwd, base, path=path), timeout=45)
         text = result.get("stdout") or ""
         stat, _, patch = text.partition("--PATCH--")
         return {"pane": pane_id, "base": base,

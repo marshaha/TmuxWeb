@@ -5943,6 +5943,39 @@ class GitWorkspaceTests(unittest.TestCase):
         self.assertIn("app.txt", payload["stat"])
         self.assertIn("+changed", payload["patch"])
 
+    def test_commit_with_push_and_pr_stops_where_it_breaks(self):
+        """一键提交：提交成功、推送失败时，得能分清两件事。"""
+        (self.repo / "app.txt").write_text("one\ncompose me\n")
+        payload = self.client.post("/api/panes/%254/git/commit",
+                                   json={"message": "改 app.txt", "push": True}).json()
+        self.assertTrue(payload["committed"], payload)
+        self.assertEqual(len(payload["sha"]), 7)
+        self.assertFalse(payload["pushed"], "没有远端，推不上去")
+        log = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=self.repo,
+                             capture_output=True, text=True).stdout.strip()
+        self.assertEqual(log, "改 app.txt")
+
+    def test_a_clean_tree_cannot_be_committed(self):
+        payload = self.client.post("/api/panes/%254/git/commit", json={"message": "空的"}).json()
+        self.assertFalse(payload["committed"], payload)
+        self.assertEqual(payload["exit"], 11)
+
+    def test_branch_info_and_a_suggested_message(self):
+        (self.repo / "app.txt").write_text("changed\n")
+        branch = self.client.get("/api/panes/%254/git/branch").json()
+        self.assertEqual(branch["branch"], "main")
+        self.assertFalse(branch["gh"], "这台机器上 gh 没装或没登录")
+        status = self.client.get("/api/panes/%254/git").json()
+        self.assertIn("app.txt", status["suggested_message"])
+
+    def test_diff_can_be_limited_to_one_file(self):
+        (self.repo / "other.txt").write_text("new file\n")
+        subprocess.run(["git", "add", "other.txt"], cwd=self.repo, capture_output=True)
+        (self.repo / "app.txt").write_text("changed\n")
+        payload = self.client.get("/api/panes/%254/git/diff", params={"path": "app.txt"}).json()
+        self.assertIn("app.txt", payload["patch"])
+        self.assertNotIn("other.txt", payload["patch"])
+
     def test_worktree_gives_the_thread_its_own_checkout(self):
         payload = self.client.post("/api/panes/%254/git/worktree", json={"name": "task1"}).json()
         self.assertTrue(Path(payload["path"]).is_dir(), payload)

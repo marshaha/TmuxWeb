@@ -85,14 +85,15 @@ def build_restore(cwd: str, ref: str) -> str:
     )
 
 
-def build_diff(cwd: str, base: str = "", limit: int = 200_000) -> str:
+def build_diff(cwd: str, base: str = "", limit: int = 200_000, path: str = "") -> str:
     inside = f" {quote(base)}" if base else ""
+    only = f" -- {quote(path)}" if path else ""
     return (
         f"cd {quote(cwd)} || exit 1; "
         "root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 2; "
         f"cd \"$root\" || exit 2; "
-        f"echo '--STAT--'; git -c core.quotepath=false diff --stat{inside} 2>/dev/null | tail -20; "
-        f"echo '--PATCH--'; git -c core.quotepath=false diff{inside} 2>/dev/null | head -c {int(limit)}"
+        f"echo '--STAT--'; git -c core.quotepath=false diff --stat{inside}{only} 2>/dev/null | tail -20; "
+        f"echo '--PATCH--'; git -c core.quotepath=false diff{inside}{only} 2>/dev/null | head -c {int(limit)}"
     )
 
 
@@ -208,3 +209,112 @@ class GitError(RuntimeError):
 
     def __str__(self) -> str:               # pragma: no cover - trivial
         return self.detail
+
+
+def build_branch_info(cwd: str) -> str:
+    """分支/上游/领先落后/远端 —— 提交前先让人知道会推到哪。"""
+    return (
+        f"cd {quote(cwd)} || exit 1; "
+        "root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 2; "
+        f"cd \"$root\" || exit 2; "
+        "echo '--BRANCH--'; git rev-parse --abbrev-ref HEAD 2>/dev/null; "
+        "echo '--UPSTREAM--'; git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null; "
+        "echo '--AHEAD--'; git rev-list --count @{u}..HEAD 2>/dev/null || echo 0; "
+        "echo '--BEHIND--'; git rev-list --count HEAD..@{u} 2>/dev/null || echo 0; "
+        "echo '--REMOTE--'; git remote | head -1; "
+        "echo '--GH--'; command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && echo yes || echo no"
+    )
+
+
+def build_commit_and_push(cwd: str, message: str, push: bool, pr: bool,
+                          paths: list[str] | None = None) -> str:
+    """暂存 → 提交 →（可选）推送 →（可选）开 PR。
+
+    每一步成功才打 `--STEP--xxx` 标记，失败打 `XXX_FAILED`，这样前端能分清
+    "提交成功但推送失败" 和 "根本提交不上"（两者的 sha 和后续动作完全不同）。
+    """
+    subject = (message or "").strip() or "Update from TmuxWeb"
+    target = " ".join(quote(item) for item in (paths or [])) or "-A"
+    parts = [
+        f"cd {quote(cwd)} || exit 1; ",
+        "root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 2; ",
+        "cd \"$root\" || exit 2; ",
+        f"git add {target} || exit 10; echo '--STEP--stage'; ",
+        f"out=$(git commit -m {quote(subject)} 2>&1) || {{ printf '%s\\n' \"$out\" | tail -3; "
+        "echo COMMIT_FAILED; exit 11; }; ",
+        "printf '%s\\n' \"$out\" | tail -3; echo \"SHA:$(git rev-parse --short HEAD)\"; "
+        "echo '--STEP--commit'; ",
+    ]
+    if push or pr:
+        parts.append(
+            "out=$(git push -u origin HEAD 2>&1) || { printf '%s\n' \"$out\" | tail -3; "
+            "echo PUSH_FAILED; exit 20; }; "
+            "printf '%s\n' \"$out\" | tail -3; echo '--STEP--push'; ")
+    if pr:
+        parts.append(
+            "branch=$(git rev-parse --abbrev-ref HEAD); "
+            "base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@'); "
+            "[ -n \"$base\" ] || base=main; "
+            "if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then "
+            "out=$(gh pr create --fill --base \"$base\" --head \"$branch\" 2>&1) || { "
+            "printf '%s\n' \"$out\" | tail -3; echo PR_FAILED; exit 30; }; "
+            "printf '%s\n' \"$out\" | tail -3; echo '--STEP--pr'; "
+            "else echo NO_GH; exit 31; fi; ")
+    return "".join(parts)
+
+
+def parse_branch_info(stdout: str) -> dict:
+    sections = {"branch": "", "upstream": "", "ahead": 0, "behind": 0, "remote": "", "gh": False}
+    key = ""
+    for line in stdout.splitlines():
+        if line.startswith("--") and line.endswith("--"):
+            key = line.strip("-").lower()
+            continue
+        value = line.strip()
+        if key in ("branch", "upstream", "remote"):
+            sections[key] = value
+        elif key in ("ahead", "behind"):
+            try:
+                sections[key] = int(value or 0)
+            except ValueError:
+                sections[key] = 0
+        elif key == "gh":
+            sections["gh"] = value == "yes"
+    return sections
+
+
+def suggest_commit_message(changes: list[dict], limit: int = 3) -> str:
+    """没有现成标题时，用改动的形状拼一句人话（agent 之后可以再改）。"""
+    paths = [item.get("path", "") for item in changes if item.get("path")]
+    if not paths:
+        return "Update from TmuxWeb"
+    if len(paths) == 1:
+        return f"Update {paths[0]}"
+    head = ", ".join(paths[:limit])
+    more = f" 等 {len(paths)} 个文件" if len(paths) > limit else f" 等 {len(paths)} 个文件"
+    return f"Update {head}{more}"
+
+
+def parse_commit_result(stdout: str, exit_code: int) -> dict:
+    """看哪几步走到了、PR 链接是多少。"""
+    result = {"staged": False, "committed": False, "sha": "", "pushed": False,
+              "pr_url": "", "needs_gh": False, "detail": ""}
+    step = ""
+    for line in stdout.splitlines():
+        if line.startswith("--STEP--"):
+            step = line.split("--STEP--", 1)[1].strip()
+            result[{"stage": "staged", "commit": "committed",
+                    "push": "pushed", "pr": "pr_opened"}.get(step, "step")] = True
+            continue
+        if line.startswith("SHA:"):
+            result["sha"] = line.split(":", 1)[1].strip()
+        elif line.startswith("https://github.com/") and "/pull/" in line:
+            result["pr_url"] = line.strip().split()[0]
+        elif "NO_GH" in line:
+            result["needs_gh"] = True
+        elif line.strip():
+            result["detail"] = (result["detail"] + "\n" + line.strip()).strip()
+    result.pop("step", None)
+    if exit_code:
+        result["detail"] = result["detail"] or f"git 返回 {exit_code}"
+    return result

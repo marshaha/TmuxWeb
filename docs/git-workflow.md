@@ -34,6 +34,20 @@ agent 把代码改乱了以后，最需要的是"退回到一分钟前"。这三
 **检查点之后新增的未跟踪文件不会被删除**，它们会在响应的 `untracked` 里列出来，
 要不要清理由人决定。
 
+## 一键提交 / 推送 / 开 PR
+
+    GET  /api/panes/{pane}/git/branch   当前分支、上游、领先/落后、远端、gh 是否登录
+    POST /api/panes/{pane}/git/commit   {message, paths?, push?, pr?}
+
+流程是一步一步的：`git add` → `git commit` →（可选）`git push -u origin HEAD` →（可选）`gh pr create --fill`。
+**哪一步失败就停在哪一步**，响应里的 `committed` / `pushed` / `pr_opened` / `sha` / `pr_url` 说明走到了哪里，
+`detail` 带上那一步的输出。所以「提交上了但推不上去」不会显示成「提交失败」。
+
+没有 `gh` 或没登录时：分支照样推，响应标 `needs_gh`，PR 需要自己开。
+
+`GET /git` 会附一句 `suggested_message`（按改动文件名拼的），前端预填到提交框里；
+点改动列表里的某一项，diff 只显示那个文件（`/git/diff?path=`）。
+
 ## worktree
 
     git worktree add -b wt/<name> ../<repo>-wt/<name>
