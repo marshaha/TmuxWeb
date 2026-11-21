@@ -58,7 +58,8 @@ test('transcriptBubble 不再往气泡上盖 msg-virtualized', () => {
 
 test('两条渲染路径仍然把 index/total 传进来（换实现时不用再动调用点）', () => {
   assert.ok(page.includes('virtualizedClass(index,messages.length)'), '正式列表要传 index');
-  assert.ok(page.includes('transcriptBubble(message,rendered.length+offset,messages.length)'), '追加路径要传 index');
+  assert.ok(page.includes('transcriptBubble(message,start+rendered.length+offset,total)'),
+    '追加路径要传绝对 index（窗口化之后 index 是 start+offset）');
 });
 
 test('流式更新仍然原地替换，不整段重建', () => {

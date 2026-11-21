@@ -1114,6 +1114,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     term.textContent='';$('transcript').classList.add('active');$('message-shell').hidden=true;
     clientTrace(null,`cache:${entry.messages.length}`,id);
     state.transcriptMtime=entry.mtime;state.transcriptSig=entry.sig;state.transcriptProvider=entry.provider||'';renderTranscriptNow(entry.messages);
+    state.needsFullTranscript=true;
     $('status-dot').className='status-dot live';$('status-text').textContent=`${entry.provider||'缓存'} · 更新中…`;
     restorePaneUi(id);return true;}
   // ---- 下载线路：浏览器 → 本机这一跳（TS / 局域网 / CF）；点子节点 pane 时也切换它的线路
@@ -1160,7 +1161,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   }
 
   function selectPane(id){if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
-    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();if(window.TmuxNeedsYou)TmuxNeedsYou.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedIds=[];$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';$('selected-sub').textContent=`${p.target} · ${p.command} · ${p.path}`;$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);syncLiveButton();syncFavButton();
+    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();if(window.TmuxNeedsYou)TmuxNeedsYou.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.windowStart=null;state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedIds=[];$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';$('selected-sub').textContent=`${p.target} · ${p.command} · ${p.path}`;$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);syncLiveButton();syncFavButton();
     clientTrace(null,'sel:cleared',id);
     if(state.mode==='terminal'){connectTerminal(id);}
     else if(paintCachedTranscript(id)){clientTrace(null,'sel:cached',id);refreshTranscript(id);}  // instant paint, then revalidate
@@ -1203,6 +1204,13 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   // `?plain=1` 连 markdown 都不解析。Chrome 的 STATUS_BREAKPOINT 是整页崩溃，控制台里
   // 什么都看不到，只能靠这两个开关把范围切小。
   const URL_FLAGS=new URLSearchParams(location.search);
+  // 渲染窗口：DOM 里只留最近/附近的这么多条，滚到顶自动往上加，回到底部再收回来。
+  // 不用 content-visibility（那玩意会把 Chrome 渲染进程搞崩），也不做占位高度估算 ——
+  // 纯靠"加在顶部、用可见消息锚定"这一套，逻辑少、能自测。
+  const WIN_OVERRIDE=Number(URL_FLAGS.get('winsize'))||0;
+  const WIN_INITIAL=WIN_OVERRIDE||80;       // 首屏渲染多少条
+  const WIN_GROW=WIN_OVERRIDE||80;          // 每次往上/往下扩多少
+  const WIN_MAX=(WIN_OVERRIDE?WIN_OVERRIDE*2:0)||240;   // 超过就回收
   const SAFE_MODE=URL_FLAGS.get('safe')==='1';
   const PLAIN_MODE=URL_FLAGS.get('plain')==='1';
   const NOLINK_MODE=URL_FLAGS.get('nolink')==='1';      // 只关路径链接
@@ -1355,7 +1363,15 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
 copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<span class="msg-time">${clockTime(message.timestamp)}</span>`:''}${msgResendButton(message)}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`,formal=messages.map((message,index)=>message.role==='user'?`<article class="chat-message user${virtualizedClass(index,messages.length)}" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copyButton(message)}</div></article>`:`<article class="chat-message assistant${virtualizedClass(index,messages.length)}" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copyButton(message)}</div></article>`),pending=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
       .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0))
       .map(([localId,message])=>({pending:message,html:`<article class="chat-message user pending" data-id="${esc(localId)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${deliveryHtml(message,localId)}</div></article>`}));host.classList.add('active');$('message-shell').hidden=true;
-    const ids=messages.map(message=>String(message.id));
+    const total=messages.length;
+    let start=Number.isFinite(state.windowStart)?state.windowStart:Math.max(0,total-WIN_INITIAL);
+    if(start<0)start=0;
+    if(start>total)start=Math.max(0,total-WIN_INITIAL);
+    state.windowStart=start;
+    // 窗口最多这么多条：翻了很多历史之后（start 还是 0）也不能一次全渲染出来
+    const end=Math.min(total,start+WIN_MAX);
+    const shown=messages.slice(start,end);
+    const ids=shown.map(message=>String(message.id));
     const rendered=state.renderedIds||[];
     // Only append when the DOM really is the list we rendered last time: pending
     // bubbles, an earlier-page load or any other writer force a full rebuild.
@@ -1365,7 +1381,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
       &&rendered.every((id,index)=>ids[index]===id);
     if(canAppend){
       const holder=document.createElement('div');
-      holder.innerHTML=messages.slice(rendered.length).map((message,offset)=>transcriptBubble(message,rendered.length+offset,messages.length)).join('');
+      holder.innerHTML=shown.slice(rendered.length).map((message,offset)=>transcriptBubble(message,start+rendered.length+offset,total)).join('');
       enhanceBlocks(holder);rewriteLocalLinks(holder);enhancePathsLazy(host);
       const fragment=document.createDocumentFragment();
       while(holder.firstChild)fragment.appendChild(holder.firstChild);
@@ -1383,12 +1399,12 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
         &&rendered.every((id,index)=>ids[index]===id)
         &&domIds.length===rendered.length&&domIds.every((id,index)=>id===rendered[index])){
       let changed=0;
-      messages.forEach((message,index)=>{
+      shown.forEach((message,localIndex)=>{
         if((prevText.get(String(message.id))||'')===String(message.text||''))return;
         const node=host.querySelector(`[data-id="${CSS.escape(String(message.id))}"]`);
-        if(!node)return;
+        if(!node)return;                                    // 不在窗口里（读者往上翻着）：跳过
         const wrap=document.createElement('div');
-        wrap.innerHTML=formal[index];
+        wrap.innerHTML=formal[start+localIndex];
         node.replaceWith(...wrap.childNodes);
         changed++;
       });
@@ -1398,12 +1414,35 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
       return;
     }
     state.renderedIds=ids;
-    const slots=messages.map(()=>[]);
-    for(const item of pending){const index=Math.min(messages.length,pendingAnchorIndex(messages,item.pending));slots[index]=slots[index]||[];slots[index].push(item.html);}
-    const ordered=messages.map((message,index)=>(slots[index]||[]).join('')+formal[index]).join('')
-      +(slots[messages.length]||[]).join('');
+    const slots=shown.map(()=>[]);
+    for(const item of pending){const absolute=Math.min(end,Math.max(start,pendingAnchorIndex(messages,item.pending)));
+      const index=absolute-start;slots[index]=slots[index]||[];slots[index].push(item.html);}
+    const ordered=shown.map((message,localIndex)=>(slots[localIndex]||[]).join('')+formal[start+localIndex]).join('')
+      +(slots[shown.length]||[]).join('');
     host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);
-    watchVisibility(host);clientTrace(state.transcriptMessages,'full');}
+    watchVisibility(host);clientTrace(state.transcriptMessages,`full:${start}-${start+shown.length}`);}
+    // ---- 窗口管理 ----
+    function growWindowUp(){
+      if(!state.selected||state.mode!=='chat')return false;
+      const start=Number.isFinite(state.windowStart)?state.windowStart:0;
+      if(start<=0)return false;
+      const anchor=firstVisibleMessage();
+      state.windowStart=Math.max(0,start-WIN_GROW);
+      renderTranscriptNow(state.transcriptMessages);
+      // 往上加了内容：把读者眼前那条按几何位置放回去（和"加载更早"同一套办法）
+      requestAnimationFrame(()=>{restoreAnchor(anchor);state.stick=false;
+        requestAnimationFrame(()=>restoreAnchor(anchor));});
+      return true;
+    }
+    function trimWindow(){
+      if(!state.selected||state.mode!=='chat')return false;
+      const total=state.transcriptMessages.length;
+      const start=Number.isFinite(state.windowStart)?state.windowStart:0;
+      if(total-start<=WIN_MAX)return false;
+      state.windowStart=Math.max(0,total-WIN_INITIAL);
+      renderTranscriptNow(state.transcriptMessages);
+      return true;
+    }
   const CODE_LANG_RE=/language-([\w+#-]+)/;
   async function copyText(text,button){const value=String(text==null?'':text);let ok=false;
     try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);ok=true;}}catch{}
@@ -1470,10 +1509,12 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     return idleFor<30000?1500:idleFor<300000?3000:idleFor<600000?5000:10000;
   }
   async function refreshTranscript(id,{force=false,refresh=false}={}){if(state.selected!==id||state.mode!=='chat')return;
-    const follow=atBottom(),first=state.transcriptMtime===null;
+    const fullFirst=!!state.needsFullTranscript;state.needsFullTranscript=false;
+    // 缓存只画了最后 40 条，全量补齐后内容会变长：读者原本就在最底部，补完也得还在底部
+    const follow=atBottom()||fullFirst,first=state.transcriptMtime===null;
     // 稳态轮询才挂长轮询：force/手动刷新走全量立即回；有基线（sig 或 since）才有得等
     const steady=!force&&!refresh,longPoll=steady&&(!!state.transcriptSig||state.transcriptMessages.length>0);
-    const sinceId=!force&&!refresh&&state.transcriptMessages.length?String(state.transcriptMessages[state.transcriptMessages.length-1].id):'';
+    const sinceId=(!force&&!refresh&&!fullFirst&&state.transcriptMessages.length)?String(state.transcriptMessages[state.transcriptMessages.length-1].id):'';
     let nextDelay=null;
     try{const sig=state.transcriptSig?`&sig=${encodeURIComponent(state.transcriptSig)}`:'';
       const since=sinceId?`&since=${encodeURIComponent(sinceId)}`:'';
@@ -2230,7 +2271,10 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   {const box=$('input-complete');
   if(box){box.addEventListener('mousedown',event=>{const item=event.target.closest('[data-complete-index]');if(!item)return;event.preventDefault();acceptInputComplete(completeItems[Number(item.dataset.completeIndex)]);});
   box.addEventListener('mouseover',event=>{const item=event.target.closest('[data-complete-index]');if(!item)return;completeIndex=Number(item.dataset.completeIndex);paintCompleteSelection();});}}scroll.addEventListener('wheel',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.addEventListener('touchmove',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.onscroll=()=>{state.stick=atBottom();
-    if(scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier)loadEarlier();$('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
+    // 滚到顶：先把本地窗口往上扩（快，不联网），窗口已经到头了才去服务器要更早的
+    if(scroll.scrollTop<160){if(!growWindowUp()&&scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier)loadEarlier();}
+    else if(state.stick)trimWindow();          // 在底部看最新消息：窗口太大就回收，别让 DOM 一直涨
+    $('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
 // 会跨页面加载记住的偏好。以前这里会读 localStorage，于是你上次开着文件面板，之后每次
 // 进 chat（主页卡片、多窗口、直接链接）侧栏都先弹文件管理，看起来像是随机的。
 try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(localStorage.getItem('tmux-sidebar-collapsed')==='1'&&!isMobile())document.querySelector('.app').classList.add('sidebar-collapsed');const saved=localStorage.getItem('tmux-web-mode');if(saved==='terminal')setMode('terminal');
