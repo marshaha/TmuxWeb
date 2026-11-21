@@ -2399,6 +2399,12 @@ class _Sequencer:
         self._completed_prefix = 0
         self._acked: set[int] = set()
         self._acked_prefix = 0
+        # acks that arrived before the reply's completion was recorded:
+        # the reply goes out from a pool worker, the server acks it the
+        # moment it lands, and mark_completed runs a hair later. Dropping
+        # those acks made the cursor regress across a reconnect, so the
+        # server replayed a batch that had already run.
+        self._early_acks: set[int] = set()
 
     @property
     def cursor(self) -> int:
@@ -2414,6 +2420,7 @@ class _Sequencer:
             self._completed_prefix = 0
             self._acked.clear()
             self._acked_prefix = 0
+            self._early_acks.clear()
 
     def sync(self, next_seq: int) -> str:
         """Adopt the server's ``next_seq`` from a welcome frame.
@@ -2461,12 +2468,16 @@ class _Sequencer:
     def mark_completed(self, seq: int) -> None:
         """A reply for ``seq`` was sent. Advances the completed prefix."""
         with self._lock:
-            if seq <= self._completed_prefix:
-                return
-            self._completed.add(seq)
-            while self._completed_prefix + 1 in self._completed:
-                self._completed_prefix += 1
-                self._completed.discard(self._completed_prefix)
+            if seq > self._completed_prefix:
+                self._completed.add(seq)
+                while self._completed_prefix + 1 in self._completed:
+                    self._completed_prefix += 1
+                    self._completed.discard(self._completed_prefix)
+            # 有 ack 比这条完成先到：现在补上
+            for pending in [item for item in self._early_acks
+                            if item <= self._completed_prefix or item in self._completed]:
+                self._early_acks.discard(pending)
+                self._apply_ack(pending)
 
     def mark_acked(self, seq) -> None:
         """The server acked the reply for ``seq``. Advances the cursor."""
@@ -2476,17 +2487,23 @@ class _Sequencer:
             if seq <= self._acked_prefix:
                 return
             if seq > self._completed_prefix and seq not in self._completed:
-                # An ack for a reply this agent never completed is a
-                # server bug (or a stale ack from a previous epoch):
-                # ignore it rather than letting the cursor jump over
-                # batches whose replies never went out. A reply that
-                # completed out of order is in the set even when the
-                # prefix has not reached it yet, so membership counts.
+                # 回复是由 worker 发出去的，"发出去"和"记下已完成"之间有一个缝，
+                # 服务器恰好在缝里 ack 很正常 —— 先记着，等 mark_completed 补上，
+                # 别丢（丢了 cursor 就退回去，重连时整批会重放）。
+                self._early_acks.add(seq)
+                if len(self._early_acks) > 256:            # 防御：不至于无限涨
+                    self._early_acks = set(sorted(self._early_acks)[-256:])
                 return
-            self._acked.add(seq)
-            while self._acked_prefix + 1 in self._acked:
-                self._acked_prefix += 1
-                self._acked.discard(self._acked_prefix)
+            self._apply_ack(seq)
+
+    def _apply_ack(self, seq: int) -> None:
+        """``seq`` 的回复已经确认发出，可以推进 cursor（调用方持锁）。"""
+        if seq <= self._acked_prefix or seq in self._acked:
+            return
+        self._acked.add(seq)
+        while self._acked_prefix + 1 in self._acked:
+            self._acked_prefix += 1
+            self._acked.discard(self._acked_prefix)
 
 
 def backoff_delay(failures: int) -> float:
@@ -2732,6 +2749,23 @@ def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
             except queue.Empty:
                 kind, item = None, None
             if kind == "closed":
+                # 连接死了，但队列里可能还压着一条比它更早到的 ack：
+                # 服务器"发完 ack 立刻关连接"是真的会发生，丢了这个 ack
+                # 就会在下一次 hello 里报旧 cursor，服务端重放已经执行过的批次。
+                # 所以先把控制消息（ack/welcome）消化掉，再抛关闭。
+                while True:
+                    try:
+                        pending_kind, pending = inbox.get_nowait()
+                    except queue.Empty:
+                        break
+                    if pending_kind != "message":
+                        continue
+                    try:
+                        parsed_pending = json.loads(pending)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        continue
+                    if isinstance(parsed_pending, dict) and parsed_pending.get("type") == "ack":
+                        sequencer.mark_acked(parsed_pending.get("seq"))
                 if item.code == CLOSE_AUTH_FAILED:
                     raise AuthFailed("server rejected the token (close 4403)")
                 if item.code == CLOSE_AGENT_TOO_OLD:

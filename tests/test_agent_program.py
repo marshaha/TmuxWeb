@@ -1481,6 +1481,37 @@ class ConcurrentDaemonTests(unittest.TestCase):
 # Sequencing (protocol 1.2.0): the sequencer, and the daemon's gate
 # ---------------------------------------------------------------------------
 
+class SequencerAckOrderTests(unittest.TestCase):
+    def test_an_ack_that_beats_its_completion_still_moves_the_cursor(self):
+        """回复由 worker 发、完成记录晚一点：这中间到的 ack 不许丢。
+
+        丢了 cursor 就会退回去，重连时服务端把已经执行过的批次再放一遍。
+        """
+        seq = agent_program._Sequencer()
+        self.assertEqual(seq.accept(1), "ok")
+        seq.mark_acked(1)                       # ack 先到，完成还没记
+        self.assertEqual(seq.cursor, 0, "还没完成就不能算确认")
+        seq.mark_completed(1)
+        self.assertEqual(seq.cursor, 1, "完成补上之后，那条早到的 ack 要生效")
+
+    def test_an_ack_for_a_sequence_that_never_completes_stays_out_of_the_cursor(self):
+        seq = agent_program._Sequencer()
+        self.assertEqual(seq.accept(1), "ok")
+        self.assertEqual(seq.accept(2), "ok")
+        seq.mark_acked(2)                       # 2 没完成
+        seq.mark_completed(1)
+        seq.mark_acked(1)
+        self.assertEqual(seq.cursor, 1, "1 之后的空洞不能跳过")
+
+    def test_a_fresh_epoch_forgets_early_acks(self):
+        seq = agent_program._Sequencer()
+        seq.accept(1)
+        seq.mark_acked(1)
+        seq.reset(1)
+        seq.mark_completed(1)
+        self.assertEqual(seq.cursor, 0, "reset 之后旧的 ack 不能复活")
+
+
 class SequencerTests(unittest.TestCase):
     def test_accept_in_order_then_duplicate_then_gap(self):
         seq = agent_program._Sequencer()
