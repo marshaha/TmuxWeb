@@ -79,3 +79,14 @@ test('加载更早消息按"可见消息"锚定，而不是按 scrollHeight 差'
   assert.ok(!page.includes('scroll.scrollTop+=scroll.scrollHeight-height'),
     'scrollHeight 差值补偿必须删掉');
 });
+
+test('展开历史有条数上限，到顶后按钮变禁用并说明原因', () => {
+  // 没有虚拟化之后，DOM 就是实打实的节点：300→1000 条封顶，别让人一路翻到几千条。
+  assert.match(page, /TRANSCRIPT_PAGE=300,TRANSCRIPT_PAGE_MAX=1000/,
+    '上限必须是 1000（原来 3000 太多）');
+  assert.ok(page.includes('const capped=state.transcriptLimit>=TRANSCRIPT_PAGE_MAX;'),
+    '到顶要能被识别出来');
+  assert.ok(page.includes('button.disabled=!!state.loadingEarlier||capped;'),
+    '到顶后按钮禁用，不然点了没反应');
+  assert.ok(page.includes('只保留最近 ${TRANSCRIPT_PAGE_MAX} 条'), '按钮要说清为什么点不动');
+});

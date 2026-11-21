@@ -977,7 +977,11 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   $('md-toggle').addEventListener('click',()=>{const viewer=state.viewer;if(!viewer||!viewer.renderMarkdown)return;
     viewer.rendered?viewer.renderSource():viewer.renderMarkdown();});
   document.addEventListener('keydown',event=>{if(event.key==='Escape')closeMarkdownViewer();});
-  const TRANSCRIPT_PAGE=300,TRANSCRIPT_PAGE_MAX=3000;
+  // 一页 300 条，"加载更早"每次翻倍，但最多翻到 1000 条就停：
+  // 再往上 DOM 就是几十万节点，没有 content-visibility（它会把 Chrome 渲染进程搞崩，
+  // 见 console-base.css 里的注释）就只能老实付布局和滚动的钱。真要翻更久的历史，
+  // 该做的是窗口化渲染，不是把上限调大。
+  const TRANSCRIPT_PAGE=300,TRANSCRIPT_PAGE_MAX=1000;
   function sinceSeconds(value){if(!value)return 0;let seconds=0;
     if(typeof value==='number')seconds=value>1e12?value/1000:value;
     else{const parsed=Date.parse(String(value));if(!Number.isNaN(parsed))seconds=parsed/1000;
@@ -1041,8 +1045,12 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     syncSendButton();
   }
   function syncEarlierBar(){const bar=$('earlier-bar'),button=$('load-earlier');
-    if(!bar)return;bar.hidden=!(state.hasMore&&state.mode==='chat'&&state.selected);
-    button.disabled=!!state.loadingEarlier;button.textContent=state.loadingEarlier?'加载中…':'加载更早的消息';}
+    if(!bar)return;
+    const capped=state.transcriptLimit>=TRANSCRIPT_PAGE_MAX;
+    bar.hidden=!(state.hasMore&&state.mode==='chat'&&state.selected);
+    button.disabled=!!state.loadingEarlier||capped;
+    button.textContent=state.loadingEarlier?'加载中…':(capped?`只保留最近 ${TRANSCRIPT_PAGE_MAX} 条`:'加载更早的消息');
+    button.title=capped?`一次最多展开 ${TRANSCRIPT_PAGE_MAX} 条：再多就不虚拟化了，DOM 撑不住`:'把上一次的 300 条再接上来';}
   // The message at the top of the viewport, with its distance from the
   // viewport top. Used to keep the reader's place across a rebuild: a
   // scrollHeight delta cannot do that under content-visibility, where
@@ -1063,6 +1071,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     if(!id||!state.hasMore||state.loadingEarlier)return;
     state.loadingEarlier=true;syncEarlierBar();
     const previous=state.transcriptMessages.length,anchor=firstVisibleMessage();
+    if(state.transcriptLimit>=TRANSCRIPT_PAGE_MAX)return;                 // 到顶了：按钮已经是禁用态
     state.transcriptLimit=Math.min(TRANSCRIPT_PAGE_MAX,Math.max(state.transcriptLimit*2,TRANSCRIPT_PAGE));
     try{const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit}`);
       if(state.selected!==id||state.mode!=='chat')return;
