@@ -78,6 +78,8 @@ def build_restore(cwd: str, ref: str) -> str:
         f"git cat-file -e {quote(ref)}^{{commit}} 2>/dev/null || exit 3; "
         f"(git restore --source={quote(ref)} --staged --worktree -- . 2>/dev/null "
         f" || git checkout {quote(ref)} -- . ) || exit 4; "
+        # 回滚不该顺带把东西塞进暂存区：恢复完把索引退回"未暂存"，status 才和平时一样
+        f"git reset -q -- . 2>/dev/null; "
         f"git diff --quiet {quote(ref)} -- . 2>/dev/null; echo \"--MATCHES--$?\"; "
         "git -c core.quotepath=false status --porcelain=v1 | head -50"
     )

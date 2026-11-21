@@ -561,6 +561,110 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     if(list)TmuxPanePreview.bind(list,{selector:'.recent-row',paneOf:element=>element.dataset.row,steadyDelay:true});
   }
 
+
+  // ---- Git 面板：改动 / 检查点 / 回滚 / worktree -------------------------
+  // 后端在 /api/panes/{pane}/git*（见 docs/git-workflow.md）。这里只负责显示和按钮，
+  // 所有判断都以服务端返回为准：联邦窗格没有 shell，服务端会回 501 并带一句人话。
+  function gitTime(iso){const d=new Date(iso);if(Number.isNaN(d.getTime()))return iso||'';
+    const pad=v=>String(v).padStart(2,'0');
+    return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;}
+  function gitUrl(suffix){return `/api/panes/${encodeURIComponent(state.selected)}/git${suffix||''}`;}
+  function renderGitPanel(data){
+    const panel=$('git-panel');if(!panel)return;
+    const title=$('gp-title'),sub=$('gp-sub');
+    $('gp-checkpoint').disabled=!data.repo;$('gp-worktree').disabled=!data.repo;
+    if(!data.repo){title.textContent='Git';sub.textContent='这个目录不是 git 仓库';}
+    else{
+      title.textContent=`Git · ${data.branch||'detached'}`;
+      const count=(data.changes||[]).length;
+      sub.textContent=(count?`${count} 个文件有改动`:'工作区干净')+` · ${data.root}`;
+      sub.title=data.root||'';
+    }
+    const changes=$('gp-changes'),checkpoints=$('gp-checkpoints');
+    $('gp-changes-count').textContent=data.repo?`(${(data.changes||[]).length})`:'';
+    if(!data.repo){changes.innerHTML='<li class="gp-empty">不是仓库，没什么可看的</li>';}
+    else if(!(data.changes||[]).length){changes.innerHTML='<li class="gp-empty">工作区干净</li>';}
+    else{
+      changes.innerHTML=data.changes.map(item=>
+        `<li><span class="gp-code">${esc(item.code)}</span><span class="gp-path" title="${esc(item.path)}">${esc(item.path)}</span></li>`).join('');
+    }
+    const list=data.checkpoints||[];
+    if(!list.length){checkpoints.innerHTML='<li class="gp-empty">还没有检查点</li>';}
+    else{
+      checkpoints.innerHTML=list.map(item=>
+        `<li><span class="gp-when">${esc(gitTime(item.at))}</span>`
+        +`<span class="gp-path" title="${esc(item.ref)}">${esc(item.sha)}</span>`
+        +`<button class="chip-btn" type="button" data-gp-restore="${esc(item.ref)}" title="把工作区退回到这个检查点">回滚</button></li>`).join('');
+    }
+  }
+  async function loadGitPanel(){
+    if(!state.selected)return;
+    try{renderGitPanel(await api(gitUrl()));}
+    catch(error){renderGitPanel({repo:false});$('gp-sub').textContent=error.message||'取不到 git 状态';}
+  }
+  async function openGitPanel(){
+    if(!state.selected){toast('先选一个窗格');return;}
+    $('git-panel').hidden=false;
+    $('gp-diff-wrap').hidden=true;
+    $('gp-changes').innerHTML='<li class="gp-empty">加载中…</li>';
+    $('gp-checkpoints').innerHTML='<li class="gp-empty">加载中…</li>';
+    await loadGitPanel();
+  }
+  async function gpCheckpoint(){
+    try{
+      const result=await api(gitUrl('/checkpoint'),
+        {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:''})});
+      toast(result.created?`已建立检查点 ${String(result.ref).split('/').pop()}`:result.detail,3600);
+      loadGitPanel();
+    }catch(error){toast(error.message||'建立检查点失败',4000);}
+  }
+  async function gpWorktree(){
+    const name=prompt('给这份 worktree 起个名字（会建分支 wt/<名字>）','task');
+    if(!name)return;
+    try{
+      const result=await api(gitUrl('/worktree'),
+        {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+      toast(`worktree：${result.path}（分支 ${result.branch}）`,6000);
+      loadGitPanel();
+    }catch(error){toast(error.message||'worktree 创建失败',4000);}
+  }
+  async function gpDiff(base){
+    const wrap=$('gp-diff-wrap');wrap.hidden=false;$('gp-diff-base').textContent=base||'(工作区 vs HEAD)';
+    $('gp-diff').textContent='加载中…';
+    try{
+      const data=await api(gitUrl(`/diff${base?`?base=${encodeURIComponent(base)}`:''}`));
+      const body=String(data.patch||'').trim();
+      $('gp-diff').textContent=[data.stat,body].filter(Boolean).join('\n\n')
+        ||'没有已跟踪文件的差异（未跟踪文件不在 git diff 里，用文件面板看）';
+    }catch(error){$('gp-diff').textContent=error.message||'取不到 diff';}
+  }
+  async function gpRestore(ref){
+    if(!confirm(`回滚到检查点 ${String(ref).split('/').pop()}？\n检查点之后新增的未跟踪文件不会被删除。`))return;
+    try{
+      const data=await api(gitUrl('/restore'),
+        {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ref})});
+      const extra=(data.untracked||[]).length?`（${data.untracked.length} 个未跟踪文件保留）`:'';
+      toast(data.matches?`已回滚到这个检查点${extra}`:`回滚没完全对上：还有 ${(data.remaining||[]).length} 个文件有差异`,5000);
+      loadGitPanel();
+      if(state.filesMode&&state.filesPath)openFiles(state.filesPath);
+    }catch(error){toast(error.message||'回滚失败',4000);}
+  }
+  function setupGitPanel(){
+    const panel=$('git-panel');if(!panel)return;
+    const open=$('git-open');if(open)open.addEventListener('click',openGitPanel);
+    $('gp-close').addEventListener('click',()=>{panel.hidden=true;});
+    panel.addEventListener('click',event=>{if(event.target===panel)panel.hidden=true;});
+    $('gp-checkpoint').addEventListener('click',gpCheckpoint);
+    $('gp-worktree').addEventListener('click',gpWorktree);
+    $('gp-changes').addEventListener('click',()=>gpDiff(''));
+    $('gp-checkpoints').addEventListener('click',event=>{
+      const button=event.target.closest('[data-gp-restore]');
+      if(button)gpRestore(button.dataset.gpRestore);
+    });
+    document.addEventListener('keydown',event=>{
+      if(event.key==='Escape'&&!panel.hidden){panel.hidden=true;}
+    });
+  }
   function setupFiles(){$('files-toggle').onclick=()=>{state.filesMode=!state.filesMode;syncFilesPanel();if(state.filesMode)openFiles(state.filesPane===state.selected?state.filesPath:null);};
     $('file-reload').onclick=()=>{if(state.filesMode)openFiles(state.filesPath);};
     $('file-close').onclick=()=>{state.filesMode=false;syncFilesPanel();};
@@ -2274,7 +2378,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     // 滚到顶：先把本地窗口往上扩（快，不联网），窗口已经到头了才去服务器要更早的
     if(scroll.scrollTop<160){if(!growWindowUp()&&scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier)loadEarlier();}
     else if(state.stick)trimWindow();          // 在底部看最新消息：窗口太大就回收，别让 DOM 一直涨
-    $('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
+    $('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupGitPanel();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
 // 会跨页面加载记住的偏好。以前这里会读 localStorage，于是你上次开着文件面板，之后每次
 // 进 chat（主页卡片、多窗口、直接链接）侧栏都先弹文件管理，看起来像是随机的。
 try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(localStorage.getItem('tmux-sidebar-collapsed')==='1'&&!isMobile())document.querySelector('.app').classList.add('sidebar-collapsed');const saved=localStorage.getItem('tmux-web-mode');if(saved==='terminal')setMode('terminal');

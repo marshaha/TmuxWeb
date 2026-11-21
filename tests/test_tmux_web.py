@@ -1917,6 +1917,24 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(tmux_web.openlist_d_link("https://h/a/x.mp4?token=1"),
                          "https://h/d/a/x.mp4?token=1")
 
+    def test_the_git_panel_is_wired_into_the_file_bar(self):
+        """Git 面板：文件栏上的入口、面板骨架、以及按钮到接口的连线。"""
+        self.login()
+        page = self.client.get("/").text
+        for marker in ('id="git-open"', 'id="git-panel"', 'id="gp-checkpoints"',
+                       'id="gp-diff-wrap"', 'id="gp-worktree"', 'href="#i-git"'):
+            self.assertIn(marker, page)
+        app = self.client.get("/assets/console-app.js").text
+        for marker in ("function openGitPanel(", "async function gpCheckpoint(",
+                       "async function gpRestore(", "async function gpDiff(",
+                       "gitUrl('/checkpoint')", "gitUrl('/restore')", "gitUrl('/worktree')",
+                       "function gitUrl(suffix)",
+                       "headers:{'Content-Type':'application/json'}"):
+            self.assertIn(marker, app)
+        css = self.client.get("/assets/console.css").text    # 页面加载的是这一份（bundled）
+        self.assertIn(".git-panel{", css)
+        self.assertIn(".gp-path{flex:1;min-width:0;overflow:hidden", css)
+
     def test_the_media_proxy_refuses_to_touch_the_local_network(self):
         """远端视频要代取（octet-stream + attachment 浏览器不播），但不能变成打内网的后门。"""
         self.login()
