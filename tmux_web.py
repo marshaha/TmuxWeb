@@ -5149,6 +5149,15 @@ def create_app(
                 return "timeout"
             await asyncio.sleep(min(LONG_POLL_CHECK_SECONDS, max(0.0, deadline - now)))
 
+    @app.get("/api/transcript/adapters")
+    async def transcript_adapters(request: Request):
+        """有哪些 transcript 适配器、各自怎么认进程、远端要不要反转行序。
+
+        纯数据：新增一个 CLI 之后这里立刻能看到它，不用先去翻代码。
+        """
+        require_auth(request)
+        return {"adapters": [adapter.summary() for adapter in transcript_reader.adapters()]}
+
     @app.get("/api/panes/{pane_id}/transcript")
     async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0,
                          sig: str = "", since: str = "", wait: float = 0):

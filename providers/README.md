@@ -124,3 +124,9 @@ provider.
    before the registry existed.
 4. Run `python3 scripts/generate_agent_provider_facts.py` to refresh
    the agent's embedded block, then full pytest + node.
+
+## transcript 读取
+
+读聊天记录的差异（远端要不要反转行序、模型名在哪）声明在
+`transcript_reader.ADAPTERS` 里，见 `docs/transcript-adapters.md`；
+本目录负责"怎么认这个 agent"，那边负责"怎么把它的记录读出来"，两边有断言绑定。

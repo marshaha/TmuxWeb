@@ -29,27 +29,99 @@ ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 PANED_ID_RE = re.compile(r"^%[0-9]+$")
 
 
+class Adapter(object):
+    """一个 agent CLI 在"读 transcript"这件事上的全部差异。
+
+    这个模块会被 ``python3 -`` 管道到远端主机执行，所以不能用 dataclass /
+    类型注解：保持一个 __slots__ 的普通类，3.6 也能跑。
+
+    字段就是声明：怎么找进程、怎么读、怎么解析远端 tail、模型写在哪。
+    新增一个 CLI = 末尾 register 一个 Adapter，下面没有一处 if/elif 需要改。
+    """
+    __slots__ = ("name", "read", "parse", "command_prefixes", "argv_names",
+                 "payload_parsers", "remote_reversed", "takes_title", "takes_hint",
+                 "takes_screen", "model_source", "note")
+
+    def __init__(self, name, read, parse, command_prefixes=(), argv_names=(),
+                 payload_parsers=None, remote_reversed=False, takes_title=True,
+                 takes_hint=False, takes_screen=False, model_source="tail", note=""):
+        self.name = name
+        self.read = read
+        self.parse = parse
+        self.command_prefixes = tuple(command_prefixes) or (name,)
+        self.argv_names = tuple(argv_names) or (name,)
+        self.payload_parsers = dict(payload_parsers or {})
+        self.remote_reversed = bool(remote_reversed)
+        self.takes_title = bool(takes_title)
+        self.takes_hint = bool(takes_hint)
+        self.takes_screen = bool(takes_screen)
+        self.model_source = model_source
+        self.note = note
+
+    def summary(self):
+        """给 /api/transcript/adapters 用的形状（纯数据）。"""
+        return {
+            "name": self.name,
+            "command_prefixes": list(self.command_prefixes),
+            "argv_names": list(self.argv_names),
+            "remote_reversed": self.remote_reversed,
+            "payload_formats": sorted(self.payload_parsers) or [],
+            "model_source": self.model_source,
+            "note": self.note,
+        }
+
+
+ADAPTERS = {}
+
+
+def register(adapter, replace=False):
+    """装一个 adapter。重名要显式 replace，免得两个模块悄悄互相覆盖。"""
+    if not isinstance(adapter, Adapter):
+        raise TypeError("register() takes an Adapter")
+    if adapter.name in ADAPTERS and not replace:
+        raise ValueError("adapter already registered: %s" % adapter.name)
+    ADAPTERS[adapter.name] = adapter
+    return adapter
+
+
+def adapters():
+    """注册顺序（也决定了 provider_from_argv 的优先顺序）。"""
+    return list(ADAPTERS.values())
+
+
+def agent_names():
+    names = []
+    for adapter in adapters():
+        for name in adapter.argv_names:
+            if name not in names:
+                names.append(name)
+    return tuple(names)
+
+
+def adapter_for(name):
+    adapter = ADAPTERS.get((name or "").strip().lower())
+    if adapter is None:
+        raise TranscriptError("no adapter for provider %s" % (name or ""))
+    return adapter
+
+
 class TranscriptError(RuntimeError):
     pass
 
 
 def provider_for_command(command):
-    """Map a pane's foreground command to a transcript provider (or None)."""
+    """Map a pane's foreground command to a transcript adapter (or None).
+
+    Looks at ``ADAPTERS`` — adding a CLI is one registration, not a new branch
+    in this chain. Hermes also matches a plain ``python`` interpreter because
+    both expose their history through ``~/.hermes/state.db``.
+    """
     command = (command or "").strip().lower()
-    if command.startswith("claude"):
-        return "claude"
-    if command.startswith("codex"):
-        return "codex"
-    if command.startswith("kimi"):
-        return "kimi"
-    # Hermes runs as ``hermes`` or as a plain python interpreter; both expose
-    # their history through ~/.hermes/state.db.
-    if command.startswith("hermes") or command.startswith("python"):
-        return "hermes"
+    for adapter in adapters():
+        for prefix in adapter.command_prefixes:
+            if command.startswith(prefix):
+                return adapter.name
     return None
-
-
-AGENT_NAMES = ("claude", "codex", "kimi", "hermes")
 
 
 def parse_process_table(raw):
@@ -97,19 +169,32 @@ def provider_for_pane(pane, table=None):
     return None
 
 
+def _provider_for_argv_name(name):
+    """argv 里那个可执行名 -> adapter 名字。
+
+    名字不总等于 provider：``kimi-code`` 是 kimi，``fakecli`` 也可能是 ``fake``；
+    所以这里比对的是 adapter 声明的 argv_names，返回的是 adapter.name。
+    """
+    for adapter in adapters():
+        for token in adapter.argv_names:
+            if name == token or name.startswith(token + ".") or name.startswith(token + "-"):
+                return adapter.name
+    return None
+
+
 def provider_from_argv(argv):
     """一条 argv 是哪个 agent：``codex``、``/x/bin/codex``、``node .../@openai/codex/bin/codex.js`` 都算。"""
-    name = app_name(argv)
-    if name in AGENT_NAMES:
-        return name
+    found = _provider_for_argv_name(app_name(argv))
+    if found:
+        return found
     for token in str(argv or "").split():
         base = os.path.basename(token).lower()
         if not base or base.startswith("-"):
             continue
-        for agent in AGENT_NAMES:
-            # kimi-code / hermes-agent / claude-code：包一层壳也算同一个 agent
-            if base == agent or base.startswith(agent + ".") or base.startswith(agent + "-"):
-                return agent
+        # kimi-code / hermes-agent / claude-code：包一层壳也算同一个 agent
+        found = _provider_for_argv_name(base)
+        if found:
+            return found
     return None
 
 
@@ -677,55 +762,106 @@ def parse_hermes_session(lines, limit, session_id="", mtime=0):
 
 
 def parse_remote_payload(provider, payload_format, payload, limit, session_id="", mtime=0):
-    """Parse bytes pulled from a remote host with the same code paths as local files."""
+    """Parse bytes pulled from a remote host with the same code paths as local files.
+
+    命名格式（hermes-rows 之类整段 JSON）先查 adapter 的 payload_parsers；
+    其余一律按行交给 adapter.parse，要不要反转由 adapter 的 remote_reversed 决定
+    —— 这几个解析器对行序的要求不一样，写死一个方向必然错一半。
+    """
+    adapter = adapter_for(provider)
     lines = payload.splitlines()
-    if payload_format == "hermes-rows":
-        try:
-            rows = json.loads(payload) if payload.strip() else []
-        except ValueError as exc:
-            raise TranscriptError("remote message rows are not valid JSON") from exc
-        if not isinstance(rows, list):
-            raise TranscriptError("remote message rows have an unexpected shape")
-        return parse_hermes_rows(rows, limit, session_id, mtime)
-    if payload_format == "hermes-jsonl":
-        return parse_hermes_session(lines, limit, session_id, mtime)
-    if provider in ("claude", "kimi"):
-        # these readers expect newest-first input; remote tails arrive oldest-first
-        return (parse_claude if provider == "claude" else parse_kimi)(
-            list(reversed(lines)), limit, session_id, mtime)
-    if provider == "codex":
-        return parse_codex(lines, limit, session_id, mtime)
-    raise TranscriptError("no parser for provider %s" % provider)
+    if payload_format:
+        parser = adapter.payload_parsers.get(payload_format)
+        if parser is not None:
+            # 命名格式的 parser 也吃行列表：hermes-jsonl 是逐行 JSON，
+            # hermes-rows 是整段 JSON 数组（自己再拼回去），契约只有一种。
+            return parser(lines, limit, session_id, mtime)
+        if payload_format in _special_payload_formats():
+            # 别的 provider 专属格式跑到这里来了，说明调用方认错了对象 —— 别硬解析
+            raise TranscriptError("no parser for provider %s / format %s"
+                                  % (provider, payload_format))
+        # 普通格式（jsonl/plain）：按 provider 的默认解析器走，和以前一致
+    if adapter.remote_reversed:
+        lines = list(reversed(lines))
+    return adapter.parse(lines, limit, session_id, mtime)
 
 
-READERS = {"claude": read_claude, "codex": read_codex, "hermes": read_hermes, "kimi": read_kimi}
+def _special_payload_formats():
+    formats = set()
+    for adapter in adapters():
+        formats.update(adapter.payload_parsers)
+    return formats
+
+
+def _parse_hermes_rows_payload(lines, limit, session_id, mtime):
+    payload = "\n".join(lines)
+    try:
+        rows = json.loads(payload) if payload.strip() else []
+    except ValueError as exc:
+        raise TranscriptError("remote message rows are not valid JSON") from exc
+    if not isinstance(rows, list):
+        raise TranscriptError("remote message rows have an unexpected shape")
+    return parse_hermes_rows(rows, limit, session_id, mtime)
+
+
+register(Adapter(
+    "claude", read_claude, parse_claude,
+    command_prefixes=("claude",), argv_names=("claude",),
+    remote_reversed=True, takes_hint=True, takes_screen=True,
+    note="~/.claude/projects/*/*.jsonl，按进程树/screen 里的 session id 定位"))
+register(Adapter(
+    "codex", read_codex, parse_codex,
+    command_prefixes=("codex",), argv_names=("codex",),
+    remote_reversed=False, takes_hint=True, takes_screen=False,
+    note="~/.codex/sessions/**/rollout-*.jsonl，远端 tail 本来就是 oldest-first"))
+register(Adapter(
+    "kimi", read_kimi, parse_kimi,
+    command_prefixes=("kimi",), argv_names=("kimi",),
+    remote_reversed=True, takes_hint=False, takes_screen=False,
+    note="~/.kimi/sessions/**/wire.jsonl，解析器吃 newest-first"))
+register(Adapter(
+    "hermes", read_hermes, parse_hermes_session,
+    command_prefixes=("hermes", "python"), argv_names=("hermes",),
+    payload_parsers={"hermes-rows": _parse_hermes_rows_payload,
+                     "hermes-jsonl": parse_hermes_session},
+    remote_reversed=False, takes_title=False, takes_hint=True, takes_screen=False,
+    model_source="sqlite",
+    note="~/.hermes/state.db（sqlite 优先，单会话 jsonl 兜底）"))
+
+# 老名字保留：外部（tmux_web / 测试 / 远端脚本）还在用
+READERS = {adapter.name: adapter.read for adapter in adapters()}
+PROVIDERS = tuple(adapter.name for adapter in adapters())
+AGENT_NAMES = agent_names()
 
 
 def read_transcript(provider, cwd, title, limit=200, home=None, hint=None, screen=None):
     """Read a provider transcript for one pane.
 
-    ``hint`` is a Claude session id discovered from the process tree, ``screen``
-    is optional pane text used as a last-resort session-id probe.
+    Everything provider-specific comes from the adapter: which function reads,
+    whether it can use a session-id hint, and where the model name lives.
     """
-    if provider not in READERS:
+    try:
+        adapter = adapter_for(provider)
+    except TranscriptError:
         raise TranscriptError("structured transcript is not supported for this pane")
     home = Path(home) if home is not None else Path.home()
-    if provider == "claude":
-        data = read_claude(home, cwd, title, limit, hint=hint, screen=screen)
-    elif provider == "hermes":
-        data = read_hermes(home, cwd, limit, hint=hint)
-    elif provider == "codex":
-        data = read_codex(home, cwd, title, limit, hint=hint)
-    else:
-        data = READERS[provider](home, cwd, title, limit)
+    kwargs = {}
+    if adapter.takes_hint:
+        kwargs["hint"] = hint
+    if adapter.takes_screen:
+        kwargs["screen"] = screen
+    args = [home, cwd] + ([title] if adapter.takes_title else []) + [limit]
+    data = adapter.read(*args, **kwargs)
     if not data.get("messages"):
         raise TranscriptError("this session has no messages yet")
     if not data.get("model"):
+        filled = ""
         primary = data.get("path") or ""
         if primary:
-            data["model"] = tail_model(primary)
-        elif provider == "hermes":
-            data["model"] = hermes_model(Path(home), data.get("session_id") or "")
+            filled = tail_model(primary)
+        if not filled and adapter.model_source == "sqlite":
+            filled = hermes_model(Path(home), data.get("session_id") or "")
+        data["model"] = filled
     return data
 
 
