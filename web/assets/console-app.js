@@ -649,6 +649,63 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       if(state.filesMode&&state.filesPath)openFiles(state.filesPath);
     }catch(error){toast(error.message||'回滚失败',4000);}
   }
+
+  // ---- 排队：agent 正忙时把消息存到服务端，这一轮结束自动发 ---------------
+  // 后端是 /api/panes/{pane}/queue（message_queue.py）：持久化，重启不丢；
+  // 模式 mode='queue' 等空闲再发，'steer' 先按中断键再发。
+  const queueState={items:[],timer:null};
+  function queueUrl(suffix){return `/api/panes/${encodeURIComponent(state.selected)}/queue${suffix||''}`;}
+  function renderQueueStrip(){
+    const strip=$('queue-strip');if(!strip)return;
+    const items=queueState.items||[];
+    strip.hidden=!items.length;
+    if(!items.length){strip.textContent='';return;}
+    strip.innerHTML=items.map(item=>
+      `<span class="qs-item${item.state==='failed'?' failed':''}" title="${esc(item.error||'')}">`
+      +`<span class="qs-text">${esc(String(item.text||'').replace(/\s+/g,' ').slice(0,80))}</span>`
+      +(item.state==='pending'
+        ? `<button type="button" class="qs-btn" data-queue-steer="${esc(item.id)}" title="${item.mode==='steer'?'打断并立刻发（已是这个模式）':'改成打断并立刻发'}">${item.mode==='steer'?'⚡':'⇢⚡'}</button>`
+        : `<span class="qs-state">${item.state==='failed'?'发送失败':''}</span>`)
+      +`<button type="button" class="qs-btn" data-queue-cancel="${esc(item.id)}" title="取消这条">×</button></span>`).join('');
+  }
+  async function loadQueue(){
+    if(!state.selected){queueState.items=[];renderQueueStrip();return;}
+    try{const data=await api(queueUrl());queueState.items=data.items||[];}
+    catch{queueState.items=[];}
+    renderQueueStrip();
+  }
+  function scheduleQueuePoll(ms){
+    clearTimeout(queueState.timer);
+    queueState.timer=setTimeout(()=>{if(state.selected&&!document.hidden)loadQueue().then(()=>scheduleQueuePoll(4000));},ms);
+  }
+  async function enqueueMessage(text){
+    const data=await api(queueUrl(),{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text,submit:true,mode:'queue'})});
+    queueState.items=(await api(queueUrl())).items||[];
+    renderQueueStrip();scheduleQueuePoll(2000);
+    return data;
+  }
+  async function setQueueMode(itemId,mode){
+    try{await api(queueUrl(`/${encodeURIComponent(itemId)}/mode`),{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'',mode})});
+      await loadQueue();}
+    catch(error){toast(error.message||'改不了这条的发送方式',3600);}
+  }
+  async function cancelQueueItem(itemId){
+    try{await api(queueUrl(`/${encodeURIComponent(itemId)}`),{method:'DELETE'});await loadQueue();}
+    catch(error){toast(error.message||'取消失败',3600);}
+  }
+  // 测试钩子：队列的读取/渲染都在闭包里，外面点不到
+  window.TmuxQueue={load:()=>loadQueue(),state:queueState,render:renderQueueStrip};
+  function setupQueueStrip(){
+    const strip=$('queue-strip');if(!strip)return;
+    strip.addEventListener('click',event=>{
+      const cancel=event.target.closest('[data-queue-cancel]');
+      if(cancel){cancelQueueItem(cancel.dataset.queueCancel);return;}
+      const steer=event.target.closest('[data-queue-steer]');
+      if(steer)setQueueMode(steer.dataset.queueSteer,'steer');
+    });
+  }
   function setupGitPanel(){
     const panel=$('git-panel');if(!panel)return;
     const open=$('git-open');if(open)open.addEventListener('click',openGitPanel);
@@ -1266,6 +1323,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
 
   function selectPane(id){if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
     setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();if(window.TmuxNeedsYou)TmuxNeedsYou.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.windowStart=null;state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedIds=[];$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';$('selected-sub').textContent=`${p.target} · ${p.command} · ${p.path}`;$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);syncLiveButton();syncFavButton();
+    queueState.items=[];renderQueueStrip();
     clientTrace(null,'sel:cleared',id);
     if(state.mode==='terminal'){connectTerminal(id);}
     else if(paintCachedTranscript(id)){clientTrace(null,'sel:cached',id);refreshTranscript(id);}  // instant paint, then revalidate
@@ -1273,6 +1331,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     clientTrace(null,'sel:connected',id);
     loadPaneModels(id);
     clientTrace(null,'sel:models',id);
+    loadQueue().then(()=>scheduleQueuePoll(4000));
     if(state.mode==='chat'&&canAutoFocusComposer())input.focus();
     const memory=filesMemoryOn();
     const remembered=memory?readFilesView(id):null;
@@ -2221,6 +2280,17 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     const pane=state.selected;
     if(!pane||!text.trim()||attachmentsPending())return;
     // 条带在按 Enter 这一刻就收起来（以前等 POST 回来才清，那一秒图片还留着）
+    // agent 正忙：排到服务端队列，等这一轮结束自动发（以前是直接塞进去，容易被吞）
+    if(!prompt&&state.waiting){
+      try{
+        const data=await enqueueMessage(text);
+        input.value='';input.style.height='auto';send.disabled=!state.selected;
+        setSendState(`已排队（${data.pending}）`,'ok');
+        toast('已排队，这一轮结束会自动发出',3000);
+        if(!isMobile())input.focus();
+      }catch(error){showError(error.message);setSendState('排队失败','bad');}
+      return;
+    }
     const attachments=prompt?takeAttachments():[];
     const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:$('submit-enter').checked})});const st=sendResultState(d);setOptimisticStatus(localId,st.kind==='bad'?'failed':st.kind==='retrying'?'retrying':'sent');setSendState(st.text,st.kind);showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;refreshTranscript(pane,{force:true});}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点消息上的重发','bad');
     // 不把原文放回输入框：这条消息已经在聊天里显示出来了（带「重发」），
@@ -2378,7 +2448,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     // 滚到顶：先把本地窗口往上扩（快，不联网），窗口已经到头了才去服务器要更早的
     if(scroll.scrollTop<160){if(!growWindowUp()&&scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier)loadEarlier();}
     else if(state.stick)trimWindow();          // 在底部看最新消息：窗口太大就回收，别让 DOM 一直涨
-    $('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupGitPanel();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
+    $('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupGitPanel();setupQueueStrip();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
 // 会跨页面加载记住的偏好。以前这里会读 localStorage，于是你上次开着文件面板，之后每次
 // 进 chat（主页卡片、多窗口、直接链接）侧栏都先弹文件管理，看起来像是随机的。
 try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(localStorage.getItem('tmux-sidebar-collapsed')==='1'&&!isMobile())document.querySelector('.app').classList.add('sidebar-collapsed');const saved=localStorage.getItem('tmux-web-mode');if(saved==='terminal')setMode('terminal');

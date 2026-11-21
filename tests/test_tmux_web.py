@@ -428,7 +428,7 @@ class TmuxWebTests(unittest.TestCase):
             password="unit-test-admin-password",
             session_secret="test-secret",
             terminal_factory=self.terminals,
-            share_db=":memory:",
+            share_db=":memory:", queue_db=":memory:",
             remote_store=self.remote_store,
             remote_runner_factory=FakeSSHRunner,
         ))
@@ -905,7 +905,7 @@ class TmuxWebTests(unittest.TestCase):
             password="unit-test-admin-password",
             session_secret="test-secret",
             terminal_factory=self.terminals,
-            share_db=":memory:",
+            share_db=":memory:", queue_db=":memory:",
             remote_store=self.remote_store,
             remote_runner_factory=HangingRunner,
         ))
@@ -1847,7 +1847,7 @@ class TmuxWebTests(unittest.TestCase):
         with patch.dict("os.environ", {"TMUX_WEB_API_TOKEN": "relay-token-value"}):
             client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
                                            session_secret="test-secret", terminal_factory=self.terminals,
-                                           share_db=":memory:", remote_store=FakeRemoteStore(),
+                                           share_db=":memory:", queue_db=":memory:", remote_store=FakeRemoteStore(),
                                            remote_runner_factory=FakeSSHRunner))
             self.assertEqual(client.get("/api/panes").status_code, 401)
             self.assertEqual(client.get("/api/panes", headers={"X-TmuxWeb-Token": "wrong"}).status_code, 401)
@@ -1897,7 +1897,7 @@ class TmuxWebTests(unittest.TestCase):
         tmux_web.ADDRESS_CACHE.update({"at": 0.0, "value": []})
         app = create_app(self.tmux, password="unit-test-admin-password",
                          session_secret="test-secret", terminal_factory=self.terminals,
-                         share_db=":memory:", remote_store=self.remote_store,
+                         share_db=":memory:", queue_db=":memory:", remote_store=self.remote_store,
                          remote_runner_factory=FakeSSHRunner)
         with TestClient(app):                     # 进 with 才会触发 startup 事件
             self.assertGreater(tmux_web.ADDRESS_CACHE["at"], 0.0, "启动时没预热地址缓存")
@@ -1916,6 +1916,24 @@ class TmuxWebTests(unittest.TestCase):
         # 查询串要原样留着（签名链接靠它）
         self.assertEqual(tmux_web.openlist_d_link("https://h/a/x.mp4?token=1"),
                          "https://h/d/a/x.mp4?token=1")
+
+    def test_the_queue_strip_is_wired_into_the_composer(self):
+        """忙的时候消息排到服务端队列，输入框上方的条带能看能撤能改成"打断并立刻发"。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn('id="queue-strip"', page)
+        app = self.client.get("/assets/console-app.js").text
+        for marker in ("function enqueueMessage(", "async function loadQueue()",
+                       "function renderQueueStrip(", "function setupQueueStrip(",
+                       "setQueueMode(", "/mode", "data-queue-cancel", "data-queue-steer",
+                       "window.TmuxQueue"):
+            self.assertIn(marker, app)
+        # 忙的时候走排队，而不是硬塞
+        self.assertIn("if(!prompt&&state.waiting){", app)
+        self.assertIn("enqueueMessage(text)", app)
+        css = self.client.get("/assets/console.css").text
+        self.assertIn(".queue-strip{", css)
+        self.assertIn(".qs-text{max-width", css)
 
     def test_the_git_panel_is_wired_into_the_file_bar(self):
         """Git 面板：文件栏上的入口、面板骨架、以及按钮到接口的连线。"""
@@ -2147,7 +2165,7 @@ class TmuxWebTests(unittest.TestCase):
         with patch.dict("os.environ", {"TMUX_WEB_API_TOKEN": "relay-token-value"}):
             client = TestClient(create_app(self.tmux, password="pw",
                                            session_secret="test-session-secret",
-                                           share_db=":memory:", remote_store=FakeRemoteStore(),
+                                           share_db=":memory:", queue_db=":memory:", remote_store=FakeRemoteStore(),
                                            remote_runner_factory=FakeSSHRunner))
             self.assertEqual(client.post("/api/session").status_code, 401)
             self.assertEqual(client.post("/api/session",
@@ -2200,7 +2218,7 @@ class TmuxWebTests(unittest.TestCase):
         self.client = TestClient(create_app(
             self.tmux, password="unit-test-admin-password",
             session_secret="test-secret", terminal_factory=self.terminals,
-            share_db=":memory:", home_db=":memory:",
+            share_db=":memory:", queue_db=":memory:", home_db=":memory:",
             remote_store=self.remote_store,
             remote_runner_factory=RecordingRunner))
         self.login()
@@ -2234,7 +2252,7 @@ class TmuxWebTests(unittest.TestCase):
             password="unit-test-admin-password",
             session_secret="test-secret",
             terminal_factory=FakeTerminalFactory(),
-            share_db=":memory:",
+            share_db=":memory:", queue_db=":memory:",
             remote_store=FakeRemoteStore(),
             remote_runner_factory=FakeSSHRunner,
         ))
@@ -2299,7 +2317,7 @@ class TmuxWebTests(unittest.TestCase):
             password="unit-test-admin-password",
             session_secret="test-secret",
             terminal_factory=FakeTerminalFactory(),
-            share_db=":memory:",
+            share_db=":memory:", queue_db=":memory:",
             remote_store=FakeRemoteStore(),
             remote_runner_factory=FakeSSHRunner,
         ))
@@ -2368,7 +2386,7 @@ class TmuxWebTests(unittest.TestCase):
         client = TestClient(create_app(
             self.tmux, password="unit-test-admin-password",
             session_secret="test-secret", terminal_factory=FakeTerminalFactory(),
-            share_db=":memory:", home_db=":memory:",
+            share_db=":memory:", queue_db=":memory:", home_db=":memory:",
             remote_store=self.remote_store,
             remote_runner_factory=FakeSSHRunner))
         response = client.post("/login", data={"password": "unit-test-admin-password"},
@@ -2519,7 +2537,7 @@ class TmuxWebTests(unittest.TestCase):
         client = TestClient(create_app(
             self.tmux, password="unit-test-admin-password",
             session_secret="test-secret", terminal_factory=FakeTerminalFactory(),
-            share_db=":memory:", home_db=":memory:",
+            share_db=":memory:", queue_db=":memory:", home_db=":memory:",
             remote_store=self.remote_store,
             remote_runner_factory=MenuRunner))
         response = client.post("/login", data={"password": "unit-test-admin-password"},
@@ -2579,7 +2597,7 @@ class TmuxWebTests(unittest.TestCase):
         self.client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
                                             session_secret="test-secret",
                                             terminal_factory=self.terminals,
-                                            share_db=":memory:", home_db=":memory:",
+                                            share_db=":memory:", queue_db=":memory:", home_db=":memory:",
                                             remote_store=self.remote_store,
                                             remote_runner_factory=FakeSSHRunner))
         self.login()
@@ -2789,7 +2807,7 @@ class TmuxWebTests(unittest.TestCase):
             with patch.dict("os.environ", {"TMUX_WEB_TRUST_PROXY": "1", "TMUX_WEB_SECURE_COOKIES": "auto"}):
                 client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
                                                session_secret="test-secret", terminal_factory=self.terminals,
-                                               share_db=":memory:", remote_store=FakeRemoteStore(),
+                                               share_db=":memory:", queue_db=":memory:", remote_store=FakeRemoteStore(),
                                                remote_runner_factory=FakeSSHRunner))
                 response = client.post("/login", data={"password": "unit-test-admin-password"}, headers=headers,
                                        follow_redirects=False)
@@ -2798,7 +2816,7 @@ class TmuxWebTests(unittest.TestCase):
             with patch.dict("os.environ", {"TMUX_WEB_TRUST_PROXY": "", "TMUX_WEB_SECURE_COOKIES": "auto"}):
                 client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
                                                session_secret="test-secret", terminal_factory=self.terminals,
-                                               share_db=":memory:", remote_store=FakeRemoteStore(),
+                                               share_db=":memory:", queue_db=":memory:", remote_store=FakeRemoteStore(),
                                                remote_runner_factory=FakeSSHRunner))
                 response = client.post("/login", data={"password": "unit-test-admin-password"}, headers=headers,
                                        follow_redirects=False)
@@ -2808,7 +2826,7 @@ class TmuxWebTests(unittest.TestCase):
         with patch.dict("os.environ", {"TMUX_WEB_ALLOWED_HOSTS": "chat.example.com"}):
             client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
                                            session_secret="test-secret", terminal_factory=self.terminals,
-                                           share_db=":memory:", remote_store=FakeRemoteStore(),
+                                           share_db=":memory:", queue_db=":memory:", remote_store=FakeRemoteStore(),
                                            remote_runner_factory=FakeSSHRunner))
             strays = client.get("/login", headers={"Host": "evil.example.net"})
             allowed = client.get("/login", headers={"Host": "chat.example.com"})
@@ -2891,7 +2909,7 @@ class TmuxWebTests(unittest.TestCase):
         with patch.dict("os.environ", {"TMUX_WEB_MCP_AUTH": "off"}):
             client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
                                            session_secret="test-secret", terminal_factory=self.terminals,
-                                           share_db=":memory:", remote_store=FakeRemoteStore(),
+                                           share_db=":memory:", queue_db=":memory:", remote_store=FakeRemoteStore(),
                                            remote_runner_factory=FakeSSHRunner))
             body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
             open_mcp = client.post("/mcp", json=body)
@@ -2904,7 +2922,7 @@ class TmuxWebTests(unittest.TestCase):
     def test_mcp_endpoint_requires_the_api_token(self):
         anonymous = TestClient(create_app(self.tmux, password="unit-test-admin-password",
                                          session_secret="test-secret", terminal_factory=self.terminals,
-                                         share_db=":memory:", remote_store=FakeRemoteStore(),
+                                         share_db=":memory:", queue_db=":memory:", remote_store=FakeRemoteStore(),
                                          remote_runner_factory=FakeSSHRunner))
         body = {"jsonrpc": "2.0", "id": 1, "method": "initialize"}
         self.assertEqual(anonymous.post("/mcp", json=body).status_code, 401)
@@ -2912,7 +2930,7 @@ class TmuxWebTests(unittest.TestCase):
         with patch.dict("os.environ", {"TMUX_WEB_API_TOKEN": token}):
             client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
                                            session_secret="test-secret", terminal_factory=self.terminals,
-                                           share_db=":memory:", remote_store=FakeRemoteStore(),
+                                           share_db=":memory:", queue_db=":memory:", remote_store=FakeRemoteStore(),
                                            remote_runner_factory=FakeSSHRunner))
             allowed = client.post("/mcp", json=body, headers={"Authorization": "Bearer " + token})
         self.assertEqual(allowed.status_code, 200)
@@ -4695,7 +4713,9 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn('console.css: composer-files.css', page)
         self.assertIn('console.bundle: assets/composer-files.js',
                       self.client.get("/assets/console.bundle.js").text)
-        self.assertIn('<div class="composer-card"><div class="cf-bar">', page)
+        # 排队条带插在卡片和 cf-bar 之间，所以这里只要求两者相邻关系成立
+        self.assertIn('<div class="composer-card">', page)
+        self.assertIn('<div class="cf-bar">', page)
         self.assertIn('<div class="cf-strip" id="uploads" hidden></div>', page)
         self.assertIn('id="attach"', page)
         self.assertIn("window.TmuxFiles.mount({", page)
@@ -4860,7 +4880,7 @@ class TmuxWebTests(unittest.TestCase):
         # 用独立的内存 home.db：这组断言会写偏好，不能落到部署里的 home.db
         client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
                                        session_secret="test-secret", terminal_factory=self.terminals,
-                                       share_db=":memory:", home_db=":memory:",
+                                       share_db=":memory:", queue_db=":memory:", home_db=":memory:",
                                        remote_store=self.remote_store, remote_runner_factory=FakeSSHRunner))
         self.assertEqual(client.post("/login", data={"password": "unit-test-admin-password"},
                                      follow_redirects=False).status_code, 303)
@@ -5120,7 +5140,7 @@ class TmuxWebTests(unittest.TestCase):
         with patch.dict("os.environ", {"TMUX_WEB_FILE_UPLOAD_MAX": "8"}):
             client = TestClient(create_app(self.tmux, password="unit-test-admin-password",
                                            session_secret="test-secret", terminal_factory=self.terminals,
-                                           share_db=":memory:", remote_store=FakeRemoteStore(),
+                                           share_db=":memory:", queue_db=":memory:", remote_store=FakeRemoteStore(),
                                            remote_runner_factory=FakeSSHRunner))
             client.post("/login", data={"password": "unit-test-admin-password"})
             with tempfile.TemporaryDirectory() as directory:
@@ -5452,7 +5472,7 @@ class SendSubmittedTests(unittest.TestCase):
             password="unit-test-admin-password",
             session_secret="test-secret",
             terminal_factory=FakeTerminalFactory(),
-            share_db=":memory:",
+            share_db=":memory:", queue_db=":memory:",
             remote_store=FakeRemoteStore(),
             remote_runner_factory=FakeSSHRunner,
         ))
@@ -5709,7 +5729,7 @@ class BackgroundResendRouteTests(unittest.TestCase):
             password="unit-test-admin-password",
             session_secret="test-secret",
             terminal_factory=FakeTerminalFactory(),
-            share_db=":memory:",
+            share_db=":memory:", queue_db=":memory:",
             remote_store=FakeRemoteStore(),
             remote_runner_factory=FakeSSHRunner,
             resend_manager=manager,

@@ -29,6 +29,18 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 .block-wrap{position:relative;margin:10px 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface2);max-width:100%;min-width:0}
 .block-bar{display:flex;align-items:center;gap:6px;padding:5px 8px;border-bottom:1px solid var(--line);background:var(--card-hover)}
 .block-kind{margin-right:auto;color:var(--faint);font:10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em;text-transform:uppercase}
+/* 排队条带：忙的时候排下来的消息，等这一轮结束自动发 */
+.queue-strip{display:flex;flex-wrap:wrap;gap:5px;padding:0 2px 8px}
+.queue-strip[hidden]{display:none}
+.qs-item{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:3px 4px 3px 9px;border:1px solid var(--line);
+  border-radius:999px;background:var(--surface2);color:var(--muted);font-size:11.5px;line-height:1.5}
+.qs-item.failed{border-color:color-mix(in srgb,var(--danger) 45%,var(--line));color:var(--danger)}
+.qs-text{max-width:min(46vw,320px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qs-state{color:inherit}
+.qs-btn{flex:none;width:20px;height:20px;padding:0;border:0;border-radius:50%;background:transparent;
+  color:var(--faint);font-size:12px;line-height:1;cursor:pointer}
+.qs-btn:hover{background:var(--card-hover);color:var(--ink)}
+@media(max-width:760px){.qs-text{max-width:52vw}}
 /* Git 面板：改动 / 检查点 / 回滚 / worktree。宽度跟着卡片走，手机上满屏。 */
 .git-panel{position:fixed;inset:0;z-index:82;display:grid;place-items:center;padding:20px;background:rgba(12,10,9,.45)}
 .git-panel[hidden]{display:none}

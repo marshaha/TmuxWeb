@@ -30,6 +30,7 @@ import sqlite3
 from auth_store import PasswordStore
 import federation
 import git_tools
+import message_queue
 from plugin_api import PluginError, PluginManager, PluginServices, install_routes
 import time
 import threading
@@ -1188,6 +1189,12 @@ class FileDeleteRequest(BaseModel):
     recursive: bool = False
 
 
+class QueueAddRequest(BaseModel):
+    text: str
+    submit: bool = True
+    mode: str = "queue"
+
+
 class GitCheckpointRequest(BaseModel):
     label: str = ""
 
@@ -1691,6 +1698,7 @@ def create_app(
     session_secret: str | None = None,
     terminal_factory=None,
     share_db: str | None = None,
+    queue_db: str | None = None,
     home_db: str | None = None,
     needs_you_inbox_db: str | None = None,
     remote_store=None,
@@ -5473,6 +5481,101 @@ def create_app(
         transport, actual_pane_id = pane_transport(pane_ref)
         return transport, actual_pane_id, pane
 
+    # ---- 持久排队：忙碌时先存下来，等这一轮结束再发 ------------------------
+    queue_store = message_queue.QueueStore(queue_db or os.environ.get("TMUX_WEB_QUEUE_DB", "")
+                                           or str(BASE_DIR / "message_queue.db"))
+
+    async def deliver_queued(item) -> None:
+        """真正把排队消息发出去；steer 模式先按一次中断键。"""
+        pane = await asyncio.to_thread(pane_or_404, item.pane)
+        transport, actual_pane_id = pane_transport(item.pane)
+        if item.mode == "steer":
+            provider = pane.get("command") or pane.get("provider") or ""
+            await asyncio.to_thread(transport.send_key, actual_pane_id,
+                                    interrupt_key(provider), pane)
+            await asyncio.sleep(0.5)
+        submitted = await asyncio.to_thread(transport.send, actual_pane_id, item.text,
+                                            item.submit, pane=pane)
+        if item.submit and submitted is False:
+            raise RuntimeError("文字进去了，但回车没生效")
+
+    def pane_is_busy(pane: dict) -> bool:
+        provider = (pane.get("provider") or pane.get("command") or "")
+        try:
+            return agent_busy(provider, pane)
+        except Exception:                   # noqa: BLE001 - 探针失败就当空闲，别把队列卡死
+            return False
+
+    async def queue_worker_loop() -> None:
+        """每 2 秒扫一遍：某 pane 空闲了就发它队首那条。"""
+        while True:
+            try:
+                panes = await asyncio.to_thread(queue_store.panes_with_pending)
+                for pane_id in panes:
+                    try:
+                        pane = await asyncio.to_thread(pane_or_404, pane_id)
+                    except HTTPException:
+                        continue                       # 窗格没了：留给用户自己取消
+                    head = await asyncio.to_thread(lambda ref=pane_id: queue_store.list(ref)[:1])
+                    if not head:
+                        continue
+                    if head[0].mode == "queue" and await asyncio.to_thread(pane_is_busy, pane):
+                        continue                       # 还在跑：下一轮再说，不消耗尝试次数
+                    claimed = await asyncio.to_thread(queue_store.claim_next, pane_id)
+                    if claimed is None:
+                        continue
+                    try:
+                        await deliver_queued(claimed)
+                        await asyncio.to_thread(queue_store.finish, claimed.id, "sent")
+                    except Exception as exc:           # noqa: BLE001
+                        LOGGER.warning("queued send failed pane=%s: %s", pane_id, exc)
+                        await asyncio.to_thread(queue_store.retry_later, claimed.id, str(exc))
+            except asyncio.CancelledError:
+                raise
+            except Exception:                          # noqa: BLE001 - worker 不能死
+                LOGGER.exception("queue worker round failed")
+            await asyncio.sleep(2)
+
+    @app.get("/api/panes/{pane_id}/queue")
+    async def list_queue(request: Request, pane_id: str):
+        require_auth(request)
+        items = await asyncio.to_thread(queue_store.list, resolve_pane_ref(pane_id))
+        return {"pane": pane_id, "items": [item.as_dict() for item in items]}
+
+    @app.post("/api/panes/{pane_id}/queue")
+    async def add_to_queue(request: Request, pane_id: str, payload: QueueAddRequest):
+        require_auth(request)
+        if payload.mode not in message_queue.MODES:
+            raise HTTPException(status_code=422,
+                                detail=f"mode 只能是 {' / '.join(message_queue.MODES)}")
+        try:
+            item = await asyncio.to_thread(queue_store.add, resolve_pane_ref(pane_id),
+                                           payload.text, payload.submit, payload.mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        pending = await asyncio.to_thread(queue_store.list, item.pane)
+        return {"item": item.as_dict(), "pending": len(pending)}
+
+    @app.post("/api/panes/{pane_id}/queue/{item_id}/mode")
+    async def set_queued_mode(request: Request, pane_id: str, item_id: str, payload: QueueAddRequest):
+        """把一条还没发的排队消息改成"打断并立刻发"（或改回来）。"""
+        require_auth(request)
+        try:
+            changed = await asyncio.to_thread(queue_store.set_mode, item_id, payload.mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not changed:
+            raise HTTPException(status_code=404, detail="这条排队消息已经开始发送了")
+        return {"id": item_id, "mode": payload.mode}
+
+    @app.delete("/api/panes/{pane_id}/queue/{item_id}")
+    async def cancel_queued(request: Request, pane_id: str, item_id: str):
+        require_auth(request)
+        cancelled = await asyncio.to_thread(queue_store.cancel, item_id)
+        if not cancelled:
+            raise HTTPException(status_code=404, detail="这条排队消息已经发出去了")
+        return {"cancelled": True, "id": item_id}
+
     # ---- git：工作树状态、检查点、回滚、diff、worktree ----------------------
     async def git_target(pane_ref: str) -> tuple[str, str]:
         """pane → (run_exec 用的主机标识, 目录)。联邦窗格没有 shell，直接说清楚。"""
@@ -7265,6 +7368,29 @@ def create_app(
             logging.getLogger(__name__).debug("address warm-up failed", exc_info=True)
 
     app.router.add_event_handler("startup", warm_addresses)
+
+    async def start_queue_worker():
+        """重启时先把手里的 sending 放回 pending（那次发送没送达），再开循环。"""
+        try:
+            moved = await asyncio.to_thread(queue_store.reset_inflight)
+            if moved:
+                LOGGER.info("queue: %d 条上次没送达的消息回到待发", moved)
+        except Exception:                              # noqa: BLE001
+            LOGGER.exception("queue: reset_inflight failed")
+        app.state.queue_worker = asyncio.create_task(queue_worker_loop())
+
+    async def stop_queue_worker():
+        task = getattr(app.state, "queue_worker", None)
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+
+    app.router.add_event_handler("startup", start_queue_worker)
+    app.router.add_event_handler("shutdown", stop_queue_worker)
 
     return app
 
