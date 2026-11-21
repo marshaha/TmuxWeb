@@ -2003,21 +2003,18 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".tree-tools-label{flex:none", base, "标签固定宽度，输入框才能吃掉标题行剩余空间")
         self.assertNotIn(".tree-tools-label{flex:1", base)
 
-    def test_off_screen_transcript_messages_are_virtualized_like_open_webui(self):
-        """Borrowed from Open WebUI Message.svelte (message-virtualized):
-        off-screen transcript messages get content-visibility:auto; the last
-        message (current turn, streaming lands on it) and WebKit never do."""
+    def test_off_screen_messages_are_not_virtualized_with_content_visibility(self):
+        """content-visibility:auto 曾在 WebKit 上留白屏、在 Windows Chrome 上整页崩。
+
+        #378 侧边栏点一下就 STATUS_BREAKPOINT（2026-11-20），`?nocv=1` 立刻正常，
+        所以这条 CSS 必须保持删除状态 —— 想省绘制请换别的办法。
+        """
         app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
         base = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-base.css").read_text()
-        self.assertIn(".chat-message.msg-virtualized{content-visibility:auto;contain-intrinsic-size:auto 150px}", base)
-        self.assertIn("function isWebKit()", app)
-        self.assertIn("Apple Computer, Inc.", app)
-        self.assertIn("function virtualizedClass(index,total)", app)
+        self.assertNotIn(".msg-virtualized{content-visibility", base)
+        self.assertNotIn("contain-intrinsic-size", base, "整条虚拟化 CSS 都不该回来")
+        self.assertIn("function virtualizedClass(index,total)", app, "调用点还在，函数改成返回空")
         self.assertIn("virtualizedClass(index,messages.length)", app)
-        self.assertIn("transcriptBubble(message,rendered.length+offset,messages.length)", app)
-        pending = app.index('<article class="chat-message user pending"')
-        pending_line = app[pending:app.index("\n", pending)]
-        self.assertNotIn("msg-virtualized", pending_line)
         # Streaming must update in place: a full rebuild per poll would destroy
         # every remembered intrinsic size and collapse scrollHeight.
         self.assertIn("const prevText=state.messageText||new Map();", app)

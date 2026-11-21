@@ -1198,8 +1198,6 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   const PLAIN_MODE=URL_FLAGS.get('plain')==='1';
   const NOLINK_MODE=URL_FLAGS.get('nolink')==='1';      // 只关路径链接
   const NOVIDEO_MODE=URL_FLAGS.get('novideo')==='1';    // 只关视频卡片
-  const NOCV_MODE=URL_FLAGS.get('nocv')==='1';          // 关掉 content-visibility 虚拟化（排查绘制崩溃）
-  if(NOCV_MODE)document.documentElement.classList.add('no-cv');
   window.__tmuxSafeMode=SAFE_MODE;
   window.addEventListener('error',event=>{try{clientTrace(null,`jserr:${(event.message||'').slice(0,80)}`);}catch(_e){}});
   window.addEventListener('unhandledrejection',event=>{try{clientTrace(null,`reject:${String(event.reason).slice(0,80)}`);}catch(_e){}});
@@ -1286,20 +1284,13 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     return window.TmuxUploads?TmuxUploads.bubbleHtml(message.text,pane):htmlEscape(message.text);
   }
   function deliveryHtml(pending,localId){if(pending.status==='sending')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>发送中</span>`;if(pending.status==='sent')return `<span class="message-delivery sent">已发送 ✓</span>`;if(pending.status==='retrying')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>正在重试提交…</span>`;return `<span class="message-delivery failed">发送失败<button class="retry-send" type="button" data-resend="${esc(localId||'')}" title="重新发送这条消息">重发</button></span>`;}
-  // Borrowed from Open WebUI (src/lib/components/chat/Messages/Message.svelte:55-71,173-175):
-  // off-screen messages skip layout/paint via content-visibility:auto.
-  // Two exclusions, same as upstream: the last message is the current turn —
-  // streaming updates always land on it (mergeIncrementalMessages anchors on the
-  // last id) — and WebKit, whose content-visibility implementation has paint bugs
-  // that leave on-screen messages blank (#26712). iOS WebViews and home screen
-  // apps carry no Safari token, hence the vendor check. Pending (optimistic)
-  // bubbles are built elsewhere and never get the class.
-  function isWebKit(){return navigator.vendor==='Apple Computer, Inc.'
-    ||/^((?!chrome|android).)*safari/i.test(navigator.userAgent);}
-  function virtualizedClass(index,total){
-    if(!Number.isFinite(index)||!Number.isFinite(total))return '';
-    if(isWebKit()||index>=total-1)return '';
-    return ' msg-virtualized';}
+  // 这里原本照 Open WebUI 的做法给离屏消息加 `content-visibility:auto` 省绘制，
+  // 但那条路在两个引擎上都出事：WebKit 留下空白消息（#26712），Windows Chrome 在
+  // 长会话上直接 STATUS_BREAKPOINT（#378 侧边栏点一下就整页崩，2026-11-20 实测）。
+  // 转录最多 300 条、每条几 KB，省下来的绘制时间不值这个风险 —— 保留函数名，
+  // 但不再返回任何 class，免得再有人把它接回去。
+  function virtualizedClass(index,total){    // eslint-disable-line no-unused-vars
+    return '';}
   function msgResendButton(message){
     if(!message||message.role!=='user')return '';
     return `<button class="msg-copy" type="button" data-msg-resend="${esc(message.id)}" title="把这条消息填回输入框，可修改后再发送"><svg class="ico"><use href="#i-refresh"/></svg><span class="btn-label">再次发送</span></button>`;
