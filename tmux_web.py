@@ -29,6 +29,7 @@ import sqlite3
 
 from auth_store import PasswordStore
 import federation
+import git_tools
 from plugin_api import PluginError, PluginManager, PluginServices, install_routes
 import time
 import threading
@@ -1185,6 +1186,19 @@ class FileRenameRequest(BaseModel):
 class FileDeleteRequest(BaseModel):
     paths: list[str] = Field(min_length=1, max_length=200)
     recursive: bool = False
+
+
+class GitCheckpointRequest(BaseModel):
+    label: str = ""
+
+
+class GitRestoreRequest(BaseModel):
+    ref: str
+
+
+class GitWorktreeRequest(BaseModel):
+    name: str = ""
+    branch: str = ""
 
 
 class ClientTraceRequest(BaseModel):
@@ -5458,6 +5472,109 @@ def create_app(
         pane = await asyncio.to_thread(pane_or_404, pane_ref)
         transport, actual_pane_id = pane_transport(pane_ref)
         return transport, actual_pane_id, pane
+
+    # ---- git：工作树状态、检查点、回滚、diff、worktree ----------------------
+    async def git_target(pane_ref: str) -> tuple[str, str]:
+        """pane → (run_exec 用的主机标识, 目录)。联邦窗格没有 shell，直接说清楚。"""
+        pane = await asyncio.to_thread(pane_or_404, pane_ref)
+        resolved = resolve_pane_ref(pane_ref)
+        host_id, _pane_id = split_pane_ref(resolved)
+        cwd = str(pane.get("path") or "")
+        if not cwd:
+            raise HTTPException(status_code=400, detail="这个窗格不知道自己的工作目录")
+        if host_id == "localhost":
+            return "local", cwd
+        if fed_node(host_id) is not None:
+            raise HTTPException(status_code=501,
+                                detail="联邦窗格只有 HTTP 接口、没有 shell，git 功能在本地/SSH 主机上才可用")
+        return host_id, cwd
+
+    async def run_git(pane_ref: str, command: str, timeout: int = 30) -> dict:
+        host_ref, _cwd = await git_target(pane_ref)
+        try:
+            return await run_exec(host_ref, command, "", timeout, 400_000)
+        except McpToolError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/panes/{pane_id}/git")
+    async def pane_git(request: Request, pane_id: str):
+        """一次给全：是不是仓库、当前分支、脏文件、worktree、检查点。"""
+        require_auth(request)
+        _host, cwd = await git_target(pane_id)
+        status = await run_git(pane_id, git_tools.build_status(cwd))
+        if status.get("exit") in (1, 2):
+            return {"repo": False, "pane": pane_id}
+        parsed = git_tools.parse_status(status.get("stdout") or "")
+        if not parsed["root"]:
+            return {"repo": False, "pane": pane_id}
+        trees, checkpoints = await asyncio.gather(
+            run_git(pane_id, git_tools.build_list_worktrees(parsed["root"])),
+            run_git(pane_id, git_tools.build_list_checkpoints(parsed["root"])),
+        )
+        return {
+            "repo": True,
+            "pane": pane_id,
+            "root": parsed["root"],
+            "branch": parsed["branch"],
+            "clean": not parsed["changes"],
+            "changes": parsed["changes"],
+            "worktrees": git_tools.parse_worktrees(trees.get("stdout") or ""),
+            "checkpoints": git_tools.parse_checkpoints(checkpoints.get("stdout") or ""),
+        }
+
+    @app.post("/api/panes/{pane_id}/git/checkpoint")
+    async def create_git_checkpoint(request: Request, pane_id: str,
+                                    payload: GitCheckpointRequest | None = None):
+        """把当前的改动快照成一个 ref（不动分支、不动 index、不动 stash 列表）。"""
+        require_auth(request)
+        _host, cwd = await git_target(pane_id)
+        label = (payload.label if payload else "") or time.strftime("%m-%d %H:%M")
+        result = await run_git(pane_id, git_tools.build_create_checkpoint(cwd, label))
+        out = (result.get("stdout") or "").strip()
+        if result.get("exit") or not out:
+            detail = (result.get("stderr") or "").strip() or "git 没能建立检查点"
+            raise HTTPException(status_code=400, detail=detail)
+        if out.startswith("CLEAN"):
+            return {"created": False, "detail": "工作区是干净的，没有需要快照的改动"}
+        ref, _tab, sha = out.partition("\t")
+        return {"created": True, "ref": ref.strip(), "sha": sha.strip(), "label": label}
+
+    @app.post("/api/panes/{pane_id}/git/restore")
+    async def restore_git_checkpoint(request: Request, pane_id: str, payload: GitRestoreRequest):
+        require_auth(request)
+        _host, cwd = await git_target(pane_id)
+        result = await run_git(pane_id, git_tools.build_restore(cwd, payload.ref))
+        if result.get("exit"):
+            detail = (result.get("stderr") or result.get("stdout") or "").strip()
+            raise HTTPException(status_code=400, detail=detail or "回滚失败")
+        parsed = git_tools.parse_restore(result.get("stdout") or "")
+        data = {"ref": payload.ref, **parsed}
+        return data
+
+    @app.get("/api/panes/{pane_id}/git/diff")
+    async def pane_git_diff(request: Request, pane_id: str, base: str = ""):
+        require_auth(request)
+        _host, cwd = await git_target(pane_id)
+        result = await run_git(pane_id, git_tools.build_diff(cwd, base), timeout=45)
+        text = result.get("stdout") or ""
+        stat, _, patch = text.partition("--PATCH--")
+        return {"pane": pane_id, "base": base,
+                "stat": stat.replace("--STAT--", "", 1).strip(),
+                "patch": patch, "truncated": bool(result.get("truncated"))}
+
+    @app.post("/api/panes/{pane_id}/git/worktree")
+    async def create_git_worktree(request: Request, pane_id: str, payload: GitWorktreeRequest):
+        """给这条会话开一份独立的 working tree（每个任务一个，互不踩文件）。"""
+        require_auth(request)
+        _host, cwd = await git_target(pane_id)
+        result = await run_git(pane_id, git_tools.build_worktree(cwd, payload.name, payload.branch),
+                               timeout=60)
+        lines = [line for line in (result.get("stdout") or "").splitlines() if line.strip()]
+        if result.get("exit") or not lines:
+            detail = (result.get("stderr") or "").strip() or "worktree 创建失败"
+            raise HTTPException(status_code=400, detail=detail)
+        return {"path": lines[-1].strip(), "branch": payload.branch or f"wt/{payload.name}",
+                "pane": pane_id}
 
     @app.get("/api/panes/{pane_id}/tail")
     async def pane_tail(request: Request, pane_id: str, lines: int = 10):

@@ -5817,3 +5817,97 @@ class BackgroundResendRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GitWorkspaceTests(unittest.TestCase):
+    """检查点 / 回滚 / worktree：在临时仓库里真跑一遍 git，不打桩。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name) / "repo"
+        self.repo.mkdir()
+
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=self.repo, capture_output=True, text=True)
+
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "t")
+        (self.repo / "app.txt").write_text("one\n")
+        git("add", "app.txt")
+        git("commit", "-q", "-m", "init")
+
+        self.tmux = FakeTmux()
+        self.tmux.panes[0]["path"] = str(self.repo)
+        self.client = TestClient(create_app(
+            self.tmux, password="unit-test-admin-password", session_secret="test-secret",
+            terminal_factory=FakeTerminalFactory(), share_db=":memory:",
+            remote_store=FakeRemoteStore(), remote_runner_factory=FakeSSHRunner))
+        self.login()
+
+    def login(self):
+        response = self.client.post("/login", data={"password": "unit-test-admin-password"},
+                                    follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+
+    def test_it_reports_branch_changes_and_worktrees(self):
+        (self.repo / "app.txt").write_text("dirty\n")
+        payload = self.client.get("/api/panes/%254/git").json()
+        self.assertTrue(payload["repo"])
+        self.assertEqual(payload["branch"], "main")
+        self.assertFalse(payload["clean"])
+        self.assertEqual([item["path"] for item in payload["changes"]], ["app.txt"])
+        self.assertEqual([item["branch"] for item in payload["worktrees"]], ["main"])
+
+    def test_a_directory_that_is_not_a_repo_says_so(self):
+        self.tmux.panes[0]["path"] = self.tmp.name
+        self.assertFalse(self.client.get("/api/panes/%254/git").json()["repo"])
+
+    def test_checkpoint_then_restore_puts_the_working_tree_back(self):
+        (self.repo / "app.txt").write_text("checkpoint state\n")
+        created = self.client.post("/api/panes/%254/git/checkpoint",
+                                   json={"label": "before the agent went wild"}).json()
+        self.assertTrue(created["created"], created)
+        ref = created["ref"]
+        self.assertTrue(ref.startswith("refs/tmuxweb/checkpoints/"))
+
+        listed = self.client.get("/api/panes/%254/git").json()["checkpoints"]
+        self.assertEqual([item["ref"] for item in listed], [ref])
+
+        (self.repo / "app.txt").write_text("the agent broke it\n")
+        self.assertTrue(self.client.get("/api/panes/%254/git").json()["changes"])
+
+        restored = self.client.post("/api/panes/%254/git/restore", json={"ref": ref}).json()
+        self.assertTrue(restored["matches"], f"工作区必须和检查点一致（不是和 HEAD 一致）：{restored}")
+        self.assertEqual((self.repo / "app.txt").read_text(), "checkpoint state\n")
+        # 分支没被动过：检查点只是 ref，不是提交到 main 上
+        status = subprocess.run(["git", "log", "--oneline", "-1"], cwd=self.repo,
+                                capture_output=True, text=True).stdout
+        self.assertIn("init", status)
+
+    def test_a_clean_tree_creates_nothing(self):
+        payload = self.client.post("/api/panes/%254/git/checkpoint", json={"label": "x"}).json()
+        self.assertFalse(payload["created"])
+        self.assertIn("干净", payload["detail"])
+
+    def test_untracked_files_survive_a_restore(self):
+        (self.repo / "app.txt").write_text("state\n")
+        ref = self.client.post("/api/panes/%254/git/checkpoint", json={}).json()["ref"]
+        (self.repo / "notes.txt").write_text("mine\n")
+        payload = self.client.post("/api/panes/%254/git/restore", json={"ref": ref}).json()
+        self.assertTrue((self.repo / "notes.txt").exists(), "回滚不能删掉检查点之后新增的文件")
+        self.assertIn("notes.txt", [item["path"] for item in payload["untracked"]])
+
+    def test_diff_shows_the_pending_change(self):
+        (self.repo / "app.txt").write_text("changed\n")
+        payload = self.client.get("/api/panes/%254/git/diff").json()
+        self.assertIn("app.txt", payload["stat"])
+        self.assertIn("+changed", payload["patch"])
+
+    def test_worktree_gives_the_thread_its_own_checkout(self):
+        payload = self.client.post("/api/panes/%254/git/worktree", json={"name": "task1"}).json()
+        self.assertTrue(Path(payload["path"]).is_dir(), payload)
+        self.assertEqual(payload["branch"], "wt/task1")
+        trees = self.client.get("/api/panes/%254/git").json()["worktrees"]
+        self.assertEqual(sorted(item["branch"] for item in trees), ["main", "wt/task1"])
