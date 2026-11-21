@@ -209,7 +209,7 @@ test('accept: the completion never calls the send path', () => {
 
 // ---- message actions: resend button ----
 
-const bubbleSrc = [grab('esc'), grab('msgResendButton'), grab('isWebKit'), grab('virtualizedClass'), grab('transcriptBubble')].join('\n');
+const bubbleSrc = [grab('esc'), grab('msgResendButton'), grab('virtualizedClass'), grab('transcriptBubble')].join('\n');
 const bubble = new Function(
   'markdown', 'userBubbleHtml',
   bubbleSrc + '\nreturn transcriptBubble;',

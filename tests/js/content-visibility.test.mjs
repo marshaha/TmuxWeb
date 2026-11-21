@@ -1,6 +1,11 @@
-// Unit tests for the borrowed content-visibility virtualization in
-// web/assets/console-app.js (Open WebUI Message.svelte: message-virtualized).
-// Run with: node --test tests/js/content-visibility.test.mjs
+// content-visibility 虚拟化已经拿掉了，这个文件从"验证它有"变成"验证它别回来"。
+//
+// 背景：当年照 Open WebUI 的做法给离屏消息挂 content-visibility:auto 省绘制，
+// 结果 WebKit 上留下空白消息（#26712），Windows Chrome 更狠 —— 侧边栏点开 #378
+// 直接 STATUS_BREAKPOINT 整页崩（2026-11-20，?nocv=1 关掉就正常）。
+// 转录最多 300 条、每条几 KB，省下来的绘制时间不值这个风险。
+//
+// 运行：node --test tests/js/content-visibility.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -24,92 +29,53 @@ function grab(name) {
   throw new Error(`unbalanced ${name}`);
 }
 
-const src = [grab('isWebKit'), grab('virtualizedClass'), grab('esc'), grab('msgResendButton'), grab('transcriptBubble')].join('\n');
+const src = [grab('virtualizedClass'), grab('esc'), grab('msgResendButton'), grab('transcriptBubble')].join('\n');
 const virtualizedClass = new Function(src + '\nreturn virtualizedClass;')();
-const isWebKit = new Function(src + '\nreturn isWebKit;')();
 const bubble = new Function(
   'markdown', 'userBubbleHtml',
   src + '\nreturn transcriptBubble;',
 )((text) => `<p>${text}</p>`, (message) => message.text);
 
-function setNavigator(vendor, userAgent) {
-  // Node 24 exposes globalThis.navigator as a getter-only property.
-  Object.defineProperty(globalThis, 'navigator', { value: { vendor, userAgent }, configurable: true });
-}
-
-const CHROME = { vendor: 'Google Inc.', userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' };
-const SAFARI = { vendor: 'Apple Computer, Inc.', userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15' };
-// iOS WebView / home screen app: no Safari token, Apple vendor only.
-const IOS_WEBVIEW = { vendor: 'Apple Computer, Inc.', userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148' };
-
-test('off-screen messages get the class, the last (current turn) does not', () => {
-  setNavigator(CHROME.vendor, CHROME.userAgent);
-  assert.equal(virtualizedClass(0, 5), ' msg-virtualized');
-  assert.equal(virtualizedClass(3, 5), ' msg-virtualized');
-  assert.equal(virtualizedClass(4, 5), '', 'last message is the current turn: streaming lands on it');
-  assert.equal(virtualizedClass(0, 1), '', 'a lone message is the current turn');
-});
-
-test('WebKit never virtualizes (upstream paint bug #26712)', () => {
-  for (const ua of [SAFARI, IOS_WEBVIEW]) {
-    setNavigator(ua.vendor, ua.userAgent);
-    assert.equal(isWebKit(), true, ua.userAgent);
-    assert.equal(virtualizedClass(0, 5), '');
-    assert.equal(virtualizedClass(0, 1), '');
+test('没有任何一条消息再被打上 content-visibility', () => {
+  for (const [index, total] of [[0, 5], [3, 5], [4, 5], [0, 1]]) {
+    assert.equal(virtualizedClass(index, total), '',
+      'virtualizedClass 必须永远返回空串：返回东西就说明这条 CSS 又接回来了');
   }
-  setNavigator(CHROME.vendor, CHROME.userAgent);
-  assert.equal(isWebKit(), false);
 });
 
-test('transcriptBubble stamps the class on older bubbles only', () => {
-  setNavigator(CHROME.vendor, CHROME.userAgent);
+test('CSS 里不再有跳过绘制的那条规则', () => {
+  assert.ok(!css.includes('.msg-virtualized{content-visibility'), 'content-visibility 规则不许回来');
+  assert.ok(!css.includes('contain-intrinsic-size'), 'contain-intrinsic-size 跟着一起不许回来');
+});
+
+test('transcriptBubble 不再往气泡上盖 msg-virtualized', () => {
   const user = { id: 'u1', role: 'user', text: 'hi' };
   const asst = { id: 'a1', role: 'assistant', text: 'hello' };
-  assert.match(bubble(user, 0, 3), /class="chat-message user msg-virtualized"/);
-  assert.match(bubble(asst, 1, 3), /class="chat-message assistant msg-virtualized"/);
-  assert.match(bubble(asst, 2, 3), /class="chat-message assistant"/);
-  assert.doesNotMatch(bubble(asst, 2, 3), /msg-virtualized/);
-  setNavigator(SAFARI.vendor, SAFARI.userAgent);
-  assert.doesNotMatch(bubble(user, 0, 3), /msg-virtualized/);
+  for (const node of [bubble(user, 0, 3), bubble(asst, 1, 3), bubble(asst, 2, 3)]) {
+    assert.doesNotMatch(node, /msg-virtualized/);
+  }
 });
 
-test('the CSS rule is exactly the borrowed one-liner plus intrinsic size', () => {
-  assert.match(css, /\.chat-message\.msg-virtualized\{content-visibility:auto;contain-intrinsic-size:auto 150px\}/);
+test('两条渲染路径仍然把 index/total 传进来（换实现时不用再动调用点）', () => {
+  assert.ok(page.includes('virtualizedClass(index,messages.length)'), '正式列表要传 index');
+  assert.ok(page.includes('transcriptBubble(message,rendered.length+offset,messages.length)'), '追加路径要传 index');
 });
 
-test('both render paths wire the class; pending bubbles never get it', () => {
-  // Full rebuild path (formal map) and append-only path.
-  assert.ok(page.includes('virtualizedClass(index,messages.length)'), 'formal map must pass the index');
-  assert.ok(page.includes('transcriptBubble(message,rendered.length+offset,messages.length)'), 'append path must pass the index');
-  // Pending (optimistic) bubbles are built from a separate template without the class.
-  const pendingAt = page.indexOf('<article class="chat-message user pending"');
-  assert.notEqual(pendingAt, -1, 'pending template must stay class-free');
-  const pendingLine = page.slice(pendingAt, page.indexOf('\n', pendingAt));
-  assert.ok(!pendingLine.includes('msg-virtualized') && !pendingLine.includes('virtualizedClass'),
-    'pending template must not gain the class');
+test('流式更新仍然原地替换，不整段重建', () => {
+  // 整段 innerHTML 重建会让滚到一半的读者跳位；同 id + 只改文本时只替换那一条。
+  assert.ok(page.includes('const prevText=state.messageText||new Map();'), '要留旧文本做 diff');
+  assert.ok(page.includes('if(!pending.length&&rendered.length===ids.length'), '原地更新要求 id 一致且没有 pending');
+  assert.ok(page.includes('node.replaceWith(...wrap.childNodes)'), '只替换变化的那条');
+  assert.ok(page.includes('enhancePathsLazy(host,true)'), '原地更新后同样要重新做路径处理');
 });
 
-test('streaming updates in place instead of rebuilding (keeps remembered sizes)', () => {
-  // A full innerHTML rebuild on every streaming poll would destroy every
-  // bubble, and with content-visibility that also destroys every remembered
-  // intrinsic size, so scrollHeight collapses and a reader scrolled up loses
-  // their place. Same ids + text-only change must update just those bubbles.
-  assert.ok(page.includes('const prevText=state.messageText||new Map();'), 'old texts must be kept for the diff');
-  assert.ok(page.includes('if(!pending.length&&rendered.length===ids.length'), 'in-place path needs same ids, no pending');
-  assert.ok(page.includes('node.replaceWith(...wrap.childNodes)'), 'only the changed bubble is replaced');
-  assert.ok(page.includes('enhancePathsLazy(host,true)'), 'in-place path re-enhances like the rebuild');
-});
-
-test('load-earlier anchors on the visible message, not on scrollHeight', () => {
-  // A scrollHeight delta is an estimate under content-visibility (and a
-  // rebuild forgets every remembered size, so the delta can go negative and
-  // throw the reader to the top). The anchor's own position is measured live.
-  assert.ok(page.includes('function firstVisibleMessage()'), 'anchor helper must exist');
-  assert.ok(page.includes('function restoreAnchor(anchor)'), 'restore helper must exist');
+test('加载更早消息按"可见消息"锚定，而不是按 scrollHeight 差', () => {
+  assert.ok(page.includes('function firstVisibleMessage()'), '锚点辅助函数要在');
+  assert.ok(page.includes('function restoreAnchor(anchor)'), '恢复辅助函数要在');
   assert.ok(page.includes('const previous=state.transcriptMessages.length,anchor=firstVisibleMessage();'),
-    'loadEarlier must capture the anchor before fetching');
+    'fetch 之前要取锚点');
   assert.ok(page.includes('requestAnimationFrame(()=>restoreAnchor(anchor));'),
-    'anchor is corrected again one frame later, after neighbours are measured');
+    '下一帧再校正一次，等邻居测量完');
   assert.ok(!page.includes('scroll.scrollTop+=scroll.scrollHeight-height'),
-    'the scrollHeight-delta compensation must be gone');
+    'scrollHeight 差值补偿必须删掉');
 });
