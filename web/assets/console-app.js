@@ -1103,6 +1103,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       scroll.scrollTop=top;state.stick=entry.stick!==false;});}
   function paintCachedTranscript(id){const entry=cachedTranscript(id);if(!entry||!entry.messages||!entry.messages.length)return false;
     term.textContent='';$('transcript').classList.add('active');$('message-shell').hidden=true;
+    clientTrace(null,`cache:${entry.messages.length}`,id);
     state.transcriptMtime=entry.mtime;state.transcriptSig=entry.sig;state.transcriptProvider=entry.provider||'';renderTranscriptNow(entry.messages);
     $('status-dot').className='status-dot live';$('status-text').textContent=`${entry.provider||'缓存'} · 更新中…`;
     restorePaneUi(id);return true;}
@@ -1151,10 +1152,13 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
 
   function selectPane(id){if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
     setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();if(window.TmuxNeedsYou)TmuxNeedsYou.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedIds=[];$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';$('selected-sub').textContent=`${p.target} · ${p.command} · ${p.path}`;$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);syncLiveButton();syncFavButton();
+    clientTrace(null,'sel:cleared',id);
     if(state.mode==='terminal'){connectTerminal(id);}
-    else if(paintCachedTranscript(id)){refreshTranscript(id);}  // instant paint, then revalidate
+    else if(paintCachedTranscript(id)){clientTrace(null,'sel:cached',id);refreshTranscript(id);}  // instant paint, then revalidate
     else {connectTranscript(id,true);}
+    clientTrace(null,'sel:connected',id);
     loadPaneModels(id);
+    clientTrace(null,'sel:models',id);
     if(state.mode==='chat'&&canAutoFocusComposer())input.focus();
     const memory=filesMemoryOn();
     const remembered=memory?readFilesView(id):null;
@@ -1195,6 +1199,8 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   const NOLINK_MODE=URL_FLAGS.get('nolink')==='1';      // 只关路径链接
   const NOVIDEO_MODE=URL_FLAGS.get('novideo')==='1';    // 只关视频卡片
   window.__tmuxSafeMode=SAFE_MODE;
+  window.addEventListener('error',event=>{try{clientTrace(null,`jserr:${(event.message||'').slice(0,80)}`);}catch(_e){}});
+  window.addEventListener('unhandledrejection',event=>{try{clientTrace(null,`reject:${String(event.reason).slice(0,80)}`);}catch(_e){}});
   // 崩溃取线索：每渲染一批就报一条"画到哪了"，服务端日志里能看到最后一次是哪条消息。
   // 用 sendBeacon 不占请求队列；页面对同一个 pane 的同一批只报一次。
   let traceAt=0, traceKey='';
@@ -1221,14 +1227,15 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       visObserver.observe(node);
     });
   }
-  function clientTrace(messages, note){
+  function clientTrace(messages, note, paneOverride){
     try{
-      if(!state.selected)return;
+      if(!state.selected&&!paneOverride)return;
       const last=(messages&&messages.length)?messages[messages.length-1]:null;
-      const key=`${state.selected}|${last?last.id:''}|${messages?messages.length:0}`;
+      const pane=paneOverride||state.selected;
+      const key=`${pane}|${last?last.id:''}|${messages?messages.length:0}|${note||''}`;
       if(key===traceKey&&Date.now()-traceAt<4000)return;
       traceKey=key;traceAt=Date.now();
-      const body=JSON.stringify({pane:state.selected,last_id:last?String(last.id):'',rendered:messages?messages.length:0,note:note||''});
+      const body=JSON.stringify({pane,last_id:last?String(last.id):'',rendered:messages?messages.length:0,note:note||''});
       if(navigator.sendBeacon)navigator.sendBeacon('/api/client-trace',new Blob([body],{type:'application/json'}));
       else fetch('/api/client-trace',{method:'POST',headers:{'Content-Type':'application/json'},body,keepalive:true});
     }catch{}
