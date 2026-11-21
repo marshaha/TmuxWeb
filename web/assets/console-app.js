@@ -844,7 +844,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   // 长会话一下子上百条消息，逐条扫文本太费；改成"碰到哪条处理哪条"：
   // 鼠标移入 / 手指按下 时才扫这一条，结果打上 data-paths 不重复处理。
   function enhancePathsLazy(container, force){
-    if(!container||SAFE_MODE)return;
+    if(!container||SAFE_MODE||NOLINK_MODE)return;
     if(container.dataset.pathsBound==='1'&&!force)return;
     if(container.dataset.pathsBound==='1'){eagerPass(container);return;}
     container.dataset.pathsBound='1';
@@ -904,7 +904,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       image.setAttribute('src',next);image.dataset.localFile='1';image.classList.add('local-image');
       image.title=image.title||'本地图片';});
     enhanceVideos(root);}
-  function enhanceVideos(root){if(window.TmuxVideo&&!SAFE_MODE)window.TmuxVideo.enhance(root);}
+  function enhanceVideos(root){if(window.TmuxVideo&&!SAFE_MODE&&!NOVIDEO_MODE)window.TmuxVideo.enhance(root);}
   const MD_VIEWER_EXTS=/^(md|markdown|mdx|txt|log|json|ya?ml|csv)$/i;
   function markdownViewerBase(href){try{const url=new URL(href,location.origin);
     const path=url.searchParams.get('path')||'';return path.replace(/[^/]*$/,'');}catch(_error){return '';}}
@@ -1192,10 +1192,35 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   const URL_FLAGS=new URLSearchParams(location.search);
   const SAFE_MODE=URL_FLAGS.get('safe')==='1';
   const PLAIN_MODE=URL_FLAGS.get('plain')==='1';
+  const NOLINK_MODE=URL_FLAGS.get('nolink')==='1';      // 只关路径链接
+  const NOVIDEO_MODE=URL_FLAGS.get('novideo')==='1';    // 只关视频卡片
   window.__tmuxSafeMode=SAFE_MODE;
   // 崩溃取线索：每渲染一批就报一条"画到哪了"，服务端日志里能看到最后一次是哪条消息。
   // 用 sendBeacon 不占请求队列；页面对同一个 pane 的同一批只报一次。
   let traceAt=0, traceKey='';
+  // 滚动时才崩 → 光知道"渲染到哪"不够，还得知道"当时屏幕上是谁"。
+  let visObserver=null, visPending=null, visTimer=null;
+  function watchVisibility(host){
+    if(!('IntersectionObserver' in window))return;
+    if(!visObserver){
+      visObserver=new IntersectionObserver(entries=>{
+        const seen=new Set(visPending||[]);
+        entries.forEach(entry=>{
+          const id=entry.target.dataset.id;
+          if(!id)return;
+          if(entry.isIntersecting)seen.add(id);else seen.delete(id);
+        });
+        visPending=[...seen];
+        clearTimeout(visTimer);
+        visTimer=setTimeout(()=>{clientTrace([],'visible:'+(visPending||[]).join(','));},400);
+      },{threshold:0.35});
+    }
+    host.querySelectorAll('.chat-message[data-id]').forEach(node=>{
+      if(node.dataset.visWatched==='1')return;
+      node.dataset.visWatched='1';
+      visObserver.observe(node);
+    });
+  }
   function clientTrace(messages, note){
     try{
       if(!state.selected)return;
@@ -1359,7 +1384,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
         changed++;
       });
       if(changed){enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);
-        clientTrace(state.transcriptMessages,'append');}
+        watchVisibility(host);clientTrace(state.transcriptMessages,'append');}
       state.renderedIds=ids;
       return;
     }
@@ -1369,7 +1394,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     const ordered=messages.map((message,index)=>(slots[index]||[]).join('')+formal[index]).join('')
       +(slots[messages.length]||[]).join('');
     host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);
-    clientTrace(state.transcriptMessages,'full');}
+    watchVisibility(host);clientTrace(state.transcriptMessages,'full');}
   const CODE_LANG_RE=/language-([\w+#-]+)/;
   async function copyText(text,button){const value=String(text==null?'':text);let ok=false;
     try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);ok=true;}}catch{}
