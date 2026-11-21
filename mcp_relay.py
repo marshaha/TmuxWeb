@@ -33,10 +33,14 @@ import hashlib
 import io
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.parse
+from pathlib import Path
 from typing import Any, BinaryIO
+
+_CALLER_PANE: str | None = None
 
 from relay_client import RelayError, base_url, request, request_raw, token
 
@@ -83,6 +87,47 @@ class RelayTools:
             for peer in peers
         ]}
 
+    def caller_pane(self) -> str:
+        """Which tmux pane is this MCP client running inside?
+
+        The server records parent→child edges, so it needs the caller's pane, and
+        the only place that knows it is here: our own process tree. Walk up from
+        this process until a pid matches a pane's `pane_pid`. Cached — a pane does
+        not change under a running client, and this runs on every ask.
+        """
+        global _CALLER_PANE
+        if _CALLER_PANE is not None:
+            return _CALLER_PANE
+        _CALLER_PANE = ""
+        try:
+            completed = subprocess.run(
+                ["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}"],
+                capture_output=True, text=True, timeout=5, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return _CALLER_PANE
+        owners = {}
+        for line in completed.stdout.splitlines():
+            pane, _, pid = line.partition("\t")
+            if pane and pid.strip().isdigit():
+                owners[int(pid)] = pane
+        pid = os.getpid()
+        for _ in range(64):                     # 深度上限，防 /proc 数据异常时死循环
+            if pid in owners:
+                _CALLER_PANE = owners[pid]
+                return _CALLER_PANE
+            try:
+                stat = Path(f"/proc/{pid}/stat").read_text()
+            except OSError:
+                break
+            # comm 可能带空格/括号，ppid 是右括号后的第二个字段
+            try:
+                pid = int(stat.rsplit(")", 1)[1].split()[1])
+            except (IndexError, ValueError):
+                break
+            if pid <= 1:
+                break
+        return _CALLER_PANE
+
     def ask_agent(self, arguments: dict) -> dict:
         target = self._target(arguments)
         question = self._text(arguments, "question", limit=20_000)
@@ -94,6 +139,7 @@ class RelayTools:
             "timeout": timeout,
             "force": bool(arguments.get("force", False)),
             "source": arguments.get("source") or "mcp",
+            "caller": arguments.get("caller") or self.caller_pane(),
         }, timeout=timeout + 30)
         return {"target": target, "reply": result.get("reply", ""), "pane": result.get("pane")}
 

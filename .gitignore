@@ -64,3 +64,6 @@ message_queue.db-wal
 approvals.db
 approvals.db-shm
 approvals.db-wal
+agent_calls.db
+agent_calls.db-shm
+agent_calls.db-wal

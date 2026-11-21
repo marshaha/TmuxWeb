@@ -30,6 +30,7 @@ import sqlite3
 from auth_store import PasswordStore
 import federation
 import git_tools
+import agent_calls
 import approvals
 import message_queue
 from plugin_api import PluginError, PluginManager, PluginServices, install_routes
@@ -160,6 +161,7 @@ CONSOLE_BUNDLE_SOURCES = (
     ("assets", "composer-files.js"),
     ("assets", "path-links.js"),
     ("assets", "prompt-card.js"),
+    ("assets", "agents-panel.js"),
     ("assets", "needs-you.js"),
     ("assets", "needs-you-inbox.js"),
     ("assets", "markdown-cjk.js"),
@@ -1445,6 +1447,8 @@ class RelayAskRequest(BaseModel):
     timeout: int = Field(default=180, ge=5, le=600)
     force: bool = False
     source: str = Field(default="", max_length=120)
+    # 谁在问：MCP 客户端所在的 pane。空表示人/curl，图里就是根节点。
+    caller: str = Field(default="", max_length=64)
 
 
 class ModelSwitchRequest(BaseModel):
@@ -1708,6 +1712,7 @@ def create_app(
     share_db: str | None = None,
     queue_db: str | None = None,
     approvals_db: str | None = None,
+    calls_db: str | None = None,
     home_db: str | None = None,
     needs_you_inbox_db: str | None = None,
     remote_store=None,
@@ -3912,6 +3917,12 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "prompt-card.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/agents-panel.js")
+    async def agents_panel_script() -> FileResponse:
+        """子 agent 调用图：谁问过谁、问到哪一步了。"""
+        return FileResponse(WEB_DIR / "assets" / "agents-panel.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/needs-you.js")
     async def needs_you_script() -> FileResponse:
         """「等你回答」卡片：只渲染过门（needs_input）的菜单，答案只走 /key。"""
@@ -5539,6 +5550,8 @@ def create_app(
     # ---- 持久排队：忙碌时先存下来，等这一轮结束再发 ------------------------
     approvals_store = approvals.ApprovalStore(
         approvals_db or os.environ.get("TMUX_WEB_APPROVALS_DB") or str(BASE_DIR / "approvals.db"))
+    calls_store = agent_calls.AgentCallStore(
+        calls_db or os.environ.get("TMUX_WEB_CALLS_DB") or str(BASE_DIR / "agent_calls.db"))
     queue_store = message_queue.QueueStore(queue_db or os.environ.get("TMUX_WEB_QUEUE_DB", "")
                                            or str(BASE_DIR / "message_queue.db"))
 
@@ -7245,6 +7258,8 @@ def create_app(
         if lock.locked():
             raise HTTPException(status_code=409, detail="another relay request is already waiting on this pane")
         started = time.monotonic()
+        call = calls_store.start(payload.caller or "", payload.target,
+                                 payload.question, payload.source)
         async with lock:
             try:
                 result = await asyncio.to_thread(
@@ -7255,17 +7270,44 @@ def create_app(
             except relay.RelayBusy as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             except relay.RelayTimeout as exc:
+                calls_store.finish(call.id, status="timeout", error=str(exc))
                 relay_log.appendleft({"at": time.time(), "target": payload.target, "source": payload.source,
                                       "status": "timeout", "question": payload.question[:400],
                                       "elapsed": round(time.monotonic() - started, 2)})
                 raise RelayTimeoutError(str(exc), exc.tail) from exc
             except (relay.RelayError, TmuxError, RuntimeError, OSError, ValueError) as exc:
+                calls_store.finish(call.id, status="error", error=str(exc))
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
-        result.update({"target": payload.target, "host": host_name, "provider": provider})
+        calls_store.finish(call.id, reply=str(result.get("reply") or ""), status="ok")
+        result.update({"target": payload.target, "host": host_name, "provider": provider,
+                       "call": call.id})
         relay_log.appendleft({"at": time.time(), "target": payload.target, "source": payload.source,
                               "status": "ok", "question": payload.question[:400],
                               "reply": str(result["reply"])[:400], "elapsed": result["elapsed"]})
         return result
+
+    @app.get("/api/agents/calls")
+    async def agent_calls_list(request: Request, pane: str = "", limit: int = 50, full: bool = False):
+        """谁问过谁：这个 pane 相关的调用（父或子），新的在前。"""
+        require_auth(request)
+        items = await asyncio.to_thread(calls_store.recent, pane, limit)
+        return {"pane": pane, "calls": [item.as_dict(full=full) for item in items]}
+
+    @app.get("/api/agents/calls/{call_id}")
+    async def agent_call_detail(request: Request, call_id: str):
+        require_auth(request)
+        call = calls_store.get(call_id)
+        if call is None:
+            raise HTTPException(status_code=404, detail="没有这条调用记录")
+        return call.as_dict(full=True)
+
+    @app.get("/api/agents/tree")
+    async def agent_call_tree(request: Request, pane: str, depth: int = 3, limit: int = 50):
+        """A→B→C 的调用树（环会被剪掉：两个 agent 互相问是真实情况）。"""
+        require_auth(request)
+        if not pane:
+            raise HTTPException(status_code=422, detail="要给 pane")
+        return await asyncio.to_thread(calls_store.tree, pane, depth, limit)
 
     @app.websocket("/ws/panes/{pane_id}")
     async def stream_pane(websocket: WebSocket, pane_id: str):
