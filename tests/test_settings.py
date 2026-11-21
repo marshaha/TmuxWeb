@@ -244,7 +244,8 @@ class SettingsPageWiringTests(unittest.TestCase):
         # one section with two tabs, not two separate rows
         # 子节点(让别人接入) / 添加子节点 / 修改密码 / 直连地址 / 导入导出 / 插件 / 主题 / 交互菜单卡片
         # —— every one of them starts collapsed
-        self.assertEqual(script.count('class="ts-row"'), 9, '一级「实验性」+ 里面两个实验开关')
+        # 又多了「公网地址（零配置）」一行
+        self.assertEqual(script.count('class="ts-row"'), 10, '一级「实验性」+ 两个实验开关 + 公网地址')
         self.assertIn("/api/system/addresses", script)
         self.assertIn('id="ts-direct-panel"', script)
         # 实验性收成一个一级菜单，两个开关各开各的

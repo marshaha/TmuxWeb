@@ -196,6 +196,19 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function updateLoadCard(info){loadCard.bytes=info.received||0;loadCard.total=info.total||0;syncProgress();}
   // 给测试用的钩子（页面里的函数都在闭包里，外面看不到）
   window.TmuxLoadCard={show:showLoadCard,hide:hideLoadCard,update:updateLoadCard};
+  // 顶栏按钮排真溢出时才加 .scrolls（画左侧分界阴影）：否则"能滑"和"就是这排"看不出区别
+  function syncTopActionsScroll(){
+    const acts=document.querySelector('.top-actions');if(!acts)return;
+    acts.classList.toggle('scrolls',acts.scrollWidth>acts.clientWidth+1);
+  }
+  (function watchTopActions(){
+    const acts=document.querySelector('.top-actions');if(!acts)return;
+    acts.addEventListener('scroll',syncTopActionsScroll,{passive:true});
+    window.addEventListener('resize',syncTopActionsScroll);
+    syncTopActionsScroll();
+    if(window.ResizeObserver)new ResizeObserver(syncTopActionsScroll).observe(acts);
+    setTimeout(syncTopActionsScroll,600);
+  })();
   // "本轮"的边界 = 最后一条用户消息。授权用 turn 作用域时靠它判断过期。
   window.TmuxTurn={key:()=>{const list=state.messages||[];for(let i=list.length-1;i>=0;i--){const m=list[i];if(m&&(m.role==='user'||m.kind==='user'))return String(m.id||m.uuid||'');}return '';}};
   function hideLoadCard(){if(!loadCard.shownAt)return;loadCard.shownAt=0;loadCard.kind='';loadCard.label='';
@@ -1190,7 +1203,9 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   // 再往上 DOM 就是几十万节点，没有 content-visibility（它会把 Chrome 渲染进程搞崩，
   // 见 console-base.css 里的注释）就只能老实付布局和滚动的钱。真要翻更久的历史，
   // 该做的是窗口化渲染，不是把上限调大。
-  const TRANSCRIPT_PAGE=300,TRANSCRIPT_PAGE_MAX=1000;
+  // 上限按性能预算算出来的，不是拍的：一条消息约 24 个节点（实测 300 条 → 7229 节点），
+  // 预算 12k 节点 / 24 ≈ 500 条。1000 条是 2.4 万节点，实测在这台机器上光追加+布局就超过 5 秒。
+  const TRANSCRIPT_PAGE=300,TRANSCRIPT_PAGE_MAX=500;
   function sinceSeconds(value){if(!value)return 0;let seconds=0;
     if(typeof value==='number')seconds=value>1e12?value/1000:value;
     else{const parsed=Date.parse(String(value));if(!Number.isNaN(parsed))seconds=parsed/1000;
@@ -1259,7 +1274,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     bar.hidden=!(state.hasMore&&state.mode==='chat'&&state.selected);
     button.disabled=!!state.loadingEarlier||capped;
     button.textContent=state.loadingEarlier?'加载中…':(capped?`只保留最近 ${TRANSCRIPT_PAGE_MAX} 条`:'加载更早的消息');
-    button.title=capped?`一次最多展开 ${TRANSCRIPT_PAGE_MAX} 条：再多就不虚拟化了，DOM 撑不住`:'把上一次的 300 条再接上来';}
+    button.title=capped?`一次最多展开 ${TRANSCRIPT_PAGE_MAX} 条（性能预算：约 12k 节点封顶），再多就卡了`:'把上一次的 300 条再接上来';}
   // The message at the top of the viewport, with its distance from the
   // viewport top. Used to keep the reader's place across a rebuild: a
   // scrollHeight delta cannot do that under content-visibility, where
@@ -1422,6 +1437,10 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   const WIN_INITIAL=WIN_OVERRIDE||80;       // 首屏渲染多少条
   const WIN_GROW=WIN_OVERRIDE||80;          // 每次往上/往下扩多少
   const WIN_MAX=(WIN_OVERRIDE?WIN_OVERRIDE*2:0)||240;   // 超过就回收
+  // 性能预算（?perf=1）：左上角实时指标，超标立即变红并写进服务日志
+  const PERF_MODE=new URLSearchParams(location.search).get('perf')==='1'
+    || (()=>{try{return localStorage.getItem('tmux-perf')==='1'}catch{return false}})();
+  if(PERF_MODE&&window.TmuxPerf)window.TmuxPerf.start();
   const SAFE_MODE=URL_FLAGS.get('safe')==='1';
   const PLAIN_MODE=URL_FLAGS.get('plain')==='1';
   const NOLINK_MODE=URL_FLAGS.get('nolink')==='1';      // 只关路径链接

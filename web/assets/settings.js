@@ -295,6 +295,22 @@
     </section>
 
     <section class="ts-block">
+      <button class="ts-row" type="button" id="ts-tunnel-toggle" aria-expanded="false" aria-controls="ts-tunnel-panel">
+        <span>公网地址（零配置）</span><span class="ts-caret" aria-hidden="true"></span>
+      </button>
+      <div class="ts-panel" id="ts-tunnel-panel" hidden>
+        <p class="ts-hint">手机在别的网络里也能打开这个控制台：点一下开一个临时地址（cloudflared 快速隧道），用完关掉。
+          <strong>只改变可达性，登录照旧要密码。</strong></p>
+        <div class="ts-tabs" role="group" aria-label="公网地址">
+          <button type="button" id="ts-tunnel-start">开一个临时地址</button>
+          <button type="button" id="ts-tunnel-stop">关掉</button>
+        </div>
+        <p class="ts-state" id="ts-tunnel-state" role="status"></p>
+        <p class="ts-hint" id="ts-tunnel-tailnet"></p>
+      </div>
+    </section>
+
+    <section class="ts-block">
       <button class="ts-row" type="button" id="ts-theme-toggle" aria-expanded="false" aria-controls="ts-theme-panel">
         <span>主题</span>
         <span class="ts-tail"><span class="ts-hint" id="ts-theme-current"></span><span class="ts-caret" aria-hidden="true"></span></span>
@@ -665,6 +681,42 @@
       note($('ts-prompt-state'), on ? '已打开（立即生效）' : '已关闭（立即生效）', on ? 'ok' : '');
     } catch {
       note($('ts-prompt-state'), '保存到账号失败，已记在本浏览器', 'bad');
+    }
+  }
+
+  // ---- 公网地址（零配置隧道）：只读服务端状态，开关走 /api/tunnel
+  function paintTunnel(status) {
+    const state = $('ts-tunnel-state');
+    const tailnet = $('ts-tunnel-tailnet');
+    if (!state) return;
+    if (!status) { note(state, '读不到状态', 'bad'); return; }
+    if (!status.enabled) { note(state, '服务端用 TMUX_WEB_TUNNEL=off 关掉了这个功能', 'bad'); }
+    else if (!status.binary) { note(state, '这台机器没装 cloudflared，装了就能一键开', 'bad'); }
+    else if (status.running && status.url) {
+      state.innerHTML = '运行中：<a href="' + status.url + '" target="_blank" rel="noopener noreferrer">'
+        + status.url + '</a>';
+      state.className = 'ts-state ok';
+    } else if (status.error) { note(state, status.error, 'bad'); }
+    else { note(state, '没开（不占资源，也不暴露任何东西）'); }
+    if (tailnet) {
+      const addresses = (status.tailscale && status.tailscale.addresses) || [];
+      tailnet.textContent = addresses.length
+        ? '在 tailnet 里可以直接用：' + addresses.map(ip => `http://${ip}:8787`).join(' · ') + '（不需要隧道）'
+        : '';
+    }
+  }
+
+  async function loadTunnel() {
+    try { paintTunnel(await api('/api/tunnel')); } catch { paintTunnel(null); }
+  }
+
+  async function toggleTunnel(start) {
+    const state = $('ts-tunnel-state');
+    note(state, start ? '正在和 Cloudflare 握手…' : '正在关…');
+    try {
+      paintTunnel(await api(start ? '/api/tunnel/start' : '/api/tunnel/stop', {method: 'POST'}));
+    } catch (error) {
+      note(state, (error && error.message) || '没成功', 'bad');
     }
   }
 
@@ -1244,6 +1296,9 @@
     button.addEventListener('click', () => savePauseButtonPref(button.dataset.tsPause === 'on'));
   }
   loadPauseButtonPref();
+  $('ts-tunnel-start').addEventListener('click', () => toggleTunnel(true));
+  $('ts-tunnel-stop').addEventListener('click', () => toggleTunnel(false));
+  $('ts-tunnel-toggle').addEventListener('click', () => loadTunnel());
     $('ts-themes').addEventListener('click', event => {
       const button = event.target.closest('[data-theme]');
       if (button) chooseTheme(button.dataset.theme);

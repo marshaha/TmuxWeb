@@ -82,8 +82,8 @@ test('加载更早消息按"可见消息"锚定，而不是按 scrollHeight 差'
 });
 
 test('展开历史有条数上限，到顶后按钮变禁用并说明原因', () => {
-  // 没有虚拟化之后，DOM 就是实打实的节点：300→1000 条封顶，别让人一路翻到几千条。
-  assert.match(page, /TRANSCRIPT_PAGE=300,TRANSCRIPT_PAGE_MAX=1000/,
+  // 没有虚拟化之后，DOM 就是实打实的节点：上限按节点预算算（约 24 节点/条，12k 封顶 → 500）。
+  assert.match(page, /TRANSCRIPT_PAGE=300,TRANSCRIPT_PAGE_MAX=500/,
     '上限必须是 1000（原来 3000 太多）');
   assert.ok(page.includes('const capped=state.transcriptLimit>=TRANSCRIPT_PAGE_MAX;'),
     '到顶要能被识别出来');

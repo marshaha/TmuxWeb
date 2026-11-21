@@ -60,6 +60,7 @@ import needs_input
 import needs_you_inbox
 import relay
 import transcript_reader
+import tunnel as tunnel_mod
 import transfer_tickets
 from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, RemoteHostStore, RemoteTerminalSession, SSHRunner,
                            UploadOffsetMismatch,
@@ -163,6 +164,7 @@ CONSOLE_BUNDLE_SOURCES = (
     ("assets", "path-links.js"),
     ("assets", "prompt-card.js"),
     ("assets", "agents-panel.js"),
+    ("assets", "perf-budget.js"),
     ("assets", "needs-you.js"),
     ("assets", "needs-you-inbox.js"),
     ("assets", "markdown-cjk.js"),
@@ -3926,6 +3928,12 @@ def create_app(
         return FileResponse(WEB_DIR / "assets" / "prompt-card.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/assets/perf-budget.js")
+    async def perf_budget_script() -> FileResponse:
+        """性能预算采样（?perf=1）：帧时间/长任务/节点数，超标就是 bug。"""
+        return FileResponse(WEB_DIR / "assets" / "perf-budget.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/assets/agents-panel.js")
     async def agents_panel_script() -> FileResponse:
         """子 agent 调用图：谁问过谁、问到哪一步了。"""
@@ -5148,6 +5156,29 @@ def create_app(
             if now >= deadline:
                 return "timeout"
             await asyncio.sleep(min(LONG_POLL_CHECK_SECONDS, max(0.0, deadline - now)))
+
+    public_tunnel = tunnel_mod.QuickTunnel(
+        int(os.environ.get("TMUX_WEB_PORT") or os.environ.get("PORT") or 8787))
+
+    @app.get("/api/tunnel")
+    async def tunnel_status(request: Request):
+        """公网地址状态。零配置：cloudflared 起来就有一个随机 trycloudflare 域名。"""
+        require_auth(request)
+        return await asyncio.to_thread(public_tunnel.status)
+
+    @app.post("/api/tunnel/start")
+    async def tunnel_start(request: Request):
+        """开一个临时公网地址。范围只到"能连上"——登录照旧要密码。"""
+        require_auth(request)
+        try:
+            return await asyncio.to_thread(public_tunnel.start)
+        except tunnel_mod.TunnelError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/tunnel/stop")
+    async def tunnel_stop(request: Request):
+        require_auth(request)
+        return await asyncio.to_thread(public_tunnel.stop)
 
     @app.get("/api/transcript/adapters")
     async def transcript_adapters(request: Request):
@@ -7561,6 +7592,15 @@ def create_app(
             logging.getLogger(__name__).debug("address warm-up failed", exc_info=True)
 
     app.router.add_event_handler("startup", warm_addresses)
+
+    async def stop_public_tunnel():
+        """服务停的时候把 cloudflared 一起收掉：别留一个还挂着旧地址的孤儿进程。"""
+        try:
+            await asyncio.to_thread(public_tunnel.stop)
+        except Exception:                                   # noqa: BLE001
+            logging.getLogger(__name__).debug("tunnel stop failed", exc_info=True)
+
+    app.router.add_event_handler("shutdown", stop_public_tunnel)
 
     async def start_queue_worker():
         """重启时先把手里的 sending 放回 pending（那次发送没送达），再开循环。"""
