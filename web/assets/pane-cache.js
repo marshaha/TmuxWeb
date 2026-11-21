@@ -80,6 +80,9 @@
       panes: (host.panes || []).map(pane => ({
         id: pane.id, number: pane.number, prefix: pane.prefix || '',
         session: pane.session, window: pane.window, window_name: pane.window_name,
+        // target / command 必须存：顶栏副标题拿它们拼，少了会在"缓存先画"那一瞬
+        // 显示成 "undefined · undefined · /path"（历史 bug）。
+        target: pane.target || '', command: pane.command || '',
         path: pane.path, title: pane.title || '',
       })),
     }));
@@ -91,6 +94,10 @@
     if (!data || !Array.isArray(data.hosts) || !data.hosts.length) return null;
     const age = Date.now() - (data.at || 0);
     if (maxAge && age > maxAge) return null;
+    // 旧版缓存里没有 target/command（顶栏副标题要它们）。形状不对就当没有缓存：
+    // 宁可多等一次网络，也别拿半份数据先把顶栏画成 "undefined · undefined · /path"。
+    const first = ((data.hosts[0] || {}).panes || [])[0];
+    if (first && (!('target' in first) || !('command' in first))) return null;
     return {hosts: data.hosts, at: data.at || 0, age};
   }
 

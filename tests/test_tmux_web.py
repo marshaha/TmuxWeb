@@ -1935,6 +1935,23 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".queue-strip{", css)
         self.assertIn(".qs-text{max-width", css)
 
+    def test_the_header_subtitle_never_prints_undefined(self):
+        """#212 的老毛病：缓存里的 pane 少字段，顶栏就印 "undefined · undefined · /path"。"""
+        self.login()
+        app = self.client.get("/assets/console-app.js").text
+        self.assertIn("function paneHeaderParts(p)", app)
+        self.assertIn("paintPaneHeader(p);", app)
+        self.assertNotIn("${p.target} · ${p.command} · ${p.path}", app,
+                         "直接拼字段就是 undefined 的来源")
+        self.assertIn("function repaintSelectedHeader()", app,
+                      "hosts 刷新后要把顶栏对齐真数据，不能停在缓存画的值上")
+        # pane-cache.js 没有单独路由，只在 bundle 里
+        cache = self.client.get("/assets/console.bundle.js").text
+        self.assertIn("target: pane.target || '', command: pane.command || ''", cache,
+                      "缓存要存顶栏要用的字段")
+        self.assertIn("形状不对就当没有缓存", cache,
+                      "旧形状缓存要作废，而不是先画出半份数据")
+
     def test_the_header_never_lets_the_buttons_cover_the_menu_button(self):
         """手机窄屏：左边「菜单 + 标题」不能被右边那排按钮压住；右边自己横向滚。"""
         self.login()
