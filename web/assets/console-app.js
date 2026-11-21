@@ -1198,6 +1198,8 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   const PLAIN_MODE=URL_FLAGS.get('plain')==='1';
   const NOLINK_MODE=URL_FLAGS.get('nolink')==='1';      // 只关路径链接
   const NOVIDEO_MODE=URL_FLAGS.get('novideo')==='1';    // 只关视频卡片
+  const NOCV_MODE=URL_FLAGS.get('nocv')==='1';          // 关掉 content-visibility 虚拟化（排查绘制崩溃）
+  if(NOCV_MODE)document.documentElement.classList.add('no-cv');
   window.__tmuxSafeMode=SAFE_MODE;
   window.addEventListener('error',event=>{try{clientTrace(null,`jserr:${(event.message||'').slice(0,80)}`);}catch(_e){}});
   window.addEventListener('unhandledrejection',event=>{try{clientTrace(null,`reject:${String(event.reason).slice(0,80)}`);}catch(_e){}});
