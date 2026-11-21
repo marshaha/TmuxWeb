@@ -1935,6 +1935,21 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".queue-strip{", css)
         self.assertIn(".qs-text{max-width", css)
 
+    def test_the_header_never_lets_the_buttons_cover_the_menu_button(self):
+        """手机窄屏：左边「菜单 + 标题」不能被右边那排按钮压住；右边自己横向滚。"""
+        self.login()
+        page = self.client.get("/").text
+        self.assertIn('<div class="topbar-lead">', page)
+        self.assertNotIn('<div style="display:flex;align-items:center;min-width:0">', page,
+                         "内联样式那段正是被压住的元凶")
+        css = self.client.get("/assets/console.css").text
+        self.assertIn(".topbar>.topbar-lead{display:flex;align-items:center;min-width:0;flex:0 1 auto;overflow:hidden}", css)
+        self.assertIn(".top-actions{flex:0 1 auto;min-width:0;overflow-x:auto", css)
+        self.assertIn(".top-actions.scrolls{box-shadow:inset 12px 0 14px -9px", css)
+        self.assertIn(".top-actions>*{flex:0 0 auto}", css, "按钮本身不许被压扁")
+        app = self.client.get("/assets/console-app.js").text
+        self.assertIn("acts.classList.toggle('scrolls',acts.scrollWidth>acts.clientWidth+1)", app)
+
     def test_the_git_panel_is_wired_into_the_file_bar(self):
         """Git 面板：文件栏上的入口、面板骨架、以及按钮到接口的连线。"""
         self.login()
