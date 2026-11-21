@@ -191,6 +191,16 @@
   .prompt-x:hover{background:var(--surface2);color:var(--ink)}
   .prompt-x .ico{width:13px;height:13px}
   .prompt-hint{margin:3px 0 0;color:var(--muted);font-size:11px;line-height:1.4;overflow-wrap:anywhere}
+  .prompt-remember{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:9px;padding-top:8px;
+    border-top:1px dashed var(--line);font-size:12px;color:var(--muted)}
+  .prompt-remember label{display:inline-flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap}
+  .prompt-remember input{width:14px;height:14px;accent-color:var(--accent)}
+  .prompt-remember select{background:var(--surface2);color:var(--ink);border:1px solid var(--line);
+    border-radius:7px;padding:3px 6px;font:inherit;font-size:12px}
+  .prompt-remember-note{color:var(--faint);font-size:11.5px;min-width:0;overflow-wrap:anywhere}
+  .prompt-remember-undo{background:none;border:1px solid var(--line);border-radius:7px;color:var(--muted);
+    font:inherit;font-size:11.5px;padding:2px 7px;cursor:pointer}
+  .prompt-remember-undo:hover{color:var(--danger);border-color:var(--danger)}
   .prompt-options{display:flex;flex-direction:column;gap:6px;margin-top:8px;min-height:0;flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain}
   .prompt-option{display:flex;flex:none;align-items:center;gap:8px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);color:var(--ink);font:600 12.5px/1.35 inherit;text-align:left;cursor:pointer}
   .prompt-option:hover{border-color:var(--accent)}

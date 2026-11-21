@@ -30,6 +30,7 @@ import sqlite3
 from auth_store import PasswordStore
 import federation
 import git_tools
+import approvals
 import message_queue
 from plugin_api import PluginError, PluginManager, PluginServices, install_routes
 import time
@@ -1706,6 +1707,7 @@ def create_app(
     terminal_factory=None,
     share_db: str | None = None,
     queue_db: str | None = None,
+    approvals_db: str | None = None,
     home_db: str | None = None,
     needs_you_inbox_db: str | None = None,
     remote_store=None,
@@ -5413,7 +5415,7 @@ def create_app(
         return True
 
     @app.get("/api/panes/{pane_id}/prompt")
-    async def pane_prompt(request: Request, pane_id: str):
+    async def pane_prompt(request: Request, pane_id: str, turn: str = ""):
         """屏幕上正在等的选择（kimi 的模型菜单、claude 的权限确认…）。
 
         认不出就返回 ``{"prompt": null}`` —— 前端据此不显示按钮，用户照旧用终端。
@@ -5429,7 +5431,53 @@ def create_app(
         lines = (text or "").splitlines()
         while lines and not lines[-1].strip():      # TUI 下方常留空白，别把它当"屏幕原文"
             lines.pop()
-        return {"pane": pane_id, "prompt": found, "screen": lines[-14:] if found else []}
+        signature = agent_prompts.menu_signature(found) if found else ""
+        grant = approvals_store.find(pane_id, signature, turn) if signature else None
+        return {"pane": pane_id, "prompt": found, "signature": signature,
+                "grant": grant.as_dict() if grant else None,
+                "screen": lines[-14:] if found else []}
+
+    @app.get("/api/panes/{pane_id}/approvals")
+    async def pane_approvals(request: Request, pane_id: str, turn: str = ""):
+        """这个窗格还在生效的授权（本轮 / 一直）。"""
+        require_auth(request)
+        items = [item.as_dict() for item in approvals_store.list(pane_id)]
+        if turn:
+            items = [item for item in items
+                     if item["scope"] == "always" or item["turn"] == turn]
+        return {"pane": pane_id, "items": items}
+
+    @app.post("/api/panes/{pane_id}/approvals")
+    async def pane_remember_approval(request: Request, pane_id: str, payload: dict):
+        """记住"这道题这么答"。没有指纹一律拒绝 —— 否则会把别的菜单当成这道题。"""
+        require_auth(request)
+        signature = str(payload.get("signature") or "")
+        action = payload.get("action")
+        if not isinstance(action, dict) or not action:
+            raise HTTPException(status_code=422, detail="缺少 action")
+        try:
+            grant = approvals_store.remember(
+                pane_id, signature, action,
+                scope=str(payload.get("scope") or "turn"),
+                turn=str(payload.get("turn") or ""),
+                label=str(payload.get("label") or "")[:200])
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        return grant.as_dict()
+
+    @app.delete("/api/panes/{pane_id}/approvals/{grant_id}")
+    async def pane_forget_approval(request: Request, pane_id: str, grant_id: str):
+        require_auth(request)
+        if not approvals_store.forget(grant_id):
+            raise HTTPException(status_code=404, detail="没有这条授权")
+        return {"forgotten": True, "id": grant_id}
+
+    @app.post("/api/panes/{pane_id}/approvals/{grant_id}/used")
+    async def pane_approval_used(request: Request, pane_id: str, grant_id: str):
+        """自动答了一次就记一笔，事后能看出"它替我点了多少次"。"""
+        require_auth(request)
+        approvals_store.mark_used(grant_id)
+        return {"counted": True, "id": grant_id}
 
     @app.post("/api/panes/{pane_id}/prompt/choose")
     async def pane_prompt_choose(request: Request, pane_id: str, payload: PromptChoiceRequest):
@@ -5489,6 +5537,8 @@ def create_app(
         return transport, actual_pane_id, pane
 
     # ---- 持久排队：忙碌时先存下来，等这一轮结束再发 ------------------------
+    approvals_store = approvals.ApprovalStore(
+        approvals_db or os.environ.get("TMUX_WEB_APPROVALS_DB") or str(BASE_DIR / "approvals.db"))
     queue_store = message_queue.QueueStore(queue_db or os.environ.get("TMUX_WEB_QUEUE_DB", "")
                                            or str(BASE_DIR / "message_queue.db"))
 

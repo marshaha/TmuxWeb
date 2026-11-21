@@ -5,7 +5,10 @@
  * "已发送"。服务端从抓屏里解析出来（agent_prompts.py），这里渲染成按钮。
  *
  * 原则：
- *   - 永远不自动应答；只有人点了才发键；
+ *   - 默认不自动应答：只有人点了才发键；
+ *   - 唯一的例外是人自己勾了「记住这个选择」——此后**同一道题**（标题+选项的指纹相同）
+ *     才会被自动答，作用域是本轮或一直，可随时撤销，并在卡片上写明"它替你点了什么"；
+ *     指纹不同、换了一轮（turn 作用域）、或授权过期，都退回手点；
  *   - 卡片里给屏幕原文，用户能核对自己在答哪个问题；
  *   - 认不出/没把握就不弹（服务端返回 null），随时可以切终端；
  *   - 键盘只在卡片聚焦时接管，输入框打字不受影响。
@@ -44,6 +47,11 @@
   // 答过的题记一个签名：sweep 更新之前 poll 别再把它弹出来（和 needs-you.js
   // 的 answeredSignature 一个意思）；失败恢复时签名清掉，不然没法重试。
   let answeredSignature = '';
+  let lastSignature = '';
+  let rememberChoice = false;
+  let rememberScope = 'turn';
+  let autoAnswered = '';
+  let answering = false;       // 手里正有一条选择在路上（poll 自己的 busy 不能用来判断这个）
   let lastScreen = [];
 
   const $ = id => document.getElementById(CARD + '-' + id);
@@ -70,6 +78,76 @@
     ]);
   }
 
+  function turnKey() {
+    try { return (window.TmuxTurn && window.TmuxTurn.key()) || ''; } catch (_error) { return ''; }
+  }
+
+  function postJson(url, body) {
+    return fetch(url, {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    }).then(response => response.json().catch(() => ({})));
+  }
+
+  // 记住这次选择（可选）。没勾就不记 —— 自动答题必须是人明确同意的。
+  function rememberRow(data) {
+    const row = document.createElement('div');
+    row.className = 'prompt-remember';
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.id = 'remember-box';
+    box.checked = !!rememberChoice;
+    box.addEventListener('change', () => { rememberChoice = box.checked; });
+    label.appendChild(box);
+    const labelText = document.createElement('span');
+    labelText.textContent = '记住这个选择';
+    label.appendChild(labelText);
+    const scope = document.createElement('select');
+    scope.id = 'remember-scope';
+    for (const [value, text] of [['turn', '本轮'], ['always', '一直']]) {
+      const option = document.createElement('option');
+      option.value = value; option.textContent = text;
+      scope.appendChild(option);
+    }
+    scope.value = rememberScope;
+    scope.addEventListener('change', () => { rememberScope = scope.value; });
+    row.appendChild(label);
+    row.appendChild(scope);
+    const note = document.createElement('span');
+    note.className = 'prompt-remember-note';
+    note.id = 'remember-note';
+    row.appendChild(note);
+    if (data && data.grant) {
+      const grant = data.grant;
+      note.textContent = `已授权：${grant.label || '这个选择'}（${grant.scope === 'always' ? '一直' : '本轮'}，用过 ${grant.uses} 次）`;
+      const undo = document.createElement('button');
+      undo.type = 'button';
+      undo.className = 'prompt-remember-undo';
+      undo.textContent = '撤销';
+      undo.addEventListener('click', async () => {
+        await fetch(`/api/panes/${encodeURIComponent(paneNow())}/approvals/${encodeURIComponent(grant.id)}`,
+          {method: 'DELETE', credentials: 'same-origin'});
+        note.textContent = '已撤销授权';
+      });
+      row.appendChild(undo);
+    }
+    return row;
+  }
+
+  async function rememberIfAsked(action, label) {
+    if (!rememberChoice || !lastSignature) return false;
+    try {
+      await postJson(`/api/panes/${encodeURIComponent(paneNow())}/approvals`, {
+        signature: lastSignature, action, scope: rememberScope, turn: turnKey(), label,
+      });
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   function hide() {
     const node = card();
     if (node) node.hidden = true;
@@ -87,12 +165,13 @@
     });
   }
 
-  function render(data, screen) {
+  function render(data, screen, signature) {
     const node = card();
     if (!node) return;
     prompt = data;
     cursor = Number.isInteger(data.selected) ? Math.min(data.selected, data.options.length - 1) : 0;
 
+    if (signature !== undefined) lastSignature = signature || '';
     $('title').textContent = data.title || (data.kind === 'confirm' ? '需要确认' : '等待选择');
     const hint = $('hint');
     hint.textContent = data.hint || (data.more ? `屏幕外还有 ${data.more} 项` : '');
@@ -151,6 +230,15 @@
     });
     toggles.hidden = !(data.toggles && data.toggles.length);
 
+    // 记住这次选择 —— 只有勾上才会写授权，勾了才可能被自动答题。
+    const oldRow = document.getElementById('remember-row');
+    if (oldRow && oldRow.remove) oldRow.remove();
+    const remember = rememberRow(data);
+    remember.id = 'remember-row';
+    const anchor = toggles.hidden ? list : toggles;
+    if (anchor.after) anchor.after(remember);
+    else if (anchor.parentNode) anchor.parentNode.appendChild(remember);
+
     lastScreen = screen || [];
     // 手机上没有回车键。开关类界面（kimi 的 Thinking：←→ 选、Enter 确认）和提示里
     // 明写 confirm/继续/continue 的，给一颗「确认 Enter」按钮，点它等于敲回车。
@@ -184,6 +272,9 @@
   async function chooseByIndex(index) {
     const pane = paneNow();
     if (!pane) return;
+    const chosen = prompt && prompt.options && prompt.options[index];
+    // 不 await：点下就要立刻收卡（这是原来就有的体验），记授权在后台跑
+    void rememberIfAsked({index}, (chosen && chosen.label) || '');
     if (busy) { setState('上一条还在发送，稍等一下…'); return; }   // 别静默吞掉点击
     // 乐观关闭：点下的一刻就收卡，请求在后台跑（和 needs-you.js 一个做法）。
     const saved = prompt;
@@ -192,6 +283,7 @@
     hide();
     setState('');
     lockBusy();
+    answering = true;
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {index});
       if (!result.ok) {
@@ -208,11 +300,13 @@
       if (saved) render(saved, savedScreen);
       setState('没送到，再试一次：' + error.message, true);
     } finally {
+      answering = false;
       unlockBusy();
     }
   }
 
   async function chooseToggle(toggleIndex, value) {
+    void rememberIfAsked({toggle: [toggleIndex, value]}, `开关 ${toggleIndex} = ${value}`);
     const pane = paneNow();
     if (!pane) return;
     if (busy) { setState('上一条还在发送，稍等一下…'); return; }
@@ -227,6 +321,7 @@
     hide();
     setState('');
     lockBusy();
+    answering = true;
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`,
         {toggle: toggleIndex, value});
@@ -251,6 +346,7 @@
       if (saved) render(saved, savedScreen);
       setState('没送到，再试一次：' + error.message, true);
     } finally {
+      answering = false;
       unlockBusy();
     }
   }
@@ -265,6 +361,7 @@
     hide();
     setState('');
     lockBusy();
+    answering = true;
     try {
       const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {key});
       if (!result.ok) {
@@ -281,6 +378,7 @@
       if (saved) render(saved, savedScreen);
       setState('没送到，再试一次：' + error.message, true);
     } finally {
+      answering = false;
       unlockBusy();
     }
   }
@@ -303,6 +401,28 @@
       const data = await response.json();
       if (!data.prompt) { answeredSignature = ''; if (prompt) hide(); return; }
       if (hiddenByUser) return;
+      // 有授权就按授权答：这是"记住这个选择"的全部意义，但也只在这道题的指纹上生效。
+      if (data.grant && autoAnswered !== data.signature) {
+        if (answering) return;            // 手里还有一条在发，下一轮再试，别互相踩
+        const action = JSON.parse(data.grant.action || '{}');
+        autoAnswered = data.signature;
+        answeredSignature = signatureOf(data.prompt);
+        const label = data.grant.label || '同一道题';
+        const scopeText = data.grant.scope === 'always' ? '一直' : '本轮';
+        try {
+          if (Array.isArray(action.toggle)) await chooseToggle(action.toggle[0], action.toggle[1]);
+          else if (Number.isInteger(action.index)) await chooseByIndex(action.index);
+          else if (action.key) await chooseByKey(action.key);
+          await fetch(`/api/panes/${encodeURIComponent(pane)}/approvals/${encodeURIComponent(data.grant.id)}/used`,
+            {method: 'POST', credentials: 'same-origin'});
+          // 说清楚"它替你点了什么"：自动答题必须留痕，不能悄悄发生。
+          setState(`已按你的授权自动选了「${label}」（${scopeText}）`);
+        } catch (_error) {
+          setState(`自动应答没成功，请手动点一下`, true);
+        }
+        return;
+      }
+      if (!data.signature || data.signature !== autoAnswered) autoAnswered = '';
       // 答过的题：sweep 更新之前别再弹（点下那一刻就记了签名，卡片已经先收了）。
       const sig = signatureOf(data.prompt);
       if (sig === answeredSignature) return;
@@ -316,7 +436,7 @@
           && prompt.options.length === data.prompt.options.length
           && prompt.selected === data.prompt.selected
           && toggleKey(prompt) === toggleKey(data.prompt)) return;
-      render(data.prompt, data.screen);
+      render(data.prompt, data.screen, data.signature);
     } catch (_error) {
       // 网络抖动：保持现状，下一轮再说
     } finally {

@@ -15,6 +15,8 @@ harness 的 TUI（kimi / claude / codex / hermes）在等待用户选择时会�
 """
 from __future__ import annotations
 
+import hashlib
+
 import re
 from typing import Any
 
@@ -539,3 +541,21 @@ def choice_for_key(prompt: dict[str, Any], key: str) -> list[str] | None:
     if key.isdigit():
         return choice_keys(prompt, int(key) - 1)
     return None
+
+
+def menu_signature(prompt: dict) -> str:
+    """同一道题的指纹：标题 + 选项标签 + 开关标签/当前值。
+
+    只用于"这道题你授权过没有"，不参与任何解析判断 —— 解析照旧 fail-closed。
+    """
+    if not prompt:
+        return ""
+    parts = [str(prompt.get("title") or "")]
+    for option in prompt.get("options") or []:
+        parts.append(f"o:{option.get('label', '')}")
+    for toggle in prompt.get("toggles") or []:
+        parts.append(f"t:{toggle.get('label', '')}={toggle.get('active')}")
+    raw = "\u0000".join(parts).strip()
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:16]

@@ -61,3 +61,6 @@ upload_files/
 message_queue.db
 message_queue.db-shm
 message_queue.db-wal
+approvals.db
+approvals.db-shm
+approvals.db-wal

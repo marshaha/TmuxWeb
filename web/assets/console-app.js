@@ -196,6 +196,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function updateLoadCard(info){loadCard.bytes=info.received||0;loadCard.total=info.total||0;syncProgress();}
   // 给测试用的钩子（页面里的函数都在闭包里，外面看不到）
   window.TmuxLoadCard={show:showLoadCard,hide:hideLoadCard,update:updateLoadCard};
+  // "本轮"的边界 = 最后一条用户消息。授权用 turn 作用域时靠它判断过期。
+  window.TmuxTurn={key:()=>{const list=state.messages||[];for(let i=list.length-1;i>=0;i--){const m=list[i];if(m&&(m.role==='user'||m.kind==='user'))return String(m.id||m.uuid||'');}return '';}};
   function hideLoadCard(){if(!loadCard.shownAt)return;loadCard.shownAt=0;loadCard.kind='';loadCard.label='';
     clearInterval(loadCard.tick);clearTimeout(loadCard.timer);syncProgress();}
 
