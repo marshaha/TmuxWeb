@@ -67,3 +67,6 @@ approvals.db-wal
 agent_calls.db
 agent_calls.db-shm
 agent_calls.db-wal
+events.db
+events.db-shm
+events.db-wal

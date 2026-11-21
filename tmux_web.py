@@ -31,6 +31,7 @@ from auth_store import PasswordStore
 import federation
 import git_tools
 import agent_calls
+import event_log
 import approvals
 import message_queue
 from plugin_api import PluginError, PluginManager, PluginServices, install_routes
@@ -1713,6 +1714,7 @@ def create_app(
     queue_db: str | None = None,
     approvals_db: str | None = None,
     calls_db: str | None = None,
+    events_db: str | None = None,
     home_db: str | None = None,
     needs_you_inbox_db: str | None = None,
     remote_store=None,
@@ -3033,10 +3035,17 @@ def create_app(
         require_auth(request)
         if (os.environ.get("TMUX_WEB_EXEC") or "on").strip().lower() in {"0", "off", "false", "no"}:
             raise HTTPException(status_code=403, detail="exec 已被 TMUX_WEB_EXEC=off 关闭")
+        event = journal("exec", (payload.host or "localhost").strip(), "mcp",
+                        {"command": payload.command[:600], "cwd": (payload.cwd or "")[:200]})
         try:
-            return await run_exec((payload.host or "").strip(), payload.command,
-                                  (payload.cwd or "").strip(), payload.timeout, payload.max_output)
+            result = await run_exec((payload.host or "").strip(), payload.command,
+                                    (payload.cwd or "").strip(), payload.timeout, payload.max_output)
+            if event:
+                events.finish(event.id, "ok", {"exit": result.get("exit")})
+            return result
         except McpToolError as exc:
+            if event:
+                events.finish(event.id, "error", error=str(exc))
             status = 404 if "没有这个主机" in str(exc) else 400
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
@@ -4789,9 +4798,14 @@ def create_app(
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail="remote host not found") from exc
             transport, host_id = runner_for(record), host
+        event = journal("session.kill", name, "ui", {"session": name, "host": host_id})
         try:
             killed = await asyncio.to_thread(transport.kill_session, name)
+            if event:
+                events.finish(event.id, "ok", {"session": name})
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            if event:
+                events.finish(event.id, "error", error=str(exc))
             message = str(exc)
             status = 404 if "no such session" in message else 422
             if status == 422 and "session name" not in message:
@@ -5278,6 +5292,8 @@ def create_app(
     async def send_input(request: Request, pane_id: str, payload: InputRequest):
         require_auth(request)
         pane = await asyncio.to_thread(pane_or_404, pane_id)
+        event = journal("send", pane_id, "ui",
+                        {"text": payload.text[:600], "submit": bool(payload.submit)})
         try:
             # A new send supersedes any background retry still running for
             # this pane, so its Enter can never land in this paste.
@@ -5291,10 +5307,16 @@ def create_app(
                 # background retry instead of failing it, and keep the 200 -
                 # the text did arrive, so a 503 would be a lie.
                 status, retrying = retry_or_fail(resend_manager, pane_id, payload.text)
+                if event:
+                    events.finish(event.id, "retrying", {"status": status, "retrying": retrying})
                 return {"status": status, "pane": pane_id, "submit": payload.submit,
                         "submitted": False, "retrying": retrying}
+            if event:
+                events.finish(event.id, "ok", {"submitted": submitted})
             return {"status": "sent", "pane": pane_id, "submit": payload.submit, "submitted": submitted}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            if event:
+                events.finish(event.id, "error", error=str(exc))
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/panes/{pane_id}/models")
@@ -5380,11 +5402,16 @@ def create_app(
         pane = await asyncio.to_thread(pane_or_404, pane_id)
         if payload.key not in ALLOWED_KEYS:
             raise HTTPException(status_code=422, detail="unsupported key")
+        event = journal("key", pane_id, "ui", {"key": payload.key})
         try:
             transport, actual_pane_id = pane_transport(pane_id)
             await asyncio.to_thread(transport.send_key, actual_pane_id, payload.key, pane=pane)
+            if event:
+                events.finish(event.id, "ok", {"key": payload.key})
             return {"status": "sent", "pane": pane_id, "key": payload.key}
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            if event:
+                events.finish(event.id, "error", error=str(exc))
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     # 上一次解析出来的提示（GET /prompt 会填）：点按钮时直接用，省一次抓屏。
@@ -5550,6 +5577,14 @@ def create_app(
     # ---- 持久排队：忙碌时先存下来，等这一轮结束再发 ------------------------
     approvals_store = approvals.ApprovalStore(
         approvals_db or os.environ.get("TMUX_WEB_APPROVALS_DB") or str(BASE_DIR / "approvals.db"))
+    events = event_log.EventLog(
+        events_db or os.environ.get("TMUX_WEB_EVENTS_DB") or str(BASE_DIR / "events.db"))
+    # 日志写不进去也不能把手上的操作卡死：记不住的代价小于发不出去。
+    def journal(kind: str, pane: str = "", actor: str = "ui", request: dict | None = None):
+        try:
+            return events.begin(kind, pane, actor, request)
+        except (sqlite3.Error, OSError, ValueError):
+            return None
     calls_store = agent_calls.AgentCallStore(
         calls_db or os.environ.get("TMUX_WEB_CALLS_DB") or str(BASE_DIR / "agent_calls.db"))
     queue_store = message_queue.QueueStore(queue_db or os.environ.get("TMUX_WEB_QUEUE_DB", "")
@@ -7285,6 +7320,29 @@ def create_app(
                               "status": "ok", "question": payload.question[:400],
                               "reply": str(result["reply"])[:400], "elapsed": result["elapsed"]})
         return result
+
+    @app.get("/api/events")
+    async def events_list(request: Request, pane: str = "", kind: str = "", limit: int = 50,
+                          full: bool = False):
+        """操作日志：这个 pane（或整机）上发生过什么，新的在前。"""
+        require_auth(request)
+        items = await asyncio.to_thread(events.recent, pane, kind, limit)
+        return {"pane": pane, "events": [item.as_dict(full=full) for item in items]}
+
+    @app.get("/api/events/inflight")
+    async def events_inflight(request: Request):
+        """还挂着没结果的操作（进程被杀/重启留下的那些）。"""
+        require_auth(request)
+        items = await asyncio.to_thread(events.inflight)
+        return {"events": [item.as_dict() for item in items]}
+
+    @app.get("/api/events/{event_id}")
+    async def events_detail(request: Request, event_id: str):
+        require_auth(request)
+        item = events.get(event_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="没有这条记录")
+        return item.as_dict(full=True)
 
     @app.get("/api/agents/calls")
     async def agent_calls_list(request: Request, pane: str = "", limit: int = 50, full: bool = False):
