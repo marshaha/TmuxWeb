@@ -2228,10 +2228,10 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     }catch{showError('浏览器不允许直接读剪贴板，请长按粘贴');}
   }
   function setupTerminalControls(){
-    const keys=$('terminal-keys'),pad=$('terminal-pad');
+    const keys=$('terminal-keys');
     keys.addEventListener('pointerdown',e=>{
       const button=e.target.closest('.terminal-key');
-      if(!button||button===pad)return;
+      if(!button)return;
       e.preventDefault();
       if(button.dataset.mod){
         const mod=button.dataset.mod;state.terminalMods[mod]=!state.terminalMods[mod];updateTerminalMods();
@@ -2264,7 +2264,9 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     setupTypePad();
     setupTerminalZoom();
     setupTerminalJump();
-    if(!pad)return;let holdTimer=null,holding=false,lastDirection='',origin=null;const stop=()=>{clearTimeout(holdTimer);holdTimer=null;holding=false;lastDirection='';origin=null;pad.classList.remove('holding');};pad.addEventListener('pointerdown',e=>{e.preventDefault();origin={x:e.clientX,y:e.clientY};pad.setPointerCapture(e.pointerId);holdTimer=setTimeout(()=>{holding=true;pad.classList.add('holding');navigator.vibrate?.(20);},280);});pad.addEventListener('pointermove',e=>{if(!holding||!origin)return;const dx=e.clientX-origin.x,dy=e.clientY-origin.y;if(Math.max(Math.abs(dx),Math.abs(dy))<16)return;const direction=Math.abs(dx)>Math.abs(dy)?(dx>0?'ArrowRight':'ArrowLeft'):(dy>0?'ArrowDown':'ArrowUp');if(direction!==lastDirection){sendTerminalKey(direction);lastDirection=direction;origin={x:e.clientX,y:e.clientY};}});pad.addEventListener('pointerup',stop);pad.addEventListener('pointercancel',stop);}
+  }
+  // 这里原来还有一段"按住 280ms 后滑动换方向键"的 pad 逻辑，指向 #terminal-pad ——
+  // 那个元素在 index.html 里根本不存在，那段代码永远 return，是死代码。已删。
   // ---- pinch to zoom the terminal font (the column count follows), remembered per browser
   function terminalFont(){const saved=Number(localStorage.getItem('tmux-term-font'));return saved>=9&&saved<=22?saved:13;}
   function setTerminalFont(size){
