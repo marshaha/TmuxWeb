@@ -71,9 +71,11 @@ class InboxApiTests(unittest.TestCase):
 
     def test_list_count_and_open(self):
         self.login()
-        self.assertEqual(self.client.get("/api/needs-you/inbox/count").json(), {"count": 0})
+        self.assertEqual(self.client.get("/api/needs-you/inbox/count").json()["count"], 0)
         ids = self.seed()
-        self.assertEqual(self.client.get("/api/needs-you/inbox/count").json(), {"count": 3})
+        counts = self.client.get("/api/needs-you/inbox/count").json()
+        self.assertEqual(counts["count"], 3)
+        self.assertEqual(counts["unread"], 3)
         page = self.client.get("/api/needs-you/inbox").json()
         self.assertEqual([item["id"] for item in page["items"]], ids[::-1])
         self.assertIsNone(page["next_cursor"])
@@ -82,8 +84,11 @@ class InboxApiTests(unittest.TestCase):
         self.assertTrue(all(item["pane_alive"] is False for item in page["items"]))
         self.assertEqual(page["items"][0]["summary"], "Do you want to proceed? — 2")
         opened = self.client.post("/api/needs-you/inbox/open").json()
-        self.assertEqual(opened, {"acknowledged_count": 3, "count": 0})
-        self.assertEqual(self.client.get("/api/needs-you/inbox/count").json(), {"count": 0})
+        self.assertEqual(opened["acknowledged_count"], 3)
+        # 标成已读不等于回答过：菜单还在等，铃铛就该还亮着（数字是"还开着的"）。
+        counts = self.client.get("/api/needs-you/inbox/count").json()
+        self.assertEqual(counts["unread"], 0)
+        self.assertEqual(counts["count"], 3)
 
     def test_list_pages_by_id_cursor(self):
         self.login()
@@ -106,7 +111,7 @@ class InboxApiTests(unittest.TestCase):
         row_id = self.seed(1)[0]
         marked = self.client.patch(f"/api/needs-you/inbox/{row_id}").json()
         self.assertIsNotNone(marked["read_at"])
-        self.assertEqual(self.client.get("/api/needs-you/inbox/count").json(), {"count": 0})
+        self.assertEqual(self.client.get("/api/needs-you/inbox/count").json()["unread"], 0)
         self.assertEqual(self.client.patch("/api/needs-you/inbox/99999").status_code, 404)
 
 

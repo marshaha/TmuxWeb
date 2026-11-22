@@ -1852,6 +1852,14 @@ def create_app(
     inbox_store = needs_you_inbox.NeedsYouInbox(
         needs_you_inbox_db or os.environ.get("TMUX_WEB_NEEDS_YOU_INBOX_DB")
         or str(BASE_DIR / "needs_you_inbox.db"))
+    # "正在等"是活着的扫描得出的结论：进程一死就再没人能清它。不收拾的话这些行会
+    # 一直挂着 —— 实测见过 135 条 open 对 0 个真正在等的 pane，铃铛就成了狼来了。
+    try:
+        orphaned = inbox_store.resolve_open("restarted")
+        if orphaned:
+            logger.info("needs-you inbox: 归档 %d 条上次没清掉的\"正在等\"", orphaned)
+    except sqlite3.Error:
+        logger.warning("needs-you inbox: 归档失败", exc_info=True)
 
     mcp_auth_required = os.environ.get("TMUX_WEB_MCP_AUTH", "on").strip().lower() not in {
         "0", "off", "no", "false", "none",
@@ -7300,10 +7308,17 @@ def create_app(
     # pane_alive comes from the pane-state cache and never triggers a sweep:
     # a closed pane answers in place ("该 pane 已关闭") instead of a 404.
     @app.get("/api/needs-you/inbox")
-    async def needs_you_inbox_list(request: Request, limit: int = 20, before: int | None = None):
+    async def needs_you_inbox_list(request: Request, limit: int = 20, before: int | None = None,
+                                   open: bool = False, history: bool = False):
+        """默认只列还开着的（真的在等）；history=1 才连历史一起给。
+
+        这个抽屉给人的第一印象必须是"现在"，不是 138 条坟场。
+        """
         require_auth(request)
+        open_only = bool(open) or not history
         try:
-            page = await asyncio.to_thread(inbox_store.list_items, limit=limit, before=before)
+            page = await asyncio.to_thread(inbox_store.list_items, limit=limit, before=before,
+                                           open_only=open_only)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         states = await asyncio.to_thread(pane_states_cached, 0, 30.0, True)
@@ -7314,8 +7329,11 @@ def create_app(
 
     @app.get("/api/needs-you/inbox/count")
     async def needs_you_inbox_count(request: Request):
+        """铃铛上的数字 = 还开着的（真的在等），不是"没点过的历史"。"""
         require_auth(request)
-        return {"count": await asyncio.to_thread(inbox_store.unread_count)}
+        open_count = await asyncio.to_thread(inbox_store.open_count)
+        unread = await asyncio.to_thread(inbox_store.unread_count)
+        return {"count": open_count, "open": open_count, "unread": unread}
 
     @app.post("/api/needs-you/inbox/open")
     async def needs_you_inbox_open(request: Request):

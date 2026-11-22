@@ -183,7 +183,9 @@
       if (more) more.hidden = !cursor;
       if (readMarked) clearUnreadDots();
       setBodyState('');
-      setStatus((data.items || []).length ? '' : '还没有等你回答的记录');
+      // 这个抽屉只列"现在还开着"的；回答过的留在历史里（/api/needs-you/inbox?history=1），
+      // 不在这里占位 —— 以前把历史全列出来，看起来就像铃铛在乱报警。
+      setStatus((data.items || []).length ? '' : '现在没有正在等你的会话');
     } catch (error) {
       setStatus('没载入：' + error.message);
       // 翻页失败列表里已有内容，正文区不用再写一遍；首屏失败必须写在这里。

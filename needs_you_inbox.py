@@ -50,6 +50,9 @@ import needs_input
 MAX_TITLE = 200
 MAX_SUMMARY = 400
 MAX_OPTIONS = 12
+# 一条"正在等"的记录最多挂这么久；超过就当它已经不是活的（菜单没了 / pane 死了）。
+# 有它兜底，即使 start-up 的 resolve_open 被跳过，bell 也不会堆成坟场。
+OPEN_TTL_HOURS = 12.0
 RETENTION_DAYS = 30
 MAX_ITEMS = 200
 DEFAULT_LIMIT = 20
@@ -167,20 +170,40 @@ class NeedsYouInbox:
             self.prune()
             return record_id
 
-    def list_items(self, *, limit: int = DEFAULT_LIMIT, before: int | None = None) -> dict:
+    def resolve_open(self, reason: str = "restarted") -> int:
+        """Close every row still open. Called at startup.
+
+        An open row means "this pane is waiting for an answer *right now*". That
+        is a fact about a live sweep, and a sweep does not survive a restart: the
+        in-memory lighting map is gone, so nothing will ever come along to clear
+        those rows. Left alone they pile up — 135 open rows for 0 waiting panes
+        is what made the bell look like it was crying wolf. Whatever is genuinely
+        waiting gets recorded again by the next sweep, a second later.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE inbox SET resolved_at = ?, resolved_reason = ? "
+                "WHERE resolved_at IS NULL", (_now(), reason))
+            self._conn.commit()
+            return int(cursor.rowcount)
+
+    def list_items(self, *, limit: int = DEFAULT_LIMIT, before: int | None = None,
+                   open_only: bool = False) -> dict:
         """Newest first; ``before`` is the id cursor (Open WebUI's shape, with
         the autoincrement id standing in for its ``created_at:id`` cursor —
         ids only grow, so the order is the same)."""
         if not 1 <= int(limit) <= MAX_LIMIT:
             raise ValueError(f"limit must be between 1 and {MAX_LIMIT}")
+        clause = "resolved_at IS NULL" if open_only else "1=1"
         with self._lock:
             if before is None:
                 rows = self._conn.execute(
-                    "SELECT * FROM inbox ORDER BY id DESC LIMIT ?",
+                    "SELECT * FROM inbox WHERE " + clause + " ORDER BY id DESC LIMIT ?",
                     (int(limit) + 1,)).fetchall()
             else:
                 rows = self._conn.execute(
-                    "SELECT * FROM inbox WHERE id < ? ORDER BY id DESC LIMIT ?",
+                    "SELECT * FROM inbox WHERE " + clause
+                    + " AND id < ? ORDER BY id DESC LIMIT ?",
                     (int(before), int(limit) + 1)).fetchall()
         more = len(rows) > limit
         rows = rows[:limit]
@@ -191,6 +214,16 @@ class NeedsYouInbox:
         with self._lock:
             row = self._conn.execute(
                 "SELECT COUNT(*) FROM inbox WHERE read_at IS NULL").fetchone()
+        return int(row[0])
+
+    def open_count(self) -> int:
+        """还开着的（真的在等）—— 铃铛上的数字应该是这个。
+
+        以前用的是"未读"，于是历史里没点过的行会一直把铃铛点亮，哪怕菜单早就没了。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM inbox WHERE resolved_at IS NULL").fetchone()
         return int(row[0])
 
     def mark_all_read(self) -> int:
@@ -231,8 +264,18 @@ class NeedsYouInbox:
 
     def prune(self, now: float | None = None) -> int:
         """Enforce the retention rule: older than 30 days, then over 200 rows.
-        Oldest first in both cases. Returns rows deleted."""
+        Oldest first in both cases. Returns rows deleted.
+
+        Also closes rows that have been "open" for longer than OPEN_TTL_HOURS:
+        a menu that has been waiting half a day is either gone or the pane is
+        dead, and either way the bell should stop pointing at it.
+        """
         now = _now() if now is None else now
+        with self._lock:
+            self._conn.execute(
+                "UPDATE inbox SET resolved_at = ?, resolved_reason = 'expired' "
+                "WHERE resolved_at IS NULL AND created_at < ?",
+                (now, now - OPEN_TTL_HOURS * 3600))
         cutoff = now - RETENTION_DAYS * 86400
         with self._lock:
             cursor = self._conn.execute(
