@@ -147,7 +147,7 @@
     if (signature !== undefined) lastSignature = signature || '';
     $('title').textContent = data.title || (data.kind === 'confirm' ? '需要确认' : '等待选择');
     const hint = $('hint');
-    hint.textContent = data.read_only ? '屏幕预览，请在终端操作。' : data.hint || (data.more ? `屏幕外还有 ${data.more} 项` : '');
+    hint.textContent = data.read_only ? '可展开实时作答。' : data.hint || (data.more ? `屏幕外还有 ${data.more} 项` : '');
     hint.hidden = !hint.textContent;
 
     const list = $('options');
@@ -218,7 +218,7 @@
     // 记住这次选择 —— 只有勾上才会写授权，勾了才可能被自动答题。
     const oldRow = document.getElementById('remember-row');
     if (oldRow && oldRow.remove) oldRow.remove();
-    if (!data.read_only && data.kind !== 'multi' && data.kind !== 'screen') {
+    if (!data.read_only && data.source !== 'hermes_clarify' && data.kind !== 'multi' && data.kind !== 'screen') {
       const remember = rememberRow(data);
       remember.id = 'remember-row';
       const anchor = toggles.hidden ? list : toggles;
@@ -238,7 +238,7 @@
       enterButton.hidden = !!data.read_only || !needsEnter;
     }
     const dismiss = $('esc');
-    if (dismiss) dismiss.hidden = !!data.read_only || data.kind === 'screen';
+    if (dismiss) dismiss.hidden = !!data.read_only || data.kind === 'screen' || data.source === 'hermes_clarify';
     const raw = $('raw');
     if (raw) raw.textContent = (screen || []).join('\n');
     const details = $('raw-wrap');
@@ -305,6 +305,9 @@
         setState(result.data.detail || (result.ok ? '已经是这个值了' : `HTTP ${result.status}`), !result.ok);
         return false;
       }
+      if (action.index !== undefined && saved.options[action.index]?.opens_input) {
+        document.getElementById('chat-reply-panel')?.dispatchEvent(new Event('open-reply'));
+      }
       if (remember) void postJson(`/api/panes/${encodeURIComponent(pane)}/approvals`, remember).catch(() => {});
       setTimeout(() => { if (active()) poll(false, manual); }, checklistChange ? 350 : 1500);
       return true;
@@ -353,7 +356,7 @@
       if (!data.prompt) {
         answeredSignature = '';
         if (explicit) render({kind: 'screen', title: '未识别到可操作的选项',
-          hint: '可核对屏幕原文，或用终端继续操作。', options: []}, data.screen);
+          hint: '可核对屏幕原文，或展开实时作答。', options: []}, data.screen);
         else if (prompt && prompt.kind !== 'screen') hide();
         return;
       }
@@ -425,7 +428,7 @@
         // 只有一个开关（没有列表项）时，Enter 就是"确认当前值"，别去选第 0 项
         if (prompt.kind === 'multi' || !prompt.options.length) chooseByKey('enter');
         else chooseByIndex(cursor);
-      } else if (event.key === 'Escape') {
+      } else if (event.key === 'Escape' && prompt.source !== 'hermes_clarify') {
         event.preventDefault();
         chooseByKey('esc');
       }
@@ -446,7 +449,7 @@
     const enterButton = $('enter');
     if (enterButton) enterButton.onclick = () => chooseByKey('enter');
     const terminal = $('terminal');
-    if (terminal) terminal.onclick = () => document.getElementById('terminal-mode-button')?.click();
+    if (terminal) terminal.onclick = () => document.getElementById('chat-reply-panel')?.dispatchEvent(new Event('open-reply'));
     bindKeyboard();
     document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
   }

@@ -201,6 +201,8 @@
   .prompt-card{position:absolute;left:16px;right:16px;bottom:100%;margin:0 auto 8px;max-width:820px;padding:10px 12px 9px;border:1px solid var(--line-strong);border-radius:16px;background:var(--card);box-shadow:0 14px 34px rgba(32,31,28,.18);z-index:6;max-height:min(52vh,430px);display:flex;flex-direction:column;overflow:hidden}
   .prompt-card>.prompt-head,.prompt-card>.prompt-hint,.prompt-card>.prompt-toggles,.prompt-card>.prompt-foot,.prompt-card>.prompt-raw{flex:none}
   .prompt-card [hidden],.prompt-card[hidden],.composer:has(#prompt-card:not([hidden])) #needs-you-card{display:none}
+  #chat-reply-panel{z-index:8;height:min(52dvh,420px);max-height:52vh}
+  #chat-reply-panel iframe{flex:1;min-height:0;width:100%;border:0;margin-top:5px}
   .prompt-card:focus{outline:none}
   .prompt-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .prompt-head{display:flex;align-items:center;gap:8px;min-width:0}
@@ -265,7 +267,7 @@
   <p class="prompt-hint" id="needs-you-card-hint" hidden></p>
   <div class="prompt-options" id="needs-you-card-options" role="listbox"></div>
   <div class="prompt-toggles" id="needs-you-card-toggles" hidden></div>
-  <div class="prompt-foot"><span class="prompt-state" id="needs-you-card-state"></span><span class="prompt-timeout" id="needs-you-card-timeout"></span><button class="prompt-btn" id="needs-you-card-terminal" type="button">打开终端</button><button class="prompt-btn prompt-btn-go" id="needs-you-card-enter" type="button" hidden>确认</button><button class="prompt-btn" id="needs-you-card-esc" type="button">Esc 取消</button></div>
+  <div class="prompt-foot"><span class="prompt-state" id="needs-you-card-state"></span><span class="prompt-timeout" id="needs-you-card-timeout"></span><button class="prompt-btn" id="needs-you-card-terminal" type="button">实时作答</button><button class="prompt-btn prompt-btn-go" id="needs-you-card-enter" type="button" hidden>确认</button><button class="prompt-btn" id="needs-you-card-esc" type="button">Esc 取消</button></div>
 </div>
 <!-- 等你回答收件箱（借鉴清单第 7 项）：亮灯历史，打开即标已读 -->
 <div class="inbox-drawer" id="inbox-drawer" hidden role="dialog" aria-label="等你回答收件箱">
@@ -281,9 +283,13 @@
   <p class="prompt-hint" id="prompt-card-hint" hidden></p>
   <div class="prompt-options" id="prompt-card-options" role="listbox"></div>
   <div class="prompt-toggles" id="prompt-card-toggles" hidden></div>
-  <div class="prompt-foot"><span class="prompt-state" id="prompt-card-state"></span><button class="prompt-btn prompt-btn-go" id="prompt-card-enter" type="button" hidden>确认 Enter</button><button class="prompt-btn" id="prompt-card-terminal" type="button">打开终端</button><button class="prompt-btn" id="prompt-card-esc" type="button">Esc 取消</button></div>
+  <div class="prompt-foot"><span class="prompt-state" id="prompt-card-state"></span><button class="prompt-btn prompt-btn-go" id="prompt-card-enter" type="button" hidden>确认 Enter</button><button class="prompt-btn" id="prompt-card-terminal" type="button">实时作答</button><button class="prompt-btn" id="prompt-card-esc" type="button">Esc 取消</button></div>
   <details class="prompt-raw" id="prompt-card-raw-wrap" hidden><summary>屏幕原文</summary><pre id="prompt-card-raw"></pre></details>
 </div>
+<section id="chat-reply-panel" class="prompt-card" hidden aria-label="实时作答">
+  <div class="prompt-head"><strong class="prompt-title" id="chat-reply-title">实时作答</strong>
+    <button id="chat-reply-close" type="button" class="prompt-btn">收起</button></div>
+</section>
 <input id="upload-input" type="file" multiple hidden><div class="composer-inner"><div class="composer-card">
 <div class="queue-strip" id="queue-strip" hidden aria-label="排队中的消息"></div>
 <div class="cf-bar"><button class="cf-attach" id="inspect-interaction" type="button" disabled>查看交互</button><button class="cf-attach" id="attach" type="button" title="添加附件（存到 pane 目录下的 upload_files）" aria-label="添加附件" disabled><svg class="ico"><use href="#i-paperclip"/></svg><span>附件</span></button><div class="model-pick" id="model-pick-wrap" hidden><button type="button" class="model-toggle" id="model-toggle" aria-haspopup="true" aria-expanded="false" title="切换这个 agent 使用的模型"><svg class="ico"><use href="#i-gear"/></svg><span id="model-current">模型</span><svg class="ico model-caret"><use href="#i-chevron"/></svg></button><div class="model-menu" id="model-menu" hidden><input class="model-filter" id="model-filter" type="search" placeholder="筛选模型…" autocomplete="off" spellcheck="false"><div class="model-groups" id="model-groups"></div></div></div><span class="cf-hint">存到当前目录的 upload_files</span></div><div class="cf-strip" id="uploads" hidden></div><div class="input-complete" id="input-complete" role="listbox" hidden></div><textarea id="input" disabled placeholder="选择会话后，在这里输入消息…"></textarea><button class="send" id="send" disabled title="发送" aria-label="发送"><svg class="ico"><use href="#i-arrow-up"/></svg></button></div><div class="composer-foot"><span>Enter 发送 · Shift + Enter 换行 · @ 跳 pane · / 插指令</span><span class="send-state" id="send-state"></span><label class="submit-option"><input type="checkbox" id="submit-enter" checked> 同时按 Enter 提交</label></div></div></section>

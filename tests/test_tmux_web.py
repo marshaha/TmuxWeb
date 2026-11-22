@@ -3536,6 +3536,37 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(payload["screen"], payload["screen"])
         self.assertTrue(payload["screen"], "要带屏幕原文，用户得能核对在答什么")
 
+    def test_hermes_single_question_uses_one_digit_and_rechecks_the_live_pane(self):
+        self.login()
+        self.tmux.panes[0].update(provider="hermes", pane_pid="123")
+        screen = ("╭─ Hermes Agent needs your input ─────╮\n│ 1 question │\n"
+                  "│ ▸ 你现在用哪种设备查看 Chat？ │\n│ ❯ 1. 手机 (Recommended) │\n"
+                  "│   2. 电脑 │\n│   3. Other (type your answer) │\n╰─────╯\n"
+                  "↑/↓ to select, Enter to lock, Tab next question  (100s)\n"
+                  "── ❓ 你现在用哪种设备查看 Chat？ ──\n? ❯\n─────\nHermes")
+        self.tmux.output = screen
+        path = "/api/panes/%254/prompt"
+        prompt = self.client.get(path, params={"inspect": True}).json()["prompt"]
+        self.assertEqual(prompt["source"], "hermes_clarify")
+        self.assertEqual([o["label"] for o in prompt["options"]], ["手机 (Recommended)", "电脑", "Other (type your answer)"])
+        self.assertTrue(prompt["options"][-1]["opens_input"])
+        sent = []
+        self.tmux.send_keys = lambda pane_id, keys, pane=None: sent.extend(keys)
+        choice = {"index": 1, "revision": prompt["revision"]}
+        for stale in (screen.replace("电脑", "平板"), screen.replace("? ❯", "❯ Draft"),
+                      screen.replace("1 question", "2 questions"), screen.replace("❯ 1.", "❯ [ ] 1.")):
+            self.tmux.output = stale
+            self.assertEqual(self.client.post(path + "/choose", json=choice).status_code, 409)
+        self.tmux.output = screen
+        self.tmux.panes[0]["pane_pid"] = "456"
+        self.assertEqual(self.client.post(path + "/choose", json=choice).status_code, 409)
+        self.tmux.panes[0]["pane_pid"] = "123"
+        self.assertEqual(self.client.post(path + "/choose", json={**choice, "key": "enter"}).status_code, 422)
+        self.assertEqual(sent, [])
+        self.assertEqual(self.client.post(path + "/choose", json=choice).status_code, 200)
+        self.assertEqual(self.client.post(path + "/choose", json=choice).status_code, 409)
+        self.assertEqual(sent, ["2"])
+
     def test_manual_inspection_and_revision_protect_checklist_actions(self):
         self.login()
         self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "off"}).status_code, 200)

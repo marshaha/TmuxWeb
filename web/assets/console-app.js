@@ -344,7 +344,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   async function toggleFavorite(id){const on=state.favorites.has(id);try{if(on){await api(`/api/home/favorites/${encodeURIComponent(id)}`,{method:'DELETE'});state.favorites.delete(id);}else{await api('/api/home/favorites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane:id})});state.favorites.add(id);}syncStars();if(window.TmuxRecents)TmuxRecents.setFavorites([...state.favorites]);}catch(e){showError(e.message);}}
   function currentInteraction(){
     const status=state.needsInput?.get(state.selected);
-    if(status?.kind==='notice')return status;
+    if(status?.kind==='notice'||status?.source==='hermes_clarify')return status;
     return (state.questionPane===state.selected&&state.questionNotice)||status;
   }
   function syncQuestionNotice(id,data){
@@ -352,7 +352,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     const questions=data.open_questions||[];
     state.questionPane=id;
     state.questionNotice=questions.length?{
-      kind:'notice',title:'Codex 提问',hint:'会话记录中还没有对应的工具结果，可在终端回答。',
+      kind:'notice',title:'Codex 提问',hint:'会话记录中还没有对应的工具结果，可展开实时作答。',
       read_only:true,revision:JSON.stringify(questions.map(q=>q.id)),
       options:questions.map(q=>({label:q.text}))
     }:null;
@@ -1426,7 +1426,26 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     }
   }
 
-  function selectPane(id){if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
+  function closeChatReply(){
+    const panel=$('chat-reply-panel');
+    panel.querySelector('iframe')?.remove();
+    panel.hidden=true;
+  }
+
+  $('chat-reply-panel').addEventListener('open-reply',()=>{
+    if(!state.selected || state.mode!=='chat')return;
+    closeChatReply();
+    const frame=document.createElement('iframe');
+    const panel=$('chat-reply-panel');
+    frame.title='实时作答';
+    frame.src='/term?embed=1&reply=1&pane='+encodeURIComponent(state.selected);
+    $('chat-reply-title').textContent='实时作答 · '+$('selected-title').textContent;
+    panel.hidden=false;
+    panel.appendChild(frame);
+    $('chat-reply-close').focus();
+  });
+  $('chat-reply-close').onclick=()=>{closeChatReply();$('inspect-interaction').focus();};
+  function selectPane(id){closeChatReply();if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
     setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();if(window.TmuxNeedsYou)TmuxNeedsYou.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedMessages=new Map();$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
       const sb=$('chat-search-button');if(sb)sb.disabled=true;if(window.TmuxChatSearch)TmuxChatSearch.close();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';paintPaneHeader(p);$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);$('agents-button').disabled=false;if(window.TmuxAgents)TmuxAgents.refresh();
     const searchBtn=$('chat-search-button');if(searchBtn)searchBtn.disabled=false;syncLiveButton();syncFavButton();
@@ -2312,7 +2331,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     });
     setInterval(sync,700);
   }
-  function setMode(mode){if(state.mode===mode)return;state.mode=mode;window.TmuxPrompt?.refresh();window.TmuxNeedsYou?.refresh();document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
+  function setMode(mode){if(state.mode===mode)return;closeChatReply();state.mode=mode;window.TmuxPrompt?.refresh();window.TmuxNeedsYou?.refresh();document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
   function isFullscreen(){return document.fullscreenElement===$('main')||$('main').classList.contains('fullscreen-fallback');}
   function syncFullscreen(){const active=isFullscreen();const label=$('fullscreen').querySelector('span');if(label)label.textContent=active?'退出全屏':(state.mode==='terminal'?'终端全屏':'对话全屏');setTimeout(()=>{if(state.fit&&state.termWs?.readyState===WebSocket.OPEN){state.fit.fit();state.termWs.send(JSON.stringify({type:'resize',cols:state.xterm.cols,rows:state.xterm.rows}));}},80);}
   async function toggleFullscreen(){const main=$('main'),app=document.querySelector('.app');if(isFullscreen()){if(document.fullscreenElement)await document.exitFullscreen();main.classList.remove('fullscreen-fallback');app.classList.remove('fullscreen-fallback');}else if(main.requestFullscreen){try{await main.requestFullscreen();}catch{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}}else{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}syncFullscreen();}

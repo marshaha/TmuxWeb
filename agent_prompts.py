@@ -467,6 +467,53 @@ def toggle_keys(prompt: dict[str, Any], toggle_index: int, value_index: int) -> 
     return ["Right"] * delta if delta > 0 else ["Left"] * (-delta)
 
 
+def hermes_question(text: str, pane: dict) -> dict | None:
+    """One complete Hermes clarify dialog. Digits lock a choice without Enter."""
+    if not text or "↑/↓" not in text or pane.get("provider") != "hermes":
+        return None
+    lines = [line.strip() for line in text.splitlines()[-45:] if line.strip()]
+    # The live clarify composer is below the box. Historical output and a
+    # transcript quoting the dialog must not acquire answer buttons.
+    if len(lines) < 8 or not any(re.fullmatch(r"\?\s*❯", line) for line in lines[-4:]):
+        return None
+    headers = [i for i, line in enumerate(lines) if line.startswith("╭") and
+               any(s in line for s in (" needs your input", "需要你的回答", "需要你的回覆"))]
+    if not headers:
+        return None
+    start = headers[-1] + 1
+    rows = []
+    for line in lines[start:]:
+        row = BOX_ROW_RE.fullmatch(line)
+        if not row:
+            break
+        rows.append(row[1].strip())
+    end = start + len(rows)
+    if (len(rows) < 4 or len(lines) <= end + 2 or not lines[end].startswith("╰")
+            or not re.fullmatch(r"↑/↓ (?:to select, Enter to lock, Tab next question|选择，Enter 锁定，Tab 下一个问题|選擇，Enter 鎖定，Tab 下一題)(?:\s+\(\d+s\))?", lines[end + 1])
+            or not any(re.fullmatch(r"\?\s*❯", line) for line in lines[end + 2:end + 5])
+            or rows[0] not in ("1 question", "1 个问题", "1 個問題") or not rows[1].startswith("▸ ")):
+        return None
+    options = []
+    for i, row in enumerate(rows[2:], 1):
+        m = re.fullmatch(r"(❯\s+)?([0-9])\.\s+(.+)", row)
+        if not m or i > 10 or m[2] != str(i % 10):
+            return None
+        options.append({"label": m[3], "number": m[2], "selected": bool(m[1])})
+    if (sum(o["selected"] for o in options) != 1 or options[-1]["label"] not in
+            ("Other (type your answer)", "其他（输入你的回答）", "其他（輸入你的答案）")):
+        return None
+    # Hermes switches to its text composer when the last shortcut is pressed.
+    prompt = _finish("menu", rows[1][2:], "点选即可回答，自定义内容可在下方实时作答。",
+                     options, [], numbers=True, source="hermes_clarify")
+    prompt["options"][-1]["opens_input"] = True
+    for option in prompt["options"]:
+        option.pop("recommended", None)
+        option["keys"] = [option["number"]]
+    identity = [pane.get("pane_id") or pane.get("id"), pane.get("pane_pid"), prompt["revision"]]
+    prompt["revision"] = hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
+    return prompt
+
+
 def parse_screen(text: str) -> dict[str, Any] | None:
     """认出一个正在等待的交互提示；认不出返回 None。"""
     if not text:
@@ -583,6 +630,8 @@ def choice_keys(prompt: dict[str, Any], index: int) -> list[str]:
     if not 0 <= index < len(options):
         raise ValueError("option index is out of range")
     option = options[index]
+    if prompt.get("source") == "hermes_clarify":
+        return [option["number"]]
     if option.get("key"):
         return {"yes": ["y", "Enter"], "no": ["n", "Enter"],
                 "enter": ["Enter"], "esc": ["Escape"]}[option["key"]]

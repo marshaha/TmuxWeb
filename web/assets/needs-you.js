@@ -238,7 +238,7 @@
 
     const enter = $('enter');
     const escape = $('esc');
-    if (escape) escape.hidden = !!data.read_only;
+    if (escape) escape.hidden = !!data.read_only || data.source === 'hermes_clarify';
     if (enter) enter.hidden = !!data.read_only || data.kind !== 'multi' && data.kind !== 'toggle';
     node.hidden = false;
     // 同一张菜单的未过门版本（实验性 prompt 卡）正在显示的话，让它让位：
@@ -299,6 +299,7 @@
     try {
       await sendChoice(pane, saved, {index}, option.keys);
       if (pane !== paneNow()) return;
+      if (option.opens_input) document.getElementById('chat-reply-panel')?.dispatchEvent(new Event('open-reply'));
       setState('');
       clearTimeout(followUpTimer);
       followUpTimer = setTimeout(() => {
@@ -430,7 +431,7 @@
       } else if (event.key === 'Enter' && hasOptions) {
         event.preventDefault();
         chooseByIndex(cursor);
-      } else if (event.key === 'Escape') {
+      } else if (event.key === 'Escape' && prompt.source !== 'hermes_clarify') {
         event.preventDefault();
         chooseByKey('Escape');
       }
@@ -454,7 +455,7 @@
     const enter = $('enter');
     if (enter) enter.onclick = () => chooseByKey('Enter');
     const terminal = $('terminal');
-    if (terminal) terminal.onclick = () => document.getElementById('terminal-mode-button')?.click();
+    if (terminal) terminal.onclick = () => document.getElementById('chat-reply-panel')?.dispatchEvent(new Event('open-reply'));
     bindKeyboard();
     if (timer) clearInterval(timer);
     if (!sharedStatus) timer = setInterval(poll, POLL_MS);

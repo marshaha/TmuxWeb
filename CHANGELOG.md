@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+
+- Answer a live Hermes single-choice question in Chat using its numbered shortcuts. Recheck the visible question before sending.
+- Open the native interactive pane inside Chat for typed answers, approvals and multi-step forms.
+
 ## 0.2.0
 
 - Show native interaction notices and recorded Codex and Claude questions in Chat. Track synchronous Codex questions until their matching result or turn end. Manual screen previews are read-only.

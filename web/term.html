@@ -35,7 +35,15 @@
     .keys{flex:none;display:none;gap:6px;padding:6px;overflow-x:auto;background:#181818;border-top:1px solid #333;
       scrollbar-width:none;overscroll-behavior-x:contain}
     .keys::-webkit-scrollbar{display:none}
-    body.touch .keys{display:flex}
+    body.touch .keys,body.reply .keys{display:flex}
+    body.reply header{display:flex}
+    body.reply header .title{display:none}
+    body.reply header{height:22px}
+    body.reply header .link,body.reply .keys [data-key="ctrlc"],body.reply .keys [data-key="ctrld"]{display:none}
+    body.reply .keys{flex-wrap:wrap;gap:3px}
+    body.reply .keys button{min-width:28px;height:30px;padding:0 6px}
+    body.reply .keys [data-key="up"],body.reply .keys [data-key="down"]{order:-2}
+    body.reply .keys [data-key="enter"]{order:-1}
     .keys button{flex:0 0 auto;min-width:42px;height:36px;padding:0 9px;border:1px solid #454545;border-radius:8px;
       background:#292929;color:#eee;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;touch-action:manipulation}
     .keys button:active{background:#6b3424;border-color:#c96442}
@@ -75,6 +83,8 @@
   const params=new URLSearchParams(location.search);
   const pane=params.get('pane')||'';
   const embedded=params.get('embed')==='1';
+  const reply=params.get('reply')==='1';
+  if(reply)document.body.classList.add('reply');
   if(embedded)document.body.classList.add('embed');
   $('console-link').href='/?pane='+encodeURIComponent(pane);
   // 标题栏/PWA 窗口标题都带窗口编号（和侧栏、relay 的 #N 是同一个号）
@@ -84,7 +94,7 @@
     document.title=(number?`#${number} · `:'')+`终端 · ${pane}`;
   }
   paintTitle(0);
-  fetch('/api/panes',{headers:{'Accept':'application/json'}})
+  if(!reply)fetch('/api/panes',{headers:{'Accept':'application/json'}})
     .then(response=>response.ok?response.json():null)
     .then(data=>{
       const found=((data&&data.panes)||[]).find(item=>item.id===pane);
@@ -110,6 +120,7 @@
 
   function setState(text, live){
     $('state').textContent=text;
+    if(reply)for(const button of $('keys').querySelectorAll('button'))button.disabled=!live;
     $('dot').className='dot'+(live?' live':'');
   }
   function send(message){
@@ -156,7 +167,7 @@
 
   term.onData(data=>{
     if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'input',data}));
-    else pending+=data;               // typing before the socket is up must not vanish
+    else if(!reply)pending+=data;               // typing before the socket is up must not vanish
   });
 
   // the pty only redraws when the size really changed; coalesce keyboard animations first
@@ -182,7 +193,7 @@
     button.addEventListener('click',()=>{
       const data=KEYS[button.dataset.key]||'';
       if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'input',data}));
-      else pending+=data;
+      else if(!reply)pending+=data;
     });
   }
   // paste from the clipboard (a phone has no Ctrl+V)
@@ -192,7 +203,7 @@
       if(!text)return;
       const data=text.replace(/\r?\n/g,'\r');
       if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'input',data}));
-      else pending+=data;
+      else if(!reply)pending+=data;
     }catch{setState('粘贴被浏览器拦截',false);}
   });
 

@@ -2377,15 +2377,22 @@ def create_app(
                     bool(agent_source)),
                 screen_text=text)
             notices = (agent_entry or {}).get("notices") or []
-            if notices:
+            # Automatic cards also require an independent decision signal. A
+            # manual inspection can open the live dialog on hosts without hooks.
+            clarify = None
+            if provider == "hermes" and (notices or native_decision.get(pane["id"])):
+                clarify = agent_prompts.hermes_question(text, dict(pane, provider=provider))
+            if clarify:
+                gated_prompt = clarify
+            elif notices:
                 details = [{"label": item["title"], "description": item.get("detail", "")}
                            for item in notices if isinstance(item, dict) and item.get("title")]
                 if details:
                     gated_prompt = {"kind": "notice", "title": "交互通知", "options": details,
                                     "revision": hashlib.sha256(json.dumps(notices, sort_keys=True).encode()).hexdigest(),
-                                    "hint": "来自 harness 事件，当前进度可在终端核对。", "read_only": True}
+                                    "hint": "来自 harness 事件，可展开实时作答。", "read_only": True}
             elif gated_prompt and not screen_controls:
-                gated_prompt = dict(gated_prompt, read_only=True, hint="根据当前屏幕推测，请在终端核对。")
+                gated_prompt = dict(gated_prompt, read_only=True, hint="根据当前屏幕推测，可展开实时作答。")
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
                     "host_name": host_name, "target": target, "provider": provider,
                     "status": status, "status_source": source, "activity_age": age,
@@ -5553,7 +5560,11 @@ def create_app(
             pane = pane_or_404(pane_id)
             transport, actual = pane_transport(pane_id)
             text = transport.capture(actual, 80, pane=pane, visible_only=True)
-            return agent_prompts.parse_screen(text), text, pane, transport, actual
+            found = None
+            if text and "↑/↓" in text:
+                found = agent_prompts.hermes_question(text, dict(pane, provider=pane_provider(pane)))
+            found = found or agent_prompts.parse_screen(text)
+            return found, text, pane, transport, actual
 
         async with prompt_capture_slots:
             return await asyncio.to_thread(capture)
@@ -5617,9 +5628,10 @@ def create_app(
         lines = (text or "").splitlines()
         while lines and not lines[-1].strip():      # TUI 下方常留空白，别把它当"屏幕原文"
             lines.pop()
-        signature = agent_prompts.menu_signature(found) if found and found["kind"] != "multi" else ""
+        direct = bool(found and found.get("source") == "hermes_clarify")
+        signature = agent_prompts.menu_signature(found) if found and not direct and found["kind"] != "multi" else ""
         grant = approvals_store.find(pane_id, signature, turn) if signature else None
-        return {"pane": pane_id, "prompt": dict(found, read_only=True) if found and inspect else found, "signature": signature,
+        return {"pane": pane_id, "prompt": dict(found, read_only=True) if found and inspect and not direct else found, "signature": signature,
                 "grant": grant.as_dict() if grant else None,
                 "screen": lines[-24:] if found or inspect else []}
 
@@ -5669,7 +5681,8 @@ def create_app(
     async def pane_prompt_choose(request: Request, pane_id: str, payload: PromptChoiceRequest):
         """Check the current menu and apply a single selection on its pane."""
         require_auth(request)
-        if home.get_prefs().get("prompt_card", "off") != "on":
+        experimental = home.get_prefs().get("prompt_card", "off") == "on"
+        if not experimental and (payload.index is None or not payload.revision):
             raise HTTPException(status_code=409, detail="交互菜单卡片已在设置里关闭")
         pane_id = resolve_pane_ref(pane_id)
         lock = prompt_actions.setdefault(pane_id, asyncio.Lock())
@@ -5678,6 +5691,11 @@ def create_app(
                 found, _text, pane, transport, actual = await capture_prompt(pane_id)
                 if not found:
                     raise HTTPException(status_code=409, detail="屏幕上没有等待中的选择")
+                if found.get("source") == "hermes_clarify":
+                    if not payload.revision or payload.index is None or payload.key or payload.toggle is not None or payload.value is not None:
+                        raise HTTPException(status_code=422, detail="请选择当前问题中的一项")
+                elif not experimental:
+                    raise HTTPException(status_code=409, detail="当前题目已变化，请重新查看交互")
                 if payload.revision:
                     if payload.revision != found["revision"]:
                         raise HTTPException(status_code=409, detail="屏幕上的选项已变化，请刷新后再选择")
