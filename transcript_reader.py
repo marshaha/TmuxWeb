@@ -11,6 +11,8 @@ avoids type annotations, ``from __future__ import annotations`` and 3.8+ syntax
 (walrus, dict union, positional-only markers). Keep it dependency-free: only
 the standard library and ``tmux`` itself.
 """
+from collections import deque
+import hashlib
 import json
 import os
 import re
@@ -397,6 +399,44 @@ def _claude_session_path(home, cwd, title, screen, hint):
     raise TranscriptError("could not determine Claude session id")
 
 
+def question_record(call_id, arguments, timestamp):
+    """A recorded question is history. It carries no authority to answer a live request."""
+    if not isinstance(call_id, str) or not call_id:
+        return None
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            return None
+    questions = arguments.get("questions") if isinstance(arguments, dict) else None
+    if not isinstance(questions, list):
+        return None
+    lines = []
+    for item in questions[:8]:
+        if not isinstance(item, dict):
+            continue
+        question = item.get("question") or item.get("title")
+        if not isinstance(question, str) or not question.strip():
+            continue
+        mode = "多选" if item.get("multiSelect") else "选择" if item.get("options") else "填写"
+        lines.append("【" + mode + "】" + question[:480])
+        options = item.get("options")
+        if not isinstance(options, list):
+            continue
+        for opt in options[:12]:
+            if isinstance(opt, str):
+                lines.append("• " + opt[:160])
+                continue
+            if not isinstance(opt, dict) or not isinstance(opt.get("label"), str):
+                continue
+            desc = opt.get("description")
+            lines.append("• " + opt["label"][:160] + (" — " + desc[:240] if isinstance(desc, str) and desc else ""))
+    if lines:
+        return {"id": "question:" + call_id, "role": "interaction",
+                "text": "\n".join(lines)[:4800], "timestamp": timestamp}
+    return None
+
+
 def parse_claude(lines, limit, session_id="", mtime=0):
     """Parse Claude Code JSONL. ``lines`` must be newest-first."""
     max_records = limit_cap(limit)
@@ -414,14 +454,25 @@ def parse_claude(lines, limit, session_id="", mtime=0):
             continue
         if role not in ("user", "assistant") or not uuid or uuid in seen:
             continue
-        text = content_text((event.get("message") or {}).get("content"), ("text",))
-        if not text or text.startswith(CLAUDE_SKIP_PREFIXES):
-            continue
-        seen.add(uuid)
-        records.append({"id": uuid, "role": role, "text": text, "timestamp": event.get("timestamp")})
+        content = (event.get("message") or {}).get("content")
+        batch = []
+        if role == "assistant" and isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion":
+                    record = question_record(block.get("id"), block.get("input"), event.get("timestamp"))
+                    if record and record["id"] not in seen:
+                        seen.add(record["id"])
+                        batch.append(record)
+        text = content_text(content, ("text",))
+        if text and not text.startswith(CLAUDE_SKIP_PREFIXES):
+            batch.insert(0, {"id": uuid, "role": role, "text": text, "timestamp": event.get("timestamp")})
+        if batch:
+            seen.add(uuid)
+            records.extend(reversed(batch))
         if len(records) >= max_records:
             has_more = True
             break
+    records = records[:max_records]
     records.reverse()
     return {"provider": "claude", "session_id": session_id, "messages": records,
             "mtime": mtime, "has_more": has_more}
@@ -473,36 +524,69 @@ def _codex_session_path(home, cwd, title, hint=None):
 
 def parse_codex(lines, limit, session_id="", mtime=0):
     """Parse Codex rollout JSONL (oldest-first input)."""
-    records = []
+    cap = limit_cap(limit)
+    records = deque(maxlen=cap + 1)
     seen = set()
+    model = ""
+    pending = {}
     for line in lines:
         try:
             event = json.loads(line)
         except ValueError:
             continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "event_msg":
+            marker = event.get("payload")
+            if isinstance(marker, dict) and marker.get("type") in ("task_started", "task_complete", "turn_aborted"):
+                pending.clear()
+        if event.get("type") == "turn_context":
+            context = event.get("payload")
+            if isinstance(context, dict) and isinstance(context.get("model"), str):
+                model = context["model"]
         if event.get("type") != "response_item":
             continue
         payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("type") == "function_call" and payload.get("name") in (
+                "request_user_input", "request_user_input_async", "functions.request_user_input",
+                "functions.request_user_input_async"):
+            record = question_record(payload.get("call_id"), payload.get("arguments"), event.get("timestamp"))
+            if record and record["id"] not in seen:
+                seen.add(record["id"])
+                records.append(record)
+                if payload["name"].split(".")[-1] == "request_user_input":
+                    pending[payload["call_id"]] = record
+        elif payload.get("type") == "function_call_output" and isinstance(payload.get("call_id"), str):
+            pending.pop(payload["call_id"], None)
         if payload.get("type") != "message" or payload.get("role") not in ("user", "assistant"):
             continue
         message_id = payload.get("id")
-        if not message_id or message_id in seen:
-            continue
         text = content_text(payload.get("content"), ("input_text", "output_text", "text"))
         if not text or text.startswith(CODEX_SKIP_PREFIXES):
+            continue
+        if not message_id:
+            identity = [session_id, event.get("timestamp"), payload["role"], text]
+            message_id = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        if message_id in seen:
             continue
         seen.add(message_id)
         records.append({"id": message_id, "role": payload["role"], "text": text,
                         "timestamp": event.get("timestamp")})
-    cap = limit_cap(limit)
-    return {"provider": "codex", "session_id": session_id,
-            "messages": records[-cap:], "mtime": mtime, "has_more": len(records) > cap}
+    return {"provider": "codex", "session_id": session_id, "model": model,
+            "open_questions": [{"id": item["id"], "text": item["text"]} for item in pending.values()],
+            "messages": list(records)[-cap:], "mtime": mtime, "has_more": len(records) > cap}
 
 
 def read_codex(home, cwd, title, limit, hint=None):
     session_id, path = _codex_session_path(home, cwd, title, hint)
     with path.open(errors="replace") as handle:
         data = parse_codex(handle, limit, session_id, _mtime(path))
+    if not hint or str(hint) != session_id or not (path.stem == hint or path.stem.endswith("-" + str(hint))):
+        # The title/cwd fallback can locate a sibling. Only a pane's own
+        # resume argument can turn historical records into a pending notice.
+        data["open_questions"] = []
     data["path"] = str(path)
     return data
 
@@ -857,7 +941,7 @@ def read_transcript(provider, cwd, title, limit=200, home=None, hint=None, scree
     if not data.get("model"):
         filled = ""
         primary = data.get("path") or ""
-        if primary:
+        if primary and provider != "codex":
             filled = tail_model(primary)
         if not filled and adapter.model_source == "sqlite":
             filled = hermes_model(Path(home), data.get("session_id") or "")

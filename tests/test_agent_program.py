@@ -1037,7 +1037,7 @@ class DaemonTests(unittest.TestCase):
         self.assertEqual(seen["hello"]["type"], "hello")
         self.assertEqual(seen["hello"]["token"], "good-token")
         self.assertEqual(seen["hello"]["cursor"], 0)
-        self.assertEqual(seen["hello"]["agent"]["version"], "1.2.0")
+        self.assertEqual(seen["hello"]["agent"]["version"], agent_program.VERSION)
         reply = seen["reply"]
         self.assertEqual(reply["id"], "req-1")
         self.assertEqual(reply["seq"], 1)
@@ -1737,7 +1737,7 @@ class SequencingDaemonTests(unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertEqual(hellos["first"]["cursor"], 0)
         self.assertEqual(hellos["second"]["cursor"], 1)
-        self.assertEqual(hellos["second"]["agent"]["version"], "1.2.0")
+        self.assertEqual(hellos["second"]["agent"]["version"], agent_program.VERSION)
 
 
 if __name__ == "__main__":

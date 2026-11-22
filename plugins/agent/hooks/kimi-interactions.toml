@@ -1,0 +1,35 @@
+[[hooks]]
+event = "PermissionRequest"
+matcher = ""
+command = "python3 ~/.config/tmuxweb-agent/hooks/observe.py kimi"
+timeout = 5
+
+[[hooks]]
+event = "PermissionResult"
+matcher = ""
+command = "python3 ~/.config/tmuxweb-agent/hooks/observe.py kimi"
+timeout = 5
+
+[[hooks]]
+event = "Stop"
+matcher = ""
+command = "python3 ~/.config/tmuxweb-agent/hooks/observe.py kimi"
+timeout = 5
+
+[[hooks]]
+event = "Interrupt"
+matcher = ""
+command = "python3 ~/.config/tmuxweb-agent/hooks/observe.py kimi"
+timeout = 5
+
+[[hooks]]
+event = "SessionEnd"
+matcher = ""
+command = "python3 ~/.config/tmuxweb-agent/hooks/observe.py kimi"
+timeout = 5
+
+[[hooks]]
+event = "StopFailure"
+matcher = ""
+command = "python3 ~/.config/tmuxweb-agent/hooks/observe.py kimi"
+timeout = 5

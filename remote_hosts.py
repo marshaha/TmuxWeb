@@ -179,7 +179,7 @@ header() {
     printf 'TMUXWEB_STAMP%s%s\n' "$sep" "$stamps"
     # 会话文件里最后一条 model：模型选择器要显示"现在跑的是哪个"。
     # 只对 jsonl 做：hermes 走 state.db（二进制，且会话行里有 model，别去 grep 整个库）。
-    if [ "$2" = jsonl ]; then
+    if [ "$2" = jsonl ] && [ "$provider" != codex ]; then
       model=$(grep -o '"model"[[:space:]]*:[[:space:]]*"[^"]*"' -- "$3" 2>/dev/null \
         | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
       printf 'TMUXWEB_MODEL%s%s\n' "$sep" "$model"
@@ -351,6 +351,7 @@ if [ "$provider" = claude ]; then
 fi
 
 if [ "$provider" = codex ]; then
+  bound_session=0
   id=""
   file=""
   # `codex resume <id>` names the session outright; the title index and the cwd scan
@@ -362,6 +363,7 @@ if [ "$provider" = codex ]; then
     if [ -n "$exact" ]; then
       file=$exact
       id=$hint
+      case "$file" in *-"$hint".jsonl|*/"$hint".jsonl) bound_session=1;; esac
     fi
   fi
   short=$(printf '%s' "$title" | sed 's/ |.*//')
@@ -409,6 +411,7 @@ if [ "$provider" = codex ]; then
   [ -n "$file" ] || error "no Codex transcript for $cwd" 23
   [ "${TMUXWEB_STATUS_ONLY:-0}" = 1 ] && status_emit "$file"
   [ -n "$id" ] || id=$(basename "$file" .jsonl | sed 's/^rollout-[0-9T:.-]*-//')
+  printf 'TMUXWEB_BOUND%s%s\n' "$sep" "${bound_session:-0}"
   header "$id" jsonl "$file"
   tail -c "$payload_bytes" -- "$file" 2>/dev/null | emit
   exit 0
@@ -1886,6 +1889,13 @@ class SSHRunner:
                 continue
         return max(stamps) if stamps else 0.0
 
+    def codex_catalog(self, pane_id):
+        import agent_models
+        state = transcript_state(self.host.get("id"), pane_id) or {}
+        if state.get("provider") != "codex":
+            return []
+        return agent_models.codex_catalog(state.get("primary"), runner=self)
+
     def transcript(self, pane_id: str, limit: int = 200, refresh: bool = False, pane: dict | None = None) -> dict:
         """Pull a remote transcript's bytes and parse them here, like scp + local parse.
 
@@ -1953,6 +1963,7 @@ class SSHRunner:
             drop_transcript_state(host_id, pane_id)
             state = {
                 "provider": header.get("TMUXWEB_PROVIDER", ""),
+                "bound": header.get("TMUXWEB_BOUND", "0"),
                 "format": header.get("TMUXWEB_FORMAT", "jsonl"),
                 "session": header.get("TMUXWEB_SESSION", ""),
                 "primary": header.get("TMUXWEB_PRIMARY", ""),
@@ -1985,7 +1996,9 @@ class SSHRunner:
         stamp = header.get("TMUXWEB_STAMP", "")
         data["mtime"] = self._probe_mtime(stamp)
         data["pane"] = pane_id
-        if not data.get("model"):
+        if data.get("provider") == "codex" and header.get("TMUXWEB_BOUND") != "1":
+            data["open_questions"] = []
+        if not data.get("model") and data.get("provider") != "codex":
             data["model"] = header.get("TMUXWEB_MODEL", "")
         data["model_provider"] = header.get("TMUXWEB_MODEL_PROVIDER", "")
         data.setdefault("host_id", self.host.get("id"))
@@ -2064,6 +2077,7 @@ class SSHRunner:
         store_transcript_state(host_id, pane_id, state)
         header = {
             "TMUXWEB_PROVIDER": state.get("provider", ""),
+            "TMUXWEB_BOUND": state.get("bound", "0"),
             "TMUXWEB_FORMAT": state.get("format", "jsonl"),
             "TMUXWEB_SESSION": state.get("session", ""),
             "TMUXWEB_PRIMARY": state.get("primary", ""),

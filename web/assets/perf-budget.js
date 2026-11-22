@@ -11,7 +11,7 @@
  * 预算的含义（超了就当成 bug 修，不是"手感问题"）：
  *   frameP95   <= 24ms   60Hz 下掉一帧以内
  *   longestTask<= 120ms  一次长任务不至于让点击明显迟滞
- *   nodes      <= 12000  1000 条消息封顶时的 DOM 规模上限
+ *   nodes      <= 12000  500 条消息封顶时的 DOM 规模上限
  */
 (function () {
   const BUDGET = {frameP95: 24, longestTask: 120, nodes: 12000};

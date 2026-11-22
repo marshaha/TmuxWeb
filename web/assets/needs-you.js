@@ -6,15 +6,7 @@
  * 文件说了算）+ 屏幕连续两轮解析一致 + 菜单确实存在。解析 alone 永远点不
  * 亮这张卡（门在 needs_input.py，不在这里）。
  *
- * 点一个选项，就是把服务端随 prompt 下发的 keys（choice_keys 算好的方向键 /
- * 数字 / y-n + Enter）一条一条 POST /api/panes/{id}/key 发进去 —— 不另起
- * 发送路径。答完之后卡片先自己收起来：sweep 一分钟才重扫一轮，/status 里
- * 的旧菜单还会挂一会儿，照着旧签名继续弹等于让人对着已经答过的题再答一次。
- *
- * 点下的一刻卡片就收起来（乐观关闭），按键在后台发：手机上走 Cloudflare，
- * 逐个 POST 要好几秒，卡片一直杵在“已发送（等屏幕刷新…）”上看着像卡住了。
- * 发失败了卡片会恢复出来、显示原因，可以再点一次；恢复时签名清掉，poll
- * 才不会以为这道题已经答过、压住重弹。
+ * 新版服务端在发键前复核屏幕版本。旧版状态快照仍可使用逐键接口。
  *
  * 超时（对标 Open WebUI ask_user 的 timeout_ms，默认 120 秒自动取消）：
  * 卡片亮起 timeoutMs 后自动收起，不作答、不发任何键；收起后进入
@@ -43,11 +35,11 @@
   const DEFAULT_RESHOW_COOLDOWN_MS = 60 * 1000;
 
   let getPane = null;
+  let sharedStatus = null;
   let timer = null;
   let busy = false;
   let prompt = null;
   let cursor = 0;
-  let hiddenByUser = false;
   let answeredSignature = '';   // 答过的菜单签名：sweep 更新之前别再弹
   let followUpTimer = 0;
   let timeoutMs = DEFAULT_TIMEOUT_MS;
@@ -58,11 +50,6 @@
   let timedOut = null;          // {signature, at}：冷却期内别重弹
 
   const $ = id => document.getElementById(CARD + '-' + id);
-
-  function esc(value) {
-    return String(value == null ? '' : value)
-      .replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
-  }
 
   function paneNow() {
     try { return getPane ? getPane() : ''; } catch (_error) { return ''; }
@@ -78,7 +65,7 @@
       found.kind || '', found.title || '',
       (found.options || []).map(option => [option.label, option.meta, option.number]),
       (found.toggles || []).map(toggle => [toggle.label, toggle.active]),
-      found.selected,
+      found.selected, found.revision,
     ]);
   }
 
@@ -157,8 +144,9 @@
     const list = $('options');
     if (!list || !prompt || !prompt.options || !prompt.options.length) return;
     [...list.children].forEach((node, index) => {
-      node.classList.toggle('on', index === cursor);
-      node.setAttribute('aria-selected', index === cursor ? 'true' : 'false');
+      node.classList.toggle('on', !prompt.read_only && index === cursor);
+      const selected = prompt.kind === 'multi' ? prompt.options[index].checked : !prompt.read_only && index === cursor;
+      node.setAttribute('aria-selected', String(!!selected));
     });
   }
 
@@ -168,6 +156,8 @@
     prompt = data;
     cursor = Number.isInteger(data.selected) ? Math.min(data.selected, data.options.length - 1) : 0;
 
+    const badge = $('badge');
+    if (badge) badge.textContent = data.kind === 'notice' ? '来自会话' : data.read_only ? '待核对' : '等你回答';
     $('title').textContent = data.title || (data.kind === 'confirm' ? '需要确认' : '等你回答');
     const hint = $('hint');
     hint.textContent = data.hint || (data.more ? `屏幕外还有 ${data.more} 项` : '');
@@ -175,12 +165,14 @@
 
     const list = $('options');
     list.innerHTML = '';
+    list.setAttribute('aria-multiselectable', String(data.kind === 'multi'));
     (data.options || []).forEach((option, index) => {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'prompt-option';
       button.setAttribute('role', 'option');
       button.dataset.index = String(index);
+      button.disabled = !!data.read_only;
       const text = document.createElement('span');
       text.className = 'prompt-option-text';
       const label = document.createElement('span');
@@ -228,6 +220,7 @@
         button.type = 'button';
         button.className = 'prompt-toggle-btn' + (valueIndex === toggle.active ? ' on' : '');
         button.textContent = option;
+        button.disabled = !!data.read_only;
         button.setAttribute('aria-pressed', valueIndex === toggle.active ? 'true' : 'false');
         button.addEventListener('click', () => chooseToggle(toggleIndex, valueIndex));
         group.appendChild(button);
@@ -243,8 +236,11 @@
     });
     toggles.hidden = !(data.toggles && data.toggles.length);
 
+    const enter = $('enter');
+    const escape = $('esc');
+    if (escape) escape.hidden = !!data.read_only;
+    if (enter) enter.hidden = !!data.read_only || data.kind !== 'multi' && data.kind !== 'toggle';
     node.hidden = false;
-    hiddenByUser = false;
     // 同一张菜单的未过门版本（实验性 prompt 卡）正在显示的话，让它让位：
     // 两张卡是同一道题，留一张就够了，留过门的那张。
     const promptCard = document.getElementById('prompt-card');
@@ -257,8 +253,7 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  async function sendKeys(keys) {
-    const pane = paneNow();
+  async function sendKeys(keys, pane) {
     if (!pane) throw new Error('先选择一个 pane');
     for (const key of keys) {
       const response = await fetch(`/api/panes/${encodeURIComponent(pane)}/key`, {
@@ -275,7 +270,21 @@
     }
   }
 
+  async function sendChoice(pane, found, action, legacyKeys) {
+    if (!found.revision) return sendKeys(legacyKeys, pane);
+    const response = await fetch(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({...action, revision: found.revision}),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${response.status}`);
+    }
+  }
+
   async function chooseByIndex(index) {
+    if (prompt?.read_only) return;
     if (!prompt || !prompt.options || !prompt.options[index]) return;
     const option = prompt.options[index];
     if (!option.keys || !option.keys.length) { setState('这个选项没有可发的按键', true); return; }
@@ -283,15 +292,22 @@
     busy = true;
     // 乐观关闭：先记签名、再收卡、清掉状态文字，按键放后台发。
     const saved = prompt;
+    const pane = paneNow();
     answeredSignature = signatureOf(prompt);
     hide();
     setState('');
     try {
-      await sendKeys(option.keys);
+      await sendChoice(pane, saved, {index}, option.keys);
+      if (pane !== paneNow()) return;
       setState('');
       clearTimeout(followUpTimer);
-      followUpTimer = setTimeout(poll, 1500);   // 下一轮 sweep 前先看一眼
+      followUpTimer = setTimeout(() => {
+        if (pane !== paneNow()) return;
+        if (saved.kind === 'multi' && window.TmuxPrompt) TmuxPrompt.inspect(paneNow);
+        else poll();
+      }, saved.kind === 'multi' ? 350 : 1500);
     } catch (error) {
+      if (pane !== paneNow()) return;
       // 没送到：把卡片恢复出来，让用户能重试；签名清掉，poll 才不会以为
       // 这道题已经答过、压住重弹。恢复用点之前那份 prompt（hide() 会置空）。
       answeredSignature = '';
@@ -303,6 +319,7 @@
   }
 
   async function chooseToggle(toggleIndex, valueIndex) {
+    if (prompt?.read_only) return;
     if (!prompt || !prompt.toggles || !prompt.toggles[toggleIndex]) return;
     const toggle = prompt.toggles[toggleIndex];
     if (toggle.active === valueIndex) { setState('已经是这个值了'); return; }
@@ -311,15 +328,18 @@
     if (busy) { setState('上一条还在发送，稍等一下…'); return; }
     busy = true;
     const saved = prompt;
+    const pane = paneNow();
     answeredSignature = signatureOf(prompt);
     hide();
     setState('');
     try {
-      await sendKeys(keys);
+      await sendChoice(pane, saved, {toggle: toggleIndex, value: valueIndex}, keys);
+      if (pane !== paneNow()) return;
       setState('');
       clearTimeout(followUpTimer);
       followUpTimer = setTimeout(poll, 1500);
     } catch (error) {
+      if (pane !== paneNow()) return;
       answeredSignature = '';
       render(saved);
       setState('没送到，再试一次：' + error.message, true);
@@ -329,18 +349,22 @@
   }
 
   async function chooseByKey(key) {
+    if (prompt?.read_only) return;
     if (busy) { setState('上一条还在发送，稍等一下…'); return; }
     busy = true;
     const saved = prompt;
+    const pane = paneNow();
     answeredSignature = signatureOf(prompt);
     hide();
     setState('');
     try {
-      await sendKeys([key]);
+      if (saved) await sendChoice(pane, saved, {key}, [key]);
+      if (pane !== paneNow()) return;
       setState('');
       clearTimeout(followUpTimer);
       followUpTimer = setTimeout(poll, 1500);
     } catch (error) {
+      if (pane !== paneNow()) return;
       answeredSignature = '';
       if (saved) render(saved);
       setState('没送到，再试一次：' + error.message, true);
@@ -354,38 +378,41 @@
     const pane = paneNow();
     if (!pane) { timedOut = null; if (prompt) hide(); return; }
     try {
+      if (sharedStatus) return showStatus(sharedStatus(), pane);
       const response = await fetch('/api/panes/status', {credentials: 'same-origin'});
       if (!response.ok) return;
       const data = await response.json();
       const entry = (data.panes || []).find(item => item.id === pane);
-      if (!entry || !entry.needs_input || !entry.prompt) {
-        answeredSignature = '';
-        timedOut = null;
-        if (prompt) hide();
-        return;
-      }
-      const signature = signatureOf(entry.prompt);
-      if (signature === answeredSignature) return;   // 答过的题，sweep 更新前别再弹
-      if (hiddenByUser && prompt && signature === signatureOf(prompt)) return;
-      if (prompt && signature === signatureOf(prompt)) return;   // 同一道题，别重绘
-      if (timedOut) {
-        if (signature === timedOut.signature) {
-          // 超时收起后、冷却期内：门控仍成立也不重弹；冷却一过再出现
-          if (Date.now() - timedOut.at < reshowCooldownMs) return;
-        }
-        timedOut = null;
-      }
-      render(entry.prompt);
+      if (pane === paneNow()) showStatus(entry?.needs_input ? entry.prompt : null, pane);
     } catch (_error) {
       // 网络抖动：保持现状，下一轮再说
     }
+  }
+
+  function showStatus(found, pane = paneNow()) {
+    if (!pane || pane !== paneNow() || busy || document.hidden) return;
+    const manualCard = document.getElementById('prompt-card');
+    if (manualCard && !manualCard.hidden && window.TmuxPrompt?.isInspecting()) return;
+    if (!found) {
+      answeredSignature = '';
+      timedOut = null;
+      if (prompt) hide();
+      return;
+    }
+    const signature = signatureOf(found);
+    if (signature === answeredSignature || (prompt && signature === signatureOf(prompt))) return;
+    if (timedOut) {
+      if (signature === timedOut.signature && Date.now() - timedOut.at < reshowCooldownMs) return;
+      timedOut = null;
+    }
+    render(found);
   }
 
   function bindKeyboard() {
     const node = card();
     if (!node) return;
     node.addEventListener('keydown', event => {
-      if (!prompt) return;
+      if (!prompt || prompt.read_only || event.target?.closest?.('.prompt-foot, .prompt-head')) return;
       const hasOptions = !!(prompt.options && prompt.options.length);
       if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && hasOptions) {
         event.preventDefault();
@@ -394,6 +421,12 @@
         paintCursor();
         const target = document.querySelectorAll('#' + CARD + '-options .prompt-option')[cursor];
         if (target) target.focus();
+      } else if (event.key === 'Enter' && (prompt.kind === 'multi' || prompt.kind === 'toggle')) {
+        event.preventDefault();
+        chooseByKey('Enter');
+      } else if (event.key === ' ' && prompt.kind === 'multi') {
+        event.preventDefault();
+        chooseByIndex(cursor);
       } else if (event.key === 'Enter' && hasOptions) {
         event.preventDefault();
         chooseByIndex(cursor);
@@ -404,14 +437,13 @@
     });
   }
 
-  function start(paneGetter) {
+  function start(paneGetter, statusGetter) {
     getPane = paneGetter;
+    sharedStatus = statusGetter;
     const node = card();
     if (!node) return;
-    hiddenByUser = false;
     const close = $('close');
     if (close) close.onclick = () => {
-      hiddenByUser = true;
       disarmTimeout();   // 手动收起是用户自己的决定：超时别再把它变成
       // 一次「超时收起」（否则冷却一过卡片会自己再弹出来）
       const box = card();
@@ -419,9 +451,13 @@
     };
     const escButton = $('esc');
     if (escButton) escButton.onclick = () => chooseByKey('Escape');
+    const enter = $('enter');
+    if (enter) enter.onclick = () => chooseByKey('Enter');
+    const terminal = $('terminal');
+    if (terminal) terminal.onclick = () => document.getElementById('terminal-mode-button')?.click();
     bindKeyboard();
     if (timer) clearInterval(timer);
-    timer = setInterval(poll, POLL_MS);
+    if (!sharedStatus) timer = setInterval(poll, POLL_MS);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
     poll();
   }
@@ -434,10 +470,11 @@
   }
 
   function refresh() {
+    answeredSignature = '';
     timedOut = null;   // 换 pane 了：旧 pane 的冷却不该压住新 pane 的卡片
     hide();
     poll();
   }
 
-  window.TmuxNeedsYou = {start, stop, refresh, poll, sortNeedsFirst, signatureOf, configure, settings};
+  window.TmuxNeedsYou = {start, stop, refresh, poll, showStatus, sortNeedsFirst, signatureOf, configure, settings};
 })();

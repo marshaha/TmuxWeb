@@ -160,15 +160,7 @@ test('the poll path throttles, the immediate paths do not', () => {
     'pane switch / mode change must cancel the pending frame');
 });
 
-test('the throttle changes timing only: render internals are untouched', () => {
-  // On this base (origin/main 3e4761d) there is no in-place streaming path
-  // and no content-visibility wiring yet — both live on the item-1 branch
-  // web/borrow-content-visibility (PR #29, unmerged). The throttle must
-  // therefore not depend on any render internals: it only decides WHEN
-  // renderTranscript runs, so it composes with item 1 whichever merges first.
-  const render = grab('renderTranscript');
-  assert.ok(render.includes('const canAppend='), 'append-only path intact');
-  assert.ok(render.includes('host.innerHTML=ordered'), 'full rebuild path intact');
+test('the throttle leaves content and DOM work to the renderer', () => {
   const scheduled = grab('scheduleTranscriptRender');
   assert.ok(scheduled.includes('renderTranscript(pending.messages)'),
     'the frame callback renders exactly what the latest update carried');

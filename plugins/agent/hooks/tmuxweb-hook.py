@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         "session_id": payload.get("session_id") or payload.get("sessionId")
         or payload.get("thread_id") or "",
         "cwd": payload.get("cwd") or "",
-        "pane_id": payload.get("pane_id") or "",
+        "pane_id": os.environ.get("TMUX_PANE") or payload.get("pane_id") or "",
         "transcript_path": payload.get("transcript_path") or "",
         "hook_event_name": payload.get("hook_event_name")
         or payload.get("event") or payload.get("notification_type") or "",

@@ -174,7 +174,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function formatBytes(n){if(!n)return '0 B';if(n<1024)return `${n} B`;if(n<1024*1024)return `${(n/1024).toFixed(1)} KB`;return `${(n/1024/1024).toFixed(1)} MB`;}
   function paneLoadLabel(id){const found=state.panes.find(p=>p.id===id);if(!found)return id;const host=state.hosts.find(h=>h.id===(found.host_id||''))||{};const name=host.prefix?`${host.prefix}#${found.number}`:(found.number!=null?`#${found.number}`:id);return `${name} · ${host.name||host.id||''}`.trim();}
   function loadingActive(){return !!loadCard.shownAt;}
-  function loadingLabel(){return loadCard.kind==='fed'?'子节点加载中':'远端加载中';}
+  function loadingLabel(){return loadCard.kind==='fed'?'子节点加载中':loadCard.kind==='remote'?'远端加载中':'加载中';}
   function loadingDetail(){const elapsed=(performance.now()-loadCard.started)/1000;
     const percent=loadCard.total>0?Math.min(100,Math.round(loadCard.bytes/loadCard.total*100)):null;
     const parts=[`${elapsed.toFixed(1)}s`];
@@ -210,7 +210,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     setTimeout(syncTopActionsScroll,600);
   })();
   // "本轮"的边界 = 最后一条用户消息。授权用 turn 作用域时靠它判断过期。
-  window.TmuxTurn={key:()=>{const list=state.messages||[];for(let i=list.length-1;i>=0;i--){const m=list[i];if(m&&(m.role==='user'||m.kind==='user'))return String(m.id||m.uuid||'');}return '';}};
+  window.TmuxTurn={key:()=>{const list=state.transcriptMessages||[];for(let i=list.length-1;i>=0;i--){const m=list[i];if(m&&(m.role==='user'||m.kind==='user'))return String(m.id||m.uuid||'');}return '';}};
   function hideLoadCard(){if(!loadCard.shownAt)return;loadCard.shownAt=0;loadCard.kind='';loadCard.label='';
     clearInterval(loadCard.tick);clearTimeout(loadCard.timer);syncProgress();}
 
@@ -342,7 +342,23 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
 
   async function loadFavorites(){try{const d=await api('/api/home/favorites');state.favorites=new Set(d.favorites||[]);syncStars();if(window.TmuxRecents)TmuxRecents.setFavorites([...state.favorites]);}catch{}}
   async function toggleFavorite(id){const on=state.favorites.has(id);try{if(on){await api(`/api/home/favorites/${encodeURIComponent(id)}`,{method:'DELETE'});state.favorites.delete(id);}else{await api('/api/home/favorites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane:id})});state.favorites.add(id);}syncStars();if(window.TmuxRecents)TmuxRecents.setFavorites([...state.favorites]);}catch(e){showError(e.message);}}
-  async function refreshPaneStates(){const now=Date.now();if(now-(state.stateAt||0)<9000)return;state.stateAt=now;try{const d=await api('/api/panes/status');state.paneState=new Map((d.panes||[]).map(p=>[p.id,p.status]));const needs=new Map((d.panes||[]).filter(p=>p.needs_input&&p.prompt).map(p=>[p.id,p.prompt]));const changed=needs.size!==(state.needsInput?state.needsInput.size:0)||[...needs.keys()].some(id=>!state.needsInput||!state.needsInput.has(id));state.needsInput=needs;applyPaneStates();if(changed)renderList();syncProgress();}catch{}}
+  function currentInteraction(){
+    const status=state.needsInput?.get(state.selected);
+    if(status?.kind==='notice')return status;
+    return (state.questionPane===state.selected&&state.questionNotice)||status;
+  }
+  function syncQuestionNotice(id,data){
+    if(data.unchanged&&!Object.hasOwn(data,'open_questions'))return;
+    const questions=data.open_questions||[];
+    state.questionPane=id;
+    state.questionNotice=questions.length?{
+      kind:'notice',title:'Codex 提问',hint:'会话记录中还没有对应的工具结果，可在终端回答。',
+      read_only:true,revision:JSON.stringify(questions.map(q=>q.id)),
+      options:questions.map(q=>({label:q.text}))
+    }:null;
+    window.TmuxNeedsYou?.showStatus(currentInteraction());
+  }
+  async function refreshPaneStates(){const now=Date.now();if(now-(state.stateAt||0)<9000)return;state.stateAt=now;try{const d=await api('/api/panes/status');state.paneState=new Map((d.panes||[]).map(p=>[p.id,p.status]));const needs=new Map((d.panes||[]).filter(p=>p.needs_input&&p.prompt).map(p=>[p.id,p.prompt]));const changed=needs.size!==(state.needsInput?state.needsInput.size:0)||[...needs.keys()].some(id=>!state.needsInput||!state.needsInput.has(id));state.needsInput=needs;if(state.mode==='chat')window.TmuxNeedsYou?.showStatus(currentInteraction());applyPaneStates();if(changed)renderList();syncProgress();}catch{}}
   function applyPaneStates(){if(window.TmuxRecents)TmuxRecents.setStates(state.paneState);document.querySelectorAll('[data-pane]').forEach(button=>{const dot=button.querySelector('.pane-state');if(!dot)return;const status=state.paneState.get(button.dataset.pane)||'unknown',name='pane-state '+status;if(dot.className!==name){dot.className=name;dot.title=status==='idle'?'空闲，可接收中继':status==='busy'?'正在运行':'状态未知';}});}
   function formatSize(bytes){if(!bytes)return '0 B';const units=['B','KB','MB','GB','TB'];let value=bytes,index=0;while(value>=1024&&index<units.length-1){value/=1024;index++;}return (index?(value<10?value.toFixed(1):Math.round(value)):value)+' '+units[index];}
   function setFileStatus(message){$('file-status').textContent=message||'拖拽文件到此处上传';}
@@ -942,12 +958,12 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   function renderModelMenu(){
     $('model-current').textContent=modelLabel();
     const host=$('model-groups');host.innerHTML='';
-    if(modelState.pickerOnly){
+    if(modelState.nativePicker || modelState.pickerOnly){
       const button=document.createElement('button');
       button.type='button';button.className='model-item';
-      button.textContent=(modelState.current?`${modelState.current} · `:'')+'打开 agent 的模型菜单';
+      button.textContent='打开原生模型菜单';
       button.onclick=()=>switchModel('','');
-      host.appendChild(button);return;}
+      host.appendChild(button);if(modelState.pickerOnly)return;}
     if(!modelState.groups.length){
       const empty=document.createElement('div');empty.className='model-empty';
       empty.textContent='这个 provider 没有返回模型列表';host.appendChild(empty);}
@@ -957,7 +973,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       wrap.dataset.provider=group.provider;
       const head=document.createElement('button');
       head.type='button';head.className='model-group-head';
-      head.innerHTML=`<svg class="ico model-caret"><use href="#i-chevron"/></svg><span>${esc(group.provider)}</span><span class="count">${group.models.length}</span>`;
+      head.innerHTML=`<svg class="ico model-caret"><use href="#i-chevron"/></svg><span>${esc(group.provider+(modelState.source==='host_cache'?' · 主机缓存':modelState.source==='aliases'?' · 常用别名':''))}</span><span class="count">${group.models.length}</span>`;
       // 重绘会把被点的节点从文档里摘掉，若不拦住冒泡，外面那层"点别处就关"会当成点了外面
       head.onclick=event=>{event.stopPropagation();
         if(modelState.open.has(group.provider))modelState.open.delete(group.provider);
@@ -1000,34 +1016,46 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       if(shiftLeft<8)menu.style.left=`${Math.round(8-shiftLeft+parseFloat(menu.style.left||'0'))}px`;
       $('model-filter').focus({preventScroll:true});}
   }
-  function modelCacheKey(id){return 'tmux-models:'+id;}
   function applyModels(data){const current=(data.current||'').trim();
     modelState={groups:[],current,currentProvider:(data.current_provider||data.provider_label||'').trim(),
-      pickerOnly:!!data.picker_only,open:new Set()};
+      pickerOnly:!!data.picker_only,nativePicker:!!data.native_picker,source:data.catalog_source,open:new Set()};
     if(modelState.currentProvider)modelState.open.add(modelState.currentProvider);
     const groups=(data.groups||[]).filter(group=>(group.models||[]).length);
     modelState.groups=groups.length?groups:
       (data.presets||[]).length?[{provider:modelState.currentProvider||'模型',models:data.presets}]:[];
     renderModelMenu();}
-  async function loadPaneModels(id){const wrap=$('model-pick-wrap');
-    wrap.hidden=true;openModelMenu(false);modelState={groups:[],current:'',currentProvider:'',pickerOnly:false,open:new Set()};
+  function resetPaneModels(id){
+    state.modelsToken=(state.modelsToken||0)+1;
+    modelState={groups:[],current:'',currentProvider:'',pickerOnly:false,open:new Set()};
+    openModelMenu(false);
+    const pane=state.panes.find(item=>item.id===id);
+    const name=pane?.provider||pane?.command||'';
+    $('model-pick-wrap').hidden=!/^(codex|claude|hermes|kimi)(?:$|[- ])/i.test(name);
+    $('model-current').textContent='选择模型';
+  }
+  async function loadPaneModels(id){
     if(!id)return;
-    // 远端列模型要跑几次 /v1/models，先把上次的结果画出来，别让菜单空等
-    try{const cached=JSON.parse(localStorage.getItem(modelCacheKey(id))||'null');
-      if(cached){applyModels(cached);wrap.hidden=false;}}catch(error){}
-    const token=(state.modelsToken=(state.modelsToken||0)+1);
-    try{const data=await api(`/api/panes/${encodeURIComponent(id)}/models`);if(token!==state.modelsToken)return;
-      applyModels(data);wrap.hidden=false;
-      try{localStorage.setItem(modelCacheKey(id),JSON.stringify(data));}catch(error){}
-    }catch(error){wrap.hidden=true;
-      // pane 列表和进程探测有先后：刚建好的 agent pane 第一次可能还没认出来，稍后再问一次
-      if(state.modelsToken===token)setTimeout(()=>{if(state.selected===id&&state.modelsToken===token)loadPaneModels(id);},3000);}}
+    const token=++state.modelsToken;
+    const host=$('model-groups');
+    host.textContent='正在读取模型…';
+    try{
+      const data=await api('/api/panes/'+encodeURIComponent(id)+'/models');
+      if(id!==state.selected||token!==state.modelsToken)return;
+      applyModels(data);
+      filterModels($('model-filter').value);
+    }catch(error){
+      if(id===state.selected&&token===state.modelsToken)host.textContent='读取失败：'+error.message;
+    }
+  }
   async function switchModel(model,provider){const id=state.selected;if(!id)return;
     openModelMenu(false);
     const body=model?{model,provider:provider||''}:{};
     try{const result=await api(`/api/panes/${encodeURIComponent(id)}/model`,{method:'POST',
         headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      if(model){modelState.current=model;modelState.currentProvider=provider||modelState.currentProvider;renderModelMenu();}
+      if(id!==state.selected)return;
+      if(result.command==='/model'){
+        setTimeout(()=>{if(state.selected===id&&state.mode==='chat')window.TmuxPrompt?.inspect(()=>state.selected);},500);
+      }
       toast(result.command==='/model'?'已在 agent 里打开模型菜单，用方向键选':`已发送：${result.command}`,2400);
     }catch(error){showError(`切换模型失败：${error.message}`);}}
   async function closeSelectedPane(){const id=state.selected;if(!id)return;
@@ -1224,12 +1252,8 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   $('md-toggle').addEventListener('click',()=>{const viewer=state.viewer;if(!viewer||!viewer.renderMarkdown)return;
     viewer.rendered?viewer.renderSource():viewer.renderMarkdown();});
   document.addEventListener('keydown',event=>{if(event.key==='Escape')closeMarkdownViewer();});
-  // 一页 300 条，"加载更早"每次翻倍，但最多翻到 1000 条就停：
-  // 再往上 DOM 就是几十万节点，没有 content-visibility（它会把 Chrome 渲染进程搞崩，
-  // 见 console-base.css 里的注释）就只能老实付布局和滚动的钱。真要翻更久的历史，
-  // 该做的是窗口化渲染，不是把上限调大。
-  // 上限按性能预算算出来的，不是拍的：一条消息约 24 个节点（实测 300 条 → 7229 节点），
-  // 预算 12k 节点 / 24 ≈ 500 条。1000 条是 2.4 万节点，实测在这台机器上光追加+布局就超过 5 秒。
+  // Keep every loaded message mounted. Rich blocks fall back to readable source
+  // when necessary to leave room for the rest of the page within the DOM budget.
   const TRANSCRIPT_PAGE=300,TRANSCRIPT_PAGE_MAX=500;
   function sinceSeconds(value){if(!value)return 0;let seconds=0;
     if(typeof value==='number')seconds=value>1e12?value/1000:value;
@@ -1317,27 +1341,20 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     const viewTop=scroll.getBoundingClientRect().top;
     scroll.scrollTop+=node.getBoundingClientRect().top-viewTop-anchor.top;}
   async function loadEarlier(){const id=state.selected;
-    if(!id||!state.hasMore||state.loadingEarlier)return;
+    if(!id||!state.hasMore||state.loadingEarlier||state.transcriptLimit>=TRANSCRIPT_PAGE_MAX)return;
     state.loadingEarlier=true;syncEarlierBar();
     const previous=state.transcriptMessages.length,anchor=firstVisibleMessage();
-    if(state.transcriptLimit>=TRANSCRIPT_PAGE_MAX)return;                 // 到顶了：按钮已经是禁用态
-    state.transcriptLimit=Math.min(TRANSCRIPT_PAGE_MAX,Math.max(state.transcriptLimit*2,TRANSCRIPT_PAGE));
-    try{const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit}`);
+    const limit=Math.min(TRANSCRIPT_PAGE_MAX,state.transcriptLimit*2);
+    try{const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${limit}`);
       if(state.selected!==id||state.mode!=='chat')return;
       const messages=d.messages||[];
+      state.transcriptLimit=limit;
       state.hasMore=!!d.has_more&&messages.length>previous;
-      rememberTranscript(id,d);state.transcriptSig=transcriptSignature(d);state.transcriptMtime=d.mtime;
+      rememberTranscript(id,d);state.transcriptSig=d.signature||transcriptSignature(d);state.transcriptMtime=d.mtime;
       renderTranscriptNow(messages);
-      // keep the reader's place: only the content above changed. Correct three
-      // times: each pass puts the anchor back per the live geometry, and each
-      // pass lets the messages newly next to the viewport be measured for
-      // real — their true heights differ from the 150px estimates, which
-      // would otherwise leave a few hundred px of drift.
-      requestAnimationFrame(()=>{restoreAnchor(anchor);state.stick=false;
-        requestAnimationFrame(()=>{restoreAnchor(anchor);
-          requestAnimationFrame(()=>restoreAnchor(anchor));});});
+      requestAnimationFrame(()=>{restoreAnchor(anchor);state.stick=false;});
     }catch(error){if(state.selected===id)showError(error.message);}
-    finally{state.loadingEarlier=false;syncEarlierBar();}}
+    finally{if(state.selected===id){state.loadingEarlier=false;syncEarlierBar();}}}
   function cachedTranscript(id){
     const memory=state.transcripts.get(id);
     if(memory)return memory;
@@ -1350,8 +1367,8 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   }
   function rememberTranscript(id,d){if(!id||!d||!Array.isArray(d.messages))return;const previous=cachedTranscript(id)||{};
     state.transcripts.set(id,{...previous,messages:d.messages,provider:d.provider||previous.provider||'',
-      mode:d.mode||'transcript',mtime:d.mtime,sig:transcriptSignature(d),at:Date.now()});
-    if(window.TmuxPaneCache)TmuxPaneCache.saveTranscript(id,{messages:d.messages,provider:d.provider||'',mtime:d.mtime,sig:transcriptSignature(d)});
+      mode:d.mode||'transcript',mtime:d.mtime,sig:d.signature||transcriptSignature(d),at:Date.now()});
+    if(window.TmuxPaneCache)TmuxPaneCache.saveTranscript(id,{messages:d.messages,provider:d.provider||'',mtime:d.mtime,sig:d.signature||transcriptSignature(d)});
     // keep the working set small: eight panes is more than a human switches between
     if(state.transcripts.size>8){const stale=[...state.transcripts.entries()].filter(([key])=>key!==id&&key!==state.selected)
       .sort((a,b)=>a[1].at-b[1].at);for(const [key] of stale.slice(0,state.transcripts.size-8))state.transcripts.delete(key);}}
@@ -1410,7 +1427,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   }
 
   function selectPane(id){if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
-    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.selected=id;localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();if(window.TmuxNeedsYou)TmuxNeedsYou.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.windowStart=null;state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedIds=[];$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
+    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();if(window.TmuxNeedsYou)TmuxNeedsYou.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedMessages=new Map();$('transcript').classList.remove('active');$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
       const sb=$('chat-search-button');if(sb)sb.disabled=true;if(window.TmuxChatSearch)TmuxChatSearch.close();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';paintPaneHeader(p);$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);$('agents-button').disabled=false;if(window.TmuxAgents)TmuxAgents.refresh();
     const searchBtn=$('chat-search-button');if(searchBtn)searchBtn.disabled=false;syncLiveButton();syncFavButton();
     queueState.items=[];renderQueueStrip();
@@ -1419,7 +1436,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     else if(paintCachedTranscript(id)){clientTrace(null,'sel:cached',id);refreshTranscript(id);}  // instant paint, then revalidate
     else {connectTranscript(id,true);}
     clientTrace(null,'sel:connected',id);
-    loadPaneModels(id);
+    resetPaneModels(id);
     clientTrace(null,'sel:models',id);
     loadQueue().then(()=>scheduleQueuePoll(4000));
     if(state.mode==='chat'&&canAutoFocusComposer())input.focus();
@@ -1440,7 +1457,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     if(!Array.isArray(existing)||!existing.length||!Array.isArray(incoming))return null;
     if(String(existing[existing.length-1].id)!==String(sinceId))return null;
     const seen=new Set(existing.map(message=>String(message.id)));
-    return existing.concat(incoming.filter(message=>!seen.has(String(message.id))));}
+    return existing.concat(incoming.filter(message=>!seen.has(String(message.id)))).slice(-TRANSCRIPT_PAGE_MAX);}
   function atBottom(){return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<90;}
   function htmlEscape(value){return value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function stripAnsi(value){return value.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g,'');}
@@ -1457,13 +1474,6 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   // `?plain=1` 连 markdown 都不解析。Chrome 的 STATUS_BREAKPOINT 是整页崩溃，控制台里
   // 什么都看不到，只能靠这两个开关把范围切小。
   const URL_FLAGS=new URLSearchParams(location.search);
-  // 渲染窗口：DOM 里只留最近/附近的这么多条，滚到顶自动往上加，回到底部再收回来。
-  // 不用 content-visibility（那玩意会把 Chrome 渲染进程搞崩），也不做占位高度估算 ——
-  // 纯靠"加在顶部、用可见消息锚定"这一套，逻辑少、能自测。
-  const WIN_OVERRIDE=Number(URL_FLAGS.get('winsize'))||0;
-  const WIN_INITIAL=WIN_OVERRIDE||80;       // 首屏渲染多少条
-  const WIN_GROW=WIN_OVERRIDE||80;          // 每次往上/往下扩多少
-  const WIN_MAX=(WIN_OVERRIDE?WIN_OVERRIDE*2:0)||240;   // 超过就回收
   // 性能预算（?perf=1）：左上角实时指标，超标立即变红并写进服务日志
   const PERF_MODE=new URLSearchParams(location.search).get('perf')==='1'
     || (()=>{try{return localStorage.getItem('tmux-perf')==='1'}catch{return false}})();
@@ -1558,23 +1568,28 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     return window.TmuxUploads?TmuxUploads.bubbleHtml(message.text,pane):htmlEscape(message.text);
   }
   function deliveryHtml(pending,localId){if(pending.status==='sending')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>发送中</span>`;if(pending.status==='sent')return `<span class="message-delivery sent">已发送 ✓</span>`;if(pending.status==='retrying')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>正在重试提交…</span>`;return `<span class="message-delivery failed">发送失败<button class="retry-send" type="button" data-resend="${esc(localId||'')}" title="重新发送这条消息">重发</button></span>`;}
-  // 这里原本照 Open WebUI 的做法给离屏消息加 `content-visibility:auto` 省绘制，
-  // 但那条路在两个引擎上都出事：WebKit 留下空白消息（#26712），Windows Chrome 在
-  // 长会话上直接 STATUS_BREAKPOINT（#378 侧边栏点一下就整页崩，2026-11-20 实测）。
-  // 转录最多 300 条、每条几 KB，省下来的绘制时间不值这个风险 —— 保留函数名，
-  // 但不再返回任何 class，免得再有人把它接回去。
-  function virtualizedClass(index,total){    // eslint-disable-line no-unused-vars
-    return '';}
   function msgResendButton(message){
     if(!message||message.role!=='user')return '';
     return `<button class="msg-copy" type="button" data-msg-resend="${esc(message.id)}" title="把这条消息填回输入框，可修改后再发送"><svg class="ico"><use href="#i-refresh"/></svg><span class="btn-label">再次发送</span></button>`;
   }
-  function transcriptBubble(message,index,total){
-    const virt=virtualizedClass(index,total);
-    const copy=`<div class="msg-actions">${msgResendButton(message)}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`;
+  const clockTime=ts=>{
+    if(ts===null||ts===undefined||ts==='')return '';
+    const numeric=typeof ts==='number'||/^\d+(\.\d+)?$/.test(String(ts).trim());
+    const d=numeric?new Date(Number(ts)>1e12?Number(ts):Number(ts)*1000):new Date(ts);
+    if(Number.isNaN(d.getTime()))return '';
+    const pad=value=>String(value).padStart(2,'0'),now=new Date();
+    return `${d.toDateString()===now.toDateString()?'':`${pad(d.getMonth()+1)}-${pad(d.getDate())} `}${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  function transcriptBubble(message, plain=false){
+    if(message.role==='interaction'){
+      return '<article class="chat-message assistant" data-id="'+esc(message.id)+'"><div class="assistant-body"><strong>提问记录</strong><pre class="interaction-text">'+htmlEscape(message.text)+'</pre></div></article>';
+    }
+    const clock=clockTime(message.timestamp);
+    const copy=`<div class="msg-actions">${clock?`<span class="msg-time">${esc(clock)}</span>`:''}${msgResendButton(message)}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`;
+    const text=plain?`<pre class="plain-message">${htmlEscape(String(message.text||''))}</pre>`:null;
     return message.role==='user'
-      ? `<article class="chat-message user${virt}" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copy}</div></article>`
-      : `<article class="chat-message assistant${virt}" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copy}</div></article>`;
+      ? `<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${text??userBubbleHtml(message)}</div>${copy}</div></article>`
+      : `<article class="chat-message assistant" data-id="${esc(message.id)}"><div class="assistant-body">${text??markdown(message.text)}${copy}</div></article>`;
   }
   // Borrowed from Open WebUI (src/lib/components/chat/Messages/Markdown.svelte:121):
   // while streaming, marked parses at most once per animation frame — every
@@ -1612,94 +1627,64 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   // re-parsing every markdown block) for each of them is what made a long chat
   // feel heavy, so an append-only update only renders the new tail.
   function renderTranscript(messages=state.transcriptMessages){hideLoadCard();
+    messages=messages.slice(-TRANSCRIPT_PAGE_MAX);
     state.transcriptMessages=messages;
-    const prevText=state.messageText||new Map();
     state.messageText=new Map(messages.map(message=>[String(message.id),String(message.text||'')]));
     reconcilePending(messages);
-    const host=$('transcript'),clockTime=ts=>{if(ts===null||ts===undefined||ts==='')return '';const numeric=typeof ts==='number'||/^\d+(\.\d+)?$/.test(String(ts).trim());const d=numeric?new Date(Number(ts)>1e12?Number(ts):Number(ts)*1000):new Date(ts);if(Number.isNaN(d.getTime()))return '';const pad=v=>String(v).padStart(2,'0'),now=new Date();return (d.toDateString()===now.toDateString()?'':`${pad(d.getMonth()+1)}-${pad(d.getDate())} `)+`${pad(d.getHours())}:${pad(d.getMinutes())}`},
-copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<span class="msg-time">${clockTime(message.timestamp)}</span>`:''}${msgResendButton(message)}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`,formal=messages.map((message,index)=>message.role==='user'?`<article class="chat-message user${virtualizedClass(index,messages.length)}" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${copyButton(message)}</div></article>`:`<article class="chat-message assistant${virtualizedClass(index,messages.length)}" data-id="${esc(message.id)}"><div class="assistant-body">${markdown(message.text)}${copyButton(message)}</div></article>`),pending=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
-      .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0))
-      .map(([localId,message])=>({pending:message,html:`<article class="chat-message user pending" data-id="${esc(localId)}"><div class="chat-user-wrap"><div class="chat-bubble">${userBubbleHtml(message)}</div>${deliveryHtml(message,localId)}</div></article>`}));host.classList.add('active');$('message-shell').hidden=true;
-    const total=messages.length;
-    let start=Number.isFinite(state.windowStart)?state.windowStart:Math.max(0,total-WIN_INITIAL);
-    if(start<0)start=0;
-    if(start>total)start=Math.max(0,total-WIN_INITIAL);
-    state.windowStart=start;
-    // 窗口最多这么多条：翻了很多历史之后（start 还是 0）也不能一次全渲染出来
-    const end=Math.min(total,start+WIN_MAX);
-    const shown=messages.slice(start,end);
-    const ids=shown.map(message=>String(message.id));
-    const rendered=state.renderedIds||[];
-    // Only append when the DOM really is the list we rendered last time: pending
-    // bubbles, an earlier-page load or any other writer force a full rebuild.
-    const domIds=[...host.querySelectorAll('.chat-message')].map(node=>node.dataset.id||'');
-    const canAppend=rendered.length>0&&ids.length>rendered.length&&!pending.length
-      &&domIds.length===rendered.length&&domIds.every((id,index)=>id===rendered[index])
-      &&rendered.every((id,index)=>ids[index]===id);
-    if(canAppend){
-      const holder=document.createElement('div');
-      holder.innerHTML=shown.slice(rendered.length).map((message,offset)=>transcriptBubble(message,start+rendered.length+offset,total)).join('');
-      enhanceBlocks(holder);rewriteLocalLinks(holder);enhancePathsLazy(host);
-      const fragment=document.createDocumentFragment();
-      while(holder.firstChild)fragment.appendChild(holder.firstChild);
-      host.appendChild(fragment);
-      state.renderedIds=ids;
-      return;
+    const host=$('transcript'),before=state.renderedMessages||new Map(),next=new Map();
+    const pending=new Map();
+    const local=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
+      .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0));
+    const pendingTail=local.slice(-TRANSCRIPT_PAGE_MAX);
+    const formal=messages.slice(Math.max(0,messages.length+pendingTail.length-TRANSCRIPT_PAGE_MAX));
+    for(const [id,message] of pendingTail){
+      const index=pendingAnchorIndex(formal,message),slot=pending.get(index)||[];
+      slot.push({id,message});pending.set(index,slot);
     }
-    // Same ids, only text changed — the streaming case: every poll grows the
-    // last message. A full innerHTML rebuild would destroy every bubble, and
-    // with content-visibility that also destroys every remembered intrinsic
-    // size, so scrollHeight collapses to estimates and a reader scrolled up
-    // loses their place on every poll. Update only the changed bubbles in
-    // place instead; the rest keep their nodes (and their sizes).
-    if(!pending.length&&rendered.length===ids.length
-        &&rendered.every((id,index)=>ids[index]===id)
-        &&domIds.length===rendered.length&&domIds.every((id,index)=>id===rendered[index])){
-      let changed=0;
-      shown.forEach((message,localIndex)=>{
-        if((prevText.get(String(message.id))||'')===String(message.text||''))return;
-        const node=host.querySelector(`[data-id="${CSS.escape(String(message.id))}"]`);
-        if(!node)return;                                    // 不在窗口里（读者往上翻着）：跳过
-        const wrap=document.createElement('div');
-        wrap.innerHTML=formal[start+localIndex];
-        node.replaceWith(...wrap.childNodes);
-        changed++;
-      });
-      if(changed){enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);
-        watchVisibility(host);clientTrace(state.transcriptMessages,'append');}
-      state.renderedIds=ids;
-      return;
+    const ordered=[];
+    const holder=document.createElement('div');
+    let budget=9500-(formal.length+pendingTail.length)*14;
+    let changed=false;
+    function append(id,revision,makeHtml,fallback){
+      let item=before.get(id);
+      const same=item&&(Array.isArray(revision)
+        ? revision.every((value,index)=>value===item.revision[index]):item.revision===revision);
+      if(!same||item.cost>budget+14){
+        holder.innerHTML=makeHtml();
+        enhanceBlocks(holder);rewriteLocalLinks(holder);
+        if(fallback&&holder.querySelectorAll('*').length>budget+14)holder.innerHTML=fallback();
+        item={revision,node:holder.firstElementChild,cost:holder.querySelectorAll('*').length};
+        changed=true;
+      }
+      budget=Math.max(0,budget+14-item.cost);
+      next.set(id,item);ordered.push(item.node);
     }
-    state.renderedIds=ids;
-    const slots=shown.map(()=>[]);
-    for(const item of pending){const absolute=Math.min(end,Math.max(start,pendingAnchorIndex(messages,item.pending)));
-      const index=absolute-start;slots[index]=slots[index]||[];slots[index].push(item.html);}
-    const ordered=shown.map((message,localIndex)=>(slots[localIndex]||[]).join('')+formal[start+localIndex]).join('')
-      +(slots[shown.length]||[]).join('');
-    host.innerHTML=ordered;enhanceBlocks(host);rewriteLocalLinks(host);enhancePathsLazy(host,true);
-    watchVisibility(host);clientTrace(state.transcriptMessages,`full:${start}-${start+shown.length}`);}
-    // ---- 窗口管理 ----
-    function growWindowUp(){
-      if(!state.selected||state.mode!=='chat')return false;
-      const start=Number.isFinite(state.windowStart)?state.windowStart:0;
-      if(start<=0)return false;
-      const anchor=firstVisibleMessage();
-      state.windowStart=Math.max(0,start-WIN_GROW);
-      renderTranscriptNow(state.transcriptMessages);
-      // 往上加了内容：把读者眼前那条按几何位置放回去（和"加载更早"同一套办法）
-      requestAnimationFrame(()=>{restoreAnchor(anchor);state.stick=false;
-        requestAnimationFrame(()=>restoreAnchor(anchor));});
-      return true;
+    for(let index=0;index<=formal.length;index++){
+      for(const {id,message} of pending.get(index)||[]){
+        const bubble=plain=>`<article class="chat-message user pending" data-id="${esc(id)}"><div class="chat-user-wrap"><div class="chat-bubble">${plain?htmlEscape(message.text):userBubbleHtml(message)}</div>${deliveryHtml(message,id)}</div></article>`;
+        append(id,message.status,()=>bubble(false),()=>bubble(true));
+      }
+      if(index===formal.length)break;
+      const message=formal[index],id=String(message.id);
+      const revision=[message.role,message.timestamp,message.text];
+      append(id,revision,()=>transcriptBubble(message),()=>transcriptBubble(message,true));
     }
-    function trimWindow(){
-      if(!state.selected||state.mode!=='chat')return false;
-      const total=state.transcriptMessages.length;
-      const start=Number.isFinite(state.windowStart)?state.windowStart:0;
-      if(total-start<=WIN_MAX)return false;
-      state.windowStart=Math.max(0,total-WIN_INITIAL);
-      renderTranscriptNow(state.transcriptMessages);
-      return true;
+    for(const [id,item] of before){
+      if(next.get(id)===item)continue;
+      visObserver?.unobserve(item.node);
+      item.node.remove();
+      changed=true;
     }
+    let position=host.firstElementChild;
+    for(const node of ordered){
+      if(node===position)position=position.nextElementSibling;
+      else {host.insertBefore(node,position);changed=true;}
+    }
+    for(const node of [...host.children])if(!next.has(node.dataset.id))node.remove();
+    state.renderedMessages=next;
+    host.classList.add('active');$('message-shell').hidden=true;
+    if(changed){enhancePathsLazy(host,true);if(PERF_MODE)watchVisibility(host);clientTrace(messages,'update');}
+  }
   const CODE_LANG_RE=/language-([\w+#-]+)/;
   async function copyText(text,button){const value=String(text==null?'':text);let ok=false;
     try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);ok=true;}}catch{}
@@ -1740,7 +1725,15 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
         const sourceView=document.createElement('pre');sourceView.className='block-source';sourceView.hidden=true;sourceView.textContent=source;
         wrap.append(rendered,sourceView);pre.replaceWith(wrap);
         loadMermaid().then(mermaid=>mermaid.render('m'+Math.random().toString(36).slice(2),source))
-          .then(result=>{rendered.innerHTML=result&&result.svg?result.svg:String(result||'');})
+          .then(result=>{
+            const markup=result&&result.svg?result.svg:String(result||'');
+            const elements=(markup.match(/<[a-z]/gi)||[]).length;
+            if(!rendered.isConnected)return;
+            if(elements+document.getElementsByTagName('*').length>12000){
+              sourceView.hidden=false;wrap.dataset.sourceShown='1';rendered.hidden=true;return;
+            }
+            rendered.innerHTML=markup;
+          })
           .catch(error=>{rendered.innerHTML=`<p class="block-error">mermaid 渲染失败：${htmlEscape(String(error.message||error))}</p>`;
             sourceView.hidden=false;wrap.dataset.sourceShown='1';});
         return;}
@@ -1767,19 +1760,21 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   }
   async function refreshTranscript(id,{force=false,refresh=false}={}){if(state.selected!==id||state.mode!=='chat')return;
     const fullFirst=!!state.needsFullTranscript;state.needsFullTranscript=false;
+    const limit=state.transcriptLimit;
     // 缓存只画了最后 40 条，全量补齐后内容会变长：读者原本就在最底部，补完也得还在底部
     const follow=atBottom()||fullFirst,first=state.transcriptMtime===null;
     // 稳态轮询才挂长轮询：force/手动刷新走全量立即回；有基线（sig 或 since）才有得等
     const steady=!force&&!refresh,longPoll=steady&&(!!state.transcriptSig||state.transcriptMessages.length>0);
     const sinceId=(!force&&!refresh&&!fullFirst&&state.transcriptMessages.length)?String(state.transcriptMessages[state.transcriptMessages.length-1].id):'';
     let nextDelay=null;
-    try{const sig=state.transcriptSig?`&sig=${encodeURIComponent(state.transcriptSig)}`:'';
+    try{const sig=!fullFirst&&state.transcriptSig?`&sig=${encodeURIComponent(state.transcriptSig)}`:'';
       const since=sinceId?`&since=${encodeURIComponent(sinceId)}`:'';
       const wait=longPoll?'&wait=20':'';
-      const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit}${refresh?'&refresh=1':''}${sig}${since}${wait}`);if(state.selected!==id||state.mode!=='chat')return;
+      const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${limit}${refresh?'&refresh=1':''}${sig}${since}${wait}`);if(state.selected!==id||state.mode!=='chat'||state.transcriptLimit!==limit)return;
       // 后台重试的状态也走这条轮询：必须在 unchanged 早退之前同步，否则
       // transcript 不动时气泡永远收不到终态。
       syncResendState(d);
+      syncQuestionNotice(id,d);
       showError('');state.transcriptFailures=0;$('status-dot').className='status-dot live';
       // 服务端真的挂住过（long_poll）才立即再挂；远端 pane 和旧服务端没这个标记，
       // 沿用原来的退避间隔，不会被打成紧循环
@@ -1788,6 +1783,8 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
         return;}
       const signature=d.signature||transcriptSignature(d),changed=force||signature!==state.transcriptSig;
       state.hasMore=!!d.has_more;syncEarlierBar();
+      if(d.model){modelState.current=d.model;$('model-current').textContent=modelLabel();}
+      if(d.provider&&/^(codex|claude|hermes|kimi)$/.test(d.provider))$('model-pick-wrap').hidden=false;
       state.transcriptProvider=d.provider||'';state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;syncProgress();
       if(d.incremental){
         const merged=mergeIncrementalMessages(state.transcriptMessages,d.messages,sinceId);
@@ -1855,6 +1852,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   const AGENT_COMMAND=/^(claude|codex|kimi|python|hermes)/;
   function isAgentPane(id){const pane=state.panes.find(item=>item.id===id);return !!(pane&&AGENT_COMMAND.test(String(pane.command||'')));}
   function showTranscriptNotice(id,text){
+    hideLoadCard();
     $('transcript').classList.add('active');
     $('transcript').innerHTML='<div class="transcript-empty"><b>暂时没有可解析的对话</b>'
       +`<p>${esc(text)}</p><p class="transcript-empty-actions"><button type="button" id="empty-screen">用终端打开（xterm）</button></p></div>`;
@@ -1872,11 +1870,14 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
 
   async function connectTranscript(id,allowFallback=false){if(!cachedTranscript(id))showLoadCard(id);$('message-shell').hidden=true;$('transcript').classList.add('active');$('status-dot').className='status-dot live';$('status-text').textContent='读取 transcript…';
     try{const d=await apiProgress(`/api/panes/${encodeURIComponent(id)}/transcript?limit=300`,updateLoadCard);if(state.selected!==id||state.mode!=='chat')return;
+      syncQuestionNotice(id,d);
       state.hasMore=!!d.has_more;syncEarlierBar();
       if(!d.messages||!d.messages.length){
         if(isAgentPane(id)){showError('');showTranscriptNotice(id,'这个 agent 会话还没有可读的消息，等它开始工作后会自动刷新。');retryTranscript(id);return;}
         $('transcript').classList.remove('active');if(allowFallback){showError('');connect(id);}else showError('该会话还没有消息');return;}
-      showError('');state.transcriptMtime=d.mtime;state.transcriptSig=transcriptSignature(d);rememberTranscript(id,d);
+      showError('');state.transcriptMtime=d.mtime;state.transcriptSig=d.signature||transcriptSignature(d);rememberTranscript(id,d);
+      if(d.model){modelState.current=d.model;$('model-current').textContent=modelLabel();}
+      if(d.provider&&/^(codex|claude|hermes|kimi)$/.test(d.provider))$('model-pick-wrap').hidden=false;
       state.transcriptProvider=d.provider||'';state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;syncProgress();
       renderTranscriptNow(d.messages);syncProgress();
       const entry=cachedTranscript(id);const top=entry&&entry.scrollTop!=null?entry.scrollTop:scroll.scrollHeight;
@@ -2311,7 +2312,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
     });
     setInterval(sync,700);
   }
-  function setMode(mode){if(state.mode===mode)return;state.mode=mode;document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
+  function setMode(mode){if(state.mode===mode)return;state.mode=mode;window.TmuxPrompt?.refresh();window.TmuxNeedsYou?.refresh();document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
   function isFullscreen(){return document.fullscreenElement===$('main')||$('main').classList.contains('fullscreen-fallback');}
   function syncFullscreen(){const active=isFullscreen();const label=$('fullscreen').querySelector('span');if(label)label.textContent=active?'退出全屏':(state.mode==='terminal'?'终端全屏':'对话全屏');setTimeout(()=>{if(state.fit&&state.termWs?.readyState===WebSocket.OPEN){state.fit.fit();state.termWs.send(JSON.stringify({type:'resize',cols:state.xterm.cols,rows:state.xterm.rows}));}},80);}
   async function toggleFullscreen(){const main=$('main'),app=document.querySelector('.app');if(isFullscreen()){if(document.fullscreenElement)await document.exitFullscreen();main.classList.remove('fullscreen-fallback');app.classList.remove('fullscreen-fallback');}else if(main.requestFullscreen){try{await main.requestFullscreen();}catch{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}}else{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}syncFullscreen();}
@@ -2519,7 +2520,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   }
   try{applyPauseButton(localStorage.getItem('tmux-pause-button')==='on');}catch{applyPauseButton(false);}
   window.addEventListener('tmuxweb:pause-button',event=>applyPauseButton(!!event.detail));$('fav-toggle').onclick=()=>{if(state.selected)toggleFavorite(state.selected);};
-  $('model-toggle').onclick=()=>openModelMenu($('model-menu').hidden);$('model-filter').oninput=event=>filterModels(event.target.value);document.addEventListener('click',event=>{if($('model-menu').hidden)return;const wrap=$('model-pick-wrap');if(!wrap.contains(event.target))openModelMenu(false);});document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('model-menu').hidden)openModelMenu(false);});$('route-switch').onclick=cycleRoute;paintRoute(currentRoute());window.addEventListener('tmux-route-change',()=>paintRoute(currentRoute()));$('pane-close').onclick=()=>openPaneCloseDialog();$('pane-close-cancel').onclick=()=>$('pane-close-dialog').close();$('pane-close-confirm').onclick=()=>closeSelectedPane();$('refresh').onclick=()=>{if(state.selected&&state.mode==='chat')refreshTranscript(state.selected,{force:true,refresh:true});loadPanes(true);};$('menu').onclick=openSidebar;$('sidebar-close').onclick=closeSidebar;$('drawer-backdrop').onclick=closeSidebar;$('chat-mode').onclick=()=>setMode('chat');$('terminal-mode-button').onclick=()=>setMode('terminal');$('fullscreen').onclick=toggleFullscreen;$('share-button').onclick=()=>{$('share-result').textContent='';$('share-slug').value=`share-${Date.now().toString(36)}`;$('share-dialog').showModal();};$('share-cancel').onclick=()=>$('share-dialog').close();$('share-form').onsubmit=createShare;document.addEventListener('fullscreenchange',syncFullscreen);document.addEventListener('visibilitychange',()=>{clearTimeout(state.hiddenTimer);if(document.hidden&&state.mode==='terminal')state.hiddenTimer=setTimeout(()=>{if(document.hidden&&state.mode==='terminal')setMode('chat');},15000);});window.addEventListener('beforeunload',closeConnections);document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('sidebar').classList.contains('open'))closeSidebar();else if($('main').classList.contains('fullscreen-fallback'))toggleFullscreen();}});send.onclick=()=>{if(state.mode==='chat'&&state.selected&&agentWorking()&&!input.value.trim()){stopAgent();return;}sendInput();};input.addEventListener('focus',()=>setComposing(true));input.addEventListener('blur',()=>setTimeout(()=>setComposing(keyboardWanted()),120));input.oninput=()=>{syncSendButton();input.style.height='auto';input.style.height=Math.min(input.scrollHeight,82)+'px';if(state.selected)state.drafts.set(state.selected,input.value);refreshInputComplete(true);};input.onkeydown=e=>{
+  $('model-toggle').onclick=()=>{const open=$('model-menu').hidden;openModelMenu(open);if(open)loadPaneModels(state.selected);};$('model-filter').oninput=event=>filterModels(event.target.value);document.addEventListener('click',event=>{if($('model-menu').hidden)return;const wrap=$('model-pick-wrap');if(!wrap.contains(event.target))openModelMenu(false);});document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('model-menu').hidden)openModelMenu(false);});$('route-switch').onclick=cycleRoute;paintRoute(currentRoute());window.addEventListener('tmux-route-change',()=>paintRoute(currentRoute()));$('pane-close').onclick=()=>openPaneCloseDialog();$('pane-close-cancel').onclick=()=>$('pane-close-dialog').close();$('pane-close-confirm').onclick=()=>closeSelectedPane();$('refresh').onclick=()=>{if(state.selected&&state.mode==='chat')refreshTranscript(state.selected,{force:true,refresh:true});loadPanes(true);};$('menu').onclick=openSidebar;$('sidebar-close').onclick=closeSidebar;$('drawer-backdrop').onclick=closeSidebar;$('chat-mode').onclick=()=>setMode('chat');$('terminal-mode-button').onclick=()=>setMode('terminal');$('fullscreen').onclick=toggleFullscreen;$('share-button').onclick=()=>{$('share-result').textContent='';$('share-slug').value=`share-${Date.now().toString(36)}`;$('share-dialog').showModal();};$('share-cancel').onclick=()=>$('share-dialog').close();$('share-form').onsubmit=createShare;document.addEventListener('fullscreenchange',syncFullscreen);document.addEventListener('visibilitychange',()=>{clearTimeout(state.hiddenTimer);if(document.hidden&&state.mode==='terminal')state.hiddenTimer=setTimeout(()=>{if(document.hidden&&state.mode==='terminal')setMode('chat');},15000);});window.addEventListener('beforeunload',closeConnections);document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('sidebar').classList.contains('open'))closeSidebar();else if($('main').classList.contains('fullscreen-fallback'))toggleFullscreen();}});send.onclick=()=>{if(state.mode==='chat'&&state.selected&&agentWorking()&&!input.value.trim()){stopAgent();return;}sendInput();};input.addEventListener('focus',()=>setComposing(true));input.addEventListener('blur',()=>setTimeout(()=>setComposing(keyboardWanted()),120));input.oninput=()=>{syncSendButton();input.style.height='auto';input.style.height=Math.min(input.scrollHeight,82)+'px';if(state.selected)state.drafts.set(state.selected,input.value);refreshInputComplete(true);};input.onkeydown=e=>{
     // 补全弹窗打开时，方向键/Enter/Tab/Esc 归补全；Esc 只关弹窗，不停 agent。
     if(completeOpen){
       if(e.key==='Escape'){e.preventDefault();completeSuppressed=true;closeInputComplete();return;}
@@ -2538,9 +2539,7 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
   {const box=$('input-complete');
   if(box){box.addEventListener('mousedown',event=>{const item=event.target.closest('[data-complete-index]');if(!item)return;event.preventDefault();acceptInputComplete(completeItems[Number(item.dataset.completeIndex)]);});
   box.addEventListener('mouseover',event=>{const item=event.target.closest('[data-complete-index]');if(!item)return;completeIndex=Number(item.dataset.completeIndex);paintCompleteSelection();});}}scroll.addEventListener('wheel',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.addEventListener('touchmove',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.onscroll=()=>{state.stick=atBottom();
-    // 滚到顶：先把本地窗口往上扩（快，不联网），窗口已经到头了才去服务器要更早的
-    if(scroll.scrollTop<160){if(!growWindowUp()&&scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier)loadEarlier();}
-    else if(state.stick)trimWindow();          // 在底部看最新消息：窗口太大就回收，别让 DOM 一直涨
+    if(scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier&&state.transcriptLimit<TRANSCRIPT_PAGE_MAX)loadEarlier();
     $('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupGitPanel();setupQueueStrip();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
 // 会跨页面加载记住的偏好。以前这里会读 localStorage，于是你上次开着文件面板，之后每次
 // 进 chat（主页卡片、多窗口、直接链接）侧栏都先弹文件管理，看起来像是随机的。
@@ -2592,12 +2591,15 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
   function syncPromptCard(){
     if(!window.TmuxPrompt)return;
     if(SAFE_MODE){TmuxPrompt.stop();return;}
-    if(promptCardOn)TmuxPrompt.start(()=>state.selected);
+    if(promptCardOn)TmuxPrompt.start(()=>state.mode==='chat'?state.selected:null,toast);
     else TmuxPrompt.stop();
   }
   syncPromptCard();
   // 「等你回答」卡片不过实验开关：它只显示过门（needs_input）的菜单，默认就开。
-  if(window.TmuxNeedsYou)TmuxNeedsYou.start(()=>state.selected);
+  if(window.TmuxNeedsYou)TmuxNeedsYou.start(()=>state.mode==='chat'?state.selected:null,
+    currentInteraction);
+  $('inspect-interaction').onclick=()=>window.TmuxPrompt?.inspect(()=>state.mode==='chat'?state.selected:null);
+  setInterval(()=>{if(!document.hidden)refreshPaneStates();},9000);
   // 子 agent 调用图：只在抽屉打开时轮询
   if(window.TmuxAgents)TmuxAgents.mount({getPane:()=>state.selected});
   if(window.TmuxChatSearch)TmuxChatSearch.mount();

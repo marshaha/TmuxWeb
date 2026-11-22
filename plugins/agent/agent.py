@@ -125,7 +125,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 AGENT_NAME = "tmuxweb-agent"
 HEARTBEAT_INTERVAL = 30.0
 DEFAULT_EXEC_TIMEOUT = 15.0
@@ -1171,7 +1171,7 @@ PROVIDER_FACTS = {'claude': {'label': 'Claude Code',
  'codex': {'label': 'Codex',
            'bins': ('codex',),
            'command_prefixes': ('codex',),
-           'model_presets': ('gpt-5.6-sol', 'gpt-5-codex', 'o3'),
+           'model_presets': (),
            'model_switch_template': '/model {model}',
            'provider_label': 'OpenAI',
            'hook_template': 'codex-hooks.json',
@@ -1190,7 +1190,7 @@ PROVIDER_FACTS = {'claude': {'label': 'Claude Code',
  'kimi': {'label': 'Kimi Code',
           'bins': ('kimi',),
           'command_prefixes': ('kimi',),
-          'model_presets': ('K3.1 Pro', 'K3', 'K3-256k', 'K2.7 Code Highspeed'),
+          'model_presets': (),
           'model_switch_template': '/model',
           'provider_label': 'Kimi Code',
           'hook_template': 'kimi-hooks.toml',
@@ -2022,7 +2022,7 @@ class HostWatcher:
         except OSError:
             pass
 
-    def _hook_state(self, pane: dict, events, now: float) -> tuple[bool, float | None]:
+    def _hook_state(self, pane: dict, events, now: float, unique_cwd=True) -> tuple[bool, float | None]:
         """(waiting, since) from hook events matching this pane.
 
         A clearing event after the last waiting event wins; events are
@@ -2034,11 +2034,13 @@ class HostWatcher:
         pane_id = (pane.get("pane_id") or "").strip()
         waiting_since: float | None = None
         for event in events:
-            if session_id and event["session_id"] == session_id:
-                match = True
-            elif cwd and event["cwd"] == cwd:
-                match = True
-            elif pane_id and event["pane_id"] == pane_id:
+            if pane_id and event["pane_id"] and event["pane_id"] != pane_id:
+                continue
+            if session_id and event["session_id"]:
+                match = session_id == event["session_id"]
+            elif pane_id and event["pane_id"]:
+                match = pane_id == event["pane_id"]
+            elif unique_cwd and cwd and event["cwd"] == cwd:
                 match = True
             else:
                 match = False
@@ -2254,15 +2256,19 @@ class HostWatcher:
             return {pid: dict(state) for pid, state in cached[1].items()}
         events = self._read_events(now)
         judged = []
+        cwd_counts = {}
+        for pane in normalized:
+            cwd = pane["cwd"]
+            cwd_counts[cwd] = cwd_counts.get(cwd, 0) + 1
         for pane in normalized:
             pane_id = pane["pane_id"]
             with self._lock:
                 self._known[pane_id] = pane
-            hook_waiting, hook_since = self._hook_state(pane, events, now)
+            hook_waiting, hook_since = self._hook_state(pane, events, now, cwd_counts[pane["cwd"]] == 1)
             decision, file_session = self._decision_point(pane)
             if not pane["session_id"] and file_session:
                 pane["session_id"] = file_session
-                hook_waiting, hook_since = self._hook_state(pane, events, now)
+                hook_waiting, hook_since = self._hook_state(pane, events, now, cwd_counts[pane["cwd"]] == 1)
             judged.append((pane, hook_waiting, hook_since, decision))
         # Clients exist only for sessions with decision-point panes
         # right now, in pane order (so the cap keeps the sessions the
@@ -2326,6 +2332,30 @@ class HostWatcher:
             self._thread = None
 
 
+def native_waits(panes, home=None):
+    """One read-only query for all panes on this host, shared by the sweep."""
+    import sqlite3
+    path = (Path(home) if home else Path.home()) / ".config/tmuxweb-agent/interactions.sqlite3"
+    if not path.is_file():
+        return {}
+    identities = {(str(p.get("pane_id")), str(p.get("pane_pid")), p.get("provider"))
+                  for p in panes if isinstance(p, dict) and p.get("pane_pid")}
+    result = {}
+    from contextlib import closing
+    try:
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=.2)) as db:
+            rows = db.execute("SELECT pane,pid,provider,session,request,title,detail FROM waits "
+                              "WHERE title != '' AND at > ? AND (provider != 'opencode' OR at > ?) ORDER BY at, request",
+                              (time.time() - 3600, time.time() - 40))
+            for pane, pid, provider, session, request, title, detail in rows:
+                if (pane, pid, provider) in identities:
+                    result.setdefault(pane, []).append({"title": title, "detail": detail,
+                                                       "id": [session, request]})
+    except sqlite3.Error:
+        return {}
+    return result
+
+
 def run_needs_input(op: dict, resolver: TmuxResolver,
                     watcher: HostWatcher | None = None) -> dict:
     """Answer one ``needs_input`` op. Never raises: failures become errors."""
@@ -2338,6 +2368,8 @@ def run_needs_input(op: dict, resolver: TmuxResolver,
     assert watcher is not None
     try:
         waiting = watcher.snapshot(panes)
+        for pid, notices in native_waits(panes, watcher._home).items():
+            waiting.setdefault(pid, {})["notices"] = notices
     except Exception as exc:  # noqa: BLE001 - the op answers, never crashes
         return {"ok": False, "error": f"needs_input failed: {exc}"}
     finally:

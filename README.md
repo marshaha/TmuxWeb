@@ -6,6 +6,12 @@ TmuxWeb 是一个自托管的 tmux 与 AI CLI 会话管理中心。它把本机�
 
 > 安全提醒：TmuxWeb 能向 tmux pane 输入文字并提供交互终端，等同于访问运行服务的系统账户。不要直接暴露到公网；请使用 HTTPS、访问控制、强密码和防火墙。
 
+## 版本与发布
+
+[`VERSION`](VERSION) 是发布版本的唯一来源，首个版本设为 `0.1.0`。按 SemVer 维护，破坏性变更增加主版本，新功能增加次版本，兼容修复增加补丁版本。准备发布时更新该文件和 [变更记录](CHANGELOG.md)，通过测试后在同一提交创建匹配的 `v<版本>` 标签。登录后的 `GET /api/version` 保留 `version` 作为部署标识，另提供 `release` 作为发布版本。
+
+Chat 的「查看交互」提供只读屏幕预览。配置 harness 观察器后，工具审批、澄清问题和表单会在对应 pane 的 Chat 显示通知；Codex、Claude 写进会话文件的问题还会保留在聊天记录里。Codex 模型菜单按需读取该会话主机的可见模型，也可打开 CLI 原生选择器。[支持范围与配置](docs/chat-interactions.md)
+
 ## 功能
 
 - **多主机管理**：一个本地服务管理 localhost 和 SSH 远程主机；远端只需 SSH 与 tmux，不需安装守护进程。
@@ -869,24 +875,7 @@ claude/codex/kimi 的会话文件），而**一条助手消息是这一轮跑完
 **发送失败不会吃掉你打的字**：消息 POST 失败时文字会放回输入框，状态显示「发送失败，点发送重试」，
 修好网络直接再点发送即可。
 
-**切换模型就在对话里**：附件按钮右边有个齿轮下拉，按 provider 分组显示这个 agent 现在用的模型
-（`OpenAI · gpt-6-luna`、`ctyun · gpt-5.5`…），选中后控制台替你把 agent 自己的 `/model <id>`
-敲进去——不是新协议，就是一行文本。
-
-- 当前模型和 provider 都是**读出来的**，不是猜的：claude / codex / kimi 从各自会话文件最后一条
-  记录里取，hermes 读 `state.db` 的 `sessions.model`，provider 取 `config.yaml` 的 `model.provider`
-  （远端由探测脚本随 header 回传 `TMUXWEB_MODEL` / `TMUXWEB_MODEL_PROVIDER`）。
-- **Hermes 的模型清单是真清单，而且按 provider 分组**：`config.yaml` 里每个 provider 都是 OpenAI
-  兼容端点，控制台逐个问 `/v1/models`（本地直连、远端在对方机器上跑同一段脚本），缓存 15 分钟。
-  菜单里每组可折叠，默认只展开当前用的那组（本机 axera 19 个 + ctyun 50 个）；顶部有筛选框。
-- 跨组切换发的是 `/model <id> --provider <name>`（Hermes 自己的语法），同组切换就是 `/model <id>`。
-  拿不到清单时退回「当前 + 自定义」，不会卡住界面。
-- claude / codex 用别名/模型 id 作为预设，其余用「自定义…」直接输入。
-- **Kimi Code 例外**：`/model <任何东西>` 都回 `Unknown model alias`，它只认无参的 `/model` 打开自己的菜单，
-  所以那里显示「打开模型菜单…」，点了只是把 `/model` 敲进去，选择在 agent 里用方向键完成。
-- 接口：`GET /api/panes/{pane}/models`（`provider`/`current`/`presets`/`picker_only`）、
-  `POST /api/panes/{pane}/model`（`{"model": "opus"}`，kimi 传空即可）。
-- 没有模型的证据就留空，不硬编一个默认值——显示空总比显示错的好。
+**在 Chat 切换模型。** 打开输入框旁的模型菜单后，Claude 显示常用别名，Codex 读取主机缓存中的可见模型，Kimi 使用原生选择器。Hermes 查询配置中的 provider 并分组显示返回的模型。四种 harness 都可以打开当前会话自己的 `/model` 菜单。切换操作显示命令提交状态，模型名称随会话记录更新。
 
 **关的时候先想 pane，不要整会话**：一个会话里常有好几个 agent，`kill_session` 传 `pane`
 （`#125` 或 `host~%12` 都行）只关那一个，返回 `session_alive` 告诉你会话是否还在；传 `session`

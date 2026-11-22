@@ -23,7 +23,8 @@ class SwitchCommandTests(unittest.TestCase):
     def test_kimi_opens_its_own_picker(self):
         # `kimi` 回 "Unknown model alias" 给任何参数，只能用无参形式
         self.assertTrue(agent_models.picker_only("kimi"))
-        self.assertEqual(agent_models.switch_command("kimi", ""), "/model")
+        for provider in ("kimi", "codex", "claude", "hermes"):
+            self.assertEqual(agent_models.switch_command(provider, ""), "/model")
         self.assertEqual(agent_models.switch_command("kimi", "whatever"), "/model")
 
     def test_missing_or_dirty_model_is_rejected(self):

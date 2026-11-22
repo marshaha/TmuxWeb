@@ -1281,7 +1281,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".msg-copy .ico,.block-btn .ico{width:11px;height:11px;", page)
         self.assertIn(".msg-copy,.block-btn{display:inline-flex;align-items:center}", page)
         # 文字单独一层：复制成功只换字，不会把图标删掉
-        self.assertEqual(page.count('<span class="btn-label">复制全部</span>'), 2)
+        self.assertEqual(page.count('<span class="btn-label">复制全部</span>'), 1)
         self.assertIn('<span class="btn-label">复制</span>', page)
         self.assertIn("const label=button.querySelector('.btn-label')||button;", page)
         self.assertIn("label.textContent=ok?'已复制':'复制失败';", page)
@@ -1290,9 +1290,8 @@ class TmuxWebTests(unittest.TestCase):
         """手机上宽表格：表格在自己的框里横滚，气泡宽度被夹住，复制行留在气泡里且不会被挤出去。"""
         self.login()
         page = self.console_surface()
-        # 复制行仍在气泡里（两个构造消息的地方都是这个结构）
-        self.assertEqual(page.count('${markdown(message.text)}${copy}'), 1)
-        self.assertEqual(page.count('${markdown(message.text)}${copyButton(message)}'), 1)
+        # The shared bubble template keeps the action row inside the message body.
+        self.assertIn('<div class="assistant-body">${text??markdown(message.text)}${copy}</div>', page)
         self.assertNotIn('class="assistant-wrap"', page)
         self.assertIn(".assistant-body>.msg-actions{margin-top:12px;padding-top:8px;border-top:1px solid var(--line)}", page)
         # 气泡自己限制宽度并裁掉溢出（fit-content 不会再被宽内容撑大）
@@ -1635,7 +1634,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("const fresh=messages.filter(message=>message.role==='user'&&!baseline.has(String(message.id)))", page)
         self.assertIn("messageTextKey(message.text)===key", page)
         self.assertIn("function pendingAnchorIndex(messages,pending)", page)
-        self.assertIn("pendingAnchorIndex(messages,item.pending)", page)
+        self.assertIn("pendingAnchorIndex(formal,message)", page)
         self.assertIn("a rewritten/expanded echo still belongs to the same send", page)
         self.assertIn("发送中", page)
         self.assertIn("已发送 ✓", page)
@@ -1792,7 +1791,7 @@ class TmuxWebTests(unittest.TestCase):
         response = self.client.get("/api/version")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(tmux_web.SERVER_VERSION, "the server must report a version")
-        self.assertEqual(response.json(), {"version": tmux_web.SERVER_VERSION})
+        self.assertEqual(response.json(), {"version": tmux_web.SERVER_VERSION, "release": tmux_web.RELEASE_VERSION})
         cache = response.headers.get("cache-control", "")
         self.assertIn("no-cache", cache)
         self.assertIn("no-store", cache)
@@ -1812,7 +1811,7 @@ class TmuxWebTests(unittest.TestCase):
         self.login()
         with mock.patch.object(tmux_web, "SERVER_VERSION", "deadbee1234"):
             response = self.client.get("/api/version")
-        self.assertEqual(response.json(), {"version": "deadbee1234"})
+        self.assertEqual(response.json(), {"version": "deadbee1234", "release": tmux_web.RELEASE_VERSION})
 
     def test_ansi_sequences_can_be_removed_without_changing_columns(self):
         raw = "| A   | B |\n\x1b[38;5;231m| 123 | x |\x1b[0m"
@@ -2114,12 +2113,9 @@ class TmuxWebTests(unittest.TestCase):
         base = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-base.css").read_text()
         self.assertNotIn(".msg-virtualized{content-visibility", base)
         self.assertNotIn("contain-intrinsic-size", base, "整条虚拟化 CSS 都不该回来")
-        self.assertIn("function virtualizedClass(index,total)", app, "调用点还在，函数改成返回空")
-        self.assertIn("virtualizedClass(index,messages.length)", app)
-        # Streaming must update in place: a full rebuild per poll would destroy
-        # every remembered intrinsic size and collapse scrollHeight.
-        self.assertIn("const prevText=state.messageText||new Map();", app)
-        self.assertIn("node.replaceWith(...wrap.childNodes)", app)
+        self.assertNotIn("virtualizedClass", app)
+        self.assertIn("before=state.renderedMessages", app)
+        self.assertIn("if(next.get(id)===item)continue", app)
         # load-earlier must anchor on the visible message, not a scrollHeight delta.
         self.assertIn("function firstVisibleMessage()", app)
         self.assertIn("function restoreAnchor(anchor)", app)
@@ -2641,7 +2637,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("TmuxNeedsYou", script.text)
         self.assertIn("/api/panes/status", script.text)
         self.assertIn("/api/panes/${encodeURIComponent(pane)}/key", script.text)
-        self.assertNotIn("prompt/choose", script.text, "新卡只走 /key，不另起发送路径")
+        self.assertIn("/prompt/choose", script.text)
         self.assertIn("TmuxNeedsYou", self.client.get("/assets/console.bundle.js").text)
         web = Path(__file__).resolve().parent.parent / "web"
         html = (web / "index.html").read_text()
@@ -2649,7 +2645,7 @@ class TmuxWebTests(unittest.TestCase):
         for marker in ('id="needs-you-card"', 'id="needs-you-card-options"',
                        'id="needs-you-card-esc"', ".needs-you-badge{"):
             self.assertIn(marker, html, marker)
-        for marker in ("TmuxNeedsYou.start(()=>state.selected)", "needsInput"):
+        for marker in ("TmuxNeedsYou.start(()=>state.mode", "needsInput"):
             self.assertIn(marker, app, marker)
         shell = (web / "assets" / "shell.js").read_text()
         for marker in ("tneed", "needs-you", "state.needs"):
@@ -3071,16 +3067,20 @@ class TmuxWebTests(unittest.TestCase):
 
     def test_agent_must_be_known_and_installed(self):
         self.login()
-        self.assertEqual(self.client.post("/api/sessions",
-                                          json={"name": "x1", "agent": "nope"}).status_code, 422)
         with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=[]):
-            response = self.client.post("/api/sessions", json={"name": "x2", "agent": "claude"})
+            for name, agent in (("x1", "nope"), ("x2", "claude")):
+                response = self.client.post("/api/sessions", json={"name": name, "agent": agent})
+                self.assertEqual(response.status_code, 422)
+                self.assertIn("not installed", response.json()["detail"])
+
+        installed = [{"name": "claude", "label": "Claude", "path": "/usr/bin/claude"}]
+        with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=installed):
+            self.client.get("/api/hosts/localhost/agents", params={"refresh": True})
+        response = self.client.post("/api/sessions", json={
+            "name": "x3", "agent": "claude", "agent_args": '--x "unclosed',
+        })
         self.assertEqual(response.status_code, 422)
-        self.assertIn("not installed", response.json()["detail"])
-        # 引号没闭合的 args 不能被偷偷吞掉
-        self.assertEqual(self.client.post("/api/sessions",
-                                          json={"name": "x3", "agent": "claude",
-                                                "agent_args": '--x "unclosed'}).status_code, 422)
+        self.assertIn("agent arguments", response.json()["detail"])
 
     def test_lists_the_agents_a_host_can_run(self):
         self.login()
@@ -3136,6 +3136,35 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/sessions", json={"name": "codex"}).status_code, 409)
         self.assertEqual(self.client.post("/api/sessions", json={"host": "deadbeefdeadbeef",
                                                                  "name": "ok"}).status_code, 404)
+
+    def test_hook_notice_reaches_chat_without_a_menu(self):
+        self.tmux.needs_input_many = lambda panes, timeout: {
+            "%4": {"notices": [{"title": "需要回答问题", "detail": "Which branch?", "id": ["s", "q"]}]}}
+        self.tmux.output = "still working"
+        client = self._fresh_status_client()
+        states = self._wait_for_panes(client, lambda rows: any(p.get("needs_input") for p in rows))
+        prompt = next(p["prompt"] for p in states if p["id"] == "%4")
+        self.assertTrue(prompt["read_only"])
+        self.assertEqual(prompt["kind"], "notice")
+        self.assertEqual(prompt["options"], [{"label": "需要回答问题", "description": "Which branch?"}])
+
+    def test_codex_models_follow_the_session_catalog(self):
+        self.login()
+        self.tmux.panes[0].update(provider="codex", command="codex")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.tmux.transcript = lambda pane_id, limit=1, pane=None: {
+                "provider": "codex", "messages": [], "model": "previous",
+                "path": str(root / "sessions/rollout.jsonl")}
+            url = "/api/panes/%254/models"
+            empty = self.client.get(url).json()
+            self.assertEqual(empty["presets"], [])
+            self.assertTrue(empty["picker_only"])
+            (root / "models_cache.json").write_text('{"models":[{"slug":"visible","visibility":"list"}]}')
+            body = self.client.get(url).json()
+            self.assertEqual(body["presets"], ["visible"])
+            self.assertEqual(body["current"], "previous")
+            self.assertTrue(body["native_picker"])
 
     def test_lists_the_models_a_pane_can_switch_to(self):
         self.login()
@@ -3469,7 +3498,7 @@ class TmuxWebTests(unittest.TestCase):
         for marker in ('id="prompt-card"', 'id="prompt-card-options"', 'id="prompt-card-esc"',
                        '/assets/console.bundle.js?v='):
             self.assertIn(marker, html, marker)
-        self.assertIn("TmuxPrompt.start(()=>state.selected)", app)
+        self.assertIn("TmuxPrompt.start(()=>state.mode", app)
         self.assertIn("TmuxPrompt", self.client.get("/assets/console.bundle.js").text)
         self.assertIn(".prompt-card{", html)
         # 卡片本身不滚动，只有选项列表滚：标题/开关/Esc 必须常驻可见
@@ -3507,6 +3536,66 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(payload["screen"], payload["screen"])
         self.assertTrue(payload["screen"], "要带屏幕原文，用户得能核对在答什么")
 
+    def test_manual_inspection_and_revision_protect_checklist_actions(self):
+        self.login()
+        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "off"}).status_code, 200)
+        path = "/api/panes/%254/prompt"
+        self.tmux.output = ("Select features\n  ❯ [ ] Alpha\n    [x] Beta\n"
+                            "↑↓ navigate · Space toggle · Enter submit\n")
+        self.assertTrue(self.client.get(path).json()["disabled"])
+        prompt = self.client.get(path, params={"inspect": True}).json()["prompt"]
+        self.assertEqual(prompt["kind"], "multi")
+        self.assertTrue(prompt["options"][1]["checked"])
+        payload = {"index": 1, "revision": prompt["revision"]}
+        sent = []
+        self.tmux.send_keys = lambda pane_id, keys, pane=None: sent.extend(keys)
+        self.assertTrue(prompt["read_only"])
+        self.assertEqual(self.client.post(path + "/choose", json=payload).status_code, 409)
+        self.assertEqual(sent, [])
+        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "on"}).status_code, 200)
+        self.tmux.output = self.tmux.output.replace("Beta", "Gamma")
+        self.assertEqual(self.client.post(path + "/choose", json=payload).status_code, 409)
+        self.assertEqual(sent, [])
+        self.tmux.output = self.tmux.output.replace("Gamma", "Beta")
+        self.assertEqual(self.client.post(path + "/choose", json=payload).status_code, 200)
+        self.assertEqual(self.client.post(path + "/choose", json=payload).status_code, 409)
+        self.assertEqual(sent, ["Down", "Space"])
+
+    def test_parallel_prompt_inspections_share_one_capture(self):
+        import asyncio
+        import httpx
+
+        self.login()
+        original_capture = self.tmux.capture
+        captures = []
+
+        def capture(*args, **kwargs):
+            captures.append(args[0])
+            time.sleep(0.08)
+            return original_capture(*args, **kwargs)
+
+        self.tmux.capture = capture
+
+        async def inspect():
+            transport = httpx.ASGITransport(app=self.client.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver",
+                                         cookies=self.client.cookies) as client:
+                return await asyncio.gather(*[
+                    client.get("/api/panes/%254/prompt?inspect=true")
+                    for _ in range(24)
+                ])
+
+        responses = asyncio.run(inspect())
+        self.assertTrue(all(response.status_code == 200 for response in responses))
+        self.assertEqual(captures, ["%4"])
+
+    def test_manual_inspection_returns_raw_screen_without_inventing_choices(self):
+        self.login()
+        self.tmux.output = "unrecognized TUI screen\n"
+        data = self.client.get("/api/panes/%254/prompt?inspect=true").json()
+        self.assertIsNone(data["prompt"])
+        self.assertEqual(data["screen"], ["unrecognized TUI screen"])
+
     def test_no_menu_means_no_buttons(self):
         self.login()
         self.tmux.output = "hello\n❯ Ask Codex to do anything\n"
@@ -3535,9 +3624,7 @@ class TmuxWebTests(unittest.TestCase):
         result = response.json()
         self.assertTrue(result["ok"], result)
         self.assertTrue(result["pending"], "发完立刻返回，屏幕由前端轮询")
-        self.assertEqual(sent_keys[-1], "Enter")
-        self.assertEqual(sent_keys.count("Down"), 2, "第三项要往下走两步")
-        self.assertGreaterEqual(sent_keys.count("Up"), 3, "先顶到第一项")
+        self.assertEqual(sent_keys, ["Down", "Enter"], "从当前第二项移动一步")
         # 复核交给下一次 /prompt（屏幕已经变了）
         self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
 
@@ -3612,7 +3699,8 @@ class TmuxWebTests(unittest.TestCase):
         self.assertNotIn("settleOptimistic(", script)
         self.assertNotIn("屏幕没有变化，再点一次或切到终端", script)
         # 点下先记签名、收卡；失败恢复出来、清签名，poll 才不压住重弹
-        self.assertIn("answeredSignature = signatureOf(prompt)", script)
+        self.assertIn("answeredSignature = signatureOf(saved)", script)
+        self.assertIn("if (!checklistChange) hide()", script)
         self.assertIn("没送到，再试一次", script)
         page = (root / "web" / "index.html").read_text()
         self.assertNotIn(".prompt-option.picked", page)
@@ -3669,8 +3757,8 @@ class TmuxWebTests(unittest.TestCase):
     def test_the_card_repaints_when_the_switch_value_changes(self):
         """只比标题/选项数/光标的话，←→ 切完高亮停在旧值，看起来像没生效。"""
         script = (Path(__file__).resolve().parents[1] / "web" / "assets" / "prompt-card.js").read_text()
-        self.assertIn("const toggleKey =", script)
-        self.assertIn("toggleKey(prompt) === toggleKey(data.prompt)", script)
+        self.assertIn("[toggle.label, toggle.active]", script)
+        self.assertIn("sig === signatureOf(prompt)", script)
 
     def test_sending_hides_the_attachment_strip_right_away(self):
         """按 Enter 那一刻条带就该收起来，而不是等 POST 回来（那一秒图片还杵着）。"""
@@ -4447,6 +4535,48 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in by_sig["messages"]], ["m3"])
         self.assertEqual(by_sig["signature"], by_id["signature"])
 
+    def test_parallel_transcript_reads_share_one_parse(self):
+        import asyncio
+        import httpx
+
+        self.login()
+        calls = []
+
+        def transcript(pane_id, limit=200, refresh=False, pane=None):
+            calls.append((pane_id, limit, refresh))
+            time.sleep(0.08)
+            return {"provider": "codex", "mtime": 1, "has_more": False,
+                    "messages": [{"id": "m1", "role": "user", "text": "question"}]}
+
+        self.tmux.transcript = transcript
+
+        async def fetch():
+            transport = httpx.ASGITransport(app=self.client.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver",
+                                         cookies=self.client.cookies) as client:
+                return await asyncio.gather(*[
+                    client.get("/api/panes/%254/transcript?limit=300")
+                    for _ in range(24)
+                ])
+
+        results = asyncio.run(fetch())
+        self.assertTrue(all(result.status_code == 200 for result in results))
+        self.assertEqual(calls, [("%4", 300, False)])
+
+    def test_same_transcript_message_id_can_be_updated(self):
+        self.login()
+        path, state, fake = self._fake_session_transcript([
+            {"id": "m1", "role": "assistant", "text": "partial", "timestamp": 1},
+        ])
+        self.tmux.transcript = fake
+        first = self.client.get("/api/panes/%254/transcript").json()
+        state["messages"][0]["text"] = "complete"
+        Path(path).write_text("updated record\n")
+        body = self.client.get("/api/panes/%254/transcript",
+                               params={"since": "m1", "sig": first["signature"]}).json()
+        self.assertNotIn("unchanged", body)
+        self.assertEqual(body["messages"][0]["text"], "complete")
+
     def test_since_unknown_returns_full(self):
         """since 对不上当前消息列表（会话轮换）时回全量兜底，而不是空增量。"""
         self.login()
@@ -4709,7 +4839,7 @@ class TmuxWebTests(unittest.TestCase):
         page = self.console_surface()
         self.assertIn("/files/raw?path=", page)
         self.assertIn("function rewriteLocalLinks(", page)
-        self.assertIn("rewriteLocalLinks(host)", page)
+        self.assertIn("rewriteLocalLinks(holder)", page)
 
     def test_uploads_a_file_into_the_current_directory(self):
         self.login()
@@ -5154,7 +5284,6 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("enhanceVideos(root)", page)
         self.assertIn("container.dataset.pathsBound='1';", page)
         self.assertIn("'pointerover',touch,true", page)
-        self.assertIn("enhancePathsLazy(host);", page)
         self.assertNotIn("rewriteLocalLinks(host);enhancePaths(host);", page)
         self.assertIn("onDir:path=>{openFiles(path);}", page)
         self.assertIn("onMd:path=>openMarkdownViewer(", page)

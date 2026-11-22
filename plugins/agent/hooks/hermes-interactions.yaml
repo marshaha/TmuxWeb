@@ -1,0 +1,5 @@
+hooks:
+  on_human_input_request:
+    - command: ~/.config/tmuxweb-agent/hooks/observe.py hermes
+  on_human_input_resolved:
+    - command: ~/.config/tmuxweb-agent/hooks/observe.py hermes

@@ -2,7 +2,7 @@
 
 harness 的 TUI（kimi / claude / codex / hermes）在等待用户选择时会占住整个屏幕，
 聊天里只看到"已发送"，人在手机上看不到那个菜单。这个模块只做一件事：从
-`tmux capture-pane` 的纯文本里认出三种常见形态，认不出就返回 None —— 绝不猜。
+`tmux capture-pane` 的纯文本里认出几种常见形态，认不出就返回 None —— 绝不猜。
 
     A 列表     ❯ Trust and continue          （kimi 的 Trust 对话框、模型选择器）
                  Exit
@@ -10,13 +10,13 @@ harness 的 TUI（kimi / claude / codex / hermes）在等待用户选择时会�
                2. ...
     C 确认     [y/N] · Do you want to proceed? · Press Enter to continue
 
-刻意不处理（交给终端模式）：tab 栏、开关（`[ On ] Off`）、进度条、自由文本输入。
+还支持带按键说明的分段开关和多选框。Tab 栏、进度条、自由文本输入交给终端。
 这些要理解每个 TUI 的布局语义，猜错等于替用户答错一个不该答的问题。
 """
 from __future__ import annotations
 
 import hashlib
-
+import json
 import re
 from typing import Any
 
@@ -34,8 +34,19 @@ BULLET_RE = re.compile(r"^\s{0,8}([●○•])\s+(\S.*)$")
 RULE_RE = re.compile(r"^[\s─━═┄┈╭╮╰╯│┃|+*-]{3,}$")
 HINT_RE = re.compile(
     r"(↑↓|↑/↓|←→|←/→|navigate|Enter (?:select|confirm|to)|Esc (?:cancel|exit|to)|"
-    r"shift\+tab|tab toggle|type to search|press enter)", re.I)
+    r"shift\+tab|tab toggle|type to search|press enter|arrow keys to (?:move|navigate)|"
+    r"方向键(?:导航|选择)|回车(?:确认|提交|选择)|Esc 取消)", re.I)
 BRACKET_RE = re.compile(r"\[\s*([^\]]{1,24}?)\s*\]")
+BOX_ROW_RE = re.compile(r"^\s*[│┃║] ?(.*?)[│┃║]\s*$")
+CHECKBOX_RE = re.compile(r"^\s{0,8}(?:(?P<cursor>[❯➤→»›▸▶>])\s*)?"
+                         r"(?P<box>\[[ xX✓]\]|[☐☑✓])\s+(?P<label>\S.*)$")
+SPACE_TOGGLE_RE = re.compile(
+    r"(?:space(?:bar)?\s+(?:(?:to|:)\s*)?(?:toggle|select|mark)|"
+    r"(?:toggle|select)\s+(?:with|using)\s+space|空格(?:键)?(?:选择|切换))", re.I)
+ENTER_SUBMIT_RE = re.compile(
+    r"(?:enter\s+(?:(?:to|:)\s*)?(?:submit|confirm|continue|accept|done)|"
+    r"(?:submit|confirm)\s+(?:with|using)\s+enter|回车(?:确认|提交))", re.I)
+MOVE_HINT_RE = re.compile(r"(?:[↑↓].{0,4}[↑↓]|(?:arrow keys|arrows)\s+(?:to\s+)?(?:move|navigate))", re.I)
 MORE_RE = re.compile(r"^\s*[▼▽]\s*(\d+)\s+more\b", re.I)
 
 YES_NO_RE = re.compile(r"(\[y/N\]|\[Y/n\]|\(y/n\)|\(y/N\))", re.I)
@@ -298,10 +309,13 @@ def _finish(kind: str, title: str, hint: str, options: list[dict], view: list[st
             item["key"] = option["key"]
         if option.get("number"):
             item["number"] = option["number"]
+        if "checked" in option:
+            item["checked"] = option["checked"]
+            item.pop("recommended", None)
         cleaned.append(item)
-    return {
+    prompt = {
         "kind": kind,
-        "toggles": _toggle_rows(view),
+        "toggles": [] if kind == "multi" else _toggle_rows(view),
         "title": title,
         "hint": hint,
         "options": cleaned,
@@ -312,6 +326,54 @@ def _finish(kind: str, title: str, hint: str, options: list[dict], view: list[st
         "source": source,
         "raw": "\n".join(_clean(line) for line in view[-18:]),
     }
+    prompt["revision"] = action_revision(prompt)
+    return prompt
+
+
+def action_revision(prompt: dict) -> str:
+    """Bind a click to the labels, controls and cursor actually displayed."""
+    options = prompt.get("options") or []
+    toggles = prompt.get("toggles") or []
+    data = [prompt.get(key) for key in ("kind", "source", "title", "hint",
+                                       "selected", "cursor", "numbers", "more")]
+    data += [[tuple(item.get(key) for key in ("label", "description", "meta",
+                                             "number", "key", "checked"))
+              for item in options],
+             [tuple(item.get(key) for key in ("label", "options", "active", "selected"))
+              for item in toggles]]
+    return hashlib.sha256(json.dumps(data, ensure_ascii=True).encode()).hexdigest()[:32]
+
+
+def _multiselect(lines: list[str]) -> dict | None:
+    """Recognize an explicitly documented arrow/Space/Enter checklist."""
+    for footer in range(len(lines) - 1, max(-1, len(lines) - 7), -1):
+        if CHECKBOX_RE.match(lines[footer]):
+            continue
+        # Related controls can be printed on adjacent footer lines.
+        hint = " ".join(line.strip() for line in lines[footer:footer + 3])
+        if not all(pattern.search(hint) for pattern in
+                   (SPACE_TOGGLE_RE, ENTER_SUBMIT_RE, MOVE_HINT_RE)):
+            continue
+        end = footer
+        while end > 0 and (not lines[end - 1].strip() or RULE_RE.match(lines[end - 1])):
+            end -= 1
+        start = end
+        while start > 0 and CHECKBOX_RE.match(lines[start - 1]):
+            start -= 1
+        options = []
+        for line in lines[start:end]:
+            row = CHECKBOX_RE.match(line)
+            label = row["label"].strip()
+            if len(label) > OPTION_MAX:
+                break
+            options.append({"label": label, "selected": bool(row["cursor"]),
+                            "checked": row["box"] not in {"[ ]", "☐"}})
+        if (len(options) >= 2 and len(options) == end - start
+                and sum(option["selected"] for option in options) == 1
+                and not any(MORE_RE.match(line) for line in lines[end:footer + 3])):
+            return _finish("multi", _title_above(lines, start), hint[:160],
+                           options, lines, numbers=False, source="checkbox")
+    return None
 
 
 def _toggle_rows(lines: list[str]) -> list[dict]:
@@ -393,9 +455,12 @@ def toggle_keys(prompt: dict[str, Any], toggle_index: int, value_index: int) -> 
     toggles = prompt.get("toggles") or []
     if not toggles:
         raise ValueError("no toggle")
-    toggle = toggles[max(0, min(int(toggle_index), len(toggles) - 1))]
-    options = toggle["options"]
-    target = max(0, min(int(value_index), len(options) - 1))
+    if not 0 <= toggle_index < len(toggles):
+        raise ValueError("toggle index is out of range")
+    toggle = toggles[toggle_index]
+    if not 0 <= value_index < len(toggle["options"]):
+        raise ValueError("toggle value is out of range")
+    target = value_index
     delta = target - toggle["active"]
     if delta == 0:
         return []
@@ -413,9 +478,15 @@ def parse_screen(text: str) -> dict[str, Any] | None:
         lines.pop()
     # 只看最后 40 行：历史里翻过去的旧菜单不能当成"现在还在等"
     lines = lines[max(0, len(lines) - 40):]
+    # Preserve interior indentation for boxed TUI menus.
+    lines = [match.group(1) if (match := BOX_ROW_RE.match(line)) else line for line in lines]
+    checklist = _multiselect(lines)
+    if checklist:
+        return checklist
 
     # B：编号列表（优先判，因为它能直接发数字，最稳）
-    for offset, raw in enumerate(lines):
+    for offset in range(len(lines) - 1, -1, -1):
+        raw = lines[offset]
         marker, rest = _marker(_clean(raw))
         numbered = NUMBERED_RE.match(rest if marker else _clean(raw))
         if not numbered or numbered.group(1) != "1":
@@ -442,7 +513,7 @@ def parse_screen(text: str) -> dict[str, Any] | None:
             if description:
                 position += 1   # 描述行已归属上一项，下一轮直接看下一个序号
         if len(block) >= 2 and all(_option_is_plausible(item["label"]) for item in block):
-            hint_at = _hint_index(lines, offset, offset + len(block) - 1, above=2, below=3)
+            hint_at = _hint_index(lines, offset, position - 1, above=2, below=4)
             if hint_at is None:
                 continue          # 没有提示行：多半是聊天记录里的编号列表，不是菜单
             title = _title_above(lines, min(hint_at, offset))
@@ -450,7 +521,8 @@ def parse_screen(text: str) -> dict[str, Any] | None:
             return _finish("menu", title, hint, block, lines, numbers=True, source="numbered")
 
     # A：光标列表
-    for offset, raw in enumerate(lines):
+    for offset in range(len(lines) - 1, -1, -1):
+        raw = lines[offset]
         line = _clean(raw)
         if _marker(line)[0] not in CURSOR_MARKS:
             continue
@@ -473,7 +545,7 @@ def parse_screen(text: str) -> dict[str, Any] | None:
     # C：确认类。对话框一定贴着屏幕底部，所以只看最后 6 行非空内容：
     # 聊天/终端里被回显的命令、diff 常常写着 "press Enter to continue"，位置高得多。
     confirm_tail = max(0, len(lines) - 6)
-    for offset in range(confirm_tail, len(lines)):
+    for offset in range(len(lines) - 1, confirm_tail - 1, -1):
         raw = lines[offset]
         line = _clean(raw).strip()
         if _looks_like_code(line):
@@ -503,28 +575,25 @@ def parse_screen(text: str) -> dict[str, Any] | None:
 
 
 def choice_keys(prompt: dict[str, Any], index: int) -> list[str]:
-    """把"选第 index 项"翻译成按键序列。
-
-    列表没有序号时不能发数字：kimi 的选择器里数字会被当成搜索过滤词，于是列表
-    一变，位置就全错了。所以走"先按够多次 ↑ 回到第一项（顶部多余无害），再按
-    index 次 ↓，最后 Enter"。
-    """
+    """Translate a visible option into keys from the captured cursor position."""
     options = prompt.get("options") or []
     if not options:
         raise ValueError("no options")
-    index = max(0, min(int(index), len(options) - 1))
+    index = int(index)
+    if not 0 <= index < len(options):
+        raise ValueError("option index is out of range")
     option = options[index]
     if option.get("key"):
         return {"yes": ["y", "Enter"], "no": ["n", "Enter"],
                 "enter": ["Enter"], "esc": ["Escape"]}[option["key"]]
-    # 有光标就用方向键：数字在 codex 的更新对话框里根本不生效（实测按 2 毫无反应），
-    # 而在 kimi 的选择器里会被当成搜索词。只有「纯编号、没有光标」的列表才发数字。
-    if prompt.get("numbers") and option.get("number") and not prompt.get("cursor"):
+    if prompt.get("cursor"):
+        delta = index - int(prompt["selected"])
+        action = "Space" if prompt.get("kind") == "multi" else "Enter"
+        return ["Down" if delta > 0 else "Up"] * abs(delta) + [action]
+    if prompt.get("numbers") and option.get("number"):
         return [option["number"], "Enter"]
-    keys = ["Up"] * (len(options) + 3)
-    keys += ["Down"] * index
-    keys.append("Enter")
-    return keys
+    raise ValueError("menu has no supported navigation")
+
 
 
 def choice_for_key(prompt: dict[str, Any], key: str) -> list[str] | None:
@@ -534,6 +603,8 @@ def choice_for_key(prompt: dict[str, Any], key: str) -> list[str] | None:
         return ["Escape"]
     if key in ("enter", "confirm", "ok"):
         return ["Enter"]
+    if prompt.get("kind") == "multi":
+        return None
     if key in ("yes", "y"):
         return ["y", "Enter"]
     if key in ("no", "n"):

@@ -4,10 +4,8 @@ Every agent CLI we support takes the same slash command inside its TUI:
 
     /model <id>
 
-so "pick a model in the chat" is a text send, not a new protocol.  What differs
-is the *list*: models come and go per vendor, so the list here is a short set of
-sensible presets plus whatever the session itself reports as current; the UI also
-lets the user type any id by hand.
+The native picker accepts the argument-less form. Sources for suggestions vary
+by harness: Claude aliases, a Codex host catalog, or configured Hermes endpoints.
 """
 
 # Presets are deliberately short: they are the ids that were current when this
@@ -17,6 +15,9 @@ lets the user type any id by hand.
 # 清单只是几个常用项，"自定义" 覆盖其余；真正权威的是 agent 自己的 /model 菜单。
 # All three tables come from the providers/ registry — one place to add a
 # harness's models.
+from functools import lru_cache
+import threading
+
 import providers as _providers
 
 PRESETS = {spec.name: spec.model_presets for spec in _providers.all_specs()}
@@ -106,6 +107,8 @@ def switch_command(provider: str, model: str = "", route: str = "") -> str:
         raise ValueError("this pane is not an agent: cannot switch its model")
     if "{model}" not in template:
         return template            # picker-only providers ignore the argument
+    if model == "" and not route:
+        return "/model"
     model = (model or "").strip()
     if not model:
         raise ValueError("model is required")
@@ -148,6 +151,83 @@ def hermes_route(home=None) -> str:
         if found:
             return found.group(1)
     return ""
+
+
+def codex_catalog_file(path):
+    """Self-contained projection, also executed on SSH and agent hosts."""
+    import json
+    from pathlib import Path
+    try:
+        with Path(path).open("rb") as handle:
+            raw = handle.read(4 * 1024 * 1024 + 1)
+        if len(raw) > 4 * 1024 * 1024:
+            return []
+        catalog = json.loads(raw)
+    except (OSError, ValueError):
+        return []
+    models = catalog.get("models") if isinstance(catalog, dict) else None
+    if not isinstance(models, list):
+        return []
+    names = []
+    for item in models:
+        if not isinstance(item, dict) or item.get("visibility") != "list":
+            continue
+        slug = item.get("slug")
+        if isinstance(slug, str) and slug and len(slug) <= 80 and all(c.isprintable() and not c.isspace() for c in slug):
+            names.append(slug)
+    return list(dict.fromkeys(names))
+
+
+def codex_catalog(transcript_path, runner=None):
+    """Read visible slugs from the catalog next to the session's rollout."""
+    import json
+    from pathlib import Path
+    if not transcript_path:
+        return []
+    root = next((p.parent for p in Path(transcript_path).parents if p.name == "sessions"), None)
+    if root is None or not root.is_absolute():
+        return []
+    path = root / "models_cache.json"
+    if runner is None:
+        try:
+            stat = path.stat()
+        except OSError:
+            return []
+        return list(_local_catalog(str(path), stat.st_mtime_ns, stat.st_size))
+    import inspect
+    import shlex
+    import time
+    host = runner.host.get("id")
+    key = (host, str(path))
+    lock = _catalog_locks[hash(key) % len(_catalog_locks)]
+    with lock:
+        with _catalog_cache_lock:
+            hit = _catalog_cache.get(key)
+        if hit and time.monotonic() < hit[0]:
+            return list(hit[1])
+        script = inspect.getsource(codex_catalog_file) + "\nimport sys,json\nprint(json.dumps(codex_catalog_file(sys.argv[1])))"
+        try:
+            result = runner.run("python3 -c " + shlex.quote(script) + " " + shlex.quote(str(path)), timeout=5)
+            names = json.loads(result.stdout) if result.returncode == 0 else []
+        except (OSError, ValueError, RuntimeError):
+            names = []
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            names = []
+        with _catalog_cache_lock:
+            if len(_catalog_cache) >= 128:
+                _catalog_cache.pop(next(iter(_catalog_cache)))
+            _catalog_cache[key] = (time.monotonic() + 30, names)
+        return list(names)
+
+
+@lru_cache(maxsize=32)
+def _local_catalog(path, mtime_ns, size):
+    return tuple(codex_catalog_file(path))
+
+
+_catalog_cache = {}
+_catalog_cache_lock = threading.Lock()
+_catalog_locks = [threading.Lock() for _ in range(16)]
 
 
 def supported(provider: str) -> bool:

@@ -1,0 +1,35 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.config/tmuxweb-agent/hooks/observe.py gemini"
+          }
+        ],
+        "matcher": "ToolPermission"
+      }
+    ],
+    "AfterAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.config/tmuxweb-agent/hooks/observe.py gemini"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.config/tmuxweb-agent/hooks/observe.py gemini"
+          }
+        ]
+      }
+    ]
+  }
+}

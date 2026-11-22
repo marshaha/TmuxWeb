@@ -13,7 +13,7 @@ NAME = "kimi"
 LABEL = "Kimi Code"
 BINS = ("kimi",)
 COMMAND_PREFIXES = ("kimi",)
-MODEL_PRESETS = ("K3.1 Pro", "K3", "K3-256k", "K2.7 Code Highspeed")
+MODEL_PRESETS = ()
 # Kimi only understands the argument-less form: `/model <anything>`
 # answers "Unknown model alias", so the switch opens its own picker.
 MODEL_SWITCH_TEMPLATE = "/model"

@@ -209,7 +209,8 @@ test('accept: the completion never calls the send path', () => {
 
 // ---- message actions: resend button ----
 
-const bubbleSrc = [grab('esc'), grab('msgResendButton'), grab('virtualizedClass'), grab('transcriptBubble')].join('\n');
+const clockSource = page.slice(page.indexOf('  const clockTime='), page.indexOf('  function transcriptBubble('));
+const bubbleSrc = [clockSource, grab('esc'), grab('msgResendButton'), grab('transcriptBubble')].join('\n');
 const bubble = new Function(
   'markdown', 'userBubbleHtml',
   bubbleSrc + '\nreturn transcriptBubble;',

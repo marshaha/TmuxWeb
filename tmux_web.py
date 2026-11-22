@@ -37,7 +37,8 @@ import message_queue
 from plugin_api import PluginError, PluginManager, PluginServices, install_routes
 import time
 import threading
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
+from weakref import WeakValueDictionary
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
@@ -237,6 +238,7 @@ def _resolve_server_version() -> str:
     return hashlib.sha1((BASE_DIR / "tmux_web.py").read_bytes()).hexdigest()[:12]
 
 
+RELEASE_VERSION = (BASE_DIR / "VERSION").read_text(encoding="ascii").strip()
 SERVER_VERSION = _resolve_server_version()
 
 
@@ -359,7 +361,9 @@ def _agent_waiting_source(agent_entry) -> str | None:
 def _pane_needs_input_descriptor(pane: dict) -> dict:
     """What the host watcher needs to judge one pane."""
     return {"pane_id": pane.get("pane_id") or pane.get("id"),
-            "provider": pane.get("provider") or "",
+            "pane_pid": str(pane.get("pane_pid") or ""),
+            "provider": pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
+                        or pane.get("command") or "",
             "cwd": pane.get("path") or "",
             "title": pane.get("title") or ""}
 
@@ -374,6 +378,10 @@ def _merge_agent_waiting(agent_waiting: dict, host_id: str, pane_id: str):
 
 
 class TmuxBackend:
+    def needs_input_many(self, panes, timeout=10):
+        from plugins.agent.agent import native_waits
+        return {pid: {"notices": notices} for pid, notices in native_waits(panes).items()}
+
     @staticmethod
     def _reverse_lines(path: Path, chunk_size: int = 64 * 1024, max_line: int = 8 * 1024 * 1024):
         return transcript_reader.reverse_lines(path, chunk_size, max_line)
@@ -1133,7 +1141,7 @@ class InputRequest(BaseModel):
     submit: bool = True
 
 
-ALLOWED_KEYS = {"Escape", "Enter", "Tab", "C-c", "C-d", "C-q", "C-u", "Up", "Down", "Left", "Right"}
+ALLOWED_KEYS = {"Escape", "Enter", "Tab", "Space", "C-c", "C-d", "C-q", "C-u", "Up", "Down", "Left", "Right"}
 # Single-character keys: a menu answer is one character plus Enter ("y"/"n",
 # a digit for a numbered list), and /prompt/choose already allows precisely
 # this alphabet (keys_are_safe). Without them the needs-you card could only
@@ -1169,10 +1177,11 @@ class KeyRequest(BaseModel):
 class PromptChoiceRequest(BaseModel):
     """选一个菜单项（index）或者直接发一个键（key: esc/enter/yes/no/数字）。"""
 
-    index: int | None = None
-    key: str = ""
-    toggle: int | None = None      # 第几个开关（[ Low ][ High ][ Max ] 那种）
-    value: int | None = None       # 要切到第几个值
+    index: int | None = Field(default=None, ge=0)
+    key: str = Field(default="", max_length=16)
+    revision: str = Field(default="", max_length=32)
+    toggle: int | None = Field(default=None, ge=0)
+    value: int | None = Field(default=None, ge=0)
 
 
 class TransferTicketRequest(BaseModel):
@@ -2327,6 +2336,8 @@ def create_app(
         busy_window = float(os.environ.get("TMUX_WEB_ACTIVITY_BUSY_SECONDS", "3"))
         now = time.time()
 
+        screen_controls = home.get_prefs().get("prompt_card", "off") == "on"
+
         def describe(job):
             host_id, host_name, transport, pane = job
             provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
@@ -2365,6 +2376,16 @@ def create_app(
                     native_decision.get(pane["id"], False),
                     bool(agent_source)),
                 screen_text=text)
+            notices = (agent_entry or {}).get("notices") or []
+            if notices:
+                details = [{"label": item["title"], "description": item.get("detail", "")}
+                           for item in notices if isinstance(item, dict) and item.get("title")]
+                if details:
+                    gated_prompt = {"kind": "notice", "title": "交互通知", "options": details,
+                                    "revision": hashlib.sha256(json.dumps(notices, sort_keys=True).encode()).hexdigest(),
+                                    "hint": "来自 harness 事件，当前进度可在终端核对。", "read_only": True}
+            elif gated_prompt and not screen_controls:
+                gated_prompt = dict(gated_prompt, read_only=True, hint="根据当前屏幕推测，请在终端核对。")
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
                     "host_name": host_name, "target": target, "provider": provider,
                     "status": status, "status_source": source, "activity_age": age,
@@ -2419,10 +2440,10 @@ def create_app(
         started_at = time.time()
         try:
             states = collect_pane_states()
+            elapsed = time.time() - started_at
             with pane_state_lock:
                 pane_state_cache.update({"at": time.time(), "states": states})
-            elapsed = time.time() - started_at
-            pane_state_last.update({"finished_at": time.time(), "duration": elapsed})
+                pane_state_last.update({"finished_at": time.time(), "duration": elapsed})
             log = LOGGER.warning if elapsed > 3 else LOGGER.info
             phases = pane_state_phases
             log("pane state sweep: %d panes in %.1fs (capture %.1fs, needs %.1fs, describe %.1fs)",
@@ -2431,8 +2452,6 @@ def create_app(
                 phases.get("describe", 0.0))
         except Exception:  # noqa: BLE001 - a failed sweep must never kill the poller
             LOGGER.warning("pane state sweep failed after %.1fs", time.time() - started_at, exc_info=True)
-        finally:
-            pane_state_busy["flag"] = False
 
     def pane_states_cached(wait: float = 3.0, ttl: float = 30.0, stale_ok: bool = False) -> list[dict]:
         """Last known pane states, refreshed once they are older than ``ttl``.
@@ -2453,28 +2472,27 @@ def create_app(
         later, so the tmux servers never idled and user ops queued behind
         sweep commands; freshness drops instead — performance first.
         """
-        with pane_state_lock:
-            fresh = (time.time() - pane_state_cache["at"]) < ttl
-            states = pane_state_cache["states"]
-            finished_at = pane_state_last["finished_at"]
-            last_duration = pane_state_last["duration"]
-        if fresh:
-            return states
-        if finished_at:
-            min_interval = max(
-                float(os.environ.get("TMUX_WEB_SWEEP_MIN_INTERVAL", "60")),
-                float(os.environ.get("TMUX_WEB_SWEEP_BACKOFF_FACTOR", "2"))
-                * last_duration)
-            if time.time() - finished_at < min_interval:
-                return states
-
         def refresh(event: threading.Event) -> None:
             try:
                 _refresh_pane_states()
             finally:
-                event.set()
+                with pane_state_lock:
+                    pane_state_busy["flag"] = False
+                    event.set()
 
         with pane_state_lock:
+            now = time.time()
+            states = pane_state_cache["states"]
+            if now - pane_state_cache["at"] < ttl:
+                return states
+            finished_at = pane_state_last["finished_at"]
+            if finished_at:
+                min_interval = max(
+                    float(os.environ.get("TMUX_WEB_SWEEP_MIN_INTERVAL", "60")),
+                    float(os.environ.get("TMUX_WEB_SWEEP_BACKOFF_FACTOR", "2"))
+                    * pane_state_last["duration"])
+                if now - finished_at < min_interval:
+                    return states
             should_start = not pane_state_busy["flag"]
             if should_start:
                 pane_state_busy["flag"] = True
@@ -2634,7 +2652,7 @@ def create_app(
         so the console checks on its existing 20s pane-list rhythm.
         """
         require_auth(request)
-        return JSONResponse({"version": SERVER_VERSION},
+        return JSONResponse({"version": SERVER_VERSION, "release": RELEASE_VERSION},
                             headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
     @app.get("/api/prefs")
@@ -4413,7 +4431,7 @@ def create_app(
                 raise McpToolError("no such card")
             return {"id": card_id, "removed": True}
         if name == "list_agents":
-            peers = await asyncio.to_thread(collect_pane_states)
+            peers = await asyncio.to_thread(pane_states_cached, 3.0, 30.0, True)
             if not arguments.get("include_non_agents", False):
                 peers = [peer for peer in peers if peer.get("provider")]
             numbers = await asyncio.to_thread(
@@ -5195,6 +5213,51 @@ def create_app(
         require_auth(request)
         return await asyncio.to_thread(public_tunnel.stop)
 
+    transcript_waits: dict[tuple[str, str, float], asyncio.Task] = {}
+
+    async def wait_for_pane_transcript(pane_id: str, pane: dict, hit: dict, seconds: float) -> str:
+        key = (pane_id, hit["signature"], seconds)
+        task = transcript_waits.get(key)
+        if task is None:
+            async def wait():
+                try:
+                    return await await_transcript_change(pane, hit, seconds)
+                finally:
+                    transcript_waits.pop(key, None)
+
+            task = transcript_waits[key] = asyncio.create_task(wait())
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        return await asyncio.shield(task)
+
+    transcript_reads: dict[tuple[str, int], asyncio.Task] = {}
+    transcript_read_slots = asyncio.Semaphore(8)
+
+    async def read_pane_transcript(pane_id: str, pane: dict, limit: int, refresh: bool) -> dict:
+        async def read():
+            def load():
+                transport, actual = pane_transport(pane_id)
+                args = (actual, limit, True) if refresh else (actual, limit)
+                data = transport.transcript(*args, pane=pane)
+                return with_waiting_hint(data, pane if pane.get("host_id") in (None, "localhost") else None)
+
+            async with transcript_read_slots:
+                return await asyncio.to_thread(load)
+
+        if refresh:
+            return await read()
+        key = (pane_id, limit)
+        task = transcript_reads.get(key)
+        if task is None:
+            async def shared_read():
+                try:
+                    return await read()
+                finally:
+                    transcript_reads.pop(key, None)
+
+            task = transcript_reads[key] = asyncio.create_task(shared_read())
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        return dict(await asyncio.shield(task))
+
     @app.get("/api/transcript/adapters")
     async def transcript_adapters(request: Request):
         """有哪些 transcript 适配器、各自怎么认进程、远端要不要反转行序。
@@ -5245,13 +5308,13 @@ def create_app(
                     baseline = False
                     if sig and sig == hit["signature"]:
                         baseline = True
-                    if since:
+                    if since and not sig:
                         anchor = since.rsplit("|", 1)[-1] if "|" in since else since
                         if anchor and anchor == hit["signature"].rsplit("|", 1)[-1]:
                             baseline = True
                     if baseline:
                         if wait_seconds > 0:
-                            outcome = await await_transcript_change(pane, hit, wait_seconds)
+                            outcome = await wait_for_pane_transcript(pane_id, pane, hit, wait_seconds)
                             if outcome in ("waiting_flipped", "timeout"):
                                 return unchanged_stub(pane, hit, hit["signature"], long_poll=True,
                                                       resend=resend_state)
@@ -5260,12 +5323,7 @@ def create_app(
                             return unchanged_stub(pane, hit, sig or hit["signature"],
                                                   resend=resend_state)
         try:
-            transport, actual_pane_id = pane_transport(pane_id)
-            if refresh and hasattr(transport, "transcript"):
-                data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, True, pane=pane)
-            else:
-                data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit, pane=pane)
-            data = with_waiting_hint(data, pane if is_local else None)
+            data = await read_pane_transcript(pane_id, pane, limit, bool(refresh))
             messages = data.get("messages") or []
             signature = "%s|%s|%s" % (data.get("mtime"), len(messages),
                                      messages[-1].get("id") if messages else "")
@@ -5300,25 +5358,26 @@ def create_app(
                 ids = [str(item.get("id")) for item in messages]
                 if anchor in ids:
                     index = ids.index(anchor)
-                    if index == len(ids) - 1:
-                        stub = {"unchanged": True, "signature": signature,
-                                "waiting": data.get("waiting"),
-                                "waiting_since": data.get("waiting_since"),
-                                "has_more": data.get("has_more")}
+                    if index < len(ids) - 1:
+                        incremental = dict(data)
+                        incremental["messages"] = messages[index + 1:]
+                        incremental["signature"] = signature
+                        incremental["incremental"] = True
+                        if resend_state is not None:
+                            incremental["resend"] = resend_state
+                        if held:
+                            incremental["long_poll"] = True
+                        return incremental
+                    if not sig:
+                        stub = {key: data.get(key) for key in ("waiting", "waiting_since", "has_more")}
+                        if "open_questions" in data:
+                            stub["open_questions"] = data["open_questions"]
+                        stub.update(unchanged=True, signature=signature)
                         if resend_state is not None:
                             stub["resend"] = resend_state
                         if held:
                             stub["long_poll"] = True
                         return stub
-                    incremental = dict(data)
-                    incremental["messages"] = messages[index + 1:]
-                    incremental["signature"] = signature
-                    incremental["incremental"] = True
-                    if resend_state is not None:
-                        incremental["resend"] = resend_state
-                    if held:
-                        incremental["long_poll"] = True
-                    return incremental
                 # anchor not in the current window (rotation, or older than the
                 # limit): fall through to the full list below
             data["signature"] = signature
@@ -5384,26 +5443,32 @@ def create_app(
             raise HTTPException(status_code=422, detail="this pane is not an agent with a model picker")
         current, current_data = "", {}
         try:
-            transport, actual = pane_transport(pane_id)
-            current_data = await asyncio.to_thread(transport.transcript, actual, 1, pane) or {}
+            current_data = await read_pane_transcript(pane_id, pane, 1, False) or {}
             current = current_data.get("model") or ""
-        except (HTTPException, TmuxError, RuntimeError, OSError, ValueError):
+        except (HTTPException, TmuxError, RuntimeError, OSError, ValueError, federation.FederationError):
             current = ""
         configured = (current_data.get("model_provider") or "") if isinstance(current_data, dict) else ""
-        remote = pane.get("host_id") not in (None, "localhost")
+        remote = split_pane_ref(resolve_pane_ref(pane_id))[0] != "localhost"
         if not configured and provider == "hermes" and not remote:
             configured = agent_models.hermes_route()
         presets = agent_models.preset_for(provider)
         groups = []
+        if provider == "codex":
+            if remote:
+                runner, actual = pane_transport(pane_id)
+                catalog = getattr(runner, "codex_catalog", None)
+                if catalog and current_data.get("provider") == "codex":
+                    presets = await asyncio.to_thread(catalog, actual)
+            else:
+                presets = await asyncio.to_thread(agent_models.codex_catalog, current_data.get("path"))
         if provider == "hermes":
             # Hermes 的"可选模型"就是各 provider 的 /v1/models；config 里通常不止一组
             try:
                 runner = None
                 if remote:
                     runner, _ = pane_transport(pane_id)
-                    if not hasattr(runner, "run"):
-                        runner = None
-                groups = await asyncio.to_thread(agent_models.hermes_groups, None, runner, configured)
+                if not remote or hasattr(runner, "run"):
+                    groups = await asyncio.to_thread(agent_models.hermes_groups, None, runner, configured)
             except (HTTPException, RuntimeError, OSError, ValueError):
                 groups = []
             if groups:
@@ -5413,7 +5478,10 @@ def create_app(
                 "current_provider": configured,
                 "presets": presets,
                 "groups": groups,
-                "picker_only": agent_models.picker_only(provider),
+                "catalog_source": ("host_cache" if presets else "native") if provider == "codex"
+                                  else ("provider" if groups else "aliases" if provider == "claude" else "native"),
+                "native_picker": True,
+                "picker_only": agent_models.picker_only(provider) or (provider == "codex" and not presets),
                 "template": agent_models.switch_command(provider, "MODEL").replace("MODEL", "{model}")}
 
     @app.post("/api/panes/{pane_id}/model")
@@ -5430,9 +5498,12 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
             transport, actual = pane_transport(pane_id)
-            await asyncio.to_thread(transport.send, actual, command, True, pane=pane)
+            submitted = await asyncio.to_thread(transport.send, actual, command, True, pane=pane)
+            if submitted is False:
+                raise HTTPException(status_code=409, detail="命令已粘贴，终端尚未确认提交")
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        invalidate_prompt(resolve_pane_ref(pane_id))
         return {"status": "sent", "pane": pane_id, "provider": provider, "model": payload.model,
                 "command": command}
 
@@ -5471,32 +5542,53 @@ def create_app(
 
     # 上一次解析出来的提示（GET /prompt 会填）：点按钮时直接用，省一次抓屏。
     # 远端 pane 一次抓屏就是一个 SSH 往返，省掉它点击才不卡。
-    prompt_cache: dict[str, tuple[float, dict]] = {}
-    prompt_cache_lock = asyncio.Lock()
+    prompt_cache: OrderedDict[str, tuple[float, tuple]] = OrderedDict()
+    prompt_reads: dict[str, asyncio.Task] = {}
+    prompt_actions: WeakValueDictionary = WeakValueDictionary()
+    prompt_sent: OrderedDict[str, tuple[str, float]] = OrderedDict()
+    prompt_capture_slots = asyncio.Semaphore(8)
 
-    async def remember_prompt(pane_id: str, found: dict | None) -> None:
-        async with prompt_cache_lock:
-            if found:
-                prompt_cache[pane_id] = (time.monotonic(), found)
-            else:
-                prompt_cache.pop(pane_id, None)
+    async def capture_prompt(pane_id: str) -> tuple:
+        def capture():
+            pane = pane_or_404(pane_id)
+            transport, actual = pane_transport(pane_id)
+            text = transport.capture(actual, 80, pane=pane, visible_only=True)
+            return agent_prompts.parse_screen(text), text, pane, transport, actual
 
-    async def cached_prompt(pane_id: str, max_age: float = 15.0) -> dict | None:
-        async with prompt_cache_lock:
-            entry = prompt_cache.get(pane_id)
-            if entry and time.monotonic() - entry[0] <= max_age:
-                return entry[1]
-            return None
+        async with prompt_capture_slots:
+            return await asyncio.to_thread(capture)
 
-    async def read_prompt(pane_id: str) -> tuple[dict | None, str]:
-        """抓一次屏幕并解析出等待中的菜单；认不出就是 (None, screen)。"""
-        pane = await asyncio.to_thread(pane_or_404, pane_id)
-        transport, actual = pane_transport(pane_id)
-        text = await asyncio.to_thread(transport.capture, actual, 80, pane=pane,
-                                       visible_only=True)
-        found = agent_prompts.parse_screen(text)
-        await remember_prompt(pane_id, found)
-        return found, text
+    async def read_prompt(pane_id: str) -> tuple:
+        hit = prompt_cache.get(pane_id)
+        if hit and time.monotonic() - hit[0] < 1.25:
+            prompt_cache.move_to_end(pane_id)
+            return hit[1]
+        task = prompt_reads.get(pane_id)
+        if task is None:
+            async def refresh():
+                try:
+                    found, text, *_ = await capture_prompt(pane_id)
+                    result = (found, text)
+                    # An action invalidates a read started before its capture.
+                    if prompt_reads.get(pane_id) is asyncio.current_task():
+                        prompt_cache[pane_id] = (time.monotonic(), result)
+                        prompt_cache.move_to_end(pane_id)
+                        if len(prompt_cache) > 256:
+                            prompt_cache.popitem(last=False)
+                    return result
+                finally:
+                    if prompt_reads.get(pane_id) is asyncio.current_task():
+                        prompt_reads.pop(pane_id, None)
+
+            task = prompt_reads[pane_id] = asyncio.create_task(refresh())
+            # A disconnected waiter must neither cancel the shared read nor
+            # leave an unobserved exception if nobody is still waiting.
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        return await asyncio.shield(task)
+
+    def invalidate_prompt(pane_id: str) -> None:
+        prompt_cache.pop(pane_id, None)
+        prompt_reads.pop(pane_id, None)
 
     def keys_are_safe(keys: list[str]) -> bool:
         for key in keys:
@@ -5508,27 +5600,28 @@ def create_app(
         return True
 
     @app.get("/api/panes/{pane_id}/prompt")
-    async def pane_prompt(request: Request, pane_id: str, turn: str = ""):
+    async def pane_prompt(request: Request, pane_id: str, turn: str = "", inspect: bool = False):
         """屏幕上正在等的选择（kimi 的模型菜单、claude 的权限确认…）。
 
         认不出就返回 ``{"prompt": null}`` —— 前端据此不显示按钮，用户照旧用终端。
         """
         require_auth(request)
-        if home.get_prefs().get("prompt_card", "off") != "on":
+        if not inspect and home.get_prefs().get("prompt_card", "off") != "on":
             # 实验性功能：设置里没打开就当屏幕上没有等待中的选择
             return {"pane": pane_id, "prompt": None, "screen": [], "disabled": True}
         try:
+            pane_id = resolve_pane_ref(pane_id)
             found, text = await read_prompt(pane_id)
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         lines = (text or "").splitlines()
         while lines and not lines[-1].strip():      # TUI 下方常留空白，别把它当"屏幕原文"
             lines.pop()
-        signature = agent_prompts.menu_signature(found) if found else ""
+        signature = agent_prompts.menu_signature(found) if found and found["kind"] != "multi" else ""
         grant = approvals_store.find(pane_id, signature, turn) if signature else None
-        return {"pane": pane_id, "prompt": found, "signature": signature,
+        return {"pane": pane_id, "prompt": dict(found, read_only=True) if found and inspect else found, "signature": signature,
                 "grant": grant.as_dict() if grant else None,
-                "screen": lines[-14:] if found else []}
+                "screen": lines[-24:] if found or inspect else []}
 
     @app.get("/api/panes/{pane_id}/approvals")
     async def pane_approvals(request: Request, pane_id: str, turn: str = ""):
@@ -5574,53 +5667,58 @@ def create_app(
 
     @app.post("/api/panes/{pane_id}/prompt/choose")
     async def pane_prompt_choose(request: Request, pane_id: str, payload: PromptChoiceRequest):
-        """把"选第 N 项"变成按键发进 pane，再抓屏复核。
-
-        位置式的列表不能发数字（kimi 的输入框会把数字当搜索词），所以按键序列
-        由 ``agent_prompts.choice_keys`` 生成：顶到第一项，再走 N 步，最后 Enter。
-        """
+        """Check the current menu and apply a single selection on its pane."""
         require_auth(request)
         if home.get_prefs().get("prompt_card", "off") != "on":
             raise HTTPException(status_code=409, detail="交互菜单卡片已在设置里关闭")
-        try:
-            found = await cached_prompt(pane_id)
-            if not found:
-                found, _text = await read_prompt(pane_id)
-            if not found:
-                raise HTTPException(status_code=409, detail="屏幕上没有等待中的选择")
-            if payload.index is not None and not found.get("options"):
-                raise HTTPException(status_code=422,
-                                    detail="这个界面只有一个开关，请直接点分段或按 Enter")
-            if payload.toggle is not None and payload.value is not None:
-                keys = agent_prompts.toggle_keys(found, payload.toggle, payload.value)
-                if not keys:
-                    return {"ok": True, "prompt": found, "unchanged": True}
-            elif payload.index is not None:
-                keys = agent_prompts.choice_keys(found, payload.index)
-            else:
-                keys = agent_prompts.choice_for_key(found, payload.key)
-                if keys is None:
+        pane_id = resolve_pane_ref(pane_id)
+        lock = prompt_actions.setdefault(pane_id, asyncio.Lock())
+        async with lock:
+            try:
+                found, _text, pane, transport, actual = await capture_prompt(pane_id)
+                if not found:
+                    raise HTTPException(status_code=409, detail="屏幕上没有等待中的选择")
+                if payload.revision:
+                    if payload.revision != found["revision"]:
+                        raise HTTPException(status_code=409, detail="屏幕上的选项已变化，请刷新后再选择")
+                    previous = prompt_sent.get(pane_id)
+                    if previous and previous[0] == payload.revision and time.monotonic() - previous[1] < 1.5:
+                        raise HTTPException(status_code=409, detail="这份选项刚刚已操作，请等待屏幕刷新")
+                if (payload.toggle is None) != (payload.value is None):
+                    raise HTTPException(status_code=422, detail="需要同时提供开关和值")
+                if payload.toggle is not None and payload.value is not None:
+                    keys = agent_prompts.toggle_keys(found, payload.toggle, payload.value)
+                    if not keys:
+                        return {"ok": True, "prompt": found, "unchanged": True}
+                elif payload.index is not None:
+                    if not found.get("options"):
+                        raise HTTPException(status_code=422, detail="这个界面只有一个开关")
+                    keys = agent_prompts.choice_keys(found, payload.index)
+                else:
+                    keys = agent_prompts.choice_for_key(found, payload.key)
+                if not keys or not keys_are_safe(keys):
                     raise HTTPException(status_code=422, detail="unsupported key")
-            if not keys_are_safe(keys):
-                raise HTTPException(status_code=422, detail="unsupported key")
-            pane = await asyncio.to_thread(pane_or_404, pane_id)
-            transport, actual = pane_transport(pane_id)
-            send_many = getattr(transport, "send_keys", None)
-            if send_many is not None:
-                await asyncio.to_thread(send_many, actual, keys, pane=pane)
-            else:
-                for key in keys:
-                    await asyncio.to_thread(transport.send_key, actual, key, pane=pane)
-                    await asyncio.sleep(0.06)
-            # 发完立刻返回：复核交给前端（它本来就在轮询 /prompt）。
-            # 以前在这里串行抓屏 5 次，远端每抓一次就是一个 SSH 往返，点击要卡好几秒。
-            async with prompt_cache_lock:
-                prompt_cache.pop(pane_id, None)      # 缓存作废，下一次轮询拿新状态
-            return {"ok": True, "sent": keys, "pending": True, "prompt": found}
-        except HTTPException:
-            raise
-        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+                invalidate_prompt(pane_id)
+                send_many = getattr(transport, "send_keys", None)
+                if payload.revision:
+                    prompt_sent[pane_id] = (payload.revision, time.monotonic())
+                    prompt_sent.move_to_end(pane_id)
+                    if len(prompt_sent) > 256:
+                        prompt_sent.popitem(last=False)
+                try:
+                    if send_many is not None:
+                        await asyncio.to_thread(send_many, actual, keys, pane=pane)
+                    else:
+                        for key in keys:
+                            await asyncio.to_thread(transport.send_key, actual, key, pane=pane)
+                            await asyncio.sleep(0.06)
+                finally:
+                    invalidate_prompt(pane_id)
+                return {"ok": True, "sent": keys, "pending": True, "prompt": found}
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except (TmuxError, RuntimeError, OSError) as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     async def file_target(pane_ref: str) -> tuple[object, str, dict]:
         # blocking pane lookup stays off the event loop; the transport itself

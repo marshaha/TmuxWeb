@@ -718,7 +718,7 @@ class FedTransport:
     def send_key(self, pane_id: str, key: str, pane: dict | None = None) -> dict:
         return self.client.key(self.raw_pane(pane_id), key)
 
-    def send_keys(self, pane_id: str, keys) -> dict:
+    def send_keys(self, pane_id: str, keys, pane: dict | None = None) -> dict:
         for key in keys:
             self.send_key(pane_id, key)
         return {"status": "sent", "keys": list(keys)}

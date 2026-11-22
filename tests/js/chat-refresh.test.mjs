@@ -22,7 +22,7 @@ function grab(name) {
   throw new Error(`unbalanced ${name}`);
 }
 
-const merge = new Function(grab('mergeIncrementalMessages') + 'return mergeIncrementalMessages;')();
+const merge = new Function((page.match(/const TRANSCRIPT_PAGE=\d+,TRANSCRIPT_PAGE_MAX=\d+;/)||[])[0] + grab('mergeIncrementalMessages') + 'return mergeIncrementalMessages;')();
 const msg = (id) => ({ id, role: 'assistant', text: id });
 
 test('appends the new tail when the anchor is the last message', () => {
@@ -45,4 +45,12 @@ test('returns null when the anchor is not the last message', () => {
 test('returns null when there is no local list to extend', () => {
   assert.equal(merge([], [msg('m1')], 'm1'), null);
   assert.equal(merge(null, [msg('m1')], 'm1'), null);
+});
+
+test('incremental refresh retains the most recent 500 messages', () => {
+  const existing = Array.from({length: 500}, (_, i) => msg(String(i)));
+  const merged = merge(existing, [msg('500'), msg('501')], '499');
+  assert.equal(merged.length, 500);
+  assert.equal(merged[0].id, '2');
+  assert.equal(merged.at(-1).id, '501');
 });

@@ -101,8 +101,11 @@ def prompt_signature(prompt: dict | None) -> tuple | None:
     recommended mark follows the option order, which is already covered."""
     if not prompt:
         return None
+    if prompt.get("kind") == "notice":
+        return ("notice", prompt.get("revision"))
     options = tuple(
-        (option.get("label", ""), option.get("meta", ""), option.get("number", ""))
+        (option.get("label", ""), option.get("meta", ""), option.get("number", ""),
+         option.get("checked"))
         for option in prompt.get("options") or []
     )
     toggles = tuple(

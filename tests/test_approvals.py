@@ -130,15 +130,13 @@ class AutoAnswerWiringTests(unittest.TestCase):
 
     def test_the_card_asks_before_it_remembers_anything(self):
         page = self.client.get("/assets/prompt-card.js").text
-        self.assertIn("if (!rememberChoice || !lastSignature) return false;", page)
+        self.assertIn("rememberChoice && lastSignature", page)
         self.assertIn("rememberScope = 'turn'", page, "默认只记本轮，不是一直")
-        self.assertIn("data.grant && autoAnswered !== data.signature", page)
+        self.assertIn("grantAction.revision === data.prompt.revision", page)
         self.assertIn("/approvals/${encodeURIComponent(data.grant.id)}/used", page)
         self.assertIn("prompt-remember", self.client.get("/").text)
-        # 签名在响应里（不在 prompt 对象里），漏传就等于永远记不住 —— 这里钉死
-        self.assertIn("render(data.prompt, data.screen, data.signature)", page)
-        # poll 自己就持有 busy，用它判断"手里还有一条"会永远为真
-        self.assertIn("if (answering) return;", page)
+        self.assertIn("data.screen, data.signature", page)
+        self.assertIn("pollController !== controller", page)
         self.assertIn("已按你的授权自动选了", page)
         self.assertIn("撤销", page)
 

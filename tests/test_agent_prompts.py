@@ -455,12 +455,11 @@ class KeySequenceTests(unittest.TestCase):
         found = prompts.parse_screen(COMPACT)
         self.assertEqual(prompts.choice_keys(found, 1), ["2", "Enter"])
 
-    def test_a_cursor_choice_walks_from_the_top(self):
+    def test_cursor_choices_move_from_the_observed_selection(self):
         found = prompts.parse_screen(TRUST)
-        keys = prompts.choice_keys(found, 1)
-        self.assertEqual(keys.count("Up"), len(found["options"]) + 3, "先顶到第一项")
-        self.assertEqual(keys[keys.index("Down"):], ["Down", "Enter"], "再往下走一格")
-        self.assertEqual(keys[-1], "Enter")
+        self.assertEqual(prompts.choice_keys(found, 1), ["Down", "Enter"])
+        picker = prompts.parse_screen(MODEL_PICKER)
+        self.assertEqual(prompts.choice_keys(picker, picker["selected"] - 1), ["Up", "Enter"])
 
     def test_the_first_option_needs_no_down(self):
         found = prompts.parse_screen(TRUST)
@@ -468,10 +467,10 @@ class KeySequenceTests(unittest.TestCase):
         self.assertNotIn("Down", keys)
         self.assertEqual(keys[-1], "Enter")
 
-    def test_an_out_of_range_index_is_clamped(self):
+    def test_an_out_of_range_index_is_rejected(self):
         found = prompts.parse_screen(TRUST)
-        self.assertEqual(prompts.choice_keys(found, 99),
-                         prompts.choice_keys(found, len(found["options"]) - 1))
+        with self.assertRaises(ValueError):
+            prompts.choice_keys(found, 99)
 
     def test_yes_no_and_escape_map_to_keys(self):
         found = prompts.parse_screen(YES_NO)
@@ -488,6 +487,29 @@ class KeySequenceTests(unittest.TestCase):
         found = prompts.parse_screen(TRUST)
         self.assertIsNone(prompts.choice_for_key(found, "launch-missiles"))
 
+
+
+class ChecklistTests(unittest.TestCase):
+    SCREEN = ("╭──────────────────────╮\n"
+              "│ Select targets       │\n"
+              "│   ❯ [ ] Linux        │\n"
+              "│     [x] macOS        │\n"
+              "│ ↑↓ navigate · Space toggle · Enter submit │\n"
+              "╰──────────────────────╯")
+
+    def test_boxed_checklist_has_separate_toggle_and_submit_actions(self):
+        found = prompts.parse_screen(self.SCREEN)
+        self.assertEqual(found["kind"], "multi")
+        self.assertEqual([item["checked"] for item in found["options"]], [False, True])
+        self.assertEqual(prompts.choice_keys(found, 1), ["Down", "Space"])
+        self.assertEqual(prompts.choice_for_key(found, "enter"), ["Enter"])
+        self.assertIsNone(prompts.choice_for_key(found, "yes"))
+        self.assertNotEqual(found["revision"],
+                            prompts.parse_screen(self.SCREEN.replace("[x]", "[ ]"))["revision"])
+
+    def test_checkboxes_without_a_space_hint_do_not_become_controls(self):
+        found = prompts.parse_screen(self.SCREEN.replace("Space toggle · ", ""))
+        self.assertIsNone(found)
 
 if __name__ == "__main__":
     unittest.main()

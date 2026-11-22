@@ -22,6 +22,20 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt httpx
+      - name: Check release version
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+
+          version = Path("VERSION").read_text().strip()
+          assert re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version), version
+          assert f"## {version}\n" in Path("CHANGELOG.md").read_text()
+          tag = os.environ["RELEASE_TAG"]
+          assert not tag.startswith("v") or tag == f"v{version}", tag
+          PY
       - run: python -m py_compile *.py tests/*.py
       - run: python -m unittest discover -s tests -v
 
@@ -32,6 +46,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: 前端胶水（直连传输、视频卡片）
-        run: node --test tests/transfer_client.test.mjs tests/video_cards.test.mjs tests/markdown_cjk.test.mjs tests/paste_files.test.mjs tests/js/resend-enter.test.mjs tests/js/share-resend-enter.test.mjs tests/js/background-retry.test.mjs tests/js/agent-transport.test.mjs tests/js/needs-you.test.mjs tests/js/prompt-card.test.mjs tests/js/home-card-detail.test.mjs tests/js/content-visibility.test.mjs tests/js/raf-throttle.test.mjs tests/js/version-poll.test.mjs tests/js/needs-you-inbox.test.mjs tests/js/input-complete.test.mjs tests/js/sidebar-search.test.mjs tests/js/recents-hover-preview.test.mjs
-
+      - name: Test browser scripts
+        run: node --test tests/*.test.mjs tests/js/*.test.mjs

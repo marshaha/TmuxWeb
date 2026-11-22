@@ -42,9 +42,9 @@ test('the prompt signature changes when the menu changes', () => {
   assert.equal(needsYou.signatureOf(null), '');
 });
 
-test('the card answers only through /api/panes/{id}/key', () => {
+test('the card supports verified choices and the legacy key route', () => {
   assert.match(source, /\/api\/panes\/\$\{encodeURIComponent\(pane\)\}\/key/);
-  assert.doesNotMatch(source, /prompt\/choose/);
+  assert.match(source, /prompt\/choose/);
   assert.doesNotMatch(source, /\/api\/panes\/.*\/input/);
 });
 

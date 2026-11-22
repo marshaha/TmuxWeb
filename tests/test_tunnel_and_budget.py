@@ -158,7 +158,8 @@ class PerformanceBudgetTests(unittest.TestCase):
     def test_the_message_cap_follows_the_node_budget(self):
         page = self.client.get("/assets/console-app.js").text
         self.assertIn("TRANSCRIPT_PAGE_MAX=500", page)
-        self.assertIn("约 24 个节点", page, "上限旁边要写明它是怎么算出来的")
+        self.assertIn("let budget=9500-(formal.length+pendingTail.length)*14;", page)
+        self.assertIn("()=>transcriptBubble(message,true)", page)
 
 
 if __name__ == "__main__":

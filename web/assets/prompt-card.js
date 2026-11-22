@@ -22,22 +22,12 @@
   const CARD = 'prompt-card';
 
   let getPane = null;
+  let notifyAutoAnswer = null;
   let timer = null;
   let busy = false;
-  let busyTimer = 0;
-  // busy 只是防重复提交的锁，不是"永远别再点"的状态：请求万一挂着没回来，
-  // 8 秒后自动放开，否则卡片会一直回"上一条还在发送"、看着像坏了。
-  const BUSY_MAX_MS = 8000;
-  function lockBusy() {
-    busy = true;
-    clearTimeout(busyTimer);
-    busyTimer = setTimeout(() => { busy = false; }, BUSY_MAX_MS);
-  }
-  function unlockBusy() {
-    busy = false;
-    clearTimeout(busyTimer);
-    busyTimer = 0;
-  }
+  let pollController = null;
+  let paneEpoch = 0;
+  let controlsBound = false;
   let prompt = null;
   let cursor = 0;
   let hiddenByUser = false;      // 用户点了 ✕：这一轮别再弹
@@ -51,15 +41,9 @@
   let rememberChoice = false;
   let rememberScope = 'turn';
   let autoAnswered = '';
-  let answering = false;       // 手里正有一条选择在路上（poll 自己的 busy 不能用来判断这个）
   let lastScreen = [];
 
   const $ = id => document.getElementById(CARD + '-' + id);
-
-  function esc(value) {
-    return String(value == null ? '' : value)
-      .replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
-  }
 
   function paneNow() {
     try { return getPane ? getPane() : ''; } catch (_error) { return ''; }
@@ -74,7 +58,7 @@
       found.kind || '', found.title || '',
       (found.options || []).map(option => [option.label, option.meta, option.number]),
       (found.toggles || []).map(toggle => [toggle.label, toggle.active]),
-      found.selected,
+      found.selected, found.revision,
     ]);
   }
 
@@ -136,18 +120,6 @@
     return row;
   }
 
-  async function rememberIfAsked(action, label) {
-    if (!rememberChoice || !lastSignature) return false;
-    try {
-      await postJson(`/api/panes/${encodeURIComponent(paneNow())}/approvals`, {
-        signature: lastSignature, action, scope: rememberScope, turn: turnKey(), label,
-      });
-      return true;
-    } catch (_error) {
-      return false;
-    }
-  }
-
   function hide() {
     const node = card();
     if (node) node.hidden = true;
@@ -161,7 +133,8 @@
     if (!list || !prompt || !prompt.options || !prompt.options.length) return;
     [...list.children].forEach((node, index) => {
       node.classList.toggle('on', index === cursor);
-      node.setAttribute('aria-selected', index === cursor ? 'true' : 'false');
+      const selected = prompt.kind === 'multi' ? prompt.options[index].checked : index === cursor;
+      node.setAttribute('aria-selected', String(!!selected));
     });
   }
 
@@ -169,26 +142,37 @@
     const node = card();
     if (!node) return;
     prompt = data;
-    cursor = Number.isInteger(data.selected) ? Math.min(data.selected, data.options.length - 1) : 0;
+    cursor = Math.max(0, Math.min(data.selected || 0, data.options.length - 1));
 
     if (signature !== undefined) lastSignature = signature || '';
     $('title').textContent = data.title || (data.kind === 'confirm' ? '需要确认' : '等待选择');
     const hint = $('hint');
-    hint.textContent = data.hint || (data.more ? `屏幕外还有 ${data.more} 项` : '');
+    hint.textContent = data.read_only ? '屏幕预览，请在终端操作。' : data.hint || (data.more ? `屏幕外还有 ${data.more} 项` : '');
     hint.hidden = !hint.textContent;
 
     const list = $('options');
     list.innerHTML = '';
+    list.setAttribute('aria-multiselectable', String(data.kind === 'multi'));
     data.options.forEach((option, index) => {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'prompt-option';
       button.setAttribute('role', 'option');
       button.dataset.index = String(index);
+      button.disabled = !!data.read_only;
       const label = document.createElement('span');
       label.className = 'prompt-label';
       label.textContent = (option.number ? option.number + '. ' : '') + (option.label || '');
-      button.appendChild(label);
+      const text = document.createElement('span');
+      text.className = 'prompt-option-text';
+      text.appendChild(label);
+      if (option.description) {
+        const description = document.createElement('span');
+        description.className = 'prompt-desc';
+        description.textContent = option.description;
+        text.appendChild(description);
+      }
+      button.appendChild(text);
       if (option.meta) {
         const meta = document.createElement('span');
         meta.className = 'prompt-meta';
@@ -215,6 +199,7 @@
         button.type = 'button';
         button.className = 'prompt-toggle-btn' + (valueIndex === toggle.active ? ' on' : '');
         button.textContent = option;
+        button.disabled = !!data.read_only;
         button.setAttribute('aria-pressed', valueIndex === toggle.active ? 'true' : 'false');
         button.addEventListener('click', () => chooseToggle(toggleIndex, valueIndex));
         group.appendChild(button);
@@ -233,11 +218,13 @@
     // 记住这次选择 —— 只有勾上才会写授权，勾了才可能被自动答题。
     const oldRow = document.getElementById('remember-row');
     if (oldRow && oldRow.remove) oldRow.remove();
-    const remember = rememberRow(data);
-    remember.id = 'remember-row';
-    const anchor = toggles.hidden ? list : toggles;
-    if (anchor.after) anchor.after(remember);
-    else if (anchor.parentNode) anchor.parentNode.appendChild(remember);
+    if (!data.read_only && data.kind !== 'multi' && data.kind !== 'screen') {
+      const remember = rememberRow(data);
+      remember.id = 'remember-row';
+      const anchor = toggles.hidden ? list : toggles;
+      if (anchor.after) anchor.after(remember);
+      else if (anchor.parentNode) anchor.parentNode.appendChild(remember);
+    }
 
     lastScreen = screen || [];
     // 手机上没有回车键。开关类界面（kimi 的 Thinking：←→ 选、Enter 确认）和提示里
@@ -245,15 +232,17 @@
     const enterButton = $('enter');
     if (enterButton) {
       const hint = String(data.hint || '');
-      const needsEnter = data.kind === 'toggle'
+      const needsEnter = data.kind === 'multi' || data.kind === 'toggle'
         || /press enter/i.test(hint)
         || (/confirm|continue|确认|继续/i.test(hint) && !(data.options || []).length);
-      enterButton.hidden = !needsEnter;
+      enterButton.hidden = !!data.read_only || !needsEnter;
     }
+    const dismiss = $('esc');
+    if (dismiss) dismiss.hidden = !!data.read_only || data.kind === 'screen';
     const raw = $('raw');
     if (raw) raw.textContent = (screen || []).join('\n');
     const details = $('raw-wrap');
-    if (details) details.hidden = !screen || !screen.length;
+    if (details) { details.hidden = !screen || !screen.length; details.open = data.kind === "screen"; }
 
     node.hidden = false;
     hiddenByUser = false;
@@ -269,117 +258,65 @@
     return {ok: response.ok, status: response.status, data};
   }
 
-  async function chooseByIndex(index) {
-    const pane = paneNow();
-    if (!pane) return;
-    const chosen = prompt && prompt.options && prompt.options[index];
-    // 不 await：点下就要立刻收卡（这是原来就有的体验），记授权在后台跑
-    void rememberIfAsked({index}, (chosen && chosen.label) || '');
-    if (busy) { setState('上一条还在发送，稍等一下…'); return; }   // 别静默吞掉点击
-    // 乐观关闭：点下的一刻就收卡，请求在后台跑（和 needs-you.js 一个做法）。
-    const saved = prompt;
-    const savedScreen = lastScreen;
-    answeredSignature = signatureOf(prompt);
-    hide();
-    setState('');
-    lockBusy();
-    answering = true;
-    try {
-      const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {index});
-      if (!result.ok) {
-        answeredSignature = '';
-        if (saved) render(saved, savedScreen);
-        setState(result.data.detail || `HTTP ${result.status}`, true);
-        return;
-      }
-      setState('');
-      unlockBusy();                     // 先放开锁：跟进 poll 靠它判断
-      setTimeout(poll, 1500);           // 下一轮 poll 前先看一眼
-    } catch (error) {
-      answeredSignature = '';
-      if (saved) render(saved, savedScreen);
-      setState('没送到，再试一次：' + error.message, true);
-    } finally {
-      answering = false;
-      unlockBusy();
-    }
+  function chooseByIndex(index) {
+    const option = prompt && prompt.options[index];
+    return submit({index}, option && option.label);
   }
 
-  async function chooseToggle(toggleIndex, value) {
-    void rememberIfAsked({toggle: [toggleIndex, value]}, `开关 ${toggleIndex} = ${value}`);
-    const pane = paneNow();
-    if (!pane) return;
-    if (busy) { setState('上一条还在发送，稍等一下…'); return; }
-    if (prompt && prompt.toggles && prompt.toggles[toggleIndex]
-        && prompt.toggles[toggleIndex].active === value) {
+  function chooseToggle(toggleIndex, value) {
+    if (prompt && prompt.toggles[toggleIndex]?.active === value) {
       setState('已经是这个值了');
       return;
     }
-    const saved = prompt;
-    const savedScreen = lastScreen;
-    answeredSignature = signatureOf(prompt);
-    hide();
-    setState('');
-    lockBusy();
-    answering = true;
-    try {
-      const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`,
-        {toggle: toggleIndex, value});
-      if (!result.ok) {
-        answeredSignature = '';
-        if (saved) render(saved, savedScreen);
-        setState(result.data.detail || `HTTP ${result.status}`, true);
-        return;
-      }
-      if (result.data.unchanged) {
-        // 服务端说值没变：菜单还在，把卡片恢复出来说清楚
-        answeredSignature = '';
-        if (saved) render(saved, savedScreen);
-        setState('已经是这个值了');
-        return;
-      }
-      setState('');
-      unlockBusy();                     // 先放开锁：跟进 poll 靠它判断
-      setTimeout(poll, 1500);
-    } catch (error) {
-      answeredSignature = '';
-      if (saved) render(saved, savedScreen);
-      setState('没送到，再试一次：' + error.message, true);
-    } finally {
-      answering = false;
-      unlockBusy();
-    }
+    return submit({toggle: toggleIndex, value}, `开关 ${toggleIndex} = ${value}`);
   }
 
-  async function chooseByKey(key) {
+  function chooseByKey(key) {
+    return submit({key});
+  }
+
+  async function submit(action, label, saved = prompt, automatic = false) {
     const pane = paneNow();
-    if (!pane) return;
-    if (busy) { setState('上一条还在发送，稍等一下…'); return; }
-    const saved = prompt;
-    const savedScreen = lastScreen;
-    answeredSignature = signatureOf(prompt);
-    hide();
-    setState('');
-    lockBusy();
-    answering = true;
+    const epoch = paneEpoch;
+    if (busy) { setState('上一条还在发送，稍等一下…'); return false; }
+    if (!pane || !saved || saved.read_only || saved.kind === 'screen') return false;
+    const screen = lastScreen;
+    const checklistChange = saved.kind === "multi" && action.index !== undefined;
+    pollController?.abort?.();
+    pollController = null;
+    const remember = !automatic && label && saved.kind !== 'multi' && rememberChoice && lastSignature
+      ? {signature: lastSignature, action: action.toggle === undefined
+        ? {...action, revision: saved.revision}
+        : {toggle: [action.toggle, action.value], revision: saved.revision},
+        scope: rememberScope, turn: turnKey(), label}
+      : null;
+    const active = () => pane === paneNow() && epoch === paneEpoch;
+    answeredSignature = signatureOf(saved);
+    if (!checklistChange) hide();
+    setState(checklistChange ? '正在更新选项…' : '');
+    busy = true;
     try {
-      const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`, {key});
-      if (!result.ok) {
+      const result = await post(`/api/panes/${encodeURIComponent(pane)}/prompt/choose`,
+        {...action, revision: saved.revision});
+      if (!active()) return !!result.ok;
+      if (!result.ok || result.data.unchanged) {
         answeredSignature = '';
-        if (saved) render(saved, savedScreen);
-        setState(result.data.detail || `HTTP ${result.status}`, true);
-        return;
+        render(saved, screen);
+        setState(result.data.detail || (result.ok ? '已经是这个值了' : `HTTP ${result.status}`), !result.ok);
+        return false;
       }
-      setState('');
-      unlockBusy();                     // 先放开锁：跟进 poll 靠它判断
-      setTimeout(poll, 1500);
+      if (remember) void postJson(`/api/panes/${encodeURIComponent(pane)}/approvals`, remember).catch(() => {});
+      setTimeout(() => { if (active()) poll(false, manual); }, checklistChange ? 350 : 1500);
+      return true;
     } catch (error) {
-      answeredSignature = '';
-      if (saved) render(saved, savedScreen);
-      setState('没送到，再试一次：' + error.message, true);
+      if (active()) {
+        answeredSignature = '';
+        render(saved, screen);
+        setState('没送到，再试一次：' + error.message, true);
+      }
+      return false;
     } finally {
-      answering = false;
-      unlockBusy();
+      busy = false;
     }
   }
 
@@ -390,57 +327,71 @@
     node.classList.toggle('bad', !!bad);
   }
 
-  async function poll() {
-    if (busy || document.hidden) return;
+  let manual = false;
+  async function poll(explicit = false, inspect = manual) {
+    if ((!timer && !inspect) || (busy && !explicit) || document.hidden || pollController) return;
     const pane = paneNow();
     if (!pane) { if (prompt) hide(); return; }
-    lockBusy();
+    const epoch = paneEpoch;
+    const controller = typeof AbortController === 'undefined' ? {} : new AbortController();
+    pollController = controller;
     try {
-      const response = await fetch(`/api/panes/${encodeURIComponent(pane)}/prompt`, {credentials: 'same-origin'});
-      if (!response.ok) { if (prompt) hide(); return; }
+      const turn = turnKey();
+      const query = inspect ? '?inspect=true' : (turn ? '?turn=' + encodeURIComponent(turn) : '');
+      const response = await fetch(`/api/panes/${encodeURIComponent(pane)}/prompt${query}`,
+        {credentials: 'same-origin', signal: controller.signal});
+      if (pollController !== controller || pane !== paneNow() || epoch !== paneEpoch) return;
       const data = await response.json();
-      if (!data.prompt) { answeredSignature = ''; if (prompt) hide(); return; }
-      if (hiddenByUser) return;
-      // 有授权就按授权答：这是"记住这个选择"的全部意义，但也只在这道题的指纹上生效。
-      if (data.grant && autoAnswered !== data.signature) {
-        if (answering) return;            // 手里还有一条在发，下一轮再试，别互相踩
-        const action = JSON.parse(data.grant.action || '{}');
+      if (pollController !== controller || pane !== paneNow() || epoch !== paneEpoch || busy) return;
+      if (!response.ok) {
+        if (explicit) {
+          render({kind: 'screen', title: '读取交互失败', options: []}, []);
+          setState(data.detail || `HTTP ${response.status}`, true);
+        } else if (prompt) hide();
+        return;
+      }
+      if (!data.prompt) {
+        answeredSignature = '';
+        if (explicit) render({kind: 'screen', title: '未识别到可操作的选项',
+          hint: '可核对屏幕原文，或用终端继续操作。', options: []}, data.screen);
+        else if (prompt && prompt.kind !== 'screen') hide();
+        return;
+      }
+      if (hiddenByUser && !explicit) return;
+      const gated = document.getElementById('needs-you-card');
+      if (gated && !gated.hidden && !explicit) return;
+      const grantAction = data.grant && !inspect ? JSON.parse(data.grant.action || '{}') : null;
+      if (grantAction?.revision && grantAction.revision === data.prompt.revision
+          && autoAnswered !== data.signature) {
+        const action = grantAction;
+        const payload = Array.isArray(action.toggle) ? {toggle: action.toggle[0], value: action.toggle[1]} : action;
         autoAnswered = data.signature;
-        answeredSignature = signatureOf(data.prompt);
-        const label = data.grant.label || '同一道题';
-        const scopeText = data.grant.scope === 'always' ? '一直' : '本轮';
-        try {
-          if (Array.isArray(action.toggle)) await chooseToggle(action.toggle[0], action.toggle[1]);
-          else if (Number.isInteger(action.index)) await chooseByIndex(action.index);
-          else if (action.key) await chooseByKey(action.key);
+        lastScreen = data.screen || [];
+        if (await submit(payload, data.grant.label, data.prompt, true)) {
+          notifyAutoAnswer?.(`已按你的授权自动选了「${data.grant.label || '已保存选项'}」`);
           await fetch(`/api/panes/${encodeURIComponent(pane)}/approvals/${encodeURIComponent(data.grant.id)}/used`,
             {method: 'POST', credentials: 'same-origin'});
-          // 说清楚"它替你点了什么"：自动答题必须留痕，不能悄悄发生。
-          setState(`已按你的授权自动选了「${label}」（${scopeText}）`);
-        } catch (_error) {
-          setState(`自动应答没成功，请手动点一下`, true);
         }
         return;
       }
-      if (!data.signature || data.signature !== autoAnswered) autoAnswered = '';
-      // 答过的题：sweep 更新之前别再弹（点下那一刻就记了签名，卡片已经先收了）。
+      if (autoAnswered !== data.signature) autoAnswered = '';
       const sig = signatureOf(data.prompt);
-      if (sig === answeredSignature) return;
+      if (!explicit && (sig === answeredSignature || sig === signatureOf(prompt))) {
+        if (manual && prompt?.kind === 'multi' && sig === answeredSignature) {
+          setState('等待屏幕更新，可重新查看交互。');
+        }
+        return;
+      }
       answeredSignature = '';
-      // 同一个菜单就别重绘（会打断用户正在按的方向键）。
-      // 开关的"当前值"也要算进比较：只比标题/选项数/光标的话，←→ 切完之后卡片上的
-      // 高亮永远停在旧值，人以为键盘没生效。
-      const toggleKey = (found) => JSON.stringify((found && found.toggles || [])
-        .map(item => [item.label, item.active]));
-      if (prompt && prompt.title === data.prompt.title
-          && prompt.options.length === data.prompt.options.length
-          && prompt.selected === data.prompt.selected
-          && toggleKey(prompt) === toggleKey(data.prompt)) return;
-      render(data.prompt, data.screen, data.signature);
-    } catch (_error) {
-      // 网络抖动：保持现状，下一轮再说
+      setState('');
+      render({...data.prompt, grant: data.grant}, data.screen, data.signature);
+    } catch (error) {
+      if (explicit && pollController === controller && epoch === paneEpoch && pane === paneNow()) {
+        render({kind: 'screen', title: '读取交互失败', options: []}, []);
+        setState(error.message, true);
+      }
     } finally {
-      unlockBusy();
+      if (pollController === controller) pollController = null;
     }
   }
 
@@ -448,8 +399,8 @@
     const node = card();
     if (!node) return;
     node.addEventListener('keydown', event => {
-      if (!prompt) return;
-      const arrows = ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'];
+      if (!prompt || prompt.read_only || prompt.kind === 'screen') return;
+      if (event.target?.closest?.('input, select, summary, .prompt-foot, .prompt-head')) return;
       const hasOptions = !!(prompt.options && prompt.options.length);
       const toggles = prompt.toggles || [];
       if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && toggles.length && !hasOptions) {
@@ -466,10 +417,13 @@
         paintCursor();
         const target = document.querySelectorAll('#' + CARD + '-options .prompt-option')[cursor];
         if (target) target.focus();
+      } else if (prompt.kind === 'multi' && event.key === ' ' && hasOptions) {
+        event.preventDefault();
+        chooseByIndex(cursor);
       } else if (event.key === 'Enter') {
         event.preventDefault();
         // 只有一个开关（没有列表项）时，Enter 就是"确认当前值"，别去选第 0 项
-        if (!prompt.options || !prompt.options.length) chooseByKey('enter');
+        if (prompt.kind === 'multi' || !prompt.options.length) chooseByKey('enter');
         else chooseByIndex(cursor);
       } else if (event.key === 'Escape') {
         event.preventDefault();
@@ -478,34 +432,67 @@
     });
   }
 
-  function start(paneGetter) {
-    getPane = paneGetter;
-    const node = card();
-    if (!node) return;
-    hiddenByUser = false;
+  function bindControls() {
+    if (controlsBound || !card()) return;
+    controlsBound = true;
     const close = $('close');
-    if (close) close.onclick = () => { hiddenByUser = true; const box = card(); if (box) box.hidden = true; };
+    if (close) close.onclick = () => {
+      manual = false;
+      hiddenByUser = true;
+      card().hidden = true;
+    };
     const escButton = $('esc');
     if (escButton) escButton.onclick = () => chooseByKey('esc');
     const enterButton = $('enter');
     if (enterButton) enterButton.onclick = () => chooseByKey('enter');
+    const terminal = $('terminal');
+    if (terminal) terminal.onclick = () => document.getElementById('terminal-mode-button')?.click();
     bindKeyboard();
-    if (timer) clearInterval(timer);
-    timer = setInterval(poll, POLL_MS);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
-    poll();
+  }
+
+  function start(paneGetter, onAutoAnswer) {
+    getPane = paneGetter;
+    notifyAutoAnswer = onAutoAnswer;
+    bindControls();
+    if (!timer) {
+      timer = setInterval(poll, POLL_MS);
+      poll();
+    }
+  }
+
+  function reset() {
+    paneEpoch++;
+    pollController?.abort?.();
+    pollController = null;
+    manual = false;
+    answeredSignature = '';
+    lastSignature = '';
+    autoAnswered = '';
+    rememberChoice = false;
+    hide();
   }
 
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
-    hide();
+    reset();
   }
 
   function refresh() {
-    hide();
+    reset();
     poll();
   }
 
-  window.TmuxPrompt = {start, stop, refresh, poll};
+  function inspect(paneGetter) {
+    getPane = paneGetter;
+    bindControls();
+    pollController?.abort?.();
+    pollController = null;
+    manual = true;
+    return poll(true, true);
+  }
+
+  window.TmuxPrompt = {start, stop, refresh, poll, inspect, isInspecting: () => manual};
+
 })();

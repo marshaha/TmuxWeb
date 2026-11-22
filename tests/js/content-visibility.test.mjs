@@ -15,59 +15,13 @@ const root = path.dirname(new URL(import.meta.url).pathname);
 const page = fs.readFileSync(path.join(root, '..', '..', 'web', 'assets', 'console-app.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, '..', '..', 'web', 'assets', 'console-base.css'), 'utf8');
 
-function grab(name) {
-  const start = page.indexOf('  function ' + name + '(');
-  assert.notEqual(start, -1, `missing function ${name}`);
-  let depth = 0;
-  for (let i = page.indexOf('{', start); i < page.length; i += 1) {
-    if (page[i] === '{') depth += 1;
-    else if (page[i] === '}') {
-      depth -= 1;
-      if (!depth) return page.slice(start, i + 1);
-    }
-  }
-  throw new Error(`unbalanced ${name}`);
-}
-
-const src = [grab('virtualizedClass'), grab('esc'), grab('msgResendButton'), grab('transcriptBubble')].join('\n');
-const virtualizedClass = new Function(src + '\nreturn virtualizedClass;')();
-const bubble = new Function(
-  'markdown', 'userBubbleHtml',
-  src + '\nreturn transcriptBubble;',
-)((text) => `<p>${text}</p>`, (message) => message.text);
-
-test('没有任何一条消息再被打上 content-visibility', () => {
-  for (const [index, total] of [[0, 5], [3, 5], [4, 5], [0, 1]]) {
-    assert.equal(virtualizedClass(index, total), '',
-      'virtualizedClass 必须永远返回空串：返回东西就说明这条 CSS 又接回来了');
-  }
-});
-
 test('CSS 里不再有跳过绘制的那条规则', () => {
   assert.ok(!css.includes('.msg-virtualized{content-visibility'), 'content-visibility 规则不许回来');
   assert.ok(!css.includes('contain-intrinsic-size'), 'contain-intrinsic-size 跟着一起不许回来');
 });
 
-test('transcriptBubble 不再往气泡上盖 msg-virtualized', () => {
-  const user = { id: 'u1', role: 'user', text: 'hi' };
-  const asst = { id: 'a1', role: 'assistant', text: 'hello' };
-  for (const node of [bubble(user, 0, 3), bubble(asst, 1, 3), bubble(asst, 2, 3)]) {
-    assert.doesNotMatch(node, /msg-virtualized/);
-  }
-});
-
-test('两条渲染路径仍然把 index/total 传进来（换实现时不用再动调用点）', () => {
-  assert.ok(page.includes('virtualizedClass(index,messages.length)'), '正式列表要传 index');
-  assert.ok(page.includes('transcriptBubble(message,start+rendered.length+offset,total)'),
-    '追加路径要传绝对 index（窗口化之后 index 是 start+offset）');
-});
-
-test('流式更新仍然原地替换，不整段重建', () => {
-  // 整段 innerHTML 重建会让滚到一半的读者跳位；同 id + 只改文本时只替换那一条。
-  assert.ok(page.includes('const prevText=state.messageText||new Map();'), '要留旧文本做 diff');
-  assert.ok(page.includes('if(!pending.length&&rendered.length===ids.length'), '原地更新要求 id 一致且没有 pending');
-  assert.ok(page.includes('node.replaceWith(...wrap.childNodes)'), '只替换变化的那条');
-  assert.ok(page.includes('enhancePathsLazy(host,true)'), '原地更新后同样要重新做路径处理');
+test('聊天不会通过 CSS 类跳过离屏消息的绘制', () => {
+  assert.doesNotMatch(page, /msg-virtualized|virtualizedClass/);
 });
 
 test('加载更早消息按"可见消息"锚定，而不是按 scrollHeight 差', () => {
@@ -75,8 +29,8 @@ test('加载更早消息按"可见消息"锚定，而不是按 scrollHeight 差'
   assert.ok(page.includes('function restoreAnchor(anchor)'), '恢复辅助函数要在');
   assert.ok(page.includes('const previous=state.transcriptMessages.length,anchor=firstVisibleMessage();'),
     'fetch 之前要取锚点');
-  assert.ok(page.includes('requestAnimationFrame(()=>restoreAnchor(anchor));'),
-    '下一帧再校正一次，等邻居测量完');
+  assert.ok(page.includes('requestAnimationFrame(()=>{restoreAnchor(anchor);'),
+    '更新 DOM 后在下一帧恢复锚点');
   assert.ok(!page.includes('scroll.scrollTop+=scroll.scrollHeight-height'),
     'scrollHeight 差值补偿必须删掉');
 });
@@ -84,7 +38,7 @@ test('加载更早消息按"可见消息"锚定，而不是按 scrollHeight 差'
 test('展开历史有条数上限，到顶后按钮变禁用并说明原因', () => {
   // 没有虚拟化之后，DOM 就是实打实的节点：上限按节点预算算（约 24 节点/条，12k 封顶 → 500）。
   assert.match(page, /TRANSCRIPT_PAGE=300,TRANSCRIPT_PAGE_MAX=500/,
-    '上限必须是 1000（原来 3000 太多）');
+    '上限为 500 条');
   assert.ok(page.includes('const capped=state.transcriptLimit>=TRANSCRIPT_PAGE_MAX;'),
     '到顶要能被识别出来');
   assert.ok(page.includes('button.disabled=!!state.loadingEarlier||capped;'),

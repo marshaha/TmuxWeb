@@ -71,13 +71,9 @@ Start a new session for the hooks to take effect. Payload fields
 `cwd`. `[[hooks]]` takes exactly four fields: `event`, `matcher`,
 `command`, `timeout`.
 
-## Hermes — no hooks in this PR
+## Native Chat interaction notices
 
-Hermes has no user-facing TUI hook (its `config.yaml` has zero hook
-lines), and its precise channel is ACP (`session/request_permission`),
-which needs ACP driving, not the TUI — out of scope. Hermes panes
-stay on the server-side gate (PR #24); the watcher never reports
-them waiting.
+Current Hermes CLI and TUI versions expose human-input hooks. The native Chat integration for Hermes and five other harnesses has its own receiver and installation fragments. See [Chat interaction sources](../../../docs/chat-interactions.md).
 
 ## Checking it works
 

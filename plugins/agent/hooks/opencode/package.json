@@ -1,0 +1,6 @@
+{
+  "name": "opencode-tmuxweb-observer",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": { "./tui": "./tui.js" }
+}

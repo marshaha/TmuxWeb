@@ -172,6 +172,15 @@ class HookStateTests(_TempHome):
         self.assertTrue(out["%0"]["waiting"])
         self.assertEqual(out["%0"]["since"], now - 5)
 
+    def test_same_directory_cannot_override_another_session_or_pane(self):
+        now = time.time()
+        self.events_file([{"hook_event_name": "PermissionRequest", "session_id": "a",
+                           "cwd": "/proj", "timestamp": now}])
+        panes = [{"pane_id": "%" + str(i), "provider": "claude", "session_id": sid, "cwd": "/proj"}
+                 for i, sid in enumerate(("a", "b", ""))]
+        states = self.watcher().snapshot(panes, now=now)
+        self.assertEqual([states[p["pane_id"]]["hook"] for p in panes], [True, False, False])
+
     def test_cwd_match_works_when_the_session_id_is_unknown(self):
         now = time.time()
         self.events_file([{"hook_event_name": "PermissionRequest",
@@ -1018,7 +1027,7 @@ class DaemonNeedsInputTests(_TempHome):
             _handshake_101(conn)
             opcode, payload = conn.read_frame()
             seen["hello"] = json.loads(payload.decode("utf-8"))
-            self.assertEqual(seen["hello"]["agent"]["version"], "1.2.0")
+            self.assertEqual(seen["hello"]["agent"]["version"], agent_program.VERSION)
             conn.send_text(json.dumps({
                 "type": "welcome", "host_id": "h1", "host_name": "h1",
                 "protocol": "1.2.0", "next_seq": 1}))
@@ -1180,7 +1189,7 @@ class MergeTests(unittest.TestCase):
         descriptor = tmux_web._pane_needs_input_descriptor(
             {"pane_id": "%0", "provider": "claude", "path": "/proj",
              "title": "t"})
-        self.assertEqual(descriptor, {"pane_id": "%0", "provider": "claude",
+        self.assertEqual(descriptor, {"pane_id": "%0", "pane_pid": "", "provider": "claude",
                                       "cwd": "/proj", "title": "t"})
 
 

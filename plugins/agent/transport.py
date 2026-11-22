@@ -584,6 +584,7 @@ class AgentTransport(SSHRunner):
             descriptors.append({
                 "pane_id": str(pane_id),
                 "provider": str(pane.get("provider") or ""),
+                "pane_pid": str(pane.get("pane_pid") or ""),
                 "cwd": str(pane.get("cwd") or pane.get("path") or ""),
                 "title": str(pane.get("title") or ""),
             })
