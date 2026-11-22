@@ -1935,6 +1935,18 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".queue-strip{", css)
         self.assertIn(".qs-text{max-width", css)
 
+    def test_a_terminal_key_is_sent_exactly_once(self):
+        """#terminal-ext 嵌在 #terminal-keys 里：两层各挂一个 pointerdown 就会一次点击发两遍。"""
+        self.login()
+        app = self.client.get("/assets/console-app.js").text
+        self.assertEqual(app.count("sendTerminalKey(button.dataset.key)"), 1,
+                         "按键只能有一处出口")
+        self.assertNotIn("$('terminal-ext')?.addEventListener('pointerdown'", app,
+                         "扩展键盘的按键由 #terminal-keys 的委托处理器覆盖，别再挂第二个")
+        # 删掉第二个处理器时别忘了它独有的 paste 分支
+        self.assertIn("}else if(button.dataset.paste){", app)
+        self.assertIn("pasteIntoTerminal();", app)
+
     def test_the_chat_has_an_in_conversation_search(self):
         """顶栏放大镜：命中高亮、1/N 计数、上下跳、Esc 关闭，重渲染后自动补盖。"""
         self.login()

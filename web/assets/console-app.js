@@ -2241,6 +2241,9 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
         sendTerminalData(String.fromCharCode(button.dataset.ctrlKey.toUpperCase().charCodeAt(0)&31));
       }else if(button.dataset.key){
         sendTerminalKey(button.dataset.key);
+      }else if(button.dataset.paste){
+        // 扩展键盘里的 paste 按钮（原来只有被删掉的那份重复处理器认它）
+        pasteIntoTerminal();
       }
     });
     $('terminal-paste')?.addEventListener('click',pasteIntoTerminal);
@@ -2253,16 +2256,10 @@ copyButton=message=>`<div class="msg-actions">${clockTime(message.timestamp)?`<s
       else setTimeout(()=>$('terminal-input')?.focus({preventScroll:true}),80);
       scheduleTerminalFit();
     });
-    $('terminal-ext')?.addEventListener('pointerdown',event=>{
-      const button=event.target.closest('.terminal-key');
-      if(!button)return;
-      event.preventDefault();
-      if(button.dataset.paste)pasteIntoTerminal();
-      else if(button.dataset.text)sendTerminalData(withMods(button.dataset.text));
-      else if(button.dataset.ctrlKey)sendTerminalData(String.fromCharCode(button.dataset.ctrlKey.toUpperCase().charCodeAt(0)&31));
-      else if(button.dataset.mod){const mod=button.dataset.mod;state.terminalMods[mod]=!state.terminalMods[mod];updateTerminalMods();}
-      else if(button.dataset.key)sendTerminalKey(button.dataset.key);
-    });
+    // 这里以前还有一份 #terminal-ext 的 pointerdown 处理器 —— 而 #terminal-ext 就在
+    // #terminal-keys 里面，同一个按键会先命中它、再冒泡到上面那个委托处理器，
+    // 一次点击发两遍（↑ 每次都跳两行）。ext 的按键本来就由上面那个处理器覆盖（含 paste 的单独 click），
+    // 所以整块删掉，只留一处出口。
     setupTerminalKeyboardButton();
     setupTypePad();
     setupTerminalZoom();
