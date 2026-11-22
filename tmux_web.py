@@ -165,6 +165,7 @@ CONSOLE_BUNDLE_SOURCES = (
     ("assets", "prompt-card.js"),
     ("assets", "agents-panel.js"),
     ("assets", "perf-budget.js"),
+    ("assets", "chat-search.js"),
     ("assets", "needs-you.js"),
     ("assets", "needs-you-inbox.js"),
     ("assets", "markdown-cjk.js"),
@@ -3926,6 +3927,12 @@ def create_app(
     async def prompt_card_script() -> FileResponse:
         """agent 交互菜单卡片：把 pane 里等着的选择渲染成按钮。"""
         return FileResponse(WEB_DIR / "assets" / "prompt-card.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/chat-search.js")
+    async def chat_search_script() -> FileResponse:
+        """对话内搜索：命中高亮、上下跳、重渲染后自动补盖。"""
+        return FileResponse(WEB_DIR / "assets" / "chat-search.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/perf-budget.js")

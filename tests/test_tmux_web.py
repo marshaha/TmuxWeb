@@ -1935,6 +1935,27 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn(".queue-strip{", css)
         self.assertIn(".qs-text{max-width", css)
 
+    def test_the_chat_has_an_in_conversation_search(self):
+        """顶栏放大镜：命中高亮、1/N 计数、上下跳、Esc 关闭，重渲染后自动补盖。"""
+        self.login()
+        page = self.client.get("/").text
+        for marker in ('id="chat-search-button"', 'id="chat-search"', 'id="cs-input"',
+                       'id="cs-count"', 'id="cs-prev"', 'id="cs-next"', 'id="cs-close"'):
+            self.assertIn(marker, page)
+        module = self.client.get("/assets/chat-search.js").text
+        for marker in ("function highlight(", "createTreeWalker", "MutationObserver",
+                       "const MARK = 'cs-hit'", "scrollIntoView", "'f'"):
+            self.assertIn(marker, module)
+        # 只包文本节点：撤掉高亮必须能还原原文
+        self.assertIn("parent.replaceChild(document.createTextNode(mark.textContent), mark)", module)
+        app = self.client.get("/assets/console-app.js").text
+        self.assertIn("TmuxChatSearch.mount()", app)
+        self.assertIn("searchBtn=$('chat-search-button')", app)
+        self.assertIn("searchBtn.disabled=false", app)
+        self.assertIn("TmuxChatSearch.close()", app, "切走时要收掉搜索条和高亮")
+        css = self.client.get("/assets/console.css").text
+        self.assertIn("mark.cs-hit.cs-current", css)
+
     def test_the_header_subtitle_never_prints_undefined(self):
         """#212 的老毛病：缓存里的 pane 少字段，顶栏就印 "undefined · undefined · /path"。"""
         self.login()
