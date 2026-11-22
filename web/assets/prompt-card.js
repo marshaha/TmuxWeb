@@ -147,7 +147,7 @@
     if (signature !== undefined) lastSignature = signature || '';
     $('title').textContent = data.title || (data.kind === 'confirm' ? '需要确认' : '等待选择');
     const hint = $('hint');
-    hint.textContent = data.read_only ? '可展开实时作答。' : data.hint || (data.more ? `屏幕外还有 ${data.more} 项` : '');
+    hint.textContent = data.read_only ? '选项仅供预览，请点「实时作答」进入原生界面回答。' : data.hint || (data.more ? `屏幕外还有 ${data.more} 项` : '');
     hint.hidden = !hint.textContent;
 
     const list = $('options');
@@ -179,6 +179,7 @@
         meta.textContent = option.meta;
         button.appendChild(meta);
       }
+      button.addEventListener('focus', () => { cursor = index; paintCursor(); });
       button.addEventListener('click', () => chooseByIndex(index));
       list.appendChild(button);
     });
@@ -309,7 +310,11 @@
         document.getElementById('chat-reply-panel')?.dispatchEvent(new Event('open-reply'));
       }
       if (remember) void postJson(`/api/panes/${encodeURIComponent(pane)}/approvals`, remember).catch(() => {});
-      setTimeout(() => { if (active()) poll(false, manual); }, checklistChange ? 350 : 1500);
+      if (saved.question_count > 1 && !saved.options[action.index]?.opens_input) {
+        followQuestion(getPane, saved.revision);
+      } else {
+        setTimeout(() => { if (active()) poll(false, manual); }, checklistChange ? 350 : 1500);
+      }
       return true;
     } catch (error) {
       if (active()) {
@@ -330,8 +335,9 @@
     node.classList.toggle('bad', !!bad);
   }
 
+  let followTimer;
   let manual = false;
-  async function poll(explicit = false, inspect = manual) {
+  async function poll(explicit = false, inspect = manual, previousRevision = '') {
     if ((!timer && !inspect) || (busy && !explicit) || document.hidden || pollController) return;
     const pane = paneNow();
     if (!pane) { if (prompt) hide(); return; }
@@ -353,6 +359,7 @@
         } else if (prompt) hide();
         return;
       }
+      if (previousRevision && (data.prompt?.source !== 'hermes_clarify' || data.prompt.revision === previousRevision)) return 'wait';
       if (!data.prompt) {
         answeredSignature = '';
         if (explicit) render({kind: 'screen', title: '未识别到可操作的选项',
@@ -362,7 +369,7 @@
       }
       if (hiddenByUser && !explicit) return;
       const gated = document.getElementById('needs-you-card');
-      if (gated && !gated.hidden && !explicit) return;
+      if (gated && !gated.hidden && !explicit && !inspect) return;
       const grantAction = data.grant && !inspect ? JSON.parse(data.grant.action || '{}') : null;
       if (grantAction?.revision && grantAction.revision === data.prompt.revision
           && autoAnswered !== data.signature) {
@@ -388,6 +395,9 @@
       answeredSignature = '';
       setState('');
       render({...data.prompt, grant: data.grant}, data.screen, data.signature);
+      if ((explicit || previousRevision) && data.prompt.source === 'hermes_clarify') {
+        $('options').children[cursor]?.focus();
+      }
     } catch (error) {
       if (explicit && pollController === controller && epoch === paneEpoch && pane === paneNow()) {
         render({kind: 'screen', title: '读取交互失败', options: []}, []);
@@ -404,6 +414,14 @@
     node.addEventListener('keydown', event => {
       if (!prompt || prompt.read_only || prompt.kind === 'screen') return;
       if (event.target?.closest?.('input, select, summary, .prompt-foot, .prompt-head')) return;
+      if (prompt.question_count > 1) {
+        if (['ArrowLeft', 'ArrowRight', 'Tab'].includes(event.key)) {
+          event.preventDefault();
+          if (!event.repeat) chooseByKey(event.key === 'ArrowLeft' || event.shiftKey ? 'BTab' : 'Tab');
+          return;
+        }
+        if (event.key === 'Escape') { $('close')?.focus(); return; }
+      }
       const hasOptions = !!(prompt.options && prompt.options.length);
       const toggles = prompt.toggles || [];
       if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && toggles.length && !hasOptions) {
@@ -440,6 +458,7 @@
     controlsBound = true;
     const close = $('close');
     if (close) close.onclick = () => {
+      clearTimeout(followTimer);
       manual = false;
       hiddenByUser = true;
       card().hidden = true;
@@ -465,6 +484,7 @@
   }
 
   function reset() {
+    clearTimeout(followTimer);
     paneEpoch++;
     pollController?.abort?.();
     pollController = null;
@@ -487,7 +507,25 @@
     poll();
   }
 
+  function followQuestion(paneGetter, previousRevision) {
+    clearTimeout(followTimer);
+    getPane = paneGetter;
+    bindControls();
+    manual = true;
+    const pane = paneNow(), epoch = paneEpoch;
+    const active = () => manual && pane === paneNow() && epoch === paneEpoch;
+    async function refreshQuestion(attempt) {
+      if (!active()) return;
+      const result = await poll(false, true, previousRevision);
+      if (active() && result === 'wait' && attempt < 2) {
+        followTimer = setTimeout(() => refreshQuestion(attempt + 1), 1300);
+      }
+    }
+    followTimer = setTimeout(() => refreshQuestion(0), 200);
+  }
+
   function inspect(paneGetter) {
+    clearTimeout(followTimer);
     getPane = paneGetter;
     bindControls();
     pollController?.abort?.();
@@ -496,6 +534,6 @@
     return poll(true, true);
   }
 
-  window.TmuxPrompt = {start, stop, refresh, poll, inspect, isInspecting: () => manual};
+  window.TmuxPrompt = {start, stop, refresh, poll, inspect, followQuestion, isInspecting: () => manual};
 
 })();

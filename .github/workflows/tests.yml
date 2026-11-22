@@ -48,3 +48,16 @@ jobs:
           node-version: "20"
       - name: Test browser scripts
         run: node --test tests/*.test.mjs tests/js/*.test.mjs
+
+  hermes-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: sudo apt-get update -qq && sudo apt-get install -y tmux
+      - run: python -m pip install -r requirements.txt playwright
+      - run: python -m playwright install --with-deps chromium
+      - run: python tests/browser/hermes_batch.py

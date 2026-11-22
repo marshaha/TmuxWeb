@@ -3567,6 +3567,41 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(self.client.post(path + "/choose", json=choice).status_code, 409)
         self.assertEqual(sent, ["2"])
 
+    def test_hermes_batch_choice_is_bound_to_the_expanded_question(self):
+        self.login()
+        self.client.put("/api/prefs", json={"prompt_card": "off"})
+        self.tmux.panes[0].update(provider="hermes", pane_pid="123")
+        first = ["▸ Provider?", " ❯ 1. openai", "   2. claude", "   3. Other (type your answer)", "· Model?"]
+        second = ["✓ Provider?", "    claude", "▸ Model?", " ❯ 1. Default", "   2. Other (type your answer)"]
+        def frame(rows):
+            middle = "\n".join("│ " + row + " │" for row in ["2 questions", *rows])
+            return ("╭─ Hermes Agent needs your input ─╮\n" + middle + "\n╰───╯\n"
+                    "↑/↓ to select, Enter to lock, Tab next question (80s)\n── ❓ ──\n? ❯\n───")
+        self.tmux.output = frame(first)
+        seen = []
+        self.tmux.send_keys = lambda pane_id, keys, pane=None: seen.extend(keys)
+        path = "/api/panes/%254/prompt"
+        def inspect():
+            return self.client.get(path, params={"inspect": True}).json()["prompt"]
+        def act(prompt, **action):
+            return self.client.post(path + "/choose", json={"revision": prompt["revision"], **action}).status_code
+        provider = inspect()
+        self.assertEqual(provider["question_count"], 2)
+        self.assertEqual(act(provider, key="Enter"), 409)
+        self.assertEqual(act(provider, key="Tab"), 200)
+        self.tmux.output = frame(second)
+        self.assertEqual(act(provider, index=1), 409)
+        model = inspect()
+        self.assertEqual(model["title"], "Model?")
+        self.assertEqual(act(model, key="BTab"), 200)
+        self.tmux.output = frame(first)
+        self.assertEqual(act(provider, index=1), 200)
+        self.tmux.output = frame(second)
+        self.assertEqual(act(model, index=0), 200)
+        self.assertEqual(seen, ["Tab", "BTab", "2", "1"])
+        self.tmux.output = frame(first[:-1])
+        self.assertTrue(inspect()["read_only"])
+
     def test_manual_inspection_and_revision_protect_checklist_actions(self):
         self.login()
         self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "off"}).status_code, 200)

@@ -200,6 +200,7 @@
       }
       // 没有 keys 的选项不给点：发不出去的按钮比报错的按钮更诚实。
       if (!option.keys || !option.keys.length) button.disabled = true;
+      button.addEventListener('focus', () => { cursor = index; paintCursor(); });
       button.addEventListener('click', () => chooseByIndex(index));
       list.appendChild(button);
     });
@@ -299,6 +300,10 @@
     try {
       await sendChoice(pane, saved, {index}, option.keys);
       if (pane !== paneNow()) return;
+      if (saved.question_count > 1 && !option.opens_input) {
+        window.TmuxPrompt.followQuestion(paneNow, saved.revision);
+        return;
+      }
       if (option.opens_input) document.getElementById('chat-reply-panel')?.dispatchEvent(new Event('open-reply'));
       setState('');
       clearTimeout(followUpTimer);
@@ -361,6 +366,10 @@
     try {
       if (saved) await sendChoice(pane, saved, {key}, [key]);
       if (pane !== paneNow()) return;
+      if (saved?.question_count > 1) {
+        window.TmuxPrompt.followQuestion(paneNow, saved.revision);
+        return;
+      }
       setState('');
       clearTimeout(followUpTimer);
       followUpTimer = setTimeout(poll, 1500);
@@ -414,6 +423,14 @@
     if (!node) return;
     node.addEventListener('keydown', event => {
       if (!prompt || prompt.read_only || event.target?.closest?.('.prompt-foot, .prompt-head')) return;
+      if (prompt.question_count > 1) {
+        if (['ArrowLeft', 'ArrowRight', 'Tab'].includes(event.key)) {
+          event.preventDefault();
+          if (!event.repeat) chooseByKey(event.key === 'ArrowLeft' || event.shiftKey ? 'BTab' : 'Tab');
+          return;
+        }
+        if (event.key === 'Escape') { $('close')?.focus(); return; }
+      }
       const hasOptions = !!(prompt.options && prompt.options.length);
       if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && hasOptions) {
         event.preventDefault();

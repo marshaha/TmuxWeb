@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Answer multi-question Hermes clarify dialogs in Chat with the mouse or keyboard. Switching questions refreshes the available choices. Reopening inspection dismisses the inline terminal and restores focus to the options.
+
 ## 0.3.0
 
 - Answer a live Hermes single-choice question in Chat using its numbered shortcuts. Recheck the visible question before sending.

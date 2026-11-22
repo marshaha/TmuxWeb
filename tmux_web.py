@@ -1141,7 +1141,7 @@ class InputRequest(BaseModel):
     submit: bool = True
 
 
-ALLOWED_KEYS = {"Escape", "Enter", "Tab", "Space", "C-c", "C-d", "C-q", "C-u", "Up", "Down", "Left", "Right"}
+ALLOWED_KEYS = {"Escape", "Enter", "Tab", "BTab", "Space", "C-c", "C-d", "C-q", "C-u", "Up", "Down", "Left", "Right"}
 # Single-character keys: a menu answer is one character plus Enter ("y"/"n",
 # a digit for a numbered list), and /prompt/choose already allows precisely
 # this alphabet (keys_are_safe). Without them the needs-you card could only
@@ -5682,7 +5682,8 @@ def create_app(
         """Check the current menu and apply a single selection on its pane."""
         require_auth(request)
         experimental = home.get_prefs().get("prompt_card", "off") == "on"
-        if not experimental and (payload.index is None or not payload.revision):
+        navigation = payload.index is None and payload.key in ("Tab", "BTab")
+        if not experimental and (not payload.revision or (payload.index is None and not navigation)):
             raise HTTPException(status_code=409, detail="交互菜单卡片已在设置里关闭")
         pane_id = resolve_pane_ref(pane_id)
         lock = prompt_actions.setdefault(pane_id, asyncio.Lock())
@@ -5692,7 +5693,10 @@ def create_app(
                 if not found:
                     raise HTTPException(status_code=409, detail="屏幕上没有等待中的选择")
                 if found.get("source") == "hermes_clarify":
-                    if not payload.revision or payload.index is None or payload.key or payload.toggle is not None or payload.value is not None:
+                    select = payload.index is not None and not payload.key
+                    change_question = navigation and found.get("question_count", 1) > 1
+                    if not (payload.revision and (select or change_question)
+                            and payload.toggle is None and payload.value is None):
                         raise HTTPException(status_code=422, detail="请选择当前问题中的一项")
                 elif not experimental:
                     raise HTTPException(status_code=409, detail="当前题目已变化，请重新查看交互")
@@ -5712,6 +5716,8 @@ def create_app(
                     if not found.get("options"):
                         raise HTTPException(status_code=422, detail="这个界面只有一个开关")
                     keys = agent_prompts.choice_keys(found, payload.index)
+                elif navigation and found.get("source") == "hermes_clarify":
+                    keys = [payload.key]
                 else:
                     keys = agent_prompts.choice_for_key(found, payload.key)
                 if not keys or not keys_are_safe(keys):

@@ -2617,7 +2617,10 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
   // 「等你回答」卡片不过实验开关：它只显示过门（needs_input）的菜单，默认就开。
   if(window.TmuxNeedsYou)TmuxNeedsYou.start(()=>state.mode==='chat'?state.selected:null,
     currentInteraction);
-  $('inspect-interaction').onclick=()=>window.TmuxPrompt?.inspect(()=>state.mode==='chat'?state.selected:null);
+  $('inspect-interaction').onclick=()=>{
+    closeChatReply();
+    window.TmuxPrompt?.inspect(()=>state.mode==='chat'?state.selected:null);
+  };
   setInterval(()=>{if(!document.hidden)refreshPaneStates();},9000);
   // 子 agent 调用图：只在抽屉打开时轮询
   if(window.TmuxAgents)TmuxAgents.mount({getPane:()=>state.selected});

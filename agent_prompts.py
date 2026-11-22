@@ -490,26 +490,48 @@ def hermes_question(text: str, pane: dict) -> dict | None:
     end = start + len(rows)
     if (len(rows) < 4 or len(lines) <= end + 2 or not lines[end].startswith("╰")
             or not re.fullmatch(r"↑/↓ (?:to select, Enter to lock, Tab next question|选择，Enter 锁定，Tab 下一个问题|選擇，Enter 鎖定，Tab 下一題)(?:\s+\(\d+s\))?", lines[end + 1])
-            or not any(re.fullmatch(r"\?\s*❯", line) for line in lines[end + 2:end + 5])
-            or rows[0] not in ("1 question", "1 个问题", "1 個問題") or not rows[1].startswith("▸ ")):
+            or not any(re.fullmatch(r"\?\s*❯", line) for line in lines[end + 2:end + 5])):
+        return None
+    count = re.fullmatch(r"([1-9]\d?) (?:questions?|个问题|個問題)", rows[0])
+    headings = [i for i, row in enumerate(rows[1:], 1) if row.startswith(("▸ ", "· ", "✓ "))]
+    if not count or len(headings) != int(count[1]) or headings[0] != 1:
+        return None
+    # Hermes expands one group at a time. A revisited answered question has
+    # a check mark too, so the numbered block identifies the active group.
+    groups = [rows[start:stop] for start, stop in zip(headings, headings[1:] + [len(rows)])]
+    expanded = [i for i, group in enumerate(groups)
+                if any(re.fullmatch(r"(?:❯\s+)?1\.\s+.+", row) for row in group[1:])]
+    if len(expanded) != 1:
+        return None
+    active = expanded[0]
+    group = groups[active]
+    if group[0].startswith("· ") or any(g[0].startswith("▸ ") for i, g in enumerate(groups) if i != active):
         return None
     options = []
-    for i, row in enumerate(rows[2:], 1):
+    first = next(i for i, row in enumerate(group[1:], 1) if re.fullmatch(r"(?:❯\s+)?1\.\s+.+", row))
+    if first != 1 and not group[0].startswith("✓ "):
+        return None
+    for i, row in enumerate(group[first:], 1):
         m = re.fullmatch(r"(❯\s+)?([0-9])\.\s+(.+)", row)
         if not m or i > 10 or m[2] != str(i % 10):
             return None
         options.append({"label": m[3], "number": m[2], "selected": bool(m[1])})
-    if (sum(o["selected"] for o in options) != 1 or options[-1]["label"] not in
+    if (len(options) < 2 or sum(o["selected"] for o in options) != 1 or options[-1]["label"] not in
             ("Other (type your answer)", "其他（输入你的回答）", "其他（輸入你的答案）")):
         return None
     # Hermes switches to its text composer when the last shortcut is pressed.
-    prompt = _finish("menu", rows[1][2:], "点选即可回答，自定义内容可在下方实时作答。",
+    prompt = _finish("menu", group[0][2:], "点选即可回答，自定义内容可在下方实时作答。",
                      options, [], numbers=True, source="hermes_clarify")
+    if len(groups) > 1:
+        prompt["question_count"] = len(groups)
+        prompt["hint"] = f"第 {active + 1}/{len(groups)} 题 · ↑↓ 选项 · Enter 作答 · ←→ 或 Tab 切题"
     prompt["options"][-1]["opens_input"] = True
     for option in prompt["options"]:
         option.pop("recommended", None)
         option["keys"] = [option["number"]]
     identity = [pane.get("pane_id") or pane.get("id"), pane.get("pane_pid"), prompt["revision"]]
+    if len(groups) > 1:
+        identity.extend((active, rows))
     prompt["revision"] = hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
     return prompt
 
