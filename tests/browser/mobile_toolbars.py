@@ -18,8 +18,17 @@ def sidebar(page, console):
     row = frame.locator(":scope > div")
     close = page.get_by_role("button", name="折叠侧边栏", exact=True)
     open_button = page.locator("#menu" if console else "#side-open")
+    if console and page.viewport_size["width"] == 390:
+        expect(page.locator("#sidebar:not(.open)")).to_have_css("box-shadow", "none")
     if open_button.is_visible():
         open_button.click()
+    identity = page.locator("#sidebar header.brand > div:first-child" if console else "#sidebar .side-head > .brand")
+    expect(identity).to_be_visible()
+    assert identity.evaluate("""el => {
+        const mark = getComputedStyle(el, '::before');
+        return mark.backgroundImage.includes('app-icon.svg') && mark.width === '32px' &&
+            el.scrollWidth <= el.clientWidth + 1;
+    }""")
     expect(row.locator("[data-plugin-button]")).to_have_count(10)
     expect(frame).to_have_class(re.compile("more-right"))
     assert row.evaluate("el => new Set([...el.children].map(b => b.offsetTop)).size === 1")
@@ -50,7 +59,7 @@ def manual_inspection(page):
     button = page.locator("#inspect-interaction")
     placement = page.locator("#interaction-placement")
     expect(button).to_be_hidden()
-    expect(placement.locator('option[value="manual"]')).to_be_disabled()
+    expect(placement.locator('option[value="manual"]')).to_have_js_property("disabled", True)
 
     def change_setting(enabled):
         page.evaluate("window.TmuxSettings.open()")
@@ -157,6 +166,13 @@ def composer(page, width):
         page.get_by_role("button", name="添加附件", exact=True).click()
     field = page.locator("#input")
     field.fill("first")
+    card = page.locator(".composer-card")
+    for theme in ("night", "warm"):
+        page.evaluate("(theme) => window.TmuxTheme.set(theme)", theme)
+        expect(card).to_have_css("outline-style", "solid")
+        expect(card).to_have_css("outline-width", "2px")
+        assert card.evaluate("el => getComputedStyle(el).outlineColor === getComputedStyle(el.querySelector('textarea')).color")
+
     field.press("Enter" if width == 390 else "Shift+Enter")
     field.press("End")
     field.press("x")

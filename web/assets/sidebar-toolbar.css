@@ -48,3 +48,53 @@
 @media (pointer: coarse) {
   .sidebar-toolbar { --tool-size: 40px; }
 }
+
+/* Use the same identity and navigation feedback on Chat, Home and Grid. */
+#sidebar header.brand > div:first-child,
+#sidebar .side-head > .brand {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-content: center;
+  column-gap: 9px;
+}
+#sidebar header.brand > div:first-child::before,
+#sidebar .side-head > .brand::before {
+  content: "";
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: center;
+  width: 32px;
+  height: 32px;
+  background: url("/assets/app-icon.svg") center / contain no-repeat;
+}
+#sidebar .brand-name,
+#sidebar .side-head > .brand b {
+  font-family: inherit;
+  font-weight: 700;
+  letter-spacing: -.025em;
+  line-height: 1.25;
+}
+#sidebar .brand-name { font-size: 17px; }
+#sidebar .brand-sub,
+#sidebar .side-head > .brand span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.sidebar-tool-frame::before { border-radius: 9px 0 0 9px; }
+.sidebar-tool-frame::after { border-radius: 0 9px 9px 0; }
+#sidebar .pane.selected, #sidebar .tpane.in-grid {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: inset 3px 0 var(--accent), inset 0 0 0 1px var(--line);
+}
+#sidebar :is(button, a, summary, input):focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+@media (hover: hover) {
+  .sidebar-toolbar .icon-btn:hover { background: var(--card-hover); }
+}
+.sidebar-toolbar .icon-btn:active { background: var(--bubble); }

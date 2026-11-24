@@ -352,3 +352,48 @@ mark.cs-hit.cs-current{background:var(--accent);color:#fff;box-shadow:0 0 0 2px 
       /* iOS 会自动放大 <16px 的输入框，重命名输入框必须 16px */
       .fd-input{height:40px;font-size:16px}.fd-actions .dl-btn{height:40px;font-size:14px}
       .file-dialog{padding:16px;align-items:flex-end}.fd-card{max-width:none;border-radius:16px 16px 14px 14px}}
+
+/* Conversation surfaces use the active theme, including its night palettes. */
+.app .topbar {
+  background: var(--card);
+  border-bottom-color: var(--line);
+}
+.session-title { letter-spacing: -.015em; }
+.session-sub { font-variant-numeric: tabular-nums; }
+.chat-message.user .chat-bubble {
+  border-radius: 18px 18px 5px 18px;
+  line-height: 1.6;
+}
+.chat-message.assistant .assistant-body {
+  border-color: var(--line);
+  border-radius: 5px 18px 18px;
+}
+.composer-card {
+  box-shadow: 0 1px 3px rgb(0 0 0 / .06), 0 6px 18px rgb(0 0 0 / .05);
+}
+.composer textarea::placeholder { color: var(--muted); opacity: 1; }
+.composer-card:has(textarea:focus-visible) {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+@supports not selector(:has(*)) {
+  .composer textarea:focus-visible { outline: 2px solid var(--ink); }
+}
+.top-actions :is(a, button):focus-visible,
+.composer-card button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
+#input-complete .complete-item.selected {
+  box-shadow: inset 3px 0 var(--accent);
+}
+@media (forced-colors: active) {
+  #input-complete .complete-item.selected, #sidebar .pane.selected, #sidebar .tpane.in-grid {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+}
+@media (max-width: 760px) {
+  .app .sidebar:not(.open) { box-shadow: none; }
+}
