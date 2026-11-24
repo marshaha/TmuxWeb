@@ -78,3 +78,15 @@ test('clear 清掉全部', () => {
   cache.clear();
   assert.equal([...store.keys()].length, 0);
 });
+
+test('skill snapshots keep host contexts apart, preserve empty results and clear with pane caches', () => {
+  const {cache} = load();
+  cache.saveSkills('local', {provider:'codex', skills:['review']});
+  cache.saveSkills('remote', {provider:'hermes', skills:[]});
+  assert.deepEqual(Array.from(cache.readSkills('local').skills), ['review']);
+  assert.equal(cache.readSkills('remote').skills.length, 0);
+  cache.saveSkills('local', null);
+  assert.equal(cache.readSkills('local'), null);
+  cache.clear();
+  assert.equal(cache.readSkills('remote'), null);
+});

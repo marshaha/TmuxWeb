@@ -656,6 +656,7 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual(captured.status_code, 200, captured.text)
             self.assertIn("hello from oracle", captured.json()["content"])
             after_resolve = calls[before:]
+            self.assertEqual(self.client.get("/api/panes/@ddr%2312/capture?history=20").status_code, 200)
         finally:
             federation.FedClient._get = original
 

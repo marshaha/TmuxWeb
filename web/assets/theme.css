@@ -154,3 +154,105 @@
 [data-theme="claude-code"] .chip-btn.active,[data-theme="night"] .chip-btn.active{
   background:var(--surface2);color:var(--accent);border-color:var(--line)
 }
+
+/* Shared application chrome. Keep the transcript and terminal on opaque surfaces. */
+:root[data-screen] {
+  --ui-radius: 18px;
+  --ui-pill: 999px;
+  --ui-control: var(--card, #fff);
+  --ui-divider: var(--line, #d1d1d6);
+  --ui-ease: cubic-bezier(.2,.8,.2,1);
+}
+:root[data-screen]:not([data-theme]) {
+  --page: #f2f2f7; --bg: #f2f2f7; --sidebar: #ebedf3;
+  --surface: #fff; --surface2: #f2f2f7; --card: #fff; --card-hover: #e9edf3;
+  --ink: #1c1c1e; --muted: #565963; --faint: #636671;
+  --line: #d6d8df; --line-strong: #b8bbc5; --accent: #005fc7;
+  --bubble: #e3edff; --green: #26834a; --danger: #b52a27;
+  --shadow: 0 2px 5px rgb(24 35 56 / .06), 0 10px 28px rgb(24 35 56 / .08);
+}
+[data-screen] body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+[data-screen] :is(h1, .brand-name, .session-title) { letter-spacing: -.025em; }
+[data-screen] :is(.top, .app .topbar, body > header) {
+  background-color: var(--ui-control);
+  border-bottom-color: var(--ui-divider);
+}
+[data-screen] :is(.icon-btn, .share-btn, .fullscreen-btn, .mode-switch, .mode-btn, .chip-btn) {
+  border-radius: var(--ui-pill);
+}
+[data-screen] .mode-switch { background: var(--surface2); border-color: var(--ui-divider); }
+[data-screen] .mode-switch .mode-btn.active {
+  background: var(--ui-control); color: var(--accent);
+  box-shadow: 0 1px 4px rgb(12 22 40 / .18);
+}
+[data-screen] :is(.panel, .cell, dialog, .picker, .login-card, .modal, .composer-card) {
+  border-radius: var(--ui-radius);
+  border-color: var(--ui-divider);
+}
+[data-screen] :is(.top, .sidebar-toolbar, .keys, dialog, .composer-card) :is(a,button):focus-visible {
+  outline: 2px solid currentColor; outline-offset: -2px;
+}
+[data-screen] .sidebar .pane.selected, [data-screen] .sidebar .tpane.in-grid {
+  color: var(--ink); background: var(--bubble);
+}
+[data-screen] :is(#input-complete, #model-menu) {
+  border-radius: var(--ui-radius);
+  box-shadow: var(--shadow);
+}
+[data-screen] .composer .send:not(:disabled), [data-screen="login"] form button {
+  background: var(--accent, #005fc7); color: #fff;
+}
+[data-screen="login"] body {
+  background: var(--page); color: var(--ink);
+}
+[data-screen="login"] main {
+  border-radius: 24px; border-color: var(--ui-divider); background: var(--card); box-shadow: var(--shadow);
+}
+[data-screen="login"] input { background: var(--surface2); color: var(--ink); border-color: var(--line-strong); }
+[data-screen="login"] input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+:root[data-screen="term"] {
+  --ui-control: #222329; --ui-divider: #42444e;
+}
+[data-screen="term"] .keys { background-color: var(--ui-control); border-color: var(--ui-divider); }
+[data-screen="term"] .keys button { border-radius: 10px; }
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) and (color: color-mix(in srgb, white, transparent)) {
+  @media not (prefers-reduced-transparency: reduce) {
+    [data-screen] :is(.top, .app .topbar, body > header, #input-complete, #model-menu) {
+      background-color: color-mix(in srgb, var(--ui-control) 88%, transparent);
+      -webkit-backdrop-filter: saturate(135%) blur(14px);
+      backdrop-filter: saturate(135%) blur(14px);
+    }
+  }
+}
+@media (prefers-contrast: more), (forced-colors: active) {
+  [data-screen] :is(.top, .app .topbar, body > header, #input-complete, #model-menu) {
+    background-color: var(--ui-control); -webkit-backdrop-filter: none; backdrop-filter: none;
+    border-color: currentColor;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-screen] :is(button, .icon-btn, .chip-btn) {
+    transition: scale 120ms var(--ui-ease), background-color 140ms ease, border-color 140ms ease;
+  }
+  [data-screen] :is(button, .icon-btn, .chip-btn):not(:disabled):active { scale: .97; }
+  [data-screen] :is(dialog[open], #input-complete:not([hidden]), #model-menu:not([hidden])) {
+    animation: tw-menu-in 150ms var(--ui-ease);
+  }
+}
+@keyframes tw-menu-in {
+  from { opacity: 0; translate: 0 3px; }
+  to { opacity: 1; translate: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-screen] :is(.sidebar, .app, dialog, .backdrop, .drawer-backdrop, .sidebar-tool-frame, .icon-btn, button) {
+    transition-duration: 0s;
+  }
+}
+
+[data-screen] .top-actions.scrolls {
+  border-start-start-radius: var(--ui-pill);
+  border-end-start-radius: var(--ui-pill);
+}

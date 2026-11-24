@@ -4,6 +4,11 @@
 
 - The remote agent raises its own descriptor limit at startup (`ulimit -n 4096` in the keep-alive script, `LimitNOFILE=8192` in the systemd unit). A macOS agent left on the 256-descriptor default eventually failed every command with `cannot start command: [Errno 24] Too many open files`, which made the host look offline with no panes.
 
+## 0.8.0
+
+- Show cached skills immediately and refresh the catalog in the background. Mention numbered panes in the current conversation, with local and federated relay handles.
+- Apply a shared iOS-inspired system palette, navigation materials and press feedback across the web UI, respecting transparency, contrast and motion preferences.
+
 ## 0.7.1
 
 - Unify the Chat, Home and Grid sidebar headers and active pane styling. Distinguish conversation turns, theme the chat header, and keep keyboard focus visible in the composer and navigation.

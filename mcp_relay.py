@@ -521,7 +521,7 @@ def tool_schemas() -> list[dict]:
         {
             "name": "list_agents",
             "description": ("List agent panes across every host this TmuxWeb server manages: each carries `handle` "
-                            "(a short `#12` you can pass to the other tools), `target` (the host-scoped pane id), "
+                            "(a short `#12`, also accepted as `@12`, you can pass to the other tools), `target` (the host-scoped pane id), "
                             "the host, the CLI and whether it is idle or busy."),
             "inputSchema": {
                 "type": "object",

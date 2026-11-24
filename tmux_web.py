@@ -2068,7 +2068,7 @@ def create_app(
         if not authenticated(request):
             raise HTTPException(status_code=401, detail="authentication required")
 
-    PANE_NUMBER_RE = re.compile(r"^#?(\d{1,5})$")
+    PANE_NUMBER_RE = re.compile(r"^[#@]?(\d{1,5})$")
 
     def pane_ref_for(number: int) -> str:
         """编号 → 带主机作用域的 pane 引用；没分出去的号就是 404。"""
@@ -2078,7 +2078,7 @@ def create_app(
                                 detail=f"没有 #{number} 这个窗口（编号按首次出现分配，不会回收）")
         return pane_id
 
-    FED_REF_RE = re.compile(r"^([a-z][a-z0-9]{1,15})\s*[#:/]\s*(\d{1,5})$")
+    FED_REF_RE = re.compile(r"^@?([a-z][a-z0-9]{1,15})\s*[#:/]\s*(\d{1,5})$")
 
     def resolve_fed_ref(text: str) -> str | None:
         """`ddr#12` → `<node_id>~%12`；对端编号由对端自己维护。"""

@@ -10,7 +10,7 @@
   const KEY = 'tmux-theme';
   // `page`/`accent` only feed the swatch in the settings panel
   const THEMES = [
-    { name: 'warm', label: '默认', hint: '暖灰 + 陶土橙', page: '#f7f7f5', accent: '#c96442' },
+    { name: 'warm', label: '默认', hint: '随系统切换浅色与深色', page: '#f2f2f7', accent: '#005fc7' },
     { name: 'chatgpt', label: 'ChatGPT', hint: '白底 + 绿色强调', page: '#ffffff', accent: '#10a37f' },
     { name: 'claude', label: 'Claude', hint: '米白 + 陶土橙', page: '#faf9f5', accent: '#d97757' },
     { name: 'github', label: 'GitHub', hint: '白底 + 蓝色强调', page: '#ffffff', accent: '#0969da' },
@@ -77,9 +77,11 @@
     } catch { /* the local copy is already applied; the next page load retries */ }
   }
 
+  const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)');
   function paint(name) {
     const root = document.documentElement;
-    if (name === 'warm') root.removeAttribute('data-theme');
+    if (name === 'warm' && systemDark?.matches) root.setAttribute('data-theme', 'night');
+    else if (name === 'warm') root.removeAttribute('data-theme');
     else root.setAttribute('data-theme', name);
   }
 
@@ -93,6 +95,7 @@
     return wanted;
   }
 
+  systemDark?.addEventListener?.('change', () => paint(read()));
   paint(read());
   syncWithAccount();
   window.TmuxTheme = { get: read, set, list: () => THEMES.slice() };

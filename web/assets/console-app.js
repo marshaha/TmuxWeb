@@ -242,7 +242,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     let response;
     try{response=await fetch(url,opts);}catch(error){if(!opts.signal?.aborted)netSample(performance.now()-started,false);throw error;}
     netSample(performance.now()-started,response.ok||response.status===304);
-    const r=response;if(r.status===401){location='/login';throw new Error('登录已失效');}if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||`HTTP ${r.status}`);}return r.json();}
+    const r=response;if(r.status===401){location='/login';throw Object.assign(new Error('登录已失效'),{status:401});}if(!r.ok){let d={};try{d=await r.json()}catch{}throw Object.assign(new Error(d.detail||`HTTP ${r.status}`),{status:r.status});}return r.json();}
   async function refreshHost(hostId,button){
     if(!hostId)return;
     if(button)button.classList.add('busy');
@@ -2561,13 +2561,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     // 再放一份到输入框，用户会以为要重打一遍，也容易连发两条相同的。
     if(!isMobile())input.focus();
   }finally{send.disabled=!state.selected;}}
-  // ---- 输入框补全：借自 Open WebUI MessageInput.svelte 的 @ / / 补全 ----
-  // 只借交互，不借 Tiptap 富文本：textarea 仍是纯文本，补全只做三件事——
-  // 删 token、插纯文本、切 pane；sendInput 一字不改，内容原样进 tmux。
-  // @pane：@ 后过滤 pane，选中即切 pane（Open WebUI @ 选模型/文件的
-  // 平移：选中产生结构化效果，token 本身不进文本）。
-  // /命令：选中后把预设指令文本换进输入框，不自动发送（Open WebUI
-  // replaceSlashRangeWithPrompt 的行为）；动作型命令不借。
+  // @ inserts a relay handle into the current draft. / inserts a skill or prompt.
   function inputCommands(){return [
     {key:'jixu',label:'继续',text:'继续'},
     {key:'zongjie',label:'总结',text:'总结一下目前的进展：已完成什么、正在做什么、还剩什么'},
@@ -2588,40 +2582,71 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   }
   function filterPaneCompletions(panes,query){
     const q=String(query||'').trim().toLowerCase();
-    return (panes||[]).filter(p=>p&&p.id).filter(p=>{
+    const matches=(panes||[]).filter(p=>p?.id && p.number).filter(p=>{
       if(!q)return true;
       const hay=[p.title,p.target,p.command,p.id,paneLabel(p),p.number==null?'':String(p.number)].join(' ').toLowerCase();
       return hay.includes(q);
-    }).slice(0,8);
+    });
+    if(/^#?\d+$/.test(q)){
+      const exact=p=>String(p.number)===q.replace(/^#/,'');
+      return [...matches.filter(exact),...matches.filter(p=>!exact(p))].slice(0,8);
+    }
+    return matches.slice(0,8);
   }
   function filterCommandCompletions(query){
     const q=String(query||'').trim().toLowerCase();
     return inputCommands().filter(c=>!q||c.label.toLowerCase().includes(q)||c.key.includes(q));
   }
+  const skillPrefixes={codex:'$',hermes:'/skill ',claude:'/',kimi:'/skill:'};
+  function installedSkills(data){
+    const prefix=skillPrefixes[data?.provider];
+    if(typeof prefix!=='string' || !Array.isArray(data?.skills))return null;
+    const names=data.skills.slice(0,512).filter(name=>typeof name==='string' &&
+      /^[\p{L}\p{N}_][\p{L}\p{N}_.-]{0,95}$/u.test(name));
+    return {provider:data.provider,skills:names};
+  }
+  function showSkillCatalog(catalog,data){
+    const prefix=skillPrefixes[data.provider];
+    catalog.data=data;
+    catalog.inline=data.provider==='codex';
+    catalog.items=data.skills.map(name=>({kind:'skill',label:name,text:prefix+name+' ',sub:'Skill · '+prefix+name}));
+    catalog.hint=catalog.items.length?'':'未发现已安装的技能';
+  }
   function skillSuggestions(query,atStart){
     const pane=state.panes.find(p=>p.id===state.selected);
     if(!pane || !isAgentPane(pane.id))return {items:[],hint:''};
-    const key=JSON.stringify([pane.id,pane.pane_pid,pane.path,pane.provider,pane.command]);
+    const key=JSON.stringify([pane.id,pane.pane_pid||'',pane.path||'',pane.provider||'',pane.command||'']);
     let catalog=state.completionSkills;
-    if(!catalog || catalog.key!==key || Date.now()>=catalog.expires){
-      catalog={key,items:[],hint:'正在读取技能…',expires:Infinity};
+    if(!catalog || catalog.key!==key){
+      catalog={key,items:[],data:null,hint:'正在读取技能…',expires:0};
       state.completionSkills=catalog;
-      api('/api/panes/'+encodeURIComponent(pane.id)+'/skills').then(data=>{
-        const prefix={codex:'$',hermes:'/skill ',claude:'/',kimi:'/skill:'}[data.provider];
-        const names=Array.isArray(data.skills)?data.skills:[];
-        catalog.items=typeof prefix==='string'?names.filter(name=>typeof name==='string' &&
-          /^[\p{L}\p{N}_][\p{L}\p{N}_.-]{0,95}$/u.test(name)).map(name=>({
-            kind:'skill',label:name,text:prefix+name+' ',sub:'Skill · '+prefix+name
-          })):[];
-        catalog.inline=data.provider==='codex';
+      const cached=installedSkills(window.TmuxPaneCache?.readSkills(key));
+      if(cached)showSkillCatalog(catalog,cached);
+    }
+    if(Date.now()>=catalog.expires){
+      catalog.expires=Infinity;
+      const oldHint=catalog.hint, oldData=catalog.data;
+      api('/api/panes/'+encodeURIComponent(pane.id)+'/skills').then(result=>{
+        if(state.completionSkills!==catalog)return;
+        const data=installedSkills(result);
+        if(!data)throw new Error('无效的技能目录');
+        if(!oldData || oldData.provider!==data.provider || oldData.skills.length!==data.skills.length ||
+           oldData.skills.some((name,i)=>name!==data.skills[i]))showSkillCatalog(catalog,data);
         catalog.hint=catalog.items.length?'':'未发现已安装的技能';
+        window.TmuxPaneCache?.saveSkills(key,data);
         catalog.expires=Date.now()+15000;
-      }).catch(()=>{
-        catalog.hint='技能目录暂时无法读取';
+      }).catch(error=>{
+        if(state.completionSkills!==catalog)return;
+        if([401,403,404].includes(error.status)){
+          catalog.items=[];catalog.data=null;
+          window.TmuxPaneCache?.saveSkills(key,null);
+        }
+        catalog.hint=catalog.data?'暂时无法更新，显示已缓存技能':'技能目录暂时无法读取';
         catalog.expires=Date.now()+5000;
       }).finally(()=>{
-        if(state.completionSkills===catalog && state.selected===pane.id &&
-           completeMatch?.kind==='command' && document.activeElement===input)renderInputComplete(true);
+        if((oldData!==catalog.data || oldHint!==catalog.hint) && state.completionSkills===catalog &&
+           state.selected===pane.id && completeMatch?.kind==='command' && document.activeElement===input)
+          renderInputComplete(true);
       });
     }
     const q=query.toLowerCase();
@@ -2661,7 +2686,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
       ?skillSuggestions(completeMatch.query,completeMatch.start===0):{items:[],hint:''};
     const previous=keepSelection && box.dataset.navigated==='1' && completeItems[completeIndex];
     const items=completeMatch.kind==='pane'
-      ?filterPaneCompletions(state.panes,completeMatch.query).map(p=>({kind:'pane',id:p.id,label:p.title||p.target||p.id,sub:`${paneLabel(p)}${p.command?' · '+p.command:''}`}))
+      ?filterPaneCompletions(state.panes,completeMatch.query).map(p=>({kind:'pane',id:p.id,text:'@'+paneLabel(p).replace(/^#/, '')+' ',label:p.title||p.target||p.id,sub:`${paneLabel(p)}${p.command?' · '+p.command:''}`}))
       :skills.items.concat(filterCommandCompletions(completeMatch.query).map(c=>({kind:'command',label:c.label,text:c.text,sub:c.text})));
     completeItems=items;completeIndex=previous?Math.max(0,items.findIndex(item=>item.text===previous.text)):0;
     if(!keepSelection)box.dataset.navigated='';
@@ -2685,19 +2710,6 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   }
   function acceptInputComplete(item){
     const match=completeMatch;if(!match||!item)return;
-    if(item.kind==='pane'){
-      // @token 只从当前 pane 的草稿里删掉，不进 tmux；再切 pane。
-      const cleaned=applyCompletion(input.value,input.selectionStart,match,'');
-      const target=item.id,stay=target===state.selected;
-      if(state.selected)state.drafts.set(state.selected,cleaned.text);
-      input.value=cleaned.text;
-      input.dispatchEvent(new Event('input'));
-      input.setSelectionRange(cleaned.cursor,cleaned.cursor);
-      closeInputComplete();
-      if(!stay)selectPane(target);
-      if(!isMobile())input.focus();
-      return;
-    }
     const done=applyCompletion(input.value,input.selectionStart,match,item.text);
     closeInputComplete();
     input.value=done.text;

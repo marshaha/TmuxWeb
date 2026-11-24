@@ -2,7 +2,7 @@
 // (Open WebUI MessageInput.svelte: @ mention + / slash-command suggestions,
 // CommandSuggestionList.svelte: '/' -> SlashCommands, '@' -> AtCommands).
 // Only the interaction is borrowed: the textarea stays plain text, the
-// completion only deletes a token, inserts plain text, or switches pane;
+// completion inserts a relay mention or plain text into the current draft;
 // sendInput is untouched and the text goes to tmux verbatim.
 // Run with: node --test tests/js/input-complete.test.mjs
 import test from 'node:test';
@@ -161,7 +161,7 @@ function makeHarness({ panes, selected }) {
   return { api, state, input, box, calls, dispatched };
 }
 
-test('accept pane: removes the @token from the old draft and switches pane', () => {
+test('accept pane: inserts a relay address in the current draft', () => {
   const h = makeHarness({ panes: PANES, selected: '%3' });
   h.input.value = '@cl';
   h.input.selectionStart = 3;
@@ -170,13 +170,13 @@ test('accept pane: removes the @token from the old draft and switches pane', () 
   assert.equal(st.completeOpen, true);
   assert.equal(st.completeItems[0].id, '%1');
   h.api.acceptInputComplete(st.completeItems[0]);
-  assert.deepEqual(h.calls.selectPane, ['%1']);
-  assert.equal(h.state.drafts.get('%3'), '');
-  assert.equal(h.input.value, '');
+  assert.deepEqual(h.calls.selectPane, []);
+  assert.equal(h.state.selected, '%3');
+  assert.equal(h.input.value, '@1 ');
   assert.equal(h.input._focused, true);
 });
 
-test('accept pane: picking the current pane only cleans the token, no reselect', () => {
+test('accept pane: keeps the surrounding text when mentioning the current pane', () => {
   const h = makeHarness({ panes: PANES, selected: '%1' });
   h.input.value = 'hi @cl';
   h.input.selectionStart = 6;
@@ -185,7 +185,7 @@ test('accept pane: picking the current pane only cleans the token, no reselect',
   assert.equal(st.completeItems[0].id, '%1');
   h.api.acceptInputComplete(st.completeItems[0]);
   assert.deepEqual(h.calls.selectPane, []);
-  assert.equal(h.input.value, 'hi ');
+  assert.equal(h.input.value, 'hi @1 ');
 });
 
 test('accept command: inserts the preset text, does not send', () => {
@@ -231,7 +231,7 @@ test('transcriptBubble: user messages get a resend button, assistant messages do
 
 test('composer wires the completion popup and the resend action', () => {
   assert.ok(index.includes('id="input-complete"'));
-  assert.ok(index.includes('@ 跳 pane · / 技能和提示词'));
+  assert.ok(index.includes('@ 提及会话 · / 技能和提示词'));
   assert.ok(index.includes('.input-complete{'));
   assert.ok(page.includes('data-msg-resend'));
   assert.ok(page.includes("box.addEventListener('mousedown'"));

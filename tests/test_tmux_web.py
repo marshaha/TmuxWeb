@@ -2236,7 +2236,7 @@ class TmuxWebTests(unittest.TestCase):
         page = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
         app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
         self.assertIn('id="input-complete"', page)
-        self.assertIn("@ 跳 pane · / 技能和提示词", page)
+        self.assertIn("@ 提及会话 · / 技能和提示词", page)
         self.assertIn(".input-complete{", page)
         self.assertIn("function matchInputCompletion(", app)
         self.assertIn("function filterPaneCompletions(", app)
@@ -2732,6 +2732,7 @@ class TmuxWebTests(unittest.TestCase):
         panes = self.client.get("/api/panes").json()["panes"]
         local = next(pane for pane in panes if pane["id"] == "%4")
         handle = f"#{local['number']}"
+        self.assertEqual(self.client.get(f"/api/panes/@{local['number']}/capture").status_code, 200)
         self.tmux.auto_reply = "编号回答"
         response = self.client.post("/api/relay/ask", json={
             "target": handle, "question": "hi", "timeout": 5, "source": "unit-test"})

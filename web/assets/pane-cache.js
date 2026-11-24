@@ -13,6 +13,7 @@
  */
 (function () {
   const HOSTS_KEY = 'tmuxweb.cache.hosts.v1';
+  const SKILLS_KEY = 'tmuxweb.cache.skills.v1';
   const TX_PREFIX = 'tmuxweb.cache.tx.';
   const MAX_TX = 12;
   const PER_TX_CHARS = 400_000;
@@ -83,6 +84,7 @@
         // target / command 必须存：顶栏副标题拿它们拼，少了会在"缓存先画"那一瞬
         // 显示成 "undefined · undefined · /path"（历史 bug）。
         target: pane.target || '', command: pane.command || '',
+        provider: pane.provider || '', pane_pid: pane.pane_pid || '',
         path: pane.path, title: pane.title || '',
       })),
     }));
@@ -134,12 +136,36 @@
             sig: data.sig, age, cachedAt:data.at, panePid:data.panePid || ''};
   }
 
+  function skillEntries() {
+    const entries = readJSON(SKILLS_KEY);
+    return Array.isArray(entries) ? entries.filter(e => e && Date.now() - e.at < 7 * 86400000) : [];
+  }
+
+  function readSkills(key) {
+    return skillEntries().find(e => e.key === key)?.data || null;
+  }
+
+  function saveSkills(key, data) {
+    const saved = skillEntries();
+    const previous = saved.find(e => e.key === key);
+    if (data && previous && Date.now() - previous.at < 86400000 &&
+        JSON.stringify(previous.data) === JSON.stringify(data)) return;
+    const entries = saved.filter(e => e.key !== key).slice(0, 11);
+    if (data) entries.unshift({key, data, at: Date.now()});
+    let value = JSON.stringify(entries);
+    while (value.length > 240000 && entries.length) {
+      entries.pop();
+      value = JSON.stringify(entries);
+    }
+    try { localStorage.setItem(SKILLS_KEY, value); } catch { /* in-memory suggestions remain available */ }
+  }
+
   function clear() {
-    try { localStorage.removeItem(HOSTS_KEY); } catch (_error) {}
+    try { localStorage.removeItem(SKILLS_KEY); localStorage.removeItem(HOSTS_KEY); } catch (_error) {}
     for (const key of txKeys()) {
       try { localStorage.removeItem(key); } catch (_error) {}
     }
   }
 
-  window.TmuxPaneCache = {saveHosts, readHosts, saveTranscript, readTranscript, clear};
+  window.TmuxPaneCache = {saveHosts, readHosts, saveTranscript, readTranscript, saveSkills, readSkills, clear};
 })();
