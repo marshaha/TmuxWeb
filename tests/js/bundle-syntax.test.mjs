@@ -22,7 +22,6 @@ const FILES = [
   'web/assets/agents-panel.js',
   'web/assets/perf-budget.js',
   'web/assets/chat-search.js',
-  'web/assets/needs-you.js',
   'web/assets/markdown-cjk.js',
   'web/assets/video-cards.js',
   'web/assets/upload-cards.js',

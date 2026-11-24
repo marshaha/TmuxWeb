@@ -46,6 +46,30 @@ TRANSPORTS = ("ssh", "agent")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
+def prompt_region_lines(screen: str, lines: int = 3) -> list[str]:
+    """Locate the editable input, excluding assistant history and terminal footers."""
+    rows = screen.rstrip().splitlines()
+    # Kimi wraps its editor with a border on every row. A wrapped fingerprint
+    # spans these borders, and even a one-line editor sits above the status bars.
+    for bottom in range(len(rows) - 1, max(-1, len(rows) - 8), -1):
+        if not re.fullmatch(r"╰─+╯", rows[bottom].strip()):
+            continue
+        first = bottom
+        while first and re.fullmatch(r"│.*│", rows[first - 1].strip()):
+            first -= 1
+        if first < bottom and first and re.fullmatch(r"╭─+╮", rows[first - 1].strip()):
+            content = [row.strip()[1:-1].strip() for row in rows[first:bottom]]
+            if re.match(r"^[>›❯](?:\s|$)", content[0]):
+                content[0] = content[0][1:]
+                return content
+    start = max(0, len(rows) - max(2, lines))
+    for i in range(len(rows) - 1, -1, -1):
+        if rows[i].lstrip().startswith(("❯", "›")):
+            start = min(start, i)
+            break
+    return rows[start:]
+
+
 def normalize_session_name(name: str) -> str:
     cleaned = str(name or "").strip()
     if not SESSION_NAME_RE.fullmatch(cleaned):
@@ -951,7 +975,11 @@ def split_pane_ref(value: str) -> tuple[str, str]:
     if "~" not in value:
         raise ValueError("invalid pane reference")
     host_id, pane_id = value.split("~", 1)
-    if not HOST_ID_RE.fullmatch(host_id) or not PANE_ID_RE.fullmatch(pane_id):
+    # A child can publish one of its own SSH hosts. Preserve that child's
+    # qualified target when stripping the outer federation node.
+    inner = pane_id.split("~")
+    if (not HOST_ID_RE.fullmatch(host_id) or len(inner) > 2 or
+            (len(inner) == 2 and not HOST_ID_RE.fullmatch(inner[0])) or not PANE_ID_RE.fullmatch(inner[-1])):
         raise ValueError("invalid pane reference")
     return host_id, pane_id
 
@@ -1385,6 +1413,7 @@ def _status_chunks(ids, max_chunks: int = 4, single_up_to: int = 8) -> list:
 class SSHRunner:
     def __init__(self, host: dict):
         self.host = host
+        self.used_transports: set[str] = set()
         # the status sweep sets a short value: it would rather report "unknown"
         # than let one slow host stall the whole sweep
         self.capture_timeout: int | None = None
@@ -1610,6 +1639,7 @@ class SSHRunner:
 
     def run(self, remote_command: str, *, input_bytes: bytes | None = None,
             timeout: int = 15, resolve_tmux: bool = True) -> subprocess.CompletedProcess:
+        self.used_transports.add("ssh")
         with tempfile.TemporaryDirectory(prefix="tmux-remote-") as directory_name:
             directory = Path(directory_name)
             known_hosts = self._known_hosts(directory)
@@ -2585,20 +2615,7 @@ class SSHRunner:
             return ""
         return completed.stdout.decode(errors="replace")
 
-    @staticmethod
-    def _prompt_region_lines(screen: str, lines: int = 3) -> list[str]:
-        """Lines of the prompt box (see TmuxBackend._prompt_region_lines)."""
-        screen_lines = screen.splitlines()
-        if not screen_lines:
-            return []
-        start = len(screen_lines) - max(2, lines)
-        prompt_at = None
-        for index, line in enumerate(screen_lines):
-            if "❯" in line:
-                prompt_at = index
-        if prompt_at is not None:
-            start = min(start, prompt_at)
-        return screen_lines[max(0, start):]
+    _prompt_region_lines = staticmethod(prompt_region_lines)
 
     @staticmethod
     def _fingerprint_matches(fingerprint: str, region: str) -> bool:
@@ -2673,7 +2690,7 @@ class SSHRunner:
         target = shlex.quote(pane_id)
         clear = f"{tmux} send-keys -t {target} C-u; sleep 0.05; " if submit else ""
         command = (clear + f"{tmux} load-buffer -b {name} -; "
-                   f"{tmux} paste-buffer -b {name} -d -t {target}")
+                   f"{tmux} paste-buffer -p -b {name} -d -t {target}")
         completed = self.run(command, input_bytes=text.encode())
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote send failed")
@@ -2698,9 +2715,9 @@ class SSHRunner:
             if not fingerprint:
                 submitted = True
                 break
+            time.sleep(0.5)
             if attempt + 1 >= tries:
                 break
-            time.sleep(0.5)
             # 屏幕还在动不代表提交了：直接看我们那行字还在不在输入框里。
             # 输入框从最后一个 ❯ 起、到底部（见 _prompt_region_lines），
             # transcript 在 ❯ 上面，不会误报未提交。

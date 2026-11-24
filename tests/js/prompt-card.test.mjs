@@ -1,4 +1,4 @@
-// Unit tests for the experimental prompt card (web/assets/prompt-card.js).
+// Unit tests for the unified interaction card (web/assets/prompt-card.js).
 // Run with: node --test tests/js/prompt-card.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,8 +11,8 @@ const source = fs.readFileSync(
   path.join(root, '..', '..', 'web', 'assets', 'prompt-card.js'), 'utf8');
 
 const CARD_IDS = ['prompt-card', 'prompt-card-title', 'prompt-card-hint',
-  'prompt-card-options', 'prompt-card-toggles', 'prompt-card-state',
-  'prompt-card-close', 'prompt-card-esc', 'prompt-card-enter',
+  'prompt-card-nav', 'prompt-card-options', 'prompt-card-toggles', 'prompt-card-state',
+  'prompt-card-close', 'prompt-card-terminal', 'prompt-card-timeout',
   'prompt-card-raw', 'prompt-card-raw-wrap'];
 
 function makeElement(tag = 'div') {
@@ -92,14 +92,14 @@ function makeClock() {
 }
 
 const MENU = {kind: 'menu', title: 'Select a model', hint: '↑↓ navigate · Enter select',
-  selected: 0,
+  selected: 0, verified: true, read_only: false, revision: 'r1', source: 'hermes_clarify',
   options: [
     {label: 'Alpha', number: '1'},
     {label: 'Beta', number: '2'},
   ],
   toggles: []};
 
-function loadCard({prompt = MENU, chooseHandler} = {}) {
+function loadCard({prompt = MENU, chooseHandler, inspectHandler} = {}) {
   const clock = makeClock();
   const doc = makeDocument();
   let current = prompt;
@@ -110,13 +110,14 @@ function loadCard({prompt = MENU, chooseHandler} = {}) {
       if (chooseHandler) return chooseHandler(url, options);
       return {ok: true, status: 200, json: async () => ({})};
     }
-    if (url.endsWith('/prompt')) {
+    if (url.includes('/prompt?inspect=true')) {
+      if (inspectHandler) return inspectHandler();
       return {ok: true, status: 200, json: async () => ({prompt: current})};
     }
     return {ok: true, status: 200, json: async () => ({})};
   };
   const sandbox = {
-    window: {}, document: doc, location: {}, fetch,
+    window: {}, document: doc, location: {}, fetch, AbortController,
     setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
     setInterval: clock.setInterval, clearInterval: clock.clearInterval,
     Date: {now: clock.now},
@@ -143,86 +144,126 @@ function chooseCalls(calls) {
   return calls.filter(call => call.url.includes('/prompt/choose'));
 }
 
-function promptCalls(calls) {
-  return calls.filter(call => call.url.endsWith('/prompt'));
-}
-
-test('the card answers only through /api/panes/{id}/prompt/choose', () => {
-  assert.match(source, /\/api\/panes\/\$\{encodeURIComponent\(pane\)\}\/prompt\/choose/);
-  assert.doesNotMatch(source, /\/api\/panes\/.*\/key/);
-});
-
-test('clicking an option hides the card at once, before the choose round-trip finishes', async () => {
-  let release;
-  const pending = new Promise(resolve => { release = resolve; });
-  const {api, clock, card, optionsEl, calls} = loadCard({chooseHandler: () => pending});
-  api.start(() => '%1');
-  await flush();
-  assert.equal(card().hidden, false);
-  click(optionsEl().children[0]);
-  // 同步断言：还没等任何网络回来，卡片已经收了
+test('a verified choice is sent once with its revision, including while the first request is pending', async () => {
+  let finish;
+  const {api, card, calls, optionsEl} = loadCard({chooseHandler: () => new Promise(r => { finish = r; })});
+  api.start(() => '%1', () => MENU);
+  const option = optionsEl().children[1];
+  click(option);
+  click(option);
   assert.equal(card().hidden, true);
-  assert.equal(chooseCalls(calls).length, 1);
-  release({ok: true, status: 200, json: async () => ({})});
+  assert.deepEqual(chooseCalls(calls).map(c => JSON.parse(c.options.body)), [{index: 1, revision: 'r1'}]);
+  finish({ok: true, json: async () => ({ok: true})});
   await flush();
-  // 成功后 1.5 秒跟进 poll 看一眼；同一道题还在也不重弹
-  const promptBefore = promptCalls(calls).length;
-  clock.advance(1500);
-  await flush();
-  assert.equal(promptCalls(calls).length, promptBefore + 1, '成功后 1.5 秒跟进 poll 还在');
-  assert.equal(card().hidden, true, '同一道题还没被 sweep 换掉，不重弹');
+  api.showStatus(MENU);
+  assert.equal(card().hidden, true);
 });
 
-test('a failed choose brings the card back with the error, and the question can show again', async () => {
-  const {api, card, optionsEl, doc, calls} = loadCard({
-    chooseHandler: async () => ({ok: false, status: 409, json: async () => ({detail: 'agent busy'})}),
-  });
-  api.start(() => '%1');
-  await flush();
-  assert.equal(card().hidden, false);
+test('a failed submission explains the failure and requires a fresh inspection', async () => {
+  const {api, calls, optionsEl, doc} = loadCard({chooseHandler: async () => ({
+    ok: false, status: 409, json: async () => ({detail: 'request resolved'}),
+  })});
+  api.start(() => '%1', () => MENU);
   click(optionsEl().children[0]);
-  assert.equal(card().hidden, true, '点下立刻收卡，不等请求结果');
   await flush();
-  // 恢复：卡片重新出现，显示失败原因，选项是点之前那份 prompt
+  assert.equal(optionsEl().children.length, 0);
+  assert.equal(doc._byId['prompt-card-hint'].textContent, 'request resolved');
+  assert.equal(chooseCalls(calls).length, 1);
+});
+
+test('legacy snapshots and read-only notices cannot submit, even with attached key sequences', () => {
+  for (const data of [{...MENU, verified: false}, {...MENU, source: 'screen'},
+    {...MENU, read_only: true}, {...MENU, revision: ''}]) {
+    const {api, calls, optionsEl} = loadCard();
+    api.start(() => '%1', () => data);
+    for (const option of optionsEl().children) {
+      assert.equal(option.disabled, true);
+      click(option);
+    }
+    assert.equal(calls.length, 0);
+  }
+});
+
+test('timeout, cooldown, and manual close never answer or schedule another screen poll', () => {
+  const {api, clock, card, calls, doc} = loadCard();
+  api.configure({timeoutMs: 2000, reshowCooldownMs: 5000});
+  api.start(() => '%1', () => MENU);
   assert.equal(card().hidden, false);
-  assert.equal(doc._byId['prompt-card-state'].textContent, 'agent busy');
-  assert.equal(doc._byId['prompt-card-state'].classList.contains('bad'), true);
-  assert.equal(optionsEl().children.length, 2);
-  assert.equal(chooseCalls(calls).length, 1, '失败只发了一次');
-  // 签名已清：refresh 后 poll 不再压住同一道题，卡片重新出现
+  clock.advance(2000);
+  assert.equal(card().hidden, true);
+  api.showStatus(MENU);
+  assert.equal(card().hidden, true);
+  clock.advance(5000);
+  api.showStatus(MENU);
+  assert.equal(card().hidden, false);
+  doc._byId['prompt-card-close'].onclick();
+  clock.advance(60000);
+  api.showStatus(MENU);
+  assert.equal(card().hidden, true);
+  assert.equal(calls.length, 0);
+  api.showStatus(null);
+  api.showStatus(MENU);
+  assert.equal(card().hidden, false);
+});
+
+test('an inspection arriving after a pane change cannot replace or answer the new card', async () => {
+  let release, selected = '%1';
+  const {api, card, calls} = loadCard({inspectHandler: () => new Promise(r => { release = r; })});
+  api.start(() => selected, () => null);
+  const inspection = api.inspect();
+  selected = '%2';
   api.refresh();
-  await flush();
-  assert.equal(card().hidden, false);
-});
-
-test('a network failure restores the card so the user can retry', async () => {
-  const {api, card, optionsEl, doc} = loadCard({
-    chooseHandler: async () => { throw new Error('network down'); },
-  });
-  api.start(() => '%1');
-  await flush();
-  click(optionsEl().children[0]);
+  release({ok: true, json: async () => ({prompt: MENU, screen: []})});
+  await inspection;
   assert.equal(card().hidden, true);
-  await flush();
-  assert.equal(card().hidden, false);
-  assert.equal(doc._byId['prompt-card-state'].textContent, '没送到，再试一次：network down');
+  assert.equal(chooseCalls(calls).length, 0);
 });
 
-test('a second attempt while the first choose is still in flight is blocked', async () => {
-  let release;
-  const pending = new Promise(resolve => { release = resolve; });
-  const {api, card, optionsEl, doc, calls} = loadCard({chooseHandler: () => pending});
-  api.start(() => '%1');
-  await flush();
-  click(optionsEl().children[0]);   // 第一发：挂起
+test('switching questions keeps one inline card visible and waits for a fresh revision', async () => {
+  const first = {...MENU, question_count: 2};
+  const {api, card, clock, doc, optionsEl, calls, setPrompt} = loadCard({prompt: first});
+  api.start(() => '%1', () => first);
+  const pressTab = () => card()._listeners.keydown[0]({key: 'Tab', preventDefault() {}});
+  pressTab();
+  pressTab();
+  assert.equal(card().hidden, false);
+  assert.equal(optionsEl().children.length, 0);
   assert.equal(chooseCalls(calls).length, 1);
-  // 卡片已收，但再点一次（Esc 那条路也一样）不能另起一发
-  doc._byId['prompt-card-esc'].onclick();
-  click(optionsEl().children[1]);
-  assert.equal(chooseCalls(calls).length, 1, '忙时不另起请求');
-  assert.equal(doc._byId['prompt-card-state'].textContent, '上一条还在发送，稍等一下…');
-  // 第一发走完，忙锁放开，也没有补发第二发
-  release({ok: true, status: 200, json: async () => ({})});
   await flush();
-  assert.equal(chooseCalls(calls).length, 1);
+  setPrompt({...first, title: 'Question 2', revision: 'r2'});
+  clock.advance(200);
+  await flush();
+  assert.equal(doc._byId['prompt-card-title'].textContent, 'Question 2');
+  assert.equal(optionsEl().children.length, 2);
+});
+
+test('a screen-only Codex option rechecks the live frame before opening the terminal', async () => {
+  const preview = {...MENU, source: 'codex_command_approval', read_only: true, verified: false, screen_revision: 'frame'};
+  const {api, calls, optionsEl, doc} = loadCard({inspectHandler: () => ({
+    ok: true, json: async () => ({prompt: null}),
+  })});
+  api.start(() => '%1', () => preview);
+  assert.equal(optionsEl().children[0].disabled, false);
+  click(optionsEl().children[0]);
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith('/prompt?inspect=true&fresh=true'));
+  assert.equal(chooseCalls(calls).length, 0);
+  assert.match(doc._byId['prompt-card-hint'].textContent, /审批已结束或已更换/);
+});
+
+test('an idle tail retires a manually inspected approval even if the older status is delivered again', async () => {
+  const preview = {...MENU, source: 'codex_command_approval', read_only: true, verified: false, screen_revision: 'frame'};
+  const {api, card} = loadCard({prompt: preview});
+  api.start(() => '%1', () => null);
+  await api.inspect();
+  api.observeCodexScreen('%2', '');
+  assert.equal(card().hidden, false);
+  api.observeCodexScreen('%1', '');
+  assert.equal(card().hidden, true);
+  api.showStatus(preview);
+  assert.equal(card().hidden, true);
+  api.observeCodexScreen('%1', 'frame');
+  api.showStatus(preview);
+  assert.equal(card().hidden, false);
 });

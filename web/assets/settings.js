@@ -263,20 +263,13 @@
       <div class="ts-panel" id="ts-lab-panel" hidden>
       <p class="ts-hint">可能不稳定、默认关着的功能。下面的开关各自独立，随账号同步。</p>
 
-    <section class="ts-block ts-sub">
-      <button class="ts-row" type="button" id="ts-prompt-toggle" aria-expanded="false" aria-controls="ts-prompt-panel">
-        <span>交互菜单卡片（实验性）</span><span class="ts-caret" aria-hidden="true"></span>
-      </button>
-      <div class="ts-panel" id="ts-prompt-panel" hidden>
-        <p class="ts-hint">agent 在终端里弹出选择时（kimi 的模型选择器、claude 的权限确认），在聊天里显示成可点的卡片。
-          实验性：靠读屏识别，可能把屏幕上别的内容误认成菜单，默认关闭。</p>
-        <div class="ts-tabs" role="group" aria-label="交互菜单卡片">
-          <button type="button" data-ts-prompt="off" class="on">关</button>
-          <button type="button" data-ts-prompt="on">开</button>
-        </div>
-        <p class="ts-state" id="ts-prompt-state" role="status"></p>
+      <div class="ts-row ts-static">
+        <span>手动查看交互</span>
+        <button class="ts-switch" type="button" role="switch" id="ts-manual-inspect"
+          aria-label="手动查看交互" aria-checked="false" aria-describedby="ts-inspect-hint"></button>
       </div>
-    </section>
+      <p class="ts-hint" id="ts-inspect-hint">打开后可手动查看终端交互，并在聊天工具栏选择内嵌、浮窗或仅手动查看。</p>
+      <p class="ts-state" id="ts-inspect-state" role="status"></p>
 
     <section class="ts-block">
       <button class="ts-row" type="button" id="ts-pause-toggle" aria-expanded="false" aria-controls="ts-pause-panel">
@@ -566,7 +559,7 @@
   }
 
   // 嵌套在「实验性」里面的两个小分区：各自独立开合，不参与互斥
-  const subsections = [['ts-prompt-toggle', 'ts-prompt-panel'], ['ts-pause-toggle', 'ts-pause-panel']];
+  const subsections = [['ts-pause-toggle', 'ts-pause-panel']];
 
   function toggleSubsection(toggleId) {
     const pair = subsections.find(([id]) => id === toggleId);
@@ -625,12 +618,39 @@
     window.dispatchEvent(new CustomEvent('tmuxweb:pause-button', {detail: on}));
   }
 
-  async function loadPauseButtonPref() {
+  let inspectWrites = 0;
+  function paintManualInspect(on) {
+    $('ts-manual-inspect').setAttribute('aria-checked', String(on));
+    window.dispatchEvent(new CustomEvent('tmuxweb:manual-inspect', {detail: on}));
+  }
+
+  async function toggleManualInspect() {
+    const button = $('ts-manual-inspect');
+    const on = button.getAttribute('aria-checked') !== 'true';
+    inspectWrites++;
+    button.disabled = true;
+    try {
+      const result = await api('/api/prefs', {method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({manual_inspect: on ? 'on' : 'off'})});
+      const saved = result.prefs.manual_inspect;
+      paintManualInspect(saved === 'on');
+      try { localStorage.setItem('tmux-manual-inspect', saved); } catch {}
+      note($('ts-inspect-state'), '');
+    } catch (error) {
+      note($('ts-inspect-state'), '保存失败：' + error.message, 'bad');
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function loadExperimentalPrefs() {
+    const writes = inspectWrites;
     let on = false;
     try { on = localStorage.getItem(PAUSE_KEY) === 'on'; } catch {}
     paintPauseButton(on);
     try {
       const data = await api('/api/prefs');
+      if (writes === inspectWrites) paintManualInspect(data.prefs?.manual_inspect === 'on');
       const server = (data.prefs || {}).pause_button;
       if (server === 'on' || server === 'off') paintPauseButton(server === 'on');
     } catch { /* 离线：用本地镜像 */ }
@@ -646,41 +666,6 @@
       note($('ts-pause-state'), on ? '已打开：顶栏出现暂停按钮' : '已关闭：按钮不再显示', on ? 'ok' : '');
     } catch {
       note($('ts-pause-state'), '保存到账号失败，已记在本浏览器', 'bad');
-    }
-  }
-
-  const PROMPT_KEY = 'tmux-prompt-card';
-  function paintPromptCard(on) {
-    for (const button of document.querySelectorAll('[data-ts-prompt]')) {
-      button.classList.toggle('on', (button.dataset.tsPrompt === 'on') === on);
-    }
-    try { localStorage.setItem(PROMPT_KEY, on ? 'on' : 'off'); } catch {}
-    // 控制台据此决定要不要轮询 /prompt
-    window.dispatchEvent(new CustomEvent('tmuxweb:prompt-card', {detail: on}));
-  }
-
-  async function loadPromptCardPref() {
-    let on = false;
-    try { on = localStorage.getItem(PROMPT_KEY) === 'on'; } catch {}
-    paintPromptCard(on);
-    try {
-      const data = await api('/api/prefs');
-      const server = (data.prefs || {}).prompt_card;
-      if (server === 'on' || server === 'off') paintPromptCard(server === 'on');
-    } catch { /* 离线：用本地镜像 */ }
-  }
-
-  async function savePromptCardPref(on) {
-    paintPromptCard(on);
-    try {
-      await api('/api/prefs', {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({prompt_card: on ? 'on' : 'off'}),
-      });
-      note($('ts-prompt-state'), on ? '已打开（立即生效）' : '已关闭（立即生效）', on ? 'ok' : '');
-    } catch {
-      note($('ts-prompt-state'), '保存到账号失败，已记在本浏览器', 'bad');
     }
   }
 
@@ -1288,14 +1273,16 @@
     $('ts-transfer-direct').addEventListener('click', () => toggleTransferDirect());
     $('ts-sidebar-memory').addEventListener('click', () => toggleSidebarMemory());
     $('ts-preview-delay').addEventListener('change', event => savePreviewDelay(event.target.value));
-  for (const button of document.querySelectorAll('[data-ts-prompt]')) {
-    button.addEventListener('click', () => savePromptCardPref(button.dataset.tsPrompt === 'on'));
-  }
-  loadPromptCardPref();
   for (const button of document.querySelectorAll('[data-ts-pause]')) {
     button.addEventListener('click', () => savePauseButtonPref(button.dataset.tsPause === 'on'));
   }
-  loadPauseButtonPref();
+  $('ts-manual-inspect').onclick = toggleManualInspect;
+  window.addEventListener('storage', event => {
+    if (event.key !== 'tmux-manual-inspect') return;
+    inspectWrites++;
+    paintManualInspect(event.newValue === 'on');
+  });
+  loadExperimentalPrefs();
   $('ts-tunnel-start').addEventListener('click', () => toggleTunnel(true));
   $('ts-tunnel-stop').addEventListener('click', () => toggleTunnel(false));
   $('ts-tunnel-toggle').addEventListener('click', () => loadTunnel());

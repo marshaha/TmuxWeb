@@ -10,7 +10,10 @@
   let getPane = () => '';
   let timer = 0;
   let open = false;
-  let expanded = new Set();
+  const expanded = new Set();
+  let view;
+  let loading = false;
+  let loaded = false;
 
   const $ = id => document.getElementById(id);
 
@@ -65,7 +68,7 @@
     renderRows();
     try {
       const response = await fetch(`/api/agents/calls/${encodeURIComponent(callId)}`,
-        {credentials: 'same-origin'});
+        {credentials: 'same-origin', signal: view.signal});
       if (!response.ok) return;
       const full = await response.json();
       const item = document.querySelector(`.ag-call[data-call-id="${CSS.escape(callId)}"]`);
@@ -109,7 +112,7 @@
     if (existing) { existing.remove(); return; }
     try {
       const response = await fetch(`/api/events/${encodeURIComponent(eventId)}`,
-        {credentials: 'same-origin'});
+        {credentials: 'same-origin', signal: view.signal});
       if (!response.ok) return;
       const full = await response.json();
       const body = document.createElement('div');
@@ -125,33 +128,24 @@
     if (!list) return;
     list.innerHTML = '';
     for (const event of events) list.appendChild(eventRow(event));
-    const empty = $('events-empty');
-    if (empty) empty.hidden = events.length > 0;
-  }
 
-  async function loadEvents() {
-    const pane = getPane();
-    if (!open || !pane) return;
-    try {
-      const response = await fetch(`/api/events?pane=${encodeURIComponent(pane)}&limit=60`,
-        {credentials: 'same-origin'});
-      if (!response.ok) return;
-      const data = await response.json();
-      events = data.events || [];
-      const count = $('agents-count');
-      if (count) count.textContent = events.length ? `${events.length} 条` : '';
-      renderEvents();
-    } catch (_error) { /* 下一轮再说 */ }
   }
 
   function setTab(next) {
-    tab = next;
+    tab = next === 'events' ? 'events' : 'calls';
+    if (view) view.abort();
+    view = null;
+    cache = [];
+    events = [];
+    expanded.clear();
+    loaded = loading = false;
     const calls = $('agents-list'), evs = $('events-list');
-    const callsEmpty = $('agents-empty'), evsEmpty = $('events-empty');
-    if (calls) calls.hidden = tab !== 'calls';
-    if (evs) evs.hidden = tab !== 'events';
-    if (callsEmpty) callsEmpty.hidden = tab !== 'calls' || cache.length > 0;
-    if (evsEmpty) evsEmpty.hidden = tab !== 'events' || events.length > 0;
+    calls.replaceChildren();
+    evs.replaceChildren();
+    calls.hidden = tab !== 'calls';
+    evs.hidden = tab !== 'events';
+    $('agents-empty').hidden = $('events-empty').hidden = true;
+    $('agents-count').textContent = '';
     const title = $('agents-title');
     if (title) title.textContent = tab === 'calls' ? '子 agent' : '操作日志';
     for (const [id, value] of [['ag-tab-calls', 'calls'], ['ag-tab-events', 'events']]) {
@@ -160,7 +154,11 @@
       button.classList.toggle('on', value === tab);
       button.setAttribute('aria-selected', value === tab ? 'true' : 'false');
     }
-    if (tab === 'calls') load(); else loadEvents();
+    if (open && getPane()) {
+      view = new AbortController();
+      view.pane = getPane();
+      refresh();
+    }
   }
 
   let cache = [];
@@ -169,26 +167,53 @@
     if (!list) return;
     list.innerHTML = '';
     for (const call of cache) list.appendChild(row(call));
-    const empty = $('agents-empty');
-    if (empty) empty.hidden = cache.length > 0;
+
   }
 
-  async function load() {
-    const pane = getPane();
-    if (!open || !pane) return;
+  async function refresh() {
+    if (!open || !getPane()) return;
+    if (!view || view.pane !== getPane()) { setTab(tab); return; }
+    if (loading) return;
+    const active = view;
+    const calls = tab === 'calls';
+    const pane = encodeURIComponent(active.pane);
+    const empty = $(calls ? 'agents-empty' : 'events-empty');
+    const count = $('agents-count');
+    const url = calls ? `/api/agents/calls?pane=${pane}&limit=40` : `/api/events?pane=${pane}&limit=60`;
+    loading = true;
+    if (!loaded) {
+      empty.textContent = '正在读取…';
+      empty.hidden = false;
+    }
     try {
-      const response = await fetch(`/api/agents/calls?pane=${encodeURIComponent(pane)}&limit=40`,
-        {credentials: 'same-origin'});
-      if (!response.ok) return;
+      const response = await fetch(url, {credentials:'same-origin', signal:active.signal});
+      if (!response.ok) throw new Error(String(response.status));
       const data = await response.json();
-      cache = data.calls || [];
-      const count = $('agents-count');
-      if (count) {
-        const running = cache.filter(call => call.status === 'running').length;
-        count.textContent = cache.length ? (running ? `${cache.length} 个 · ${running} 在跑` : `${cache.length} 个`) : '';
+      if (view !== active || getPane() !== active.pane) return;
+      const items = calls ? data.calls : data.events;
+      if (!Array.isArray(items)) throw new Error('invalid list');
+      if (!loaded || JSON.stringify(items) !== JSON.stringify(calls ? cache : events)) {
+        if (calls) {
+          cache = items;
+          renderRows();
+        } else {
+          events = items;
+          renderEvents();
+        }
       }
-      renderRows();
-    } catch (_error) { /* 网络抖动：下一轮再说 */ }
+      loaded = true;
+      const running = calls && items.filter(call => call.status === 'running').length;
+      count.textContent = items.length ? items.length + ' 条' + (running ? ' · ' + running + ' 在跑' : '') : '';
+      empty.textContent = calls ? '当前窗格还没有 relay 问答记录' : '当前窗格还没有操作记录';
+      empty.hidden = items.length > 0;
+    } catch (_error) {
+      if (view === active) {
+        if (loaded) count.textContent = '刷新失败';
+        else empty.textContent = '暂时无法读取，稍后重试';
+      }
+    } finally {
+      if (view === active) loading = false;
+    }
   }
 
   function setOpen(next) {
@@ -198,12 +223,14 @@
     const button = $('agents-button');
     if (button) button.setAttribute('aria-pressed', open ? 'true' : 'false');
     if (open) {
-      setTab(tab);
+      setTab('calls');
       clearInterval(timer);
-      timer = setInterval(() => { if (!document.hidden) (tab === 'calls' ? load() : loadEvents()); }, POLL_MS);
+      timer = setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
     } else {
       clearInterval(timer);
       timer = 0;
+      if (view) view.abort();
+      view = null;
     }
   }
 
@@ -237,7 +264,7 @@
     },
     open: () => setOpen(true),
     close: () => setOpen(false),
-    refresh: () => (tab === 'calls' ? load() : loadEvents()),
+    refresh,
     tab: value => setTab(value),
     state: () => ({open, tab, count: cache.length, events: events.length}),
   };

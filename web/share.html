@@ -13,15 +13,20 @@
 
     /* iOS zooms the page when a field under 16px takes focus and never zooms back out */
     @media(max-width:760px){input,textarea,select{font-size:16px!important}}
+      .app{grid-template-rows:auto minmax(0,1fr) auto}.top{min-height:58px;flex-wrap:wrap;gap:6px;padding-block:7px}.title{flex:1}.tools,.terminal-keys{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+    .tools button,.tools select,.terminal-keys button{max-width:100%;min-width:0;min-height:32px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink);padding:3px 8px;font:inherit;overflow-wrap:anywhere}
+    .tools select{max-width:min(190px,85vw)}.tools button[aria-pressed=true]{border-color:var(--accent)}[hidden]{display:none!important}
+    .terminal-pane{margin:0;padding:12px;white-space:pre;overflow:auto;width:100%;height:100%;color:var(--ink);background:var(--card);font:13px/1.45 ui-monospace,monospace}
+    .terminal-keys{margin:5px auto;max-width:900px;flex-wrap:nowrap;overflow-x:auto;overscroll-behavior-x:contain}.terminal-keys button{flex:none;white-space:nowrap}.composer{min-width:0}.share-note{flex-basis:100%;overflow-wrap:anywhere;font-size:12px;color:var(--muted)}
   </style>
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
 </head>
 <body>
 <div class="app">
-  <header class="top"><div class="title">__SHARE_TITLE__</div><span class="badge">共享会话</span></header>
-  <main class="scroll" id="scroll"><div class="messages" id="messages"></div></main>
-  <section class="composer" id="composer"><div class="card"><textarea id="input" placeholder="继续提问…"></textarea><button class="send" id="send">↑</button></div></section>
+  <header class="top"><div class="title">__SHARE_TITLE__</div><span class="badge">共享会话</span><div class="tools"><button id="terminal-mode" type="button" aria-pressed="false" hidden>终端</button><button id="choose-model" type="button" hidden>切换模型</button><select id="model-options" aria-label="选择模型" hidden></select></div><div id="share-note" class="share-note" role="status" hidden></div></header>
+  <main class="scroll" id="scroll"><div class="messages" id="messages"></div><pre class="terminal-pane" id="terminal-screen" tabindex="0" aria-label="共享终端" aria-description="Shift 加 Escape 返回终端切换按钮" hidden></pre></main>
+  <section class="composer" id="composer"><div class="terminal-keys" id="terminal-keys" aria-label="终端按键" hidden></div><div class="card"><textarea id="input" placeholder="继续提问…"></textarea><button class="send" id="send">↑</button></div></section>
 </div>
 <div class="login" id="login" hidden><form class="login-card" id="login-form"><h1>访问共享对话</h1><p>输入分享密码后继续查看和提问。</p><input id="password" type="password" autocomplete="current-password" placeholder="分享密码"><button>进入对话</button><div class="error" id="login-error"></div></form></div>
 <script type="module">
@@ -31,11 +36,107 @@ import {marked} from '/share-assets/marked.esm.js';
   const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   marked.use({renderer:{html(token){return esc(String(token&&(token.text!=null?token.text:token.raw)||''));}}});
   const markdown=text=>marked.parse(String(text==null?'':text),{gfm:true,breaks:false,async:false});
+  const allowModel=__SHARE_MODEL__,allowTerminal=__SHARE_TERMINAL__;
+  const screen=$('terminal-screen'),modeButton=$('terminal-mode'),modelButton=$('choose-model'),modelOptions=$('model-options');
+  let terminalMode=false,generation=0,keys=Promise.resolve(),lastMessages=[],signature='';
+  function note(text){$('share-note').textContent=text;$('share-note').hidden=!text;}
+  async function sharedApi(action,body){
+    const r=await fetch('/share/'+encodeURIComponent(slug)+'/api/'+action,body===undefined?{cache:'no-store'}:
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(!r.ok){if(r.status===401)$('login').hidden=false;throw Object.assign(new Error(d.detail||'读取失败'),{status:r.status});}
+    return d;
+  }
+  function setMode(on){
+    clearTimeout(timer);generation++;terminalMode=on;modeButton.setAttribute('aria-pressed',String(on));
+    modeButton.textContent=on?'返回聊天':'终端';messages.hidden=on;screen.hidden=!on;
+    if(allowInput)$('terminal-keys').hidden=!on;
+    note('');lastMtime=null;signature='';input.placeholder=on?'输入到此窗格…':'继续提问…';
+    if(on){screen.textContent='正在读取终端…';screen.focus();}refresh();
+  }
+  modeButton.hidden=!allowTerminal;modeButton.onclick=()=>setMode(!terminalMode);
+  modelButton.hidden=!allowModel;
+  modelButton.onclick=async()=>{
+    if(!modelOptions.hidden){modelOptions.hidden=true;return;}
+    modelButton.disabled=true;note('');
+    try{
+      const d=await sharedApi('models');modelOptions.replaceChildren(new Option('选择模型',''));
+      const append=(model,provider)=>modelOptions.add(new Option((provider?provider+' · ':'')+model,JSON.stringify({model,provider})));
+      if(!d.picker_only){
+        if(d.groups.length){for(const group of d.groups)for(const model of group.models)append(model,group.provider);}
+        else for(const model of d.presets)append(model,'');
+      }
+      if(allowTerminal&&allowInput)modelOptions.add(new Option('打开原生模型菜单',JSON.stringify({model:''})));
+      if(modelOptions.length===1)note('此会话没有可直接选择的模型。原生菜单需要终端和输入权限。');
+      else{modelOptions.hidden=false;modelOptions.focus();if(d.current)note('当前模型 · '+d.current);}
+    }catch(error){note(error.message);}finally{modelButton.disabled=false;}
+  };
+  modelOptions.onchange=async()=>{
+    if(!modelOptions.value)return;
+    const choice=JSON.parse(modelOptions.value);modelOptions.disabled=true;
+    try{await sharedApi('model',choice);modelOptions.hidden=true;if(!choice.model)setMode(true);else note('已发送模型切换命令 · '+choice.model);}
+    catch(error){note(error.message);}finally{modelOptions.disabled=false;modelOptions.selectedIndex=0;}
+  };
+  const keyMap={ArrowUp:'Up',ArrowDown:'Down',ArrowLeft:'Left',ArrowRight:'Right',Enter:'Enter',Escape:'Escape',Tab:'Tab',' ':'Space'};
+  function sendKey(key){const active=generation;keys=keys.then(async()=>{
+    if(!terminalMode||active!==generation)return;
+    try{await sharedApi('terminal/key',{key});}catch(error){note(error.message);}
+  });}
+  if(allowInput&&allowTerminal){
+    for(const [label,key] of [['↑','Up'],['↓','Down'],['←','Left'],['→','Right'],['Tab','Tab'],['Esc','Escape'],['Enter','Enter']]){
+      const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=()=>sendKey(key);$('terminal-keys').append(b);
+    }
+    screen.onkeydown=e=>{
+      if(e.shiftKey&&e.key==='Escape'){e.preventDefault();modeButton.focus();return;}
+      if(e.isComposing||e.altKey||e.metaKey)return;
+      const key=e.ctrlKey?(['c','d','q','u'].includes(e.key)?'C-'+e.key:null):
+        e.key==='Tab'?(e.shiftKey?'BTab':'Tab'):keyMap[e.key]||(/^[A-Za-z0-9]$/.test(e.key)?e.key:null);
+      if(key){e.preventDefault();sendKey(key);}
+    };
+  }
   function setScreenMode(){const field=document.getElementById('input');
     if(field)field.placeholder='在终端中输入…';}
   function renderScreen(text){messages.innerHTML=`<article class="message assistant"><div><pre class="screen">${esc(text||'')}</pre></div></article>`;scroll.scrollTop=scroll.scrollHeight;}
-  function render(list){messages.innerHTML=list.map(m=>`<article class="message ${m.role}"><div><div class="bubble ${m.role==='assistant'?'markdown':''}">${m.role==='assistant'?markdown(m.text):esc(m.text)}</div>${m.status?`<div class="pending ${pendingClass(m.status)}">${m.status}</div>`:''}</div></article>`).join('')+pending.map(m=>`<article class="message user"><div><div class="bubble">${esc(m.text)}</div><div class="pending ${pendingClass(m.status)}">${m.status}</div></div></article>`).join('');scroll.scrollTop=scroll.scrollHeight;}
-  async function refresh(){try{const r=await fetch(`/share/${encodeURIComponent(slug)}/api/transcript?limit=300`,{cache:'no-store'});if(r.status===401){$('login').hidden=false;return;}if(r.status===410){messages.innerHTML='<p>此分享已过期或被撤销。</p>';return;}if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();applyResend(d);if(d.mode==='screen'){setScreenMode();if(d.mtime!==lastMtime){lastMtime=d.mtime;renderScreen(d.content);}timer=setTimeout(refresh,1000);return;}if(d.mtime!==lastMtime){lastMtime=d.mtime;pending=pending.filter(p=>!d.messages.some(m=>m.role==='user'&&String(m.text).includes(p.text)));render(d.messages);}timer=setTimeout(refresh,1000);}catch(e){timer=setTimeout(refresh,2000);}}
+  function render(list){
+    const rows=list.concat(pending.map(p=>({...p,role:'user'}))).slice(-500);
+    // Keep every message; large tables can otherwise exhaust the page's DOM budget.
+    let richBudget=8500;
+    messages.innerHTML=rows.map(m=>{
+      const role=m.role==='assistant'?'assistant':'user';
+      let body=esc(m.text||'');
+      if(role==='assistant' && richBudget>0){
+        const html=markdown(m.text),elements=(html.match(/<[a-z][^>]*>/gi)||[]).length;
+        if(elements<=richBudget){body=html;richBudget-=elements;}
+      }
+      const status=m.status?'<div class="pending '+pendingClass(m.status)+'">'+esc(m.status)+'</div>':'';
+      return '<article class="message '+role+'"><div><div class="bubble '+(role==='assistant'?'markdown':'')+'">'+body+'</div>'+status+'</div></article>';
+    }).join('');scroll.scrollTop=scroll.scrollHeight;
+  }
+  function changedPermissions(d){
+    return d && (Boolean(d.allow_input)!==allowInput||Boolean(d.allow_model_switch)!==allowModel||Boolean(d.allow_terminal)!==allowTerminal);
+  }
+  async function refresh(){
+    const active=generation;
+    try{
+      const d=await sharedApi(terminalMode?'terminal':'transcript?limit=500&sig='+encodeURIComponent(signature));
+      if(active!==generation)return;
+      if(changedPermissions(d.permissions)){location.reload();return;}
+      if(d.unchanged){timer=setTimeout(refresh,1000);return;}
+      const changed=Boolean(d.signature&&d.signature!==signature);
+      signature=d.signature||'';
+      applyResend(d);
+      if(terminalMode){if(screen.textContent!==d.content)screen.textContent=d.content||'';}
+      else if(d.mode==='screen'){setScreenMode();if(d.mtime!==lastMtime){lastMtime=d.mtime;renderScreen(d.content);}}
+      else{if(changed||d.mtime!==lastMtime||lastMtime==null){lastMtime=d.mtime;lastMessages=d.messages||[];
+        pending=pending.filter(p=>!lastMessages.some(m=>m.role==='user'&&String(m.text).includes(p.text)));render(lastMessages);}}
+      timer=setTimeout(refresh,1000);
+    }catch(e){
+      if(active!==generation)return;
+      if(e.status===403){try{if(changedPermissions(await sharedApi('meta'))){location.reload();return;}}catch{}}
+      if([401,403,409,410].includes(e.status)){note(e.message);screen.textContent='';messages.replaceChildren();return;}
+      note(e.message);timer=setTimeout(refresh,2500);
+    }
+  }
   // 和主页同一份映射：后台重试的终态 → 待发送项该变成什么。
   function resendAction(resend){
     if(!resend||!resend.status)return null;
@@ -56,8 +157,30 @@ import {marked} from '/share-assets/marked.esm.js';
   }
   function inputResultText(result){return result&&result.status==='pasted_not_submitted'?'已粘贴但未提交':result&&(result.status==='retrying'||result.retrying)?'正在重试提交…':'已发送 ✓';}
   function pendingClass(s){return s==='已发送 ✓'?'ok':(s==='发送失败'||s==='已粘贴但未提交')?'fail':'';}
-  async function sendMessage(){if(!allowInput)return;const text=input.value;if(!text.trim())return;input.value='';const item={text,status:'发送中 …'};pending.push(item);render([]);send.disabled=true;try{const r=await fetch(`/share/${encodeURIComponent(slug)}/api/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:true})});if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();item.status=inputResultText(d);}catch(e){item.status='发送失败';}finally{send.disabled=false;render([]);}}
-  $('login-form').onsubmit=async e=>{e.preventDefault();const body=new URLSearchParams({password:$('password').value});const r=await fetch(`/share/${encodeURIComponent(slug)}/login`,{method:'POST',body,redirect:'manual'});if(r.status===401){$('login-error').textContent='密码错误';return;}location.reload();};send.onclick=sendMessage;input.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&matchMedia('(min-width:761px)').matches){e.preventDefault();sendMessage();}};if(!allowInput){const composer=$('composer');if(composer)composer.innerHTML='<div class="card readonly">只读分享：可以查看内容，但不能发送消息。</div>';const badge=document.querySelector('.badge');if(badge){badge.textContent='只读';badge.classList.add('readonly');}input.disabled=true;send.disabled=true;}
+  async function sendMessage(){
+    if(!allowInput||send.disabled)return;
+    const text=input.value;
+    if(!text.trim())return;
+    const terminal=terminalMode,active=generation;
+    input.value='';send.disabled=true;
+    const item={text,status:'发送中 …'};
+    if(!terminal){pending.push(item);render(lastMessages);}
+    try{
+      let result;
+      if(terminal){
+        const write=keys.then(()=>{
+          if(active!==generation)throw new Error('已离开终端');
+          return sharedApi('terminal/input',{text,submit:true});
+        });
+        keys=write.catch(()=>{});
+        result=await write;
+        note(inputResultText(result));
+      }else result=await sharedApi('input',{text,submit:true});
+      item.status=inputResultText(result);
+    }catch(e){item.status='发送失败';note(e.message);if(!input.value)input.value=text;}
+    finally{send.disabled=false;if(!terminal)render(lastMessages);}
+  }
+  $('login-form').onsubmit=async e=>{e.preventDefault();const body=new URLSearchParams({password:$('password').value});const r=await fetch(`/share/${encodeURIComponent(slug)}/login`,{method:'POST',body,redirect:'manual'});if(r.status===401){$('login-error').textContent='密码错误';return;}location.reload();};send.onclick=sendMessage;input.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&matchMedia('(min-width:761px)').matches){e.preventDefault();sendMessage();}};if(!allowInput){const composer=$('composer');if(composer)composer.innerHTML='<div class="card readonly">此分享未开放文字输入。</div>';const badge=document.querySelector('.badge');if(badge){badge.textContent=allowModel?'可切换模型':'只读';if(!allowModel)badge.classList.add('readonly');}input.disabled=true;send.disabled=true;}
 if(!initiallyUnlocked)$('login').hidden=false;else refresh();
 })();
 </script>

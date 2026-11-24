@@ -1,6 +1,6 @@
 // Unit tests for the sidebar pane search in web/assets/console-app.js:
-// a local, instant filter over the loaded pane tree (no API call, no
-// transcript content search). Run with: node --test tests/js/sidebar-search.test.mjs
+// an instant metadata filter plus progressive content matches (see also
+// the browser and API tests). Run with: node --test tests/js/sidebar-search.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -210,7 +210,7 @@ test('the input sits in the header row, right of 会话, with no custom clear bu
   assert.equal(html.includes('class="tree-search"'), false);
   assert.equal(html.includes('<input id="pane-search" type="search"'), true);
   assert.equal(html.includes('placeholder="搜索…"'), true);
-  assert.equal(html.includes('title="搜索编号、服务器、模型、标题…"'), true);
+  assert.equal(html.includes('title="搜索会话信息、最近 500 条聊天；无聊天记录时查最近 200 行终端"'), true);
   // the hit count stays, but as its own line above the tree, not in the row
   assert.equal(html.includes('<div class="tree-search-count" id="pane-search-count" hidden></div>'), true);
   assert.ok(html.indexOf('id="pane-search-count"') > expand, 'count must come after the header row');
@@ -229,4 +229,12 @@ test('clearing needs no custom button: Esc still clears, the input stays type=se
   assert.equal(page.includes('pane-search-clear'), false);
   assert.equal(page.includes('function clearPaneSearch()'), true);
   assert.equal(page.includes("event.stopPropagation();clearPaneSearch()"), true);
+});
+
+test('a match in the transcript adds its pane once, with all matching ancestors', () => {
+  const content = new Map([[HERMES_39.id, {snippet: 'McpHub'}]]);
+  const view = filterHostsForSearch(HOSTS, terms('mcphub'), NEEDS, content);
+  assert.equal(view.matched, 1);
+  assert.equal(view.hosts[0].panes[0].id, HERMES_39.id);
+  assert.equal(matches({...HERMES_39, number: 390}, MACMINI, '#39'), false);
 });

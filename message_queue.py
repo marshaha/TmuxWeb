@@ -158,11 +158,12 @@ class QueueStore:
             self._connection.commit()
             return cursor.rowcount > 0
 
-    def cancel(self, item_id: str) -> bool:
+    def cancel(self, item_id: str, pane: str | None = None) -> bool:
         with self._lock:
             cursor = self._connection.execute(
-                "UPDATE pane_queue SET state='cancelled', updated=? WHERE id=? AND state IN ('pending','sending')",
-                (_now(), item_id))
+                "UPDATE pane_queue SET state='cancelled', updated=? WHERE id=? "
+                "AND state IN ('pending','sending','failed') AND (? IS NULL OR pane=?)",
+                (_now(), item_id, pane, pane))
             self._connection.commit()
             return cursor.rowcount > 0
 

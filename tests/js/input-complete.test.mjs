@@ -129,6 +129,7 @@ const wiringSrc = [
   grab('matchInputCompletion'),
   grab('filterPaneCompletions'),
   grab('filterCommandCompletions'),
+  'const skillSuggestions=()=>({items:[],hint:\'\'});',
   grab('applyCompletion'),
   grab('inputCommands'),
   grab('paneLabel'),
@@ -144,7 +145,7 @@ const wiringSrc = [
 function makeHarness({ panes, selected }) {
   const calls = { selectPane: [] };
   const dispatched = [];
-  const box = { hidden: true, innerHTML: '', querySelectorAll: () => [], addEventListener() {} };
+  const box = { dataset: {}, hidden: true, innerHTML: '', querySelectorAll: () => [], addEventListener() {} };
   const state = { selected, panes, drafts: new Map() };
   const input = {
     value: '',
@@ -230,7 +231,7 @@ test('transcriptBubble: user messages get a resend button, assistant messages do
 
 test('composer wires the completion popup and the resend action', () => {
   assert.ok(index.includes('id="input-complete"'));
-  assert.ok(index.includes('@ 跳 pane · / 插指令'));
+  assert.ok(index.includes('@ 跳 pane · / 技能和提示词'));
   assert.ok(index.includes('.input-complete{'));
   assert.ok(page.includes('data-msg-resend'));
   assert.ok(page.includes("box.addEventListener('mousedown'"));

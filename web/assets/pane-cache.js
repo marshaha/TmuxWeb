@@ -105,10 +105,11 @@
   function saveTranscript(id, data) {
     if (!id || !data || !Array.isArray(data.messages) || !data.messages.length) return false;
     const messages = data.messages.slice(-TX_MESSAGES);
+    const panePid = data.panePid || '';
     let payload = JSON.stringify({
       at: Date.now(),
       mtime: data.mtime || null,
-      provider: data.provider || '',
+      provider: data.provider || '', panePid,
       sig: data.sig || '',
       messages,
     });
@@ -116,7 +117,7 @@
       while (payload.length > PER_TX_CHARS && messages.length > 4) {
         messages.shift();
         payload = JSON.stringify({at: Date.now(), mtime: data.mtime || null,
-                                  provider: data.provider || '', sig: data.sig || '', messages});
+                                  provider: data.provider || '', panePid, sig: data.sig || '', messages});
       }
     }
     prune(MAX_TX - 1, TX_PREFIX + id);
@@ -130,7 +131,7 @@
     const age = Date.now() - (data.at || 0);
     if (maxAge && age > maxAge) return null;
     return {messages: data.messages, mtime: data.mtime, provider: data.provider,
-            sig: data.sig, age};
+            sig: data.sig, age, cachedAt:data.at, panePid:data.panePid || ''};
   }
 
   function clear() {

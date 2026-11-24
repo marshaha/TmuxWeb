@@ -200,14 +200,11 @@ class SettingsPageWiringTests(unittest.TestCase):
         self.assertIn(".retry-send{", self.page)
 
     def test_the_copy_glyph_is_the_one_from_the_icon_sheet(self):
-        """#i-copy comes from icon.png (two sheets, back one clipped); the share arrow stays as it was."""
+        """#i-copy comes from icon.png (two sheets, back one clipped)."""
         page = self.console_surface("/?pane=%251")
         self.assertIn('<symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7"', page)
         self.assertIn('rect x="1.9" y="5.7"', page)
         self.assertIn('<svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span>', page)
-        # the share button keeps the original out-of-a-box arrow
-        self.assertIn('<use href="#i-external"/>', page)
-        self.assertNotIn('<use href="#i-share"/>', page)
         self.assertNotIn("ico-mask", page)
         self.assertEqual(self.client.get("/assets/ic-copy.png").status_code, 404)
         preview = self.client.get("/preview?pane=%254").text
@@ -242,15 +239,15 @@ class SettingsPageWiringTests(unittest.TestCase):
                        "导出密码至少 6 位", "密码不对，或者文件被改过"):
             self.assertIn(marker, script)
         # one section with two tabs, not two separate rows
-        # 子节点(让别人接入) / 添加子节点 / 修改密码 / 直连地址 / 导入导出 / 插件 / 主题 / 交互菜单卡片
+        # 子节点(让别人接入) / 添加子节点 / 修改密码 / 直连地址 / 导入导出 / 插件 / 主题
         # —— every one of them starts collapsed
         # 又多了「公网地址（零配置）」一行
-        self.assertEqual(script.count('class="ts-row"'), 10, '一级「实验性」+ 两个实验开关 + 公网地址')
+        self.assertEqual(script.count('class="ts-row"'), 9, '一级「实验性」+ 暂停刷新 + 公网地址')
         self.assertIn("/api/system/addresses", script)
         self.assertIn('id="ts-direct-panel"', script)
-        # 实验性收成一个一级菜单，两个开关各开各的
+        # Chat 的交互显示方式在控制台内选择
         self.assertIn('id="ts-lab-toggle"', script)
-        self.assertIn('id="ts-prompt-toggle"', script)
+        self.assertNotIn('id="ts-prompt-toggle"', script)
         self.assertIn('id="ts-pause-toggle"', script)
         self.assertIn("toggleSubsection", script)
         # 从设置进服务器管理，回来要回设置

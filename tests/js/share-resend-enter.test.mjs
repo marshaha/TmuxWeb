@@ -49,6 +49,8 @@ test('sendMessage reads the response body instead of trusting HTTP 200', () => {
   const start = page.indexOf('  async function sendMessage()');
   assert.notEqual(start, -1, 'missing sendMessage');
   const body = page.slice(start, page.indexOf("  $('login-form')", start));
-  assert.ok(body.includes('await r.json()'), 'sendMessage must parse the response body');
+  const api = page.slice(page.indexOf('  async function sharedApi('), page.indexOf('  function setMode('));
+  assert.ok(api.includes('await r.json()'), 'shared API calls must parse the response');
+  assert.ok(body.includes("await sharedApi('input'"), 'chat sends must use the parsed response');
   assert.ok(body.includes('inputResultText('), 'sendMessage must map the result to a status text');
 });

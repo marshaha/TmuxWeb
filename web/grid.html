@@ -250,6 +250,8 @@
   </style>
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
+  <link rel="stylesheet" href="/assets/sidebar-toolbar.css?v=1">
+  <script defer src="/assets/sidebar-toolbar.js?v=1"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -265,7 +267,7 @@
   <symbol id="i-star-fill" viewBox="0 0 24 24"><path d="m12 4.6 2.3 4.9 5.3.7-3.9 3.7 1 5.3-4.7-2.6-4.7 2.6 1-5.3L4.4 10.2l5.3-.7z" fill="currentColor"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.2v4.4h-4.4"/></symbol>
   <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="6" rx="1.8"/><rect x="3.4" y="13.4" width="17.2" height="6" rx="1.8"/><path d="M7 7.6h.01M7 16.4h.01"/></symbol>
-  <symbol id="i-share" viewBox="0 0 24 24"><circle cx="17.4" cy="6" r="2.4"/><circle cx="6.6" cy="12" r="2.4"/><circle cx="17.4" cy="18" r="2.4"/><path d="m8.8 10.8 6.4-3.6M8.8 13.2l6.4 3.6"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><g fill="currentColor" stroke="none"><path d="M5.5 9.75v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V9.75a.25.25 0 0 0-.25-.25h-2.5a.75.75 0 0 1 0-1.5h2.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 18.25 22H5.75A1.75 1.75 0 0 1 4 20.25V9.75C4 8.784 4.784 8 5.75 8h2.5a.75.75 0 0 1 0 1.5h-2.5a.25.25 0 0 0-.25.25Zm7.03-8.53 3.25 3.25a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215l-1.97-1.97v10.69a.75.75 0 0 1-1.5 0V3.56L9.28 5.53a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.25-3.25a.75.75 0 0 1 1.06 0Z"/></g></symbol>
   <symbol id="i-collapse" viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
   <symbol id="i-tree-open" viewBox="0 0 24 24"><path d="m7 6 5 4 5-4M7 13l5 4 5-4"/></symbol>
@@ -284,14 +286,14 @@
 <aside class="sidebar" id="sidebar">
   <div class="side-head">
     <div class="brand"><b>会话</b><span id="side-count">载入中…</span></div>
-    <div class="side-actions">
+    <div class="sidebar-toolbar"><div class="sidebar-tool-frame"><div class="side-actions">
       <a class="icon-btn" href="/" title="聊天（控制台）" aria-label="聊天"><svg class="ico"><use href="#i-chat"/></svg></a>
       <a class="icon-btn" href="/home" title="主页" aria-label="主页"><svg class="ico"><use href="#i-home"/></svg></a>
       <a class="icon-btn" href="/hosts" title="远程主机" aria-label="远程主机"><svg class="ico"><use href="#i-server"/></svg></a>
       <a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享"><svg class="ico"><use href="#i-share"/></svg></a>
       <button class="icon-btn" id="reload" type="button" title="刷新" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
-      <button class="icon-btn" id="side-collapse" type="button" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-collapse"/></svg></button>
-    </div>
+      </div></div>
+    <button class="icon-btn" id="side-collapse" type="button" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-collapse"/></svg></button></div>
   </div>
   <div class="tree-tools">
     <span class="tree-tools-label">会话</span>

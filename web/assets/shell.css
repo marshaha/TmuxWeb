@@ -9,26 +9,8 @@
 .side-head .brand b{font-size:14px;font-weight:650}
 .side-head .brand span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .side-head .icon-btn{width:26px;height:26px}
-/* the title sits on its own line and the icon row gets the full width underneath. A mouse cannot swipe,
-   so on a PC the icons keep their size and wrap onto a second line instead of hiding behind a scroll;
-   only a touch screen gets one row, a sideways swipe and a fading edge as the hint */
 .side-head{position:relative;flex-direction:column;align-items:stretch;gap:8px;padding:12px 10px 8px;overflow:hidden}
 .side-head .brand{flex:none;min-width:0}
-.side-actions{display:flex;gap:5px 6px;min-width:0;flex-wrap:wrap;overflow:hidden}
-.side-actions>*{flex:0 0 auto}
-.side-actions .icon-btn{width:30px;min-width:30px;max-width:30px;min-height:30px;height:30px}
-@media (pointer:coarse){
-  .side-actions{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;justify-content:flex-start;padding-right:16px;
-      scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
-  .side-actions::-webkit-scrollbar{display:none}
-  .side-actions .icon-btn{width:34px;min-width:34px;max-width:34px;min-height:34px;height:34px}
-  .side-head::after{content:'';position:absolute;right:10px;bottom:8px;width:20px;height:34px;pointer-events:none;
-      background:linear-gradient(to right,rgba(255,255,255,0),var(--surface,#fff))}
-}
-/* desktop has no touch: the buttons share the row and always all fit rather than hiding behind a scroll */
-@media (pointer:coarse){.side-actions{justify-content:flex-start}
-    .side-actions>*{flex:0 0 auto;min-width:30px;max-width:34px}
-    .side-actions .icon-btn{flex:0 0 auto;width:34px;min-width:30px;max-width:34px}}
 .tree-tools{display:flex;align-items:center;gap:6px;padding:2px 10px 4px}
 .tree-tools-label{flex:1;min-width:0;color:var(--faint);font-size:11px;letter-spacing:.06em}
 .tree-tool{display:grid;place-items:center;width:24px;height:24px;padding:0;border:1px solid var(--line);border-radius:7px;background:var(--card-hover);color:var(--muted);cursor:pointer}

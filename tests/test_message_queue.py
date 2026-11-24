@@ -2,6 +2,7 @@
 import asyncio
 import os
 import sys
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -42,7 +43,7 @@ class QueueStoreTests(unittest.TestCase):
         self.assertEqual(self.store.list("%4"), [], "发完就从待发列表里消失")
         self.assertEqual(self.store.list("%4", include_done=True)[0].state, "sent")
 
-    def test_cancel_only_touches_pending_or_sending(self):
+    def test_cancel_leaves_sent_items_alone(self):
         item = self.store.add("%4", "x")
         self.assertTrue(self.store.cancel(item.id))
         self.assertFalse(self.store.cancel(item.id), "已经取消过的不再动")
@@ -102,6 +103,26 @@ class QueueWorkerTests(unittest.TestCase):
                 return True
             time.sleep(0.2)
         return False
+
+    def test_unsubmitted_paste_finishes_without_replaying_the_message(self):
+        client = self.start()
+        with mock.patch.object(self.tmux, "send", return_value=False) as send:
+            item = client.post("/api/panes/%254/queue", json={"text": "fixture", "mode": "steer"}).json()["item"]
+            path = Path(self.tmp.name) / "queue.db"
+            with sqlite3.connect(path) as db:
+                def result():
+                    return db.execute("select state,attempts from pane_queue where id=?", (item["id"],)).fetchone()
+                self.assertTrue(self.wait_for(lambda: result()[0] == "failed"))
+                self.assertEqual(result(), ("failed", 1))
+            send.assert_called_once()
+            wrong = client.delete(f"/api/panes/%255/queue/{item['id']}")
+            self.assertEqual(wrong.status_code, 404)
+            visible = client.get("/api/panes/%254/queue").json()["items"]
+            self.assertEqual([row["id"] for row in visible], [item["id"]])
+            removed = client.delete(f"/api/panes/%254/queue/{item['id']}")
+            self.assertEqual(removed.status_code, 200)
+            self.assertEqual(client.get("/api/panes/%254/queue").json()["items"], [])
+            send.assert_called_once()
 
     def test_an_idle_pane_gets_the_queued_message(self):
         client = self.start()

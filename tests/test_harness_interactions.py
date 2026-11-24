@@ -92,6 +92,25 @@ class InteractionTests(unittest.TestCase):
                 self.assertEqual((run.returncode, run.stdout, run.stderr), (0, "", ""))
                 self.assertEqual(len(native_waits(panes, home).get("%4", [])), count)
 
+    def test_codex_permission_without_tool_id_tracks_each_callback_and_expires(self):
+        data = {"session_id": "s", "turn_id": "t", "tool_name": "Bash", "tool_input": {"command": "example task"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            db = home / ".config/tmuxweb-agent/interactions.sqlite3"
+            pane = [{"pane_id": "%4", "pane_pid": "135", "provider": "codex"}]
+            start = time.time()
+            requests = [observation("codex", "PermissionRequest", data) for _ in range(2)]
+            self.assertNotEqual(requests[0][1], requests[1][1])
+            for req in requests:
+                record(db, "%4", "135", "codex", req, start)
+            self.assertEqual(len(native_waits(pane, home)["%4"]), 2)
+            done = observation("codex", "PostToolUse", dict(data, tool_use_id="tool-id"))
+            record(db, "%4", "135", "codex", done, start + 1)
+            record(db, "%4", "135", "codex", requests[0], start)
+            self.assertEqual(native_waits(pane, home), {})
+            record(db, "%4", "135", "codex", observation("codex", "PermissionRequest", data), start + 2)
+            self.assertEqual(len(native_waits(pane, home)["%4"]), 1)
+
     def test_events_from_other_providers(self):
         for provider, event in (("codex", "PermissionRequest"), ("kimi", "PermissionRequest"),
                                 ("gemini", "Notification"), ("claude", "Elicitation")):

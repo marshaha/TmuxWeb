@@ -155,7 +155,8 @@ def ask(transport, pane_id: str, question: str, *, source: str = "", provider: s
     prompt = build_prompt(question, token, source)
     # The instruction lines contain the marker; never mistake them for a reply.
     instruction_lines = {line.strip() for line in prompt.splitlines() if line.strip()}
-    transport.send(pane_id, prompt, True)
+    if transport.send(pane_id, prompt, True) is False:
+        raise RelayError(f"{pane_id}: pasted but Enter submission was not confirmed")
     deadline = started + timeout
     while time.monotonic() < deadline:
         time.sleep(poll_interval)

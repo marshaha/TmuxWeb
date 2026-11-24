@@ -495,6 +495,49 @@ class AgentRegistryUnitTests(unittest.TestCase):
         self.assertFalse(self.registry.is_online("h1"))
 
 
+class SidebarSearchTransportTests(unittest.TestCase):
+    def test_online_agent_on_an_ssh_host_and_disconnect_fallback(self):
+        store = FakeRemoteStore()
+        host = store.add_host(name="fixture", hostname="fixture.invalid", port=22, username="test",
+                              auth_type="agent", credential="", host_key="", fingerprint="", transport="ssh")
+        app = create_app(FakeTmux(), password=PASSWORD, session_secret="test", remote_store=store,
+                         terminal_factory=FakeTerminalFactory(), share_db=":memory:", home_db=":memory:")
+        registry = app.state.plugins.loaded["agent"].registry
+        def listing(runner, **kwargs):
+            return [{"id":runner.host["id"]+"~%"+str(i), "pane_id":"%"+str(i),
+                     "host_id":runner.host["id"], "command":"sh"} for i in range(3)]
+        def capture(runner, pane_id, *args, **kwargs):
+            return runner.run("fixture read", resolve_tmux=False).stdout.decode()
+        def ssh(runner, command, **kwargs):
+            runner.used_transports.add("ssh")
+            return subprocess.CompletedProcess(command, 0, b"ssh fixture", b"")
+        with TestClient(app) as client, mock.patch.object(SSHRunner, "list_panes", listing), \
+                mock.patch.object(SSHRunner, "capture", capture), mock.patch.object(SSHRunner, "run", autospec=True, side_effect=ssh) as ssh_call, \
+                mock.patch.object(registry, "status", return_value={"agent_online": True}) as status, \
+                mock.patch.object(registry, "call") as call:
+            client.post("/login", data={"password":PASSWORD})
+            client.get("/api/hosts")
+            def find(pane, cached=False):
+                return client.post("/api/search/pane-content", params={"cached_only":cached},
+                                   json=[{"pane":host["id"]+"~%"+str(pane),"terms":["fixture"]}]).json()["results"][0]
+            self.assertEqual(find(0, True)["next"], "agent")
+            call.assert_not_called()
+            call.return_value = {"ok":True, "results":[_ok(b"agent fixture")]}
+            self.assertEqual(find(0)["routes"], ["agent"])
+            ssh_call.assert_not_called()
+            self.assertEqual(find(0, True)["routes"], ["server_cache"])
+            call.side_effect = agent_transport.AgentUnavailable("gone")
+            self.assertEqual(find(1)["routes"], ["ssh"])
+            self.assertEqual(ssh_call.call_count, 1)
+            call.side_effect = RuntimeError("timeout")
+            self.assertTrue(find(2)["unavailable"])
+            self.assertEqual(ssh_call.call_count, 1, "a busy agent must not duplicate work over SSH")
+            status.return_value = {"agent_online":False}
+            self.assertEqual(find(2, True)["next"], "ssh")
+            self.assertEqual(find(2)["routes"], ["ssh"])
+            self.assertEqual(store.get_host(host["id"])["transport"], "ssh")
+
+
 class AgentTransportTests(unittest.TestCase, _UvicornServer):
     """End to end against the real app, served on a real socket."""
 

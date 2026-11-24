@@ -1,0 +1,50 @@
+.sidebar-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  --tool-size: 32px;
+}
+.sidebar-tool-frame {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.sidebar-tool-frame > div {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 5px 4px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.sidebar-tool-frame > div::-webkit-scrollbar { display: none; }
+.sidebar-toolbar .icon-btn {
+  flex: none;
+  width: var(--tool-size);
+  height: var(--tool-size);
+  min-width: var(--tool-size);
+  min-height: var(--tool-size);
+}
+.sidebar-tool-frame::before, .sidebar-tool-frame::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset-block: 0;
+  width: 14px;
+  pointer-events: none;
+  opacity: 0;
+}
+.sidebar-tool-frame::before {
+  left: 0;
+  background: linear-gradient(to right, var(--toolbar-edge, var(--surface)), transparent);
+}
+.sidebar-tool-frame::after {
+  right: 0;
+  background: linear-gradient(to left, var(--toolbar-edge, var(--surface)), transparent);
+}
+.sidebar-tool-frame.more-left::before, .sidebar-tool-frame.more-right::after { opacity: 1; }
+@media (pointer: coarse) {
+  .sidebar-toolbar { --tool-size: 40px; }
+}

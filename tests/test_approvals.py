@@ -130,15 +130,9 @@ class AutoAnswerWiringTests(unittest.TestCase):
 
     def test_the_card_asks_before_it_remembers_anything(self):
         page = self.client.get("/assets/prompt-card.js").text
-        self.assertIn("rememberChoice && lastSignature", page)
-        self.assertIn("rememberScope = 'turn'", page, "默认只记本轮，不是一直")
-        self.assertIn("grantAction.revision === data.prompt.revision", page)
-        self.assertIn("/approvals/${encodeURIComponent(data.grant.id)}/used", page)
-        self.assertIn("prompt-remember", self.client.get("/").text)
-        self.assertIn("data.screen, data.signature", page)
-        self.assertIn("pollController !== controller", page)
-        self.assertIn("已按你的授权自动选了", page)
-        self.assertIn("撤销", page)
+        self.assertNotIn("/approvals", page)
+        self.assertNotIn("rememberChoice", page)
+        self.assertIn("actionable(saved)", page)
 
     def test_the_menu_signature_covers_title_options_and_toggles(self):
         base = {"title": "允许编辑?", "options": [{"label": "是"}, {"label": "否"}]}

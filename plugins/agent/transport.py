@@ -426,6 +426,10 @@ class AgentTransport(SSHRunner):
             self.registry.note_transport(host_id, "ssh")
             return super().run(remote_command, input_bytes=input_bytes,
                                timeout=timeout, resolve_tmux=resolve_tmux)
+        except RuntimeError:
+            self.used_transports.add("agent")
+            raise
+        self.used_transports.add("agent")
         # A timeout (RuntimeError) propagates: the command may already have
         # run on the far side, so it must not be re-run over SSH.
         self.registry.note_transport(host_id, "agent")

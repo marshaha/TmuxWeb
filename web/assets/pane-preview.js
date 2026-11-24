@@ -17,7 +17,7 @@
 (function () {
   const canHover = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
 
-  const options = { data: null, delay: () => 2000, render: null, onChat: null, onFull: null, force: false, fetch: null };
+  const options = { data: null, canShow: null, delay: () => 2000, render: null, onChat: null, onFull: null, force: false, fetch: null };
   // 不在 /api/home 里的 pane（会话树里大多数行）：悬停时按需取一次，60 秒内复用
   const fetched = new Map();
   const FETCH_TTL = 60_000;
@@ -172,7 +172,7 @@
   }
 
   function show(anchor, paneId, settings) {
-    if (!paneId) return;
+    if (!paneId || (options.canShow && !options.canShow(paneId))) return;
     let preview = previewFor(paneId);
     const entry = entryFor(paneId);
     const empty = !entry || !(entry.agent_preview || entry.preview);
@@ -216,6 +216,10 @@
 
   function hide() {
     clearPending();
+    hidePanel();
+  }
+
+  function hidePanel() {
     clearTimeout(hideTimer);
     if (panel) panel.hidden = true;
     currentPane = null;
@@ -236,7 +240,7 @@
   function scheduleHide() {
     if (sticky) return;                     // 点击打开的预览要明确关掉
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(hide, 260);
+    hideTimer = setTimeout(hidePanel, 260);
   }
 
   /** 悬停多久才弹；null = 用户在设置里关掉了 */

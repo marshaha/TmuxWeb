@@ -19,6 +19,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.config/tmuxweb-agent/hooks/observe.py codex"
+          }
+        ]
+      }
     ]
   }
 }

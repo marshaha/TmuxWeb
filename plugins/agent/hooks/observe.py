@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Translate native human-input events into pane-scoped, read-only Chat notices."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 
 
 def text(value, size=400):
@@ -28,6 +30,23 @@ def observation(provider, event, data):
     if not session and provider != "hermes":
         return None
     request = text(data.get("tool_use_id") or data.get("tool_call_id") or data.get("call_id"), 160)
+    if provider == "codex" and data.get("tool_name") in ("Bash", "exec_command"):
+        tool_input = data.get("tool_input")
+        field = "command" if data["tool_name"] == "Bash" else "cmd"
+        command = tool_input.get(field) if isinstance(tool_input, dict) else None
+        if isinstance(command, str) and command:
+            digest = hashlib.sha256(command.encode()).hexdigest()
+            turn = text(data.get("turn_id"), 160)
+            if turn:
+                # PermissionRequest may omit tool_use_id. Each actual callback gets its
+                # own ID, including concurrent requests for identical shell commands.
+                group = "codex:" + hashlib.sha256((turn + ":" + digest).encode()).hexdigest()
+                if event == "PermissionRequest":
+                    return session, group + ":" + uuid.uuid4().hex, "open", "等待工具审批", "command-sha256:" + digest
+                if event in ("PostToolUse", "PostToolUseFailure"):
+                    return session, group, "close-command", "", ""
+            if event == "PermissionRequest" and request:
+                return session, request, "open", "等待工具审批", "command-sha256:" + digest
     detail = ""
     if provider == "hermes":
         extra = data.get("extra") or {}
@@ -111,10 +130,14 @@ def record(path, pane, pid, provider, notice, now):
             if operation == "clear":
                 db.execute("DELETE FROM waits WHERE pane=? AND pid=? AND provider=? AND session=? AND at<=?",
                            (*args, now))
+            if operation == "close-command":
+                db.execute("DELETE FROM waits WHERE pane=? AND pid=? AND provider=? AND session=? "
+                           "AND request GLOB ? AND at<=?", (*args, request + ":*", now))
             if operation == "open":
-                barrier = db.execute("SELECT at FROM waits WHERE pane=? AND pid=? AND provider=? "
-                                     "AND session=? AND request=''", args).fetchone()
-                if barrier and barrier[0] >= now:
+                group = request.rpartition(":")[0] if provider == "codex" and request.startswith("codex:") else ""
+                barrier = db.execute("SELECT MAX(at) FROM waits WHERE pane=? AND pid=? AND provider=? "
+                                     "AND session=? AND request IN ('',?)", (*args, group)).fetchone()
+                if barrier[0] is not None and barrier[0] >= now:
                     return
             db.execute("""INSERT INTO waits VALUES(?,?,?,?,?,?,?,?)
                           ON CONFLICT(pane,pid,provider,session,request) DO UPDATE SET

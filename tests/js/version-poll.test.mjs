@@ -142,8 +142,8 @@ test('the check fetches /api/version and silently skips failures', () => {
 
 test('the toast offers refresh, never reloads on its own', () => {
   const show = grab('showVersionToast');
-  assert.ok(show.includes("label.textContent='服务端已更新，刷新后使用新版'"), 'prompt text');
-  assert.ok(show.includes("refresh.textContent='立即刷新'"), 'refresh button');
+  assert.ok(show.includes("label.textContent='有新版本'"), 'prompt text');
+  assert.ok(show.includes("refresh.textContent='刷新'"), 'refresh button');
   assert.ok(show.includes("later.textContent='稍后'"), 'dismiss button');
   assert.ok(show.includes('refresh.onclick=()=>{location.reload();};'),
     'reload happens only when the user taps refresh');
@@ -236,8 +236,8 @@ test('harness: a new version shows the toast; refresh reloads only on tap', asyn
   assert.equal(h.toastEl.hidden, false);
   assert.ok(h.toastEl.classList.contains('has-action'));
   assert.ok(h.toastEl.classList.contains('show'));
-  assert.ok(h.toastEl.textContent.includes('服务端已更新'));
-  assert.deepEqual(h.buttons().map((b) => b.textContent), ['立即刷新', '稍后']);
+  assert.ok(h.toastEl.textContent.includes('有新版本'));
+  assert.deepEqual(h.buttons().map((b) => b.textContent), ['刷新', '稍后']);
   assert.equal(h.reloads.length, 0, 'no reload before the user taps anything');
   h.buttons()[0].onclick();
   assert.equal(h.reloads.length, 1, 'tapping refresh reloads once');
@@ -302,5 +302,5 @@ test('harness: a plain toast clobbering the prompt lets the next check re-show i
   await h.api.checkServerVersion();
   h.flushRaf();
   assert.equal(h.toastEl.hidden, false, 'next check re-shows the version prompt');
-  assert.ok(h.toastEl.textContent.includes('服务端已更新'));
+  assert.ok(h.toastEl.textContent.includes('有新版本'));
 });

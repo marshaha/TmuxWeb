@@ -56,14 +56,14 @@ import mcp_relay
 import agent_status
 import agent_catalog
 import agent_models
+import agent_skills
 import agent_prompts
-import needs_input
 import needs_you_inbox
 import relay
 import transcript_reader
 import tunnel as tunnel_mod
 import transfer_tickets
-from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, RemoteHostStore, RemoteTerminalSession, SSHRunner,
+from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, prompt_region_lines, RemoteHostStore, RemoteTerminalSession, SSHRunner,
                            UploadOffsetMismatch,
                           host_key_fingerprint, normalize_session_name, normalize_window_name,
                           pane_ref, scan_host_key, split_pane_ref,
@@ -73,6 +73,44 @@ LOGGER = logging.getLogger("tmux_web")
 
 PANE_RE = re.compile(r"^%[0-9]+$")
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+
+# Only SGR styling is meaningful in a read-only fragment. Strip other controls,
+# including OSC hyperlinks, before counting visible lines or exposing the payload.
+TAIL_CONTROL = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]*[0-~])|[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+TAIL_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def terminal_fragment(raw: str, lines: int) -> dict:
+    styled = TAIL_CONTROL.sub(lambda m: m[0] if TAIL_SGR.fullmatch(m[0]) else "", raw)
+    rows = styled.split("\n")
+    plain = [TAIL_SGR.sub("", row).rstrip() for row in rows]
+    visible = [i for i, row in enumerate(plain) if row][-lines:]
+    text = "\n".join(plain[i] for i in visible)[-16384:]
+    result = {"text": text}
+    if visible and "\x1b[" in styled:
+        # tmux can set a color above the first retained row and leave it active.
+        start, end = visible[0], visible[-1] + 1
+        inherited = []
+        for code in TAIL_SGR.findall("\n".join(rows[:start])):
+            if code in ("\x1b[m", "\x1b[0m") or code.startswith("\x1b[0;"):
+                inherited.clear()
+            if code not in ("\x1b[m", "\x1b[0m"):
+                inherited.append(code)
+        prefix = "".join(inherited)
+        parts = [prefix]
+        for i in range(start, end):
+            if plain[i]:
+                parts.append(rows[i].rstrip())
+                if i != end - 1:
+                    parts.append("\n")
+            else:
+                parts.extend(TAIL_SGR.findall(rows[i]))
+        colored = "".join(parts)
+        if len(colored) <= 16384 and 0 < colored.count("\x1b[") <= 192:
+            result["ansi"] = colored
+    result["digest"] = hashlib.sha1(result.get("ansi", text).encode()).hexdigest()
+    return result
+
 
 # Long polling on the transcript route: a steady-state poll hangs for up to
 # this long waiting for the session file (or the agent's running state) to
@@ -167,7 +205,6 @@ CONSOLE_BUNDLE_SOURCES = (
     ("assets", "agents-panel.js"),
     ("assets", "perf-budget.js"),
     ("assets", "chat-search.js"),
-    ("assets", "needs-you.js"),
     ("assets", "needs-you-inbox.js"),
     ("assets", "markdown-cjk.js"),
     ("assets", "video-cards.js"),
@@ -239,7 +276,7 @@ def _resolve_server_version() -> str:
 
 
 RELEASE_VERSION = (BASE_DIR / "VERSION").read_text(encoding="ascii").strip()
-SERVER_VERSION = _resolve_server_version()
+SERVER_VERSION = f"{RELEASE_VERSION}+{_resolve_server_version()}"
 
 
 # The console styles: the 42KB <style> that used to sit in <head> plus the
@@ -366,6 +403,49 @@ def _pane_needs_input_descriptor(pane: dict) -> dict:
                         or pane.get("command") or "",
             "cwd": pane.get("path") or "",
             "title": pane.get("title") or ""}
+
+
+def native_interaction(pane: dict, text: str, notices: list, *, inspect_screen: bool = False) -> dict | None:
+    """Automatic notices require native evidence. An explicit inspection may preview the screen."""
+    valid = [n for n in notices if isinstance(n, dict) and isinstance(n.get("title"), str)
+             and n["title"] and isinstance(n.get("id"), list) and len(n["id"]) == 2
+             and all(isinstance(part, str) for part in n["id"]) and n["id"][1]]
+    permission = len(valid) == 1 and valid[0]["title"] == "等待工具审批"
+    if pane.get("provider") == "codex" and (permission or inspect_screen):
+        prompt = agent_prompts.codex_command_approval(text)
+        if prompt:
+            prompt["screen_revision"] = prompt["revision"]
+            if permission and len(notices) == 1 and pane.get("pane_pid"):
+                session, request = valid[0]["id"]
+                command = prompt["options"][0]["description"][2:]
+                fingerprint = "command-sha256:" + hashlib.sha256(command.encode()).hexdigest()
+                if session and request != "permission" and valid[0].get("detail") == fingerprint:
+                    prompt.update(verified=True, read_only=False, hint="点选项批准一次或拒绝。记住前缀需在 Codex 中确认。")
+                    if len(prompt["options"]) == 3:
+                        prompt["options"][1]["native_only"] = True
+            identity = [pane.get("id"), pane.get("pane_pid"), valid, prompt["revision"]]
+            prompt["revision"] = hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
+            return prompt
+        if permission and str(valid[0].get("detail", "")).startswith("command-sha256:"):
+            # A completed command can leave the native notice behind until its close hook runs.
+            return None
+    if not valid:
+        return None
+    if len(notices) == 1 and pane.get("provider") == "hermes" and pane.get("pane_pid"):
+        notice = valid[0]
+        # The installed observer uses this fixed title only for kind=clarify.
+        if (notice["title"] == "需要回答问题" and isinstance(notice.get("detail"), str)
+                and 0 < len(notice["detail"]) < 1200):
+            prompt = agent_prompts.hermes_question(text, pane, expected_questions=notice["detail"])
+            if prompt:
+                identity = [pane.get("id"), notice["id"], prompt["revision"]]
+                prompt.update(read_only=False, verified=True,
+                              revision=hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32])
+                return prompt
+    return {"kind": "notice", "title": "交互通知", "read_only": True,
+            "options": [{"label": n["title"], "description": "命令执行" if str(n.get("detail", "")).startswith("command-sha256:") else n.get("detail", "")} for n in valid],
+            "revision": hashlib.sha256(json.dumps(valid, sort_keys=True).encode()).hexdigest(),
+            "hint": "来自 harness 事件，可展开实时作答。"}
 
 
 def _merge_agent_waiting(agent_waiting: dict, host_id: str, pane_id: str):
@@ -580,11 +660,13 @@ class TmuxBackend:
             content = self._run("capture-pane", "-p", "-J", "-t", pane_id, "-S", f"-{history}")
         return ANSI_RE.sub("", content)
 
-    def capture_ansi(self, pane_id: str, history: int = 500, pane: dict | None = None) -> str:
+    def capture_ansi(self, pane_id: str, history: int = 500, pane: dict | None = None,
+                     visible_only: bool = False) -> str:
         if pane is None:
             self.validate_pane(pane_id)
         history = max(20, min(history, 5000))
-        return self._run("capture-pane", "-p", "-J", "-e", "-t", pane_id, "-S", f"-{history}")
+        extra = () if visible_only else ("-S", f"-{history}")
+        return self._run("capture-pane", "-p", "-J", "-e", "-t", pane_id, *extra)
 
     def pane_pid(self, pane_id: str) -> str:
         return self._run("display-message", "-p", "-t", pane_id, "#{pane_pid}").strip()
@@ -797,30 +879,7 @@ class TmuxBackend:
         joined = " ".join((text or "").split())
         return joined[-40:] if joined else ""
 
-    @staticmethod
-    def _prompt_region_lines(screen: str, lines: int = 3) -> list[str]:
-        """Lines of the prompt box: from the last ❯ line to the bottom, plus the bottom lines.
-
-        The input box starts at the ❯ marker and can span many lines for a
-        long message, so a fixed line count misses a fingerprint that
-        straddles the last two input lines (the divider and status line sit
-        below them).  The transcript lives above the ❯ line, so anchoring
-        there keeps a submitted message out of the check; the bottom-lines
-        fallback covers panes whose prompt does not use ❯ (python >>>,
-        shells).  Both the wait and the post-press check use this region, so
-        they can no longer disagree about what counts as the prompt.
-        """
-        screen_lines = screen.splitlines()
-        if not screen_lines:
-            return []
-        start = len(screen_lines) - max(2, lines)
-        prompt_at = None
-        for index, line in enumerate(screen_lines):
-            if "❯" in line:
-                prompt_at = index
-        if prompt_at is not None:
-            start = min(start, prompt_at)
-        return screen_lines[max(0, start):]
+    _prompt_region_lines = staticmethod(prompt_region_lines)
 
     @staticmethod
     def _fingerprint_matches(fingerprint: str, region: str) -> bool:
@@ -914,9 +973,9 @@ class TmuxBackend:
         for attempt in range(max(1, tries)):
             self._run("send-keys", "-t", pane_id, "C-m")
             presses += 1
+            time.sleep(0.5)
             if attempt + 1 >= tries:
                 break
-            time.sleep(0.5)
             try:
                 if not self.still_in_prompt(pane_id, text):
                     break
@@ -942,7 +1001,7 @@ class TmuxBackend:
                 self._run("send-keys", "-t", pane_id, "C-u")
                 time.sleep(0.05)
             self._run("load-buffer", "-b", buffer_name, "-", input_bytes=text.encode())
-            self._run("paste-buffer", "-b", buffer_name, "-d", "-t", pane_id)
+            self._run("paste-buffer", "-p", "-b", buffer_name, "-d", "-t", pane_id)
             if submit:
                 presses = self.press_enter_until_submitted(
                     pane_id, text, python=pane.get("command") == "python3", tries=5)
@@ -1174,6 +1233,22 @@ class KeyRequest(BaseModel):
     key: str = Field(min_length=1, max_length=16)
 
 
+class TailNavigationRequest(KeyRequest):
+    snapshot: str = Field(min_length=64, max_length=64)
+
+
+class PaneContentQuery(BaseModel):
+    pane: str = Field(min_length=1, max_length=200)
+    terms: list[str] = Field(min_length=1, max_length=128)
+
+    @field_validator("terms")
+    @classmethod
+    def valid_terms(cls, terms):
+        if len(" ".join(terms)) > 256 or any(not term.strip() for term in terms):
+            raise ValueError("invalid search term")
+        return [term.casefold() for term in terms]
+
+
 class PromptChoiceRequest(BaseModel):
     """选一个菜单项（index）或者直接发一个键（key: esc/enter/yes/no/数字）。"""
 
@@ -1303,6 +1378,14 @@ class ShareCreateRequest(BaseModel):
     expires_in: int = Field(ge=300, le=60 * 60 * 24 * 90)
     # read-only by default? no: existing behaviour keeps input enabled unless asked
     allow_input: bool = True
+    allow_model_switch: bool = False
+    allow_terminal: bool = False
+
+
+class SharePermissionsRequest(BaseModel):
+    allow_input: bool
+    allow_model_switch: bool
+    allow_terminal: bool
 
 
 class ShareExtendRequest(BaseModel):
@@ -1699,7 +1782,9 @@ SHARE_SCHEMA = """
         created_at REAL NOT NULL,
         expires_at REAL NOT NULL,
         revoked_at REAL,
-        allow_input INTEGER NOT NULL DEFAULT 1
+        allow_input INTEGER NOT NULL DEFAULT 1,
+        allow_model_switch INTEGER NOT NULL DEFAULT 0,
+        allow_terminal INTEGER NOT NULL DEFAULT 0
     )
 """
 
@@ -1711,6 +1796,9 @@ def ensure_share_schema(connection) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(shares)")}
         if "allow_input" not in columns:  # databases from before read-only shares
             connection.execute("ALTER TABLE shares ADD COLUMN allow_input INTEGER NOT NULL DEFAULT 1")
+        for flag in ("allow_model_switch", "allow_terminal"):
+            if flag not in columns:
+                connection.execute(f"ALTER TABLE shares ADD COLUMN {flag} INTEGER NOT NULL DEFAULT 0")
 
 
 PLUGIN_MANAGER: dict = {}     # filled near the end of create_app: the MCP endpoint needs it earlier
@@ -1823,9 +1911,12 @@ def create_app(
     # defined above this line still read the reassigned value at call time.
     agent_status_provider = None
 
-    def runner_for(host: dict):
+    def runner_for(host: dict, *, prefer_agent: bool = False):
         """Build a runner; a host saved without a pinned key gets pinned on first use."""
         host = dict(host)
+        if prefer_agent and agent_status_provider and agent_status_provider(host["id"]).get("agent_online"):
+            # Search uses a connected, authenticated agent without changing the saved transport.
+            host["transport"] = "agent"
         chain = remote_hosts.jump_chain(host, limit=jump_max_depth)
         if chain:
             host["jump_chain"] = chain
@@ -2042,7 +2133,7 @@ def create_app(
             return None
         return federation.FedTransport(node)
 
-    def pane_or_404(pane_id: str) -> dict:
+    def pane_or_404(pane_id: str, *, prefer_agent: bool = False) -> dict:
         pane_id = resolve_pane_ref(pane_id)
         try:
             host_id, actual_pane_id = split_pane_ref(pane_id)
@@ -2057,7 +2148,7 @@ def create_app(
                     raise HTTPException(status_code=404, detail=str(exc)) from exc
             try:
                 host = remote_hosts.get_host(host_id, include_credential=True)
-                panes = runner_for(host).list_panes()
+                panes = runner_for(host, prefer_agent=prefer_agent).list_panes()
             except (KeyError, RuntimeError, OSError) as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
             for pane in panes:
@@ -2076,7 +2167,7 @@ def create_app(
                     pane, local_process_table() if pane.get("host_id") in (None, "localhost") else None)
                 or transcript_reader.provider_for_command(pane.get("command")) or "")
 
-    def pane_transport(pane_ref: str):
+    def pane_transport(pane_ref: str, *, prefer_agent: bool = False):
         pane_ref = resolve_pane_ref(pane_ref)
         try:
             host_id, pane_id = split_pane_ref(pane_ref)
@@ -2087,11 +2178,13 @@ def create_app(
         federated = fed_transport(host_id)
         if federated is not None:
             return federated, pane_id
+        if "~" in pane_id:
+            raise HTTPException(404, "invalid nested pane reference")
         try:
             host = remote_hosts.get_host(host_id, include_credential=True)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="remote host not found") from exc
-        return runner_for(host), pane_id
+        return runner_for(host, prefer_agent=prefer_agent), pane_id
 
     # The background retry loop resolves its pane fresh every round through
     # this, so it never holds a stale runner across a host change.
@@ -2154,10 +2247,6 @@ def create_app(
                 continue
         return found
 
-    # "Needs you": one gate per app process, fed once per sweep per pane (see
-    # needs_input.py — the three-legged conjunction, never parsing alone).
-    needs_gate = needs_input.NeedsInputGate()
-
     # "Needs you" inbox (borrow item 7): pane_id -> {"signature", "record_id"}
     # for lightings still open. The row is written the first time a pane
     # lights up and resolved when the wait clears; the history outlives the
@@ -2217,7 +2306,6 @@ def create_app(
         # same packet — no second round trip per host per sweep.
         captured: dict[int, dict] = {}
         native: dict[str, str] = {}
-        native_decision: dict[str, bool] = {}
         def grab_both(group):
             key, transport, host_id, pane_ids, panes, status_ids = group
             try:
@@ -2225,23 +2313,21 @@ def create_app(
                 if both is not None:
                     result = both(pane_ids, 40, status_ids=status_ids, panes=panes)
                     texts, states = result[0], result[1]
-                    decisions = result[2] if len(result) > 2 else {}
                 else:
                     texts = transport.capture_many(pane_ids, 40, panes=panes)
                     verdicts = getattr(transport, "verdicts_many", None)
                     if status_ids and verdicts is not None:
-                        states, decisions = verdicts(status_ids)
+                        states, _ = verdicts(status_ids)
                     else:
                         states = (transport.status_many(status_ids)
                                   if status_ids and hasattr(transport, "status_many") else {})
-                        decisions = {}
             except Exception:  # noqa: BLE001 - fall back to per-pane captures
-                return key, {}, [], []
+                return key, {}, []
             # host-scoped: "%8" exists on several hosts and means a different pane
             scoped = lambda mapping: [
                 (f"{host_id}~{pane_id}" if "~" not in str(pane_id) else str(pane_id), value)
                 for pane_id, value in mapping.items()]
-            return key, texts, scoped(states), scoped(decisions)
+            return key, texts, scoped(states)
         groups: dict[int, tuple] = {}
         for job in jobs:
             host_id, _, transport, pane = job
@@ -2255,12 +2341,10 @@ def create_app(
                     and (hasattr(transport, "status_many") or hasattr(transport, "verdicts_many"))):
                 entry[5].append(actual)
         with ThreadPoolExecutor(max_workers=max(1, min(8, len(groups) or 1))) as pool:
-            for index, texts, listing, decision_listing in pool.map(grab_both, list(groups.values())):
+            for index, texts, listing in pool.map(grab_both, list(groups.values())):
                 captured[index] = texts
                 for key, state in listing:
                     native[key] = state
-                for key, flag in decision_listing:
-                    native_decision[key] = bool(flag)
         phases: dict = {"capture": time.monotonic() - sweep_t0}
 
         # Host watcher (agent 1.1+): one extra batch per agent host per
@@ -2300,9 +2384,7 @@ def create_app(
         # (a status bar saying "thinking: high" is a model setting, a TUI redraws while
         # idle) while the session file records the turn boundary. Remote verdicts
         # already came back with the captures above; only localhost is probed here.
-        # The same probe also asks whether the pane is at a decision point (turn
-        # ended, or a tool call outstanding): a permission wait never writes a
-        # turn-end marker, so the status verdict alone would miss it.
+        # A turn boundary affects busy/idle display. Only a native wait can open a card.
         local_agents = [job[3] for job in jobs
                         if job[0] == "localhost"
                         and (job[3].get("provider")
@@ -2315,28 +2397,21 @@ def create_app(
                     try:
                         state = agent_status.status_for_pane(
                             provider, pane.get("path", ""), pane.get("title", ""))
-                        decision = agent_status.decision_point_for_pane(
-                            provider, pane.get("path", ""), pane.get("title", ""))
                     except Exception:  # noqa: BLE001
                         continue
-                    # the decision is recorded even when the status is unknown:
-                    # a decision point can exist without a decisive status record
-                    # (e.g. a codex tail cut to just the call)
-                    out.append((pane["id"], state, decision))
+                    out.append((pane["id"], state))
                 return out
         else:
             def probe_local():
                 return []
 
-        for key, state, decision in probe_local():
+        for key, state in probe_local():
             if state in (agent_status.BUSY, agent_status.IDLE):
                 native[key] = state
-            native_decision[key] = decision
 
         busy_window = float(os.environ.get("TMUX_WEB_ACTIVITY_BUSY_SECONDS", "3"))
         now = time.time()
 
-        screen_controls = home.get_prefs().get("prompt_card", "off") == "on"
 
         def describe(job):
             host_id, host_name, transport, pane = job
@@ -2362,37 +2437,10 @@ def create_app(
                 except Exception:  # noqa: BLE001 - one slow or dead pane must not fail the sweep
                     status, source = "unknown", "screen"
             target = pane.get("target") or ""
-            # Leg 1 is the session-file decision point only — never the derived
-            # status (activity/screen fallbacks would let a streaming pane
-            # light up). Remote panes get the same decision via verdicts_many /
-            # capture_and_status_many in the same packet as their capture.
-            # The host watcher (agent 1.1+) merges in here: an agent event
-            # wins when present, agent silence changes nothing.
-            agent_entry = _merge_agent_waiting(agent_waiting, host_id, actual_pane_id)
+            agent_entry = _merge_agent_waiting(agent_waiting, host_id, actual_pane_id) or {}
             agent_source = _agent_waiting_source(agent_entry)
-            gated_prompt = needs_gate.observe(
-                pane["id"], decision_point=effective_decision_point(
-                    surface == agent_status.IDLE,
-                    native_decision.get(pane["id"], False),
-                    bool(agent_source)),
-                screen_text=text)
-            notices = (agent_entry or {}).get("notices") or []
-            # Automatic cards also require an independent decision signal. A
-            # manual inspection can open the live dialog on hosts without hooks.
-            clarify = None
-            if provider == "hermes" and (notices or native_decision.get(pane["id"])):
-                clarify = agent_prompts.hermes_question(text, dict(pane, provider=provider))
-            if clarify:
-                gated_prompt = clarify
-            elif notices:
-                details = [{"label": item["title"], "description": item.get("detail", "")}
-                           for item in notices if isinstance(item, dict) and item.get("title")]
-                if details:
-                    gated_prompt = {"kind": "notice", "title": "交互通知", "options": details,
-                                    "revision": hashlib.sha256(json.dumps(notices, sort_keys=True).encode()).hexdigest(),
-                                    "hint": "来自 harness 事件，可展开实时作答。", "read_only": True}
-            elif gated_prompt and not screen_controls:
-                gated_prompt = dict(gated_prompt, read_only=True, hint="根据当前屏幕推测，可展开实时作答。")
+            gated_prompt = native_interaction(dict(pane, provider=provider), text,
+                                              agent_entry.get("notices") or [])
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
                     "host_name": host_name, "target": target, "provider": provider,
                     "status": status, "status_source": source, "activity_age": age,
@@ -2411,7 +2459,6 @@ def create_app(
             states = list(pool.map(describe, jobs))
         phases["describe"] = time.monotonic() - sweep_t0 - phases["capture"] - phases["needs"]
         pane_state_phases.update(phases)
-        needs_gate.prune(state["id"] for state in states)
         # A lighting is history, not just a card: record the first sighting,
         # resolve it when the wait clears. A failed write must never fail the
         # sweep — the card is the live signal, the inbox is only history.
@@ -2562,7 +2609,7 @@ def create_app(
             transport, actual_pane_id = pane_transport(row["pane_id"])
             pane = pane_or_404(row["pane_id"])
             data = transport.transcript(actual_pane_id, 1, pane=pane)
-        except (HTTPException, TmuxError, RuntimeError, ValueError) as exc:
+        except (HTTPException, TmuxError, RuntimeError, OSError, ValueError, federation.FederationError) as exc:
             raise HTTPException(status_code=409, detail="shared session is unavailable") from exc
         if str(data.get("session_id")) != row["session_id"]:
             raise HTTPException(status_code=409, detail="shared pane no longer points to the original session")
@@ -2665,7 +2712,10 @@ def create_app(
     @app.get("/api/prefs")
     async def read_prefs(request: Request):
         require_auth(request)
-        return {"prefs": home.get_prefs()}
+        prefs = home.get_prefs()
+        if "prompt_card" in prefs:
+            prefs["prompt_card"] = "off"
+        return {"prefs": prefs}
 
     @app.put("/api/prefs")
     async def write_prefs(request: Request):
@@ -2677,14 +2727,14 @@ def create_app(
             raise HTTPException(status_code=400, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="expected an object of preferences")
-        allowed = {"theme", "sidebar", "preview", "prompt_card", "transfer", "pause_button"}
+        allowed = {"theme", "sidebar", "preview", "prompt_card", "transfer", "pause_button", "manual_inspect"}
         # preview = 侧栏悬停预览的延迟（off 关闭；1/2/3 秒）
-        # prompt_card = 聊天里的 agent 交互菜单卡片（实验性，默认 off）
+        # Older clients still PUT prompt_card. This legacy screen poll is always off.
         # transfer = 下载文件时要不要把字节改走直连源站（off 就一律走当前页面/CF）
         # pause_button = 顶栏「暂停实时刷新」按钮（实验性，默认 off）
         choices = {"sidebar": {"pane", "none"}, "preview": {"off", "1", "2", "3"},
                    "prompt_card": {"off", "on"}, "transfer": {"off", "on"},
-                   "pause_button": {"off", "on"}}
+                   "pause_button": {"off", "on"}, "manual_inspect": {"off", "on"}}
         saved = home.get_prefs()
         for key, value in payload.items():
             if key not in allowed:
@@ -2694,8 +2744,9 @@ def create_app(
             if key in choices and value not in choices[key]:
                 raise HTTPException(status_code=400,
                                     detail=f"preference {key} must be one of {sorted(choices[key])}")
-            stored = home.set_pref(key, value)
-            saved = stored
+            saved = home.set_pref(key, "off" if key == "prompt_card" else value)
+        if "prompt_card" in saved:
+            saved["prompt_card"] = "off"
         response = JSONResponse({"prefs": saved})
         if "theme" in saved:
             response.set_cookie(THEME_COOKIE, saved["theme"], samesite="lax", max_age=60 * 60 * 24 * 365, path="/")
@@ -3138,15 +3189,19 @@ def create_app(
                       in await asyncio.to_thread(relay_hosts, False)]
         for host_id, host_name, panes in groups:
             for pane in panes:
-                pane_id = pane.get("pane_id") or pane.get("id") or ""
-                if not pane_id or not federation.pane_allowed(grants, pane_id):
+                raw = pane.get("pane_id") or pane.get("id") or ""
+                try:
+                    pane_id = pane_ref(host_id, raw)
+                except ValueError:
+                    continue
+                if not federation.pane_allowed(grants, pane_id):
                     continue
                 found.append({
                     "id": pane_id, "number": None, "host": host_name,
                     "session": pane.get("session"), "window": pane.get("window_name") or "",
                     "index": pane.get("index"), "title": pane.get("title"),
                     "command": pane.get("command"), "path": pane.get("path"),
-                    "active": pane.get("active"), "provider": pane.get("provider"),
+                    "active": pane.get("active"), "provider": pane_provider(pane),
                 })
         numbers = await asyncio.to_thread(home.ensure_numbers, [item["id"] for item in found])
         for item in found:
@@ -3155,27 +3210,44 @@ def create_app(
                 "scopes": grants["scopes"]}
 
     @app.get("/api/fed/panes/{pane_id}/capture")
-    async def fed_capture(request: Request, pane_id: str, history: int = 80):
+    async def fed_capture(request: Request, pane_id: str, history: int = 80, prefer_agent: bool = False,
+                          color: bool = False):
         grants = require_fed(request, "view")
         actual = resolve_pane_ref(pane_id)
         if not federation.pane_allowed(grants, actual):
             raise HTTPException(status_code=403, detail="这个 pane 没有共享出去")
-        transport, actual_id = pane_transport(actual)
+        transport, actual_id = pane_transport(actual, prefer_agent=prefer_agent)
         try:
-            content = await asyncio.to_thread(transport.capture, actual_id, max(20, min(history, 500)),
+            capture = getattr(transport, "capture_ansi", transport.capture) if color else transport.capture
+            content = await asyncio.to_thread(capture, actual_id, max(20, min(history, 500)),
                                               visible_only=True)
         except (TmuxError, RuntimeError, OSError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"pane": actual, "content": content}
 
+    @app.get("/api/fed/panes/{pane_id}/terminal-screen")
+    async def fed_terminal_screen(request: Request, pane_id: str):
+        require_fed(request, "admin")
+        return await fed_capture(request, pane_id)
+
+    @app.post("/api/fed/panes/{pane_id}/terminal-input")
+    async def fed_terminal_input(request: Request, pane_id: str, payload: InputRequest):
+        require_fed(request, "admin")
+        return await fed_input(request, pane_id, payload)
+
+    @app.post("/api/fed/panes/{pane_id}/terminal-key")
+    async def fed_terminal_key(request: Request, pane_id: str, payload: KeyRequest):
+        require_fed(request, "admin")
+        return await fed_key(request, pane_id, payload)
+
     @app.get("/api/fed/panes/{pane_id}/transcript")
-    async def fed_transcript(request: Request, pane_id: str, limit: int = 200):
+    async def fed_transcript(request: Request, pane_id: str, limit: int = 200, prefer_agent: bool = False):
         grants = require_fed(request, "view")
         actual = resolve_pane_ref(pane_id)
         if not federation.pane_allowed(grants, actual):
             raise HTTPException(status_code=403, detail="这个 pane 没有共享出去")
-        transport, actual_id = pane_transport(actual)
-        pane = await asyncio.to_thread(pane_or_404, actual)
+        transport, actual_id = pane_transport(actual, prefer_agent=prefer_agent)
+        pane = await asyncio.to_thread(pane_or_404, actual, prefer_agent=prefer_agent)
         try:
             payload = await asyncio.to_thread(transport.transcript, actual_id,
                                               max(1, min(limit, 1000)), False, pane)
@@ -3443,7 +3515,16 @@ def create_app(
             await websocket.close(code=4404)
             return
         await websocket.accept()
-        session = make_terminal(actual, cols, rows)
+        host_id, target = split_pane_ref(actual)
+        if host_id == "localhost":
+            session = make_terminal(target, cols, rows)
+        else:
+            try:
+                host = remote_hosts.get_host(host_id, include_credential=True)
+                session = RemoteTerminalSession(host, target, cols, rows)
+            except (KeyError, RuntimeError, OSError, ValueError):
+                await websocket.close(code=4503)
+                return
 
         async def pump_output():
             while True:
@@ -3663,13 +3744,23 @@ def create_app(
         require_auth(request)
         if not SHARE_SLUG_RE.fullmatch(payload.slug):
             raise HTTPException(status_code=422, detail="slug must use lowercase letters, numbers, and hyphens")
-        pane = await asyncio.to_thread(pane_or_404, payload.pane_id)
-        transport, actual_pane_id = pane_transport(payload.pane_id)
+        pane_id = resolve_pane_ref(payload.pane_id)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        if not (pane.get("capabilities") or {}).get("share", True):
+            raise HTTPException(409, "此子节点未提供唯一的分享目标，请升级子节点")
+        transport, actual_pane_id = pane_transport(pane_id)
         try:
-            transcript_data = await asyncio.to_thread(transport.transcript, actual_pane_id, 1, pane=pane)
+            transcript_data = (await asyncio.to_thread(transport.transcript, actual_pane_id, 1, pane=pane)
+                               if pane_provider(pane) else {})
+        except federation.FederationAccessError as exc:
+            raise HTTPException(403, "子节点未授予此操作所需的权限") from exc
+        except federation.FederationError as exc:
+            raise HTTPException(503, "子节点无法读取会话记录，请检查连接和查看权限") from exc
         except (TmuxError, RuntimeError, ValueError):
             # a plain shell pane has no transcript: the share shows the screen instead
             transcript_data = {}
+        if payload.allow_model_switch and not (transcript_data.get("session_id") and agent_models.supported(pane_provider(pane))):
+            raise HTTPException(422, "当前会话没有可切换模型的聊天记录")
         now = time.time()
         share_id = secrets.token_hex(16)
         password_hash = hash_share_password(payload.password) if payload.password else None
@@ -3677,16 +3768,18 @@ def create_app(
             with share_lock, share_connection:
                 share_connection.execute(
                     "INSERT INTO shares(id, slug, pane_id, provider, session_id, title, password_hash,"
-                    " created_at, expires_at, revoked_at, allow_input) VALUES (?,?,?,?,?,?,?,?,?,NULL,?)",
-                    (share_id, payload.slug, payload.pane_id, transcript_data.get("provider") or "",
+                    " created_at, expires_at, revoked_at, allow_input, allow_model_switch, allow_terminal)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?,?)",
+                    (share_id, payload.slug, pane_id, transcript_data.get("provider") or pane_provider(pane) or "",
                      str(transcript_data.get("session_id") or ""), pane.get("title") or pane.get("target") or "tmux",
-                     password_hash, now, now + payload.expires_in, 1 if payload.allow_input else 0),
+                     password_hash, now, now + payload.expires_in, payload.allow_input, payload.allow_model_switch, payload.allow_terminal),
                 )
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="share slug already exists") from exc
         return {"id": share_id, "slug": payload.slug, "url": f"/share/{payload.slug}",
                 "expires_at": now + payload.expires_in, "password_protected": bool(password_hash),
-                "allow_input": bool(payload.allow_input)}
+                "allow_input": payload.allow_input, "allow_model_switch": payload.allow_model_switch,
+                "allow_terminal": payload.allow_terminal}
 
     @app.get("/api/shares")
     async def list_shares(request: Request):
@@ -3694,7 +3787,7 @@ def create_app(
         with share_lock:
             rows = share_connection.execute(
                 "SELECT id,slug,pane_id,provider,session_id,title,created_at,expires_at,revoked_at,"
-                "password_hash,allow_input FROM shares ORDER BY created_at DESC"
+                "password_hash,allow_input,allow_model_switch,allow_terminal FROM shares ORDER BY created_at DESC"
             ).fetchall()
         now = time.time()
         return {"shares": [{
@@ -3702,9 +3795,28 @@ def create_app(
             "pane_id": row["pane_id"], "provider": row["provider"], "session_id": row["session_id"],
             "title": row["title"], "created_at": row["created_at"], "expires_at": row["expires_at"],
             "revoked": row["revoked_at"] is not None, "password_protected": bool(row["password_hash"]),
-            "allow_input": bool(row["allow_input"]),
+            "allow_input": bool(row["allow_input"]), "allow_model_switch": bool(row["allow_model_switch"]),
+            "allow_terminal": bool(row["allow_terminal"]),
             "status": "stopped" if row["revoked_at"] is not None else ("expired" if row["expires_at"] <= now else "active"),
         } for row in rows]}
+
+    @app.put("/api/shares/{share_id}/permissions")
+    async def share_permissions(request: Request, share_id: str, payload: SharePermissionsRequest):
+        require_auth(request)
+        with share_lock:
+            row = share_connection.execute("SELECT * FROM shares WHERE id = ?", (share_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "分享不存在")
+        if payload.allow_model_switch:
+            if not row["session_id"]:
+                raise HTTPException(422, "当前分享没有可切换模型的聊天记录")
+            pane = await asyncio.to_thread(validate_shared_session, row)
+            if not agent_models.supported(pane_provider(pane)):
+                raise HTTPException(422, "当前会话不支持模型切换")
+        with share_lock, share_connection:
+            share_connection.execute("UPDATE shares SET allow_input=?, allow_model_switch=?, allow_terminal=? WHERE id=?",
+                                     (payload.allow_input, payload.allow_model_switch, payload.allow_terminal, share_id))
+        return payload
 
     @app.post("/api/shares/{share_id}/extend")
     async def extend_share(request: Request, share_id: str, payload: ShareExtendRequest):
@@ -3758,7 +3870,9 @@ def create_app(
         html = (WEB_DIR / "share.html").read_text().replace("__SHARE_SLUG__", json.dumps(slug)).replace(
             "__SHARE_TITLE__", str(row["title"]).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         ).replace("__SHARE_UNLOCKED__", "true" if unlocked else "false").replace(
-            "__SHARE_ALLOW_INPUT__", "true" if row["allow_input"] else "false")
+            "__SHARE_ALLOW_INPUT__", "true" if row["allow_input"] else "false").replace(
+            "__SHARE_MODEL__", "true" if unlocked and row["allow_model_switch"] else "false").replace(
+            "__SHARE_TERMINAL__", "true" if unlocked and row["allow_terminal"] else "false")
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     @app.get("/share-assets/marked.esm.js")
@@ -3798,42 +3912,184 @@ def create_app(
             "title": row["title"],
             "provider": row["provider"] or None,
             "mode": "transcript" if row["session_id"] else "screen",
-            "allow_input": bool(row["allow_input"]),
+            "allow_input": bool(row["allow_input"]), "allow_model_switch": bool(row["allow_model_switch"]),
+            "allow_terminal": bool(row["allow_terminal"]),
             "password_protected": bool(row["password_hash"]),
             "expires_at": row["expires_at"],
         }
 
     @app.get("/share/{slug}/api/transcript")
-    async def share_transcript(request: Request, slug: str, limit: int = 300):
+    async def share_transcript(request: Request, slug: str, limit: int = 300, sig: str = ""):
         row = get_share(slug)
         require_share_access(request, row)
-        await asyncio.to_thread(validate_shared_session, row)
+        pane = await asyncio.to_thread(pane_or_404, row["pane_id"])
         transport, actual_pane_id = pane_transport(row["pane_id"])
+        grants = share_flags(row)
         resend_state = resend_manager.status(row["pane_id"])
         if not row["session_id"]:
-            content = await asyncio.to_thread(transport.capture, actual_pane_id, 2000)
+            try:
+                content = await asyncio.to_thread(transport.capture, actual_pane_id, 2000, pane=pane)
+            except federation.FederationAccessError as exc:
+                raise HTTPException(403, "子节点未授予此操作所需的权限") from exc
+            except federation.FederationError as exc:
+                raise HTTPException(503, "子节点无法读取共享窗格") from exc
             digest = hashlib.sha1(content.encode()).hexdigest()
             screen_data = {"mode": "screen", "provider": row["provider"] or None, "session_id": None,
                            "mtime": digest, "messages": [], "content": content}
             if resend_state is not None:
                 screen_data["resend"] = resend_state
-            return screen_data
-        data = await asyncio.to_thread(transport.transcript, actual_pane_id, limit)
-        data["mode"] = "transcript"
+            return screen_data | {"permissions": grants}
+        try:
+            data = await read_pane_transcript(row["pane_id"], pane, max(1, min(limit, 500)), False)
+        except federation.FederationAccessError as exc:
+            raise HTTPException(403, "子节点未授予此操作所需的权限") from exc
+        except federation.FederationError as exc:
+            raise HTTPException(503, "子节点读取聊天失败") from exc
+        if str(data.get("session_id") or "") != row["session_id"]:
+            raise HTTPException(409, "共享会话已改变")
+        items = data.get("messages") or []
+        revision = ""
+        if data.get("mtime") is not None and items:
+            stamp = (row["session_id"], data["mtime"], len(items), items[-1].get("id"))
+            revision = hashlib.sha256(repr(stamp).encode()).hexdigest()[:24]
+        if revision and revision == sig and not resend_state:
+            return {"unchanged": True, "permissions": grants}
+        data = data | {"mode": "transcript", "permissions": grants, "signature": revision}
         if resend_state is not None:
             data["resend"] = resend_state
         return data
 
-    @app.post("/share/{slug}/api/input")
-    async def share_input(request: Request, slug: str, payload: InputRequest):
+    def share_flags(row):
+        return {flag: bool(row[flag]) for flag in ("allow_input", "allow_model_switch", "allow_terminal")}
+
+    def share_grant(request, slug, flag, input_required):
         row = get_share(slug)
         require_share_access(request, row)
-        if not row["allow_input"]:
-            raise HTTPException(status_code=403, detail="this share is read-only")
-        await asyncio.to_thread(validate_shared_session, row)
+        if not row[flag] or (input_required and not row["allow_input"]):
+            raise HTTPException(403, "此分享未开放该操作")
+        return row
+
+    async def shared_target(request, slug, flag, *, input_required=False):
+        row = share_grant(request, slug, flag, input_required)
+        pane = await asyncio.to_thread(validate_shared_session, row)
+        current = share_grant(request, slug, flag, input_required)
+        if current["id"] != row["id"]:
+            raise HTTPException(409, "分享已变更")
+        return current, pane
+
+    async def shared_catalog(row):
+        pane_id = row["pane_id"]
+        transport, actual = pane_transport(pane_id)
+        if isinstance(transport, federation.FedTransport):
+            try:
+                catalog = await asyncio.to_thread(transport.client.models, actual)
+            except federation.FederationAccessError as exc:
+                raise HTTPException(403, "子节点未授予此操作所需的权限") from exc
+            except federation.FederationError as exc:
+                raise HTTPException(503, "无法读取子节点模型列表，请检查连接及子节点版本") from exc
+        else:
+            catalog = await model_catalog(pane_id)
+        return {k: catalog[k] for k in ("current", "presets", "groups", "picker_only")}
+
+    @app.get("/share/{slug}/api/models")
+    async def share_models(request: Request, slug: str):
+        row, _ = await shared_target(request, slug, "allow_model_switch")
+        return await shared_catalog(row)
+
+    @app.post("/share/{slug}/api/model")
+    async def share_model(request: Request, slug: str, payload: ModelSwitchRequest):
+        row, _ = await shared_target(request, slug, "allow_model_switch")
+        original_id = row["id"]
+        if not payload.model:
+            if payload.provider or not (row["allow_terminal"] and row["allow_input"]):
+                raise HTTPException(403, "原生模型菜单需要开放终端和输入")
+            transport, actual = pane_transport(row["pane_id"])
+            if isinstance(transport, federation.FedTransport):
+                try:
+                    await asyncio.to_thread(transport.client.shared_screen, actual)
+                except federation.FederationError as exc:
+                    raise HTTPException(403, "子节点未开放原生终端菜单") from exc
+        else:
+            catalog = await shared_catalog(row)
+            options = {(route["provider"], model) for route in catalog["groups"] for model in route["models"]}
+            if not options:
+                options = {("", model) for model in catalog["presets"]}
+            if catalog["picker_only"] or (payload.provider, payload.model) not in options:
+                raise HTTPException(422, "请选择此会话提供的模型")
+        # Discovery may involve remote I/O. Check the grant and session again before writing.
+        row, pane = await shared_target(request, slug, "allow_model_switch")
+        if row["id"] != original_id:
+            raise HTTPException(409, "分享已变更")
+        if not payload.model and not (row["allow_input"] and row["allow_terminal"]):
+            raise HTTPException(403, "原生模型菜单需要开放终端和输入")
+        try:
+            await apply_pane_model(row["pane_id"], pane, payload)
+        except federation.FederationAccessError as exc:
+            raise HTTPException(403, "子节点未授予此操作所需的权限") from exc
+        except federation.FederationError as exc:
+            raise HTTPException(503, "子节点未接受模型切换") from exc
+        return {"status": "sent"}
+
+    @app.get("/share/{slug}/api/terminal")
+    async def share_terminal(request: Request, slug: str):
+        row, pane = await shared_target(request, slug, "allow_terminal")
+        transport, actual = pane_transport(row["pane_id"])
+        try:
+            if isinstance(transport, federation.FedTransport):
+                data = await asyncio.to_thread(transport.client.shared_screen, actual)
+                content = data["content"]
+            else:
+                content = await asyncio.to_thread(transport.capture, actual, 100, pane=pane, visible_only=True)
+        except federation.FederationAccessError as exc:
+            raise HTTPException(403, "子节点未授予此操作所需的权限") from exc
+        except (RuntimeError, OSError, ValueError, federation.FederationError) as exc:
+            raise HTTPException(503, "无法读取共享终端，请检查连接及子节点的版本和终端权限") from exc
+        return {"content": content, "permissions": share_flags(row)}
+
+    @app.post("/share/{slug}/api/terminal/input")
+    async def share_terminal_input(request: Request, slug: str, payload: InputRequest):
+        row, pane = await shared_target(request, slug, "allow_terminal", input_required=True)
+        transport, actual = pane_transport(row["pane_id"])
+        try:
+            if isinstance(transport, federation.FedTransport):
+                data = await asyncio.to_thread(transport.client.shared_input, actual, payload.text, payload.submit)
+                submitted = data.get("submitted")
+            else:
+                submitted = await asyncio.to_thread(transport.send, actual, payload.text, payload.submit, pane=pane)
+        except federation.FederationAccessError as exc:
+            raise HTTPException(403, "子节点未授予此操作所需的权限") from exc
+        except (RuntimeError, OSError, ValueError, federation.FederationError) as exc:
+            raise HTTPException(503, "共享终端未接受输入") from exc
+        return {"status": "pasted_not_submitted" if submitted is False else "sent"}
+
+    @app.post("/share/{slug}/api/terminal/key")
+    async def share_terminal_key(request: Request, slug: str, payload: KeyRequest):
+        row, pane = await shared_target(request, slug, "allow_terminal", input_required=True)
+        if payload.key not in ALLOWED_KEYS:
+            raise HTTPException(422, "不支持此按键")
+        transport, actual = pane_transport(row["pane_id"])
+        try:
+            if isinstance(transport, federation.FedTransport):
+                await asyncio.to_thread(transport.client.shared_key, actual, payload.key)
+            else:
+                await asyncio.to_thread(transport.send_key, actual, payload.key, pane=pane)
+        except federation.FederationAccessError as exc:
+            raise HTTPException(403, "子节点未授予此操作所需的权限") from exc
+        except (RuntimeError, OSError, ValueError, federation.FederationError) as exc:
+            raise HTTPException(503, "共享终端未接受按键") from exc
+        return {"status": "sent"}
+
+    @app.post("/share/{slug}/api/input")
+    async def share_input(request: Request, slug: str, payload: InputRequest):
+        row, _ = await shared_target(request, slug, "allow_input")
         resend_manager.cancel(row["pane_id"], "superseded")
         transport, actual_pane_id = pane_transport(row["pane_id"])
-        submitted = await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit)
+        try:
+            submitted = await asyncio.to_thread(transport.send, actual_pane_id, payload.text, payload.submit)
+        except federation.FederationAccessError as exc:
+            raise HTTPException(403, "子节点未授予此操作所需的权限") from exc
+        except federation.FederationError as exc:
+            raise HTTPException(503, "子节点未接受输入，请检查输入权限或连接") from exc
         if submitted is None:
             submitted = True
         if payload.submit and not submitted:
@@ -3865,6 +4121,15 @@ def create_app(
             raise HTTPException(status_code=404, detail="asset not found")
         media = "text/css" if kind == "css" else "text/javascript"
         return FileResponse(WEB_DIR / "assets" / f"shell.{kind}", media_type=media,
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/sidebar-toolbar.{kind}")
+    async def sidebar_toolbar_asset(kind: str):
+        """Scrollable tools shared by the console, board and grid."""
+        if kind not in {"css", "js"}:
+            raise HTTPException(status_code=404, detail="asset not found")
+        media = "text/css" if kind == "css" else "text/javascript"
+        return FileResponse(WEB_DIR / "assets" / f"sidebar-toolbar.{kind}", media_type=media,
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/theme.css")
@@ -3978,12 +4243,6 @@ def create_app(
     async def agents_panel_script() -> FileResponse:
         """子 agent 调用图：谁问过谁、问到哪一步了。"""
         return FileResponse(WEB_DIR / "assets" / "agents-panel.js", media_type="text/javascript",
-                            headers={"Cache-Control": "no-store"})
-
-    @app.get("/assets/needs-you.js")
-    async def needs_you_script() -> FileResponse:
-        """「等你回答」卡片：只渲染过门（needs_input）的菜单，答案只走 /key。"""
-        return FileResponse(WEB_DIR / "assets" / "needs-you.js", media_type="text/javascript",
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/needs-you-inbox.js")
@@ -4485,9 +4744,11 @@ def create_app(
                 raise McpToolError("target and text are required")
             transport, pane_id = await asyncio.to_thread(pane_transport, target)
             try:
-                await asyncio.to_thread(transport.send, pane_id, text[:20000], bool(arguments.get("submit", True)))
+                submitted = await asyncio.to_thread(transport.send, pane_id, text[:20000], bool(arguments.get("submit", True)))
             except (TmuxError, RuntimeError, OSError, ValueError) as exc:
                 raise McpToolError(str(exc)) from exc
+            if submitted is False:
+                return {"target": target, "sent": False, "submitted": False, "status": "pasted_not_submitted"}
             return {"target": target, "sent": True}
         if name == "read_agent":
             target = str(arguments.get("target") or "").strip()
@@ -5440,10 +5701,87 @@ def create_app(
                 events.finish(event.id, "error", error=str(exc))
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    skill_cache = OrderedDict()
+    skill_reads = {}
+    skill_slots = asyncio.Semaphore(8)
+
+    def skill_context(pane_ref):
+        transport, actual = pane_transport(pane_ref, prefer_agent=True)
+        if isinstance(transport, federation.FedTransport):
+            return transport, actual, "", ""
+        pane = pane_or_404(pane_ref, prefer_agent=True)
+        provider = pane_provider(pane) if transport is tmux else (
+            pane.get("provider") or transcript_reader.provider_for_command(pane.get("command")))
+        return transport, actual, provider, pane.get("path") or ""
+
+    def read_skills(transport, provider, cwd):
+        if transport is tmux:
+            names = agent_skills.catalog(provider, cwd)
+        else:
+            command = "python3 -I - " + shlex.quote(provider) + " " + shlex.quote(cwd)
+            result = transport.run(command, input_bytes=Path(agent_skills.__file__).read_bytes(),
+                                   timeout=6, resolve_tmux=False)
+            if result.returncode:
+                raise RuntimeError("remote skill discovery failed")
+            names = json.loads(result.stdout)
+        return {"provider": provider, "skills": names}
+
+    async def skills_for(pane_ref):
+        pane_ref = resolve_pane_ref(pane_ref)
+        async with skill_slots:
+            transport, actual, provider, cwd = await asyncio.to_thread(skill_context, pane_ref)
+        if isinstance(transport, federation.FedTransport):
+            try:
+                return await asyncio.to_thread(transport.client.skills, actual)
+            except federation.FederationAccessError as exc:
+                raise HTTPException(403, "无权读取联邦窗格技能") from exc
+            except federation.FederationError as exc:
+                raise HTTPException(503, "联邦节点暂时无法提供技能目录") from exc
+        if provider not in agent_skills.PROVIDERS:
+            return {"provider": provider, "skills": []}
+        key = (split_pane_ref(pane_ref)[0], provider, cwd)
+        cached = skill_cache.get(key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+
+        async def load():
+            try:
+                async with skill_slots:
+                    data = await asyncio.to_thread(read_skills, transport, provider, cwd)
+                skill_cache[key] = (time.monotonic() + 15, data)
+                skill_cache.move_to_end(key)
+                if len(skill_cache) > 256:
+                    skill_cache.popitem(last=False)
+                return data
+            except (RuntimeError, OSError, ValueError, federation.FederationError) as exc:
+                raise HTTPException(503, "无法读取此主机的技能目录") from exc
+            finally:
+                skill_reads.pop(key, None)
+
+        if key not in skill_reads:
+            skill_reads[key] = asyncio.create_task(load())
+        return await asyncio.shield(skill_reads[key])
+
+    @app.get("/api/panes/{pane_id}/skills")
+    async def pane_skills(request: Request, pane_id: str):
+        require_auth(request)
+        return await skills_for(pane_id)
+
+    @app.get("/api/fed/panes/{pane_id}/skills")
+    async def fed_skills(request: Request, pane_id: str):
+        return await skills_for(fed_pane_or_403(require_fed(request, "view"), pane_id))
+
     @app.get("/api/panes/{pane_id}/models")
     async def pane_models(request: Request, pane_id: str):
         """Which model this pane runs now, and what a switch would send."""
         require_auth(request)
+        return await model_catalog(pane_id)
+
+    @app.get("/api/fed/panes/{pane_id}/models")
+    async def fed_models(request: Request, pane_id: str):
+        return await model_catalog(fed_pane_or_403(require_fed(request, "view"), pane_id))
+
+    async def model_catalog(pane_id: str):
         pane = await asyncio.to_thread(pane_or_404, pane_id)
         provider = pane_provider(pane)
         if not agent_models.supported(provider):
@@ -5493,9 +5831,12 @@ def create_app(
 
     @app.post("/api/panes/{pane_id}/model")
     async def switch_pane_model(request: Request, pane_id: str, payload: ModelSwitchRequest):
-        """Type the agent's own ``/model <id>`` into the pane."""
+        """Type the agent's own model command into the pane."""
         require_auth(request)
         pane = await asyncio.to_thread(pane_or_404, pane_id)
+        return await apply_pane_model(pane_id, pane, payload)
+
+    async def apply_pane_model(pane_id, pane, payload):
         provider = pane_provider(pane)
         try:
             command = agent_models.switch_command(
@@ -5559,11 +5900,17 @@ def create_app(
         def capture():
             pane = pane_or_404(pane_id)
             transport, actual = pane_transport(pane_id)
+            descriptor = _pane_needs_input_descriptor(dict(pane, provider=pane_provider(pane)))
+            ask = getattr(transport, "needs_input_many", None)
+            try:
+                waiting = ask([descriptor], timeout=5) if ask else {}
+            except (RuntimeError, OSError, ValueError):
+                waiting = {}
+            entry = waiting.get(actual) if isinstance(waiting, dict) else None
+            notices = entry.get("notices") if isinstance(entry, dict) else None
             text = transport.capture(actual, 80, pane=pane, visible_only=True)
-            found = None
-            if text and "↑/↓" in text:
-                found = agent_prompts.hermes_question(text, dict(pane, provider=pane_provider(pane)))
-            found = found or agent_prompts.parse_screen(text)
+            found = native_interaction(dict(pane, id=pane_id, provider=descriptor["provider"]),
+                                       text, notices or [], inspect_screen=True)
             return found, text, pane, transport, actual
 
         async with prompt_capture_slots:
@@ -5611,29 +5958,23 @@ def create_app(
         return True
 
     @app.get("/api/panes/{pane_id}/prompt")
-    async def pane_prompt(request: Request, pane_id: str, turn: str = "", inspect: bool = False):
-        """屏幕上正在等的选择（kimi 的模型菜单、claude 的权限确认…）。
-
-        认不出就返回 ``{"prompt": null}`` —— 前端据此不显示按钮，用户照旧用终端。
-        """
+    async def pane_prompt(request: Request, pane_id: str, turn: str = "", inspect: bool = False, fresh: bool = False):
+        """Manual inspection. Automatic notices arrive in the shared pane status."""
         require_auth(request)
-        if not inspect and home.get_prefs().get("prompt_card", "off") != "on":
-            # 实验性功能：设置里没打开就当屏幕上没有等待中的选择
+        if not inspect:
             return {"pane": pane_id, "prompt": None, "screen": [], "disabled": True}
         try:
             pane_id = resolve_pane_ref(pane_id)
-            found, text = await read_prompt(pane_id)
+            if fresh:
+                found, text, *_ = await capture_prompt(pane_id)
+            else:
+                found, text = await read_prompt(pane_id)
         except (TmuxError, RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         lines = (text or "").splitlines()
         while lines and not lines[-1].strip():      # TUI 下方常留空白，别把它当"屏幕原文"
             lines.pop()
-        direct = bool(found and found.get("source") == "hermes_clarify")
-        signature = agent_prompts.menu_signature(found) if found and not direct and found["kind"] != "multi" else ""
-        grant = approvals_store.find(pane_id, signature, turn) if signature else None
-        return {"pane": pane_id, "prompt": dict(found, read_only=True) if found and inspect and not direct else found, "signature": signature,
-                "grant": grant.as_dict() if grant else None,
-                "screen": lines[-24:] if found or inspect else []}
+        return {"pane": pane_id, "prompt": found, "screen": lines[-24:]}
 
     @app.get("/api/panes/{pane_id}/approvals")
     async def pane_approvals(request: Request, pane_id: str, turn: str = ""):
@@ -5681,54 +6022,35 @@ def create_app(
     async def pane_prompt_choose(request: Request, pane_id: str, payload: PromptChoiceRequest):
         """Check the current menu and apply a single selection on its pane."""
         require_auth(request)
-        experimental = home.get_prefs().get("prompt_card", "off") == "on"
-        navigation = payload.index is None and payload.key in ("Tab", "BTab")
-        if not experimental and (not payload.revision or (payload.index is None and not navigation)):
-            raise HTTPException(status_code=409, detail="交互菜单卡片已在设置里关闭")
+        if not payload.revision:
+            raise HTTPException(status_code=409, detail="请重新查看当前交互")
         pane_id = resolve_pane_ref(pane_id)
         lock = prompt_actions.setdefault(pane_id, asyncio.Lock())
         async with lock:
             try:
                 found, _text, pane, transport, actual = await capture_prompt(pane_id)
-                if not found:
-                    raise HTTPException(status_code=409, detail="屏幕上没有等待中的选择")
-                if found.get("source") == "hermes_clarify":
-                    select = payload.index is not None and not payload.key
-                    change_question = navigation and found.get("question_count", 1) > 1
-                    if not (payload.revision and (select or change_question)
-                            and payload.toggle is None and payload.value is None):
-                        raise HTTPException(status_code=422, detail="请选择当前问题中的一项")
-                elif not experimental:
-                    raise HTTPException(status_code=409, detail="当前题目已变化，请重新查看交互")
-                if payload.revision:
-                    if payload.revision != found["revision"]:
-                        raise HTTPException(status_code=409, detail="屏幕上的选项已变化，请刷新后再选择")
-                    previous = prompt_sent.get(pane_id)
-                    if previous and previous[0] == payload.revision and time.monotonic() - previous[1] < 1.5:
-                        raise HTTPException(status_code=409, detail="这份选项刚刚已操作，请等待屏幕刷新")
-                if (payload.toggle is None) != (payload.value is None):
-                    raise HTTPException(status_code=422, detail="需要同时提供开关和值")
-                if payload.toggle is not None and payload.value is not None:
-                    keys = agent_prompts.toggle_keys(found, payload.toggle, payload.value)
-                    if not keys:
-                        return {"ok": True, "prompt": found, "unchanged": True}
-                elif payload.index is not None:
-                    if not found.get("options"):
-                        raise HTTPException(status_code=422, detail="这个界面只有一个开关")
+                if not found or not found.get("verified") or found["revision"] != payload.revision:
+                    raise HTTPException(status_code=409, detail="当前题目已变化或缺少原生请求，请重新查看交互")
+                previous = prompt_sent.get(pane_id)
+                if previous and previous[0] == payload.revision and (
+                        found.get("source") == "codex_command_approval" or time.monotonic() - previous[1] < 1.5):
+                    raise HTTPException(status_code=409, detail="这份选项刚刚已操作，请等待屏幕刷新")
+                if payload.toggle is not None or payload.value is not None:
+                    raise HTTPException(status_code=422, detail="请选择当前问题中的一项")
+                if payload.index is not None and not payload.key:
                     keys = agent_prompts.choice_keys(found, payload.index)
-                elif navigation and found.get("source") == "hermes_clarify":
+                elif payload.index is None and payload.key in ("Tab", "BTab") and found.get("question_count", 1) > 1:
                     keys = [payload.key]
                 else:
-                    keys = agent_prompts.choice_for_key(found, payload.key)
+                    raise HTTPException(status_code=422, detail="请选择当前问题中的一项")
                 if not keys or not keys_are_safe(keys):
                     raise HTTPException(status_code=422, detail="unsupported key")
                 invalidate_prompt(pane_id)
                 send_many = getattr(transport, "send_keys", None)
-                if payload.revision:
-                    prompt_sent[pane_id] = (payload.revision, time.monotonic())
-                    prompt_sent.move_to_end(pane_id)
-                    if len(prompt_sent) > 256:
-                        prompt_sent.popitem(last=False)
+                prompt_sent[pane_id] = (payload.revision, time.monotonic())
+                prompt_sent.move_to_end(pane_id)
+                if len(prompt_sent) > 256:
+                    prompt_sent.popitem(last=False)
                 try:
                     if send_many is not None:
                         await asyncio.to_thread(send_many, actual, keys, pane=pane)
@@ -5767,19 +6089,18 @@ def create_app(
     queue_store = message_queue.QueueStore(queue_db or os.environ.get("TMUX_WEB_QUEUE_DB", "")
                                            or str(BASE_DIR / "message_queue.db"))
 
-    async def deliver_queued(item) -> None:
+    async def deliver_queued(item) -> bool:
         """真正把排队消息发出去；steer 模式先按一次中断键。"""
         pane = await asyncio.to_thread(pane_or_404, item.pane)
         transport, actual_pane_id = pane_transport(item.pane)
         if item.mode == "steer":
-            provider = pane.get("command") or pane.get("provider") or ""
+            provider = pane.get("provider") or pane.get("command") or ""
             await asyncio.to_thread(transport.send_key, actual_pane_id,
                                     interrupt_key(provider), pane)
             await asyncio.sleep(0.5)
         submitted = await asyncio.to_thread(transport.send, actual_pane_id, item.text,
                                             item.submit, pane=pane)
-        if item.submit and submitted is False:
-            raise RuntimeError("文字进去了，但回车没生效")
+        return not item.submit or submitted is not False
 
     def pane_is_busy(pane: dict) -> bool:
         provider = (pane.get("provider") or pane.get("command") or "")
@@ -5807,8 +6128,11 @@ def create_app(
                     if claimed is None:
                         continue
                     try:
-                        await deliver_queued(claimed)
-                        await asyncio.to_thread(queue_store.finish, claimed.id, "sent")
+                        if await deliver_queued(claimed):
+                            await asyncio.to_thread(queue_store.finish, claimed.id, "sent")
+                        else:
+                            await asyncio.to_thread(queue_store.finish, claimed.id, "failed",
+                                                    "文字已粘贴，未确认回车提交，请检查目标输入框")
                     except Exception as exc:           # noqa: BLE001
                         LOGGER.warning("queued send failed pane=%s: %s", pane_id, exc)
                         await asyncio.to_thread(queue_store.retry_later, claimed.id, str(exc))
@@ -5853,9 +6177,9 @@ def create_app(
     @app.delete("/api/panes/{pane_id}/queue/{item_id}")
     async def cancel_queued(request: Request, pane_id: str, item_id: str):
         require_auth(request)
-        cancelled = await asyncio.to_thread(queue_store.cancel, item_id)
+        cancelled = await asyncio.to_thread(queue_store.cancel, item_id, resolve_pane_ref(pane_id))
         if not cancelled:
-            raise HTTPException(status_code=404, detail="这条排队消息已经发出去了")
+            raise HTTPException(status_code=404, detail="当前会话中没有可移除的这条排队消息")
         return {"cancelled": True, "id": item_id}
 
     # ---- git：工作树状态、检查点、回滚、diff、worktree ----------------------
@@ -5988,23 +6312,93 @@ def create_app(
         return {"path": lines[-1].strip(), "branch": payload.branch or f"wt/{payload.name}",
                 "pane": pane_id}
 
-    @app.get("/api/panes/{pane_id}/tail")
-    async def pane_tail(request: Request, pane_id: str, lines: int = 10):
-        """最后几行屏幕文字：agent 还在跑的时候，聊天里先看到"它在干什么"。
+    tail_reads: dict[tuple[str, int, bool], asyncio.Task] = {}
+    tail_slots = asyncio.Semaphore(8)
 
-        比 /transcript 便宜得多（一次 capture），而且只返回纯文本，客户端按 digest
-        判断要不要重绘——空闲时每 1.5 秒一次抓屏，在远端就是一次 ssh 往返。
-        """
+    def capture_tail(pane_id, pane, transport, actual, lines, color, *, visible_only=False):
+        grab = getattr(transport, "capture_ansi", transport.capture) if color else transport.capture
+        raw = (grab(actual, lines, pane=pane, visible_only=True) if visible_only else grab(actual, lines, pane=pane)) or ""
+        result = terminal_fragment(raw, lines)
+        text = result["text"]
+        menu_text = text
+        footer = text.rsplit("\n", 1)[-1].strip()
+        if footer and agent_prompts.RULE_RE.fullmatch(footer):
+            menu_text = text.rpartition("\n")[0]
+            footer = menu_text.rsplit("\n", 1)[-1].strip()
+        if box := agent_prompts.BOX_ROW_RE.fullmatch(footer):
+            footer = box[1].strip()
+        menu = None
+        if footer.lower() == "press enter to confirm or esc to cancel" and pane_provider(pane) == "codex":
+            menu = agent_prompts.codex_command_approval(ANSI_RE.sub("", raw))
+            if menu:
+                result["codex_command_approval"] = True
+                result["codex_screen_revision"] = menu["revision"]
+        elif (agent_prompts.HINT_RE.search(footer) and ("enter" in footer.lower() or "回车" in footer)
+              and pane_provider(pane) in {"claude", "codex", "hermes", "kimi", "opencode", "gemini"}):
+            candidate = agent_prompts.parse_screen(menu_text)
+            if (candidate and candidate["kind"] in {"menu", "multi"} and candidate["hint"] == footer
+                    and sum(bool(option.get("selected")) for option in candidate["options"]) == 1):
+                menu = candidate
+        if menu:
+            result["screen_menu"] = {"revision": menu["revision"], "selected": menu["selected"],
+                                     "labels": [option["label"] for option in menu["options"]]}
+            # Federated capture currently includes scrollback even in visible-only mode.
+            if pane.get("pane_pid") and not isinstance(transport, federation.FedTransport):
+                identity = [pane_id, pane["pane_pid"], result["digest"], menu["revision"], menu["selected"]]
+                result["screen_menu"]["snapshot"] = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        return result
+
+    tail_moves: OrderedDict[str, tuple[str, float]] = OrderedDict()
+
+    @app.post("/api/panes/{pane_id}/tail/navigate")
+    async def navigate_tail(request: Request, pane_id: str, payload: TailNavigationRequest):
         require_auth(request)
-        pane = await asyncio.to_thread(pane_or_404, pane_id)
-        try:
-            transport, actual = pane_transport(pane_id)
-            raw = await asyncio.to_thread(transport.capture, actual, max(3, min(lines, 40)), pane=pane)
-        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        text = "\n".join(line.rstrip() for line in (raw or "").splitlines() if line.strip())
-        tail = "\n".join(text.splitlines()[-max(3, min(lines, 40)):])
-        return {"digest": hashlib.sha1(tail.encode()).hexdigest(), "text": tail}
+        if payload.key not in ("Up", "Down"):
+            raise HTTPException(status_code=422, detail="屏幕菜单仅支持上下移动")
+        pane_id = resolve_pane_ref(pane_id)
+        lock = prompt_actions.setdefault(pane_id, asyncio.Lock())
+        async with lock:
+            try:
+                transport, actual, pane = await file_target(pane_id)
+                async with tail_slots:
+                    frame = await asyncio.to_thread(capture_tail, pane_id, pane, transport, actual, 12, True, visible_only=True)
+                if frame.get("screen_menu", {}).get("snapshot") != payload.snapshot:
+                    raise HTTPException(status_code=409, detail="终端菜单已变化，请查看当前选项")
+                last = tail_moves.get(pane_id)
+                if last and last[0] == payload.snapshot and time.monotonic() - last[1] < 1:
+                    raise HTTPException(status_code=409, detail="请等待终端更新选项")
+                tail_moves[pane_id] = (payload.snapshot, time.monotonic())
+                tail_moves.move_to_end(pane_id)
+                if len(tail_moves) > 256:
+                    tail_moves.popitem(last=False)
+                await asyncio.to_thread(transport.send_key, actual, payload.key, pane=pane)
+                return {"ok": True}
+            except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/panes/{pane_id}/tail")
+    async def pane_tail(request: Request, pane_id: str, lines: int = 10, color: bool = False):
+        """Share concurrent reads of the same terminal fragment across Chat viewers."""
+        require_auth(request)
+        lines = max(3, min(lines, 40))
+        pane_id = resolve_pane_ref(pane_id)
+        key = (pane_id, lines, color)
+
+        async def read():
+            try:
+                async with tail_slots:
+                    transport, actual, pane = await file_target(pane_id)
+                    return await asyncio.to_thread(capture_tail, pane_id, pane, transport, actual, lines, color)
+            except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            finally:
+                tail_reads.pop(key, None)
+
+        task = tail_reads.get(key)
+        if task is None:
+            task = tail_reads[key] = asyncio.create_task(read())
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        return await asyncio.shield(task)
 
     @app.get("/api/panes/{pane_id}/files")
     async def list_pane_files(request: Request, pane_id: str, path: str = "", hidden: int = 0,
@@ -7247,6 +7641,134 @@ def create_app(
             oldest = min(SEARCH_MESSAGE_CACHE, key=lambda key: SEARCH_MESSAGE_CACHE[key][0])
             SEARCH_MESSAGE_CACHE.pop(oldest, None)
         return messages
+
+    # Sidebar searches page through the actual tree, including federated panes.
+    # Share cold reads across users and cache only short-lived, size-bounded documents.
+    sidebar_docs = OrderedDict()
+    sidebar_bytes = 0
+    sidebar_reads = {}
+    sidebar_slots = asyncio.Semaphore(4)
+    sidebar_cache_budget = 16 * 1024 * 1024
+
+    def load_sidebar_text(pane):
+        transport, actual = pane_transport(pane["id"], prefer_agent=True)
+        options = {"prefer_agent": True} if isinstance(transport, federation.FedTransport) else {}
+        provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
+        rows = []
+        source = "transcript"
+        unavailable = False
+        if provider:
+            try:
+                data = transport.transcript(actual, 500, pane=pane, **options)
+                rows = [m["text"] for m in data.get("messages", [])[-500:] if isinstance(m.get("text"), str) and m["text"]]
+            except (RuntimeError, OSError, ValueError, federation.FederationError, subprocess.TimeoutExpired):
+                unavailable = True
+        if not rows:
+            source = "screen"
+            try:
+                rows = transport.capture(actual, 200, pane=pane, **options).splitlines()[-200:]
+            except (RuntimeError, OSError, ValueError, federation.FederationError, subprocess.TimeoutExpired):
+                unavailable = True
+        size = sum(sys.getsizeof(row) for row in rows) + sys.getsizeof(rows)
+        if transport is tmux:
+            routes = ["local"]
+        elif isinstance(transport, federation.FedTransport):
+            routes = ["federation"]
+        else:
+            # A transport's own short-lived transcript cache can satisfy this read without a call.
+            routes = sorted(getattr(transport, "used_transports", {"ssh"})) or ["server_cache"]
+        return source, rows, size, unavailable, routes
+
+    def sidebar_key(pane):
+        return tuple(pane.get(k) for k in ("id", "pane_pid", "provider", "command", "path", "title"))
+
+    def cached_sidebar_document(key):
+        hit = sidebar_docs.get(key)
+        if hit and time.monotonic() < hit[0]:
+            sidebar_docs.move_to_end(key)
+            return hit[1]
+        return None
+
+    async def sidebar_document(pane, key):
+        task = sidebar_reads.get(key)
+        if task is None:
+            async def read():
+                nonlocal sidebar_bytes
+                try:
+                    async with sidebar_slots:
+                        doc = await asyncio.to_thread(load_sidebar_text, pane)
+                    old = sidebar_docs.pop(key, None)
+                    if old:
+                        sidebar_bytes -= old[1][2]
+                    if not doc[3] and doc[2] <= sidebar_cache_budget:
+                        sidebar_docs[key] = (time.monotonic() + SEARCH_MESSAGE_TTL, doc)
+                        sidebar_bytes += doc[2]
+                        while len(sidebar_docs) > 256 or sidebar_bytes > sidebar_cache_budget:
+                            sidebar_bytes -= sidebar_docs.popitem(last=False)[1][1][2]
+                    return doc
+                finally:
+                    sidebar_reads.pop(key, None)
+            task = sidebar_reads[key] = asyncio.create_task(read())
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            return await asyncio.shield(task), None
+        return await asyncio.shield(task), ["shared"]
+
+    def matching_excerpt(rows, terms):
+        for row in reversed(rows):
+            folded = row.casefold()
+            if all(term in folded for term in terms):
+                start = max(0, folded.find(terms[0]) - 35)
+                excerpt = " ".join(row[start:start + 160].split())
+                return ("…" if start else "") + excerpt + ("…" if start + 160 < len(row) else "")
+        return None
+
+    @app.post("/api/search/pane-content")
+    async def search_pane_content(request: Request, queries: list[PaneContentQuery], cached_only: bool = False):
+        require_auth(request)
+        limit = 32 if cached_only else 8
+        if len(queries) > limit:
+            raise HTTPException(status_code=422, detail=f"每批最多查询 {limit} 个会话")
+        snapshot = hosts_snapshot["value"]
+        if not snapshot and not cached_only:
+            snapshot = await list_hosts(request)
+        hosts = (snapshot or {}).get("hosts", [])
+        panes = {p["id"]: (p, host) for host in hosts for p in host.get("panes", [])}
+        next_routes = {}
+
+        async def find(query):
+            pane, host = panes.get(query.pane, (None, None))
+            if pane is None:
+                if cached_only:
+                    return {"pane": query.pane, "next": "online"}
+                return {"pane": query.pane, "unavailable": True}
+            try:
+                key = sidebar_key(pane)
+                doc = cached_sidebar_document(key)
+                routes = ["server_cache"]
+                if doc is None:
+                    if cached_only:
+                        host_id = host["id"]
+                        if host_id not in next_routes:
+                            if host_id == "localhost":
+                                route = "local"
+                            elif host.get("kind") == "fed":
+                                route = "federation"
+                            elif agent_status_provider and agent_status_provider(host_id).get("agent_online"):
+                                route = "agent"
+                            else:
+                                route = "ssh"
+                            next_routes[host_id] = route
+                        return {"pane": query.pane, "next": next_routes[host_id]}
+                    doc, shared = await sidebar_document(pane, key)
+                    routes = shared or doc[4]
+                source, rows, _, partial, _ = doc
+                async with sidebar_slots:
+                    snippet = await asyncio.to_thread(matching_excerpt, rows, query.terms)
+                return {"pane": query.pane, "source": source, "snippet": snippet, "unavailable": partial, "routes": routes}
+            except (RuntimeError, OSError, ValueError, HTTPException, federation.FederationError, subprocess.TimeoutExpired):
+                return {"pane": query.pane, "unavailable": True}
+
+        return {"results": await asyncio.gather(*(find(q) for q in queries))}
 
     @app.get("/api/home/search")
     async def home_search(request: Request, q: str = "", limit: int = 20, messages: int = 1):

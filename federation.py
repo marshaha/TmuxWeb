@@ -30,6 +30,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from remote_hosts import split_pane_ref
+
 LOGGER = logging.getLogger(__name__)
 
 TOKEN_PREFIX = "fed_"
@@ -49,6 +51,10 @@ ZIP_MAX_FILES = 1000
 
 class FederationError(Exception):
     """Anything the caller should surface as a 4xx/503 rather than a traceback."""
+
+
+class FederationAccessError(FederationError):
+    """The child rejected its credential or the requested scope."""
 
 
 def node_id() -> str:
@@ -493,7 +499,7 @@ class FedClient:
                     detail += "（Cloudflare 把这类请求当成机器人封了：换成 tailnet/局域网地址直连，或让对面放行）"
                 errors.append(f"{base}: HTTP {exc.code} {detail}")
                 if exc.code in (401, 403):
-                    break            # 令牌不对，换地址也白搭
+                    raise FederationAccessError(errors[-1]) from exc
             except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                 errors.append(f"{base}: {exc}")
         raise FederationError("; ".join(errors) or "node has no address")
@@ -519,7 +525,7 @@ class FedClient:
                     detail += "（Cloudflare 把这类请求当成机器人封了：换成 tailnet/局域网地址直连，或让对面放行）"
                 errors.append(f"{base}: HTTP {exc.code} {detail}")
                 if exc.code in (401, 403):
-                    break
+                    raise FederationAccessError(errors[-1]) from exc
             except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                 errors.append(f"{base}: {exc}")
         raise FederationError("; ".join(errors) or "node has no address")
@@ -597,9 +603,12 @@ class FedClient:
         # 对端列 pane 时可能还在等它自己的 SSH 主机，给宽一点；调用方另有缓存
         return self._get("/api/fed/panes", timeout=timeout).get("panes") or []
 
-    def capture(self, pane_id: str, history: int = 80) -> str:
+    def capture(self, pane_id: str, history: int = 80, *, prefer_agent: bool = False, color: bool = False) -> str:
         quoted = urllib.parse.quote(pane_id, safe="")
-        return self._get(f"/api/fed/panes/{quoted}/capture?history={int(history)}").get("content") or ""
+        suffix = "&prefer_agent=1" if prefer_agent else ""
+        if color:
+            suffix += "&color=1"
+        return self._get(f"/api/fed/panes/{quoted}/capture?history={int(history)}{suffix}").get("content") or ""
 
     def rename_session(self, session: str, name: str) -> dict:
         body = json.dumps({"session": session, "name": name}).encode()
@@ -612,9 +621,31 @@ class FedClient:
         return self._call("POST", f"/api/fed/panes/{quoted}/rename", body,
                           {"Content-Type": "application/json"}, timeout=30)
 
-    def transcript(self, pane_id: str, limit: int = 200) -> dict:
+    def shared_screen(self, pane_id: str) -> dict:
         quoted = urllib.parse.quote(pane_id, safe="")
-        return self._get(f"/api/fed/panes/{quoted}/transcript?limit={int(limit)}")
+        return self._get(f"/api/fed/panes/{quoted}/terminal-screen")
+
+    def shared_input(self, pane_id: str, text: str, submit: bool) -> dict:
+        quoted = urllib.parse.quote(pane_id, safe="")
+        body = json.dumps({"text": text, "submit": submit}).encode()
+        return self._call("POST", f"/api/fed/panes/{quoted}/terminal-input", body, {"Content-Type": "application/json"})
+
+    def shared_key(self, pane_id: str, key: str) -> dict:
+        quoted = urllib.parse.quote(pane_id, safe="")
+        return self._call("POST", f"/api/fed/panes/{quoted}/terminal-key", json.dumps({"key": key}).encode(),
+                          {"Content-Type": "application/json"})
+
+    def skills(self, pane_id: str) -> dict:
+        return self._get(f"/api/fed/panes/{urllib.parse.quote(pane_id, safe='')}/skills")
+
+    def models(self, pane_id: str) -> dict:
+        quoted = urllib.parse.quote(pane_id, safe="")
+        return self._get(f"/api/fed/panes/{quoted}/models")
+
+    def transcript(self, pane_id: str, limit: int = 200, *, prefer_agent: bool = False) -> dict:
+        quoted = urllib.parse.quote(pane_id, safe="")
+        suffix = "&prefer_agent=1" if prefer_agent else ""
+        return self._get(f"/api/fed/panes/{quoted}/transcript?limit={int(limit)}{suffix}")
 
 
 class FedTransport:
@@ -647,11 +678,20 @@ class FedTransport:
         found = []
         for pane in self.client.panes():
             entry = dict(pane)
+            # Older children publish pane metadata without a capabilities object.
+            entry["capabilities"] = {"share": True, **(entry.get("capabilities") or {})}
             entry["host_id"] = self.host_id
             entry["prefix"] = self.prefix
             # 上游的编号显示成 `ddr#12`；id 仍然是本地的 `<node>~%12`
             raw_pane = str(entry.get("id") or entry.get("pane_id") or "")
-            if not raw_pane.startswith("%"):
+            try:
+                split_pane_ref(raw_pane)
+            except ValueError:
+                continue
+            if raw_pane.count("~") > 1:
+                continue
+            if "~" not in raw_pane and entry.get("host") not in (None, "", "localhost"):
+                # Legacy child stripped the owning SSH host: a bare id could target another pane.
                 continue
             entry["pane_id"] = raw_pane
             entry["id"] = f"{self.host_id}~{raw_pane}"
@@ -668,12 +708,14 @@ class FedTransport:
 
     # -- screen ------------------------------------------------------------
     def capture(self, pane_id: str, history: int = 500, pane: dict | None = None,
-                visible_only: bool = False) -> str:
+                visible_only: bool = False, *, prefer_agent: bool = False) -> str:
+        if prefer_agent:
+            return self.client.capture(pane_id, history=history, prefer_agent=True)
         return self.client.capture(pane_id, history=history)
 
     def capture_ansi(self, pane_id: str, history: int = 500, pane: dict | None = None,
                      visible_only: bool = False) -> str:
-        return self.capture(pane_id, history=history, pane=pane)
+        return self.client.capture(pane_id, history=history, color=True)
 
     def _capture_all(self, pane_ids, history: int) -> dict:
         """并发抓屏：子节点是 HTTP 一跳一跳抓的，串行 26 个 pane 要 8 秒，扫一轮状态就废了。"""
@@ -702,8 +744,9 @@ class FedTransport:
         return self._capture_all(pane_ids, history)
 
     def transcript(self, pane_id: str, limit: int = 200, refresh: bool = False,
-                   pane: dict | None = None) -> dict:
-        payload = self.client.transcript(pane_id, limit=limit)
+                   pane: dict | None = None, *, prefer_agent: bool = False) -> dict:
+        options = {"prefer_agent": True} if prefer_agent else {}
+        payload = self.client.transcript(pane_id, limit=limit, **options)
         payload.setdefault("pane", pane_id)
         return payload
 
@@ -821,7 +864,7 @@ class FedTransport:
     # -- 内部 -------------------------------------------------------------
     def raw_pane(self, pane_id: str) -> str:
         """`<node>~%12` → `%12`：对端只认自己的编号。"""
-        return pane_id.split("~", 1)[1] if "~" in pane_id else pane_id
+        return pane_id.removeprefix(self.host_id + "~")
 
 
 class FedTerminalSession:

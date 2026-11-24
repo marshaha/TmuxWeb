@@ -144,7 +144,7 @@ class FakeTmux(TmuxBackend):
         self.validate_pane(pane_id)
         return self.output
 
-    def capture_ansi(self, pane_id, history=500, pane=None):
+    def capture_ansi(self, pane_id, history=500, pane=None, visible_only=False):
         self.validate_pane(pane_id)
         return "\x1b[32mhello\x1b[0m\n› Ask Codex to do anything\n"
 
@@ -329,7 +329,7 @@ class FakeSSHRunner:
                  "target": "remote:0.0", "session": "remote", "window": "0", "window_name": "agent",
                  "index": "0", "command": "claude", "title": "Remote Claude", "path": "/srv/work",
                  "active": True, "width": 100, "height": 30}]
-    def capture_ansi(self, pane_id, history=5000, pane=None): return FakeSSHRunner.screen
+    def capture_ansi(self, pane_id, history=5000, pane=None, visible_only=False): return FakeSSHRunner.screen
     def capture(self, pane_id, history=5000, pane=None, visible_only=False):
         return ANSI_RE.sub("", FakeSSHRunner.screen)
     def snapshot_ansi(self, pane_id, history=5000, known_digest=None, pane=None):
@@ -1796,6 +1796,21 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("no-cache", cache)
         self.assertIn("no-store", cache)
 
+    def test_skill_catalog_uses_the_pane_host(self):
+        from unittest.mock import patch
+        self.assertEqual(self.client.get("/api/panes/%254/skills").status_code, 401)
+        self.login()
+        host = self.remote_store.add_host(name="remote", credential="", hostname="test", username="tester")
+        host_id = host["id"]
+        with patch.object(FakeSSHRunner, "run", return_value=subprocess.CompletedProcess(
+            [], 0, stdout=b'["remote-only"]')) as run:
+            result = self.client.get(f"/api/panes/{host_id}~%259/skills")
+            self.assertEqual(result.json(), {"provider": "claude", "skills": ["remote-only"]})
+            self.assertIn("claude /srv/work", run.call_args.args[0])
+            self.assertIn(b"def catalog(", run.call_args.kwargs["input_bytes"])
+            self.client.get(f"/api/panes/{host_id}~%259/skills")
+            self.assertEqual(run.call_count, 1)
+
     def test_version_endpoint_requires_auth(self):
         self.assertEqual(self.client.get("/api/version").status_code, 401)
 
@@ -2069,6 +2084,78 @@ class TmuxWebTests(unittest.TestCase):
         base = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-base.css").read_text()
         self.assertIn(".share-btn[hidden]", base)
 
+    def test_sidebar_search_reaches_later_panes_and_matches_only_in_chat(self):
+        self.login()
+        original = self.tmux.panes[0]
+        self.tmux.panes = [dict(original, id=f"%{i}", pane_pid=str(i+1000), provider="hermes")
+                           for i in range(405, 443)]
+        calls = []
+        def transcript(pid, limit, pane):
+            calls.append((pid, limit))
+            text = "Install MCPHub <example>" if pid == "%442" else "nothing here"
+            return {"messages": [{"text": text}, *[{"text": "later"} for _ in range(450)]]}
+        self.tmux.transcript = transcript
+        path = "/api/search/pane-content"
+        panes = ["%405", "%442"]
+        body = [{"pane": pid, "terms": ["mcphub"]} for pid in panes]
+        with mock.patch.object(self.tmux, "list_panes", side_effect=AssertionError("cache check contacted tmux")):
+            cold = self.client.post(path+"?cached_only=1", json=body)
+        self.assertTrue(all("next" in row for row in cold.json()["results"]))
+        self.assertEqual(calls, [])
+        for q in ["mcphub", "MCPHUB"]:
+            found = self.client.post(path, json=[{"pane": pid, "terms": [q]} for pid in panes])
+            self.assertEqual(found.status_code, 200)
+            miss, hit = found.json()["results"]
+            self.assertIsNone(miss["snippet"])
+            self.assertEqual((hit["pane"], hit["source"], hit["snippet"]), ("%442", "transcript", "Install MCPHub <example>"))
+        warm = self.client.post(path+"?cached_only=1", json=body).json()["results"]
+        self.assertEqual([row["routes"] for row in warm], [["server_cache"], ["server_cache"]])
+        self.assertIsNone(warm[0]["snippet"])
+        self.assertIn("MCPHub", warm[1]["snippet"])
+        self.assertCountEqual(calls, [(pid, 500) for pid in panes])
+        self.assertEqual(self.tmux.keys, [])
+        self.assertEqual(self.client.post(path, json=[{"pane": "%4", "terms":["a"]}]*9).status_code, 422)
+
+    def test_concurrent_sidebar_searches_share_a_transcript_read(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.tmux.panes[0].update(provider="hermes")
+        reading = threading.Event()
+        release = threading.Event()
+
+        def transcript(*args, **kwargs):
+            reading.set()
+            if not release.wait(10):
+                raise RuntimeError("fixture timed out")
+            return {"messages": [{"text": "MCPHub setup"}]}
+
+        self.tmux.transcript = mock.Mock(side_effect=transcript)
+        with self.client as client, ThreadPoolExecutor(max_workers=2) as pool:
+            self.login()
+            client.get("/api/hosts")
+            def query(term):
+                return client.post("/api/search/pane-content", json=[{"pane": "%4", "terms": [term]}])
+            first = pool.submit(query, "mcphub")
+            try:
+                self.assertTrue(reading.wait(10))
+                second = pool.submit(query, "setup")
+            finally:
+                release.set()
+            for request in (first, second):
+                self.assertEqual(request.result().json()["results"][0]["snippet"], "MCPHub setup")
+        self.tmux.transcript.assert_called_once()
+
+    def test_sidebar_search_handles_shells_unavailable_panes_and_requires_login(self):
+        path = "/api/search/pane-content"
+        body = [{"pane": "%4", "terms": ["hub"]}, {"pane": "%999", "terms": ["hub"]}]
+        self.assertEqual(self.client.post(path, json=body).status_code, 401)
+        self.login()
+        self.tmux.panes[0].update(provider="", command="sh")
+        self.tmux.output = "only in terminal: MCPHub"
+        found, missing = self.client.post(path, json=body).json()["results"]
+        self.assertEqual(found["source"], "screen")
+        self.assertIn("MCPHub", found["snippet"])
+        self.assertTrue(missing["unavailable"])
+
     def test_the_sidebar_has_a_search_box_that_filters_the_pane_tree(self):
         html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
         # the input lives in the header row, right of 会话, between the label
@@ -2077,7 +2164,7 @@ class TmuxWebTests(unittest.TestCase):
         tools = html[tools_start:html.index('</div>', tools_start)]
         self.assertIn('id="pane-search"', tools)
         self.assertIn('placeholder="搜索…"', tools, "窄侧边栏里 placeholder 要短，完整提示放 title")
-        self.assertIn('title="搜索编号、服务器、模型、标题…"', tools)
+        self.assertIn('title="搜索会话信息、最近 500 条聊天；无聊天记录时查最近 200 行终端"', tools)
         self.assertNotIn('id="pane-search-count"', tools, "命中数不在标题行里，单独放树列表上方")
         self.assertIn('id="pane-search-count"', html, "命中数指示保留")
         self.assertNotIn('pane-search-clear', html, "自定义 × 已去掉：原生 search 清除 + Esc 才是清空路径")
@@ -2121,6 +2208,17 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("function restoreAnchor(anchor)", app)
         self.assertNotIn("scroll.scrollTop+=scroll.scrollHeight-height", app)
 
+    def test_manual_inspection_is_opt_in_and_separate_from_legacy_prompt_card(self):
+        self.login()
+        prefs = self.client.get("/api/prefs").json()["prefs"]
+        self.assertEqual(prefs.get("manual_inspect", "off"), "off")
+        for value in ("on", "off"):
+            response = self.client.put("/api/prefs", json={"manual_inspect": value, "prompt_card": "on"})
+            self.assertEqual(response.status_code, 200)
+            prefs = self.client.get("/api/prefs").json()["prefs"]
+            self.assertEqual((prefs["manual_inspect"], prefs["prompt_card"]), (value, "off"))
+        self.assertEqual(self.client.put("/api/prefs", json={"manual_inspect": "maybe"}).status_code, 400)
+
     def test_the_pause_button_preference_is_accepted(self):
         self.login()
         response = self.client.put("/api/prefs", json={"pause_button": "on"})
@@ -2138,7 +2236,7 @@ class TmuxWebTests(unittest.TestCase):
         page = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
         app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
         self.assertIn('id="input-complete"', page)
-        self.assertIn("@ 跳 pane · / 插指令", page)
+        self.assertIn("@ 跳 pane · / 技能和提示词", page)
         self.assertIn(".input-complete{", page)
         self.assertIn("function matchInputCompletion(", app)
         self.assertIn("function filterPaneCompletions(", app)
@@ -2455,41 +2553,13 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         return client
 
-    def test_needs_input_fires_only_after_two_idle_stable_sweeps(self):
-        """三腿齐了才亮灯：第一轮只记不亮，第二轮相同才亮，带下去的 prompt 能直接答。"""
-        import agent_status
-
-        client = self._fresh_status_client()
+    def test_an_idle_pane_with_a_stable_menu_is_not_a_native_wait(self):
         self.tmux.output = self.NEEDS_MENU
-        now = [time.time()]
-
-        def fake_time():
-            return now[0]
-
-        with mock.patch("agent_status.status_for_pane", return_value="idle"), \
-                mock.patch("agent_status.decision_point_for_pane", return_value=True), \
-                mock.patch("time.time", side_effect=fake_time):
-            states = self._wait_for_panes(client, lambda rows: len(rows) == 1)
-            self.assertEqual(len(states), 1)
-            local = states[0]
-            self.assertEqual(local["status"], "idle")
-            self.assertEqual(local["status_source"], "session")
-            self.assertFalse(local["needs_input"], "第一轮：只记稳定计数，不亮灯")
-            self.assertIsNone(local["prompt"])
-
-            now[0] += 61            # 超过 sweep 最小间隔 60 秒：下一轮必须开起来
-            states = self._wait_for_panes(
-                client, lambda rows: rows and rows[0].get("needs_input"))
-            local = states[0]
-            self.assertTrue(local["needs_input"])
-            prompt = local["prompt"]
-            self.assertEqual(prompt["title"], "Do you want to proceed?")
-            self.assertEqual([option["label"] for option in prompt["options"]],
-                             ["Yes", "Yes, and don't ask again this session",
-                              "No, and tell Claude what to do differently"])
-            for option in prompt["options"]:
-                self.assertTrue(option["keys"], option)
-                self.assertEqual(option["keys"][-1], "Enter")
+        with mock.patch("agent_status.status_for_pane", return_value="idle"):
+            states = self._wait_for_panes(self._fresh_status_client(), bool)
+        self.assertEqual(states[0]["status"], "idle")
+        self.assertIsNone(states[0]["prompt"])
+        self.assertFalse(states[0]["needs_input"])
 
     def test_needs_input_never_fires_while_the_agent_is_just_executing(self):
         """agent 只是在执行（没有决策点）：菜单一直在屏上也绝不亮 —— stale prompt 的标准形态。"""
@@ -2512,29 +2582,13 @@ class TmuxWebTests(unittest.TestCase):
             states = self._wait_for_panes(client, lambda rows: len(rows) == 1)
             self.assertFalse(states[0]["needs_input"], "执行时攒再多轮也没用")
 
-    def test_needs_input_fires_at_a_permission_wait_while_the_turn_is_running(self):
-        """THE corrected case: turn 还在跑（verdict 是 BUSY，turn-end 标记在等批复时
-        根本不写），但一个 tool 调用 outstanding —— agent 正坐在权限确认上等你。
-        旧版的门（只认 turn ended）在这里永远不亮，这正是它错的地方。"""
-        client = self._fresh_status_client()
+    def test_an_outstanding_tool_call_does_not_confirm_a_menu(self):
         self.tmux.output = self.NEEDS_MENU
-        now = [time.time()]
-
-        def fake_time():
-            return now[0]
-
         with mock.patch("agent_status.status_for_pane", return_value="busy"), \
-                mock.patch("agent_status.decision_point_for_pane", return_value=True), \
-                mock.patch("time.time", side_effect=fake_time):
-            states = self._wait_for_panes(client, lambda rows: len(rows) == 1)
-            self.assertEqual(states[0]["status"], "busy")
-            self.assertFalse(states[0]["needs_input"], "第一轮：只记不亮")
-            now[0] += 61
-            states = self._wait_for_panes(
-                client, lambda rows: rows and rows[0].get("needs_input"))
-            self.assertEqual(states[0]["status"], "busy")
-            self.assertTrue(states[0]["needs_input"])
-            self.assertEqual(states[0]["prompt"]["title"], "Do you want to proceed?")
+                mock.patch("agent_status.decision_point_for_pane", return_value=True):
+            states = self._wait_for_panes(self._fresh_status_client(), bool)
+        self.assertEqual(states[0]["status"], "busy")
+        self.assertIsNone(states[0]["prompt"])
 
     def test_needs_input_never_fires_without_a_session_file_verdict(self):
         """没有 verdict 的 provider（hermes / shell / 未知）：fail closed。"""
@@ -2554,28 +2608,6 @@ class TmuxWebTests(unittest.TestCase):
             self.assertFalse(states[0]["needs_input"])
             self.assertIsNone(states[0]["prompt"])
 
-    def test_a_transient_menu_does_not_fire_until_it_settles(self):
-        """菜单在两轮之间变了（光标移动）：稳定计数重来，稳住之后才亮。"""
-        client = self._fresh_status_client()
-        self.tmux.output = self.NEEDS_MENU
-        now = [time.time()]
-
-        def fake_time():
-            return now[0]
-
-        with mock.patch("agent_status.status_for_pane", return_value="idle"), \
-                mock.patch("agent_status.decision_point_for_pane", return_value=True), \
-                mock.patch("time.time", side_effect=fake_time):
-            self._wait_for_panes(client, lambda rows: len(rows) == 1)
-            self.tmux.output = self.NEEDS_MENU_MOVED
-            now[0] += 61
-            states = self._wait_for_panes(client, lambda rows: len(rows) == 1)
-            self.assertFalse(states[0]["needs_input"], "变过一次：计数重来")
-            now[0] += 61
-            states = self._wait_for_panes(
-                client, lambda rows: rows and rows[0].get("needs_input"))
-            self.assertTrue(states[0]["needs_input"], "新菜单稳住两轮之后才亮")
-            self.assertEqual(states[0]["prompt"]["selected"], 1)
 
     def test_a_remote_pane_uses_the_same_gate(self):
         """远端 pane：turn verdict 和抓屏同一包回来（capture_and_status_many），
@@ -2621,32 +2653,14 @@ class TmuxWebTests(unittest.TestCase):
             remote = next(item for item in states if "~" in item["id"])
             self.assertEqual(remote["status"], "busy")
             self.assertFalse(remote["needs_input"], "第一轮：只记不亮")
-            now[0] += 61
-            states = self._wait_for_panes(
-                client, lambda rows: any(item.get("needs_input") for item in rows))
-            remote = next(item for item in states if "~" in item["id"])
-            self.assertEqual(remote["status"], "busy", "等批复时 verdict 仍是 busy")
-            self.assertTrue(remote["needs_input"])
-            self.assertEqual(remote["prompt"]["title"], "Do you want to proceed?")
+            self.assertIsNone(remote["prompt"])
             self.assertEqual(remote["status_source"], "session")
 
     def test_the_needs_you_card_is_wired(self):
         """卡片脚本、bundle、控制台页、侧栏树：缺一环前面都白做。"""
-        script = self.client.get("/assets/needs-you.js")
-        self.assertEqual(script.status_code, 200)
-        self.assertIn("TmuxNeedsYou", script.text)
-        self.assertIn("/api/panes/status", script.text)
-        self.assertIn("/api/panes/${encodeURIComponent(pane)}/key", script.text)
-        self.assertIn("/prompt/choose", script.text)
-        self.assertIn("TmuxNeedsYou", self.client.get("/assets/console.bundle.js").text)
-        web = Path(__file__).resolve().parent.parent / "web"
-        html = (web / "index.html").read_text()
-        app = (web / "assets" / "console-app.js").read_text()
-        for marker in ('id="needs-you-card"', 'id="needs-you-card-options"',
-                       'id="needs-you-card-esc"', ".needs-you-badge{"):
-            self.assertIn(marker, html, marker)
-        for marker in ("TmuxNeedsYou.start(()=>state.mode", "needsInput"):
-            self.assertIn(marker, app, marker)
+        web = Path(__file__).resolve().parents[1] / "web"
+        self.assertNotIn('id="needs-you-card"', (web / "index.html").read_text())
+        self.assertIn("TmuxPrompt?.showStatus", (web / "assets/console-app.js").read_text())
         shell = (web / "assets" / "shell.js").read_text()
         for marker in ("tneed", "needs-you", "state.needs"):
             self.assertIn(marker, shell, marker)
@@ -3243,6 +3257,86 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(body["text"], "a\n  b\nc")
         self.assertEqual(len(body["digest"]), 40)
 
+    def test_tail_menu_requires_a_cursor_and_current_navigation_footer(self):
+        self.login()
+        self.tmux.panes[0].update(command="claude", provider="claude")
+        menu = "Select a model\n❯ 1. Alpha\n  2. Beta\nEnter select · Esc cancel"
+        path = "/api/panes/%254/tail?lines=12"
+        self.tmux.capture = mock.Mock(return_value=menu)
+        preview = self.client.get(path).json()["screen_menu"]
+        self.assertEqual(preview["labels"], ["Alpha", "Beta"])
+        self.assertEqual(preview["selected"], 0)
+        self.tmux.capture.return_value = ("╭────╮\n│ ❯ [ ] Linux │\n│   [x] macOS │\n"
+                                          "│ ↑↓ navigate · Space toggle · Enter submit │\n╰────╯")
+        self.assertEqual(self.client.get(path).json()["screen_menu"]["labels"], ["Linux", "macOS"])
+        for text in (menu.replace("❯", " "), menu + "\nFinished", "1. Alpha\n2. Beta"):
+            self.tmux.capture.return_value = text
+            self.assertNotIn("screen_menu", self.client.get(path).json())
+        self.assertFalse(self.tmux.keys)
+
+    def test_tail_navigation_checks_the_screen_and_never_confirms(self):
+        path = "/api/panes/%254/tail"
+        move = path + "/navigate"
+        self.tmux.panes[0].update(command="claude", provider="claude", pane_pid="4242")
+        menu = "Select a model\n❯ 1. Alpha\n  2. Beta\nEnter select · Esc cancel"
+        self.tmux.capture_ansi = mock.Mock(return_value=menu)
+        self.assertEqual(self.client.post(move, json={"key": "Down", "snapshot": "0"*64}).status_code, 401)
+        self.login()
+        token = self.client.get(path + "?lines=12&color=1").json()["screen_menu"]["snapshot"]
+        def send(key):
+            return self.client.post(move, json={"key": key, "snapshot": token}).status_code
+        self.assertEqual(send("Enter"), 422)
+        self.tmux.panes[0]["pane_pid"] = "4243"
+        self.assertEqual(send("Up"), 409)
+        self.tmux.panes[0]["pane_pid"] = "4242"
+        self.tmux.capture_ansi.return_value = menu + "\nDone"
+        self.assertEqual(send("Down"), 409)
+        self.assertFalse(self.tmux.keys)
+        self.tmux.capture_ansi.return_value = menu
+        self.assertEqual(send("Down"), 200)
+        self.assertTrue(self.tmux.capture_ansi.call_args.kwargs["visible_only"])
+        self.assertEqual(send("Down"), 409)
+        self.assertEqual(self.tmux.keys, [("%4", "Down")])
+
+    def test_color_tail_keeps_inherited_sgr_and_ignores_non_display_controls(self):
+        self.login()
+        def capture(color):
+            return f"\x1b[{color}mold\n\x1b[2J\nA\nB\n\x1b]8;;https://example.test\x1b\\<b>C</b>\x1b]8;;\x07"
+        self.tmux.capture_ansi = mock.Mock(side_effect=[capture(31), capture(32)])
+        url = "/api/panes/%254/tail?lines=3&color=1"
+        first, second = (self.client.get(url).json() for _ in range(2))
+        self.assertEqual(first["text"], "A\nB\n<b>C</b>")
+        self.assertEqual(first["ansi"], "\x1b[31mA\nB\n<b>C</b>")
+        self.assertNotEqual(first["digest"], second["digest"])
+        dense = tmux_web.terminal_fragment("\x1b[31mX" * 200, 12)
+        self.assertEqual(dense["text"], "X" * 200)
+        self.assertNotIn("ansi", dense)
+
+    def test_simultaneous_tail_viewers_share_capture_and_retry_after_failure(self):
+        import asyncio
+        import httpx
+
+        self.login()
+        def capture(*args, **kwargs):
+            time.sleep(0.08)
+            raise RuntimeError("fixture offline")
+        self.tmux.capture = mock.Mock(side_effect=capture)
+        path = "/api/panes/%254/tail?lines=12"
+
+        async def read():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.client.app),
+                                         base_url="http://testserver", cookies=self.client.cookies) as client:
+                responses = await asyncio.gather(*(client.get(path) for _ in range(8)))
+                self.assertEqual([r.status_code for r in responses], [503] * 8)
+                self.assertEqual(self.tmux.capture.call_count, 1)
+                self.tmux.capture.side_effect = None
+                self.tmux.capture.return_value = "X" * 17000
+                response = await client.get(path)
+                self.assertEqual(response.json()["text"], "X" * 16384)
+                self.assertEqual(self.tmux.capture.call_count, 2)
+
+        asyncio.run(read())
+
     def test_chunked_upload_appends_then_renames(self):
         """4MB 一块：中途失败只丢一块，最后一块落盘才改名，别人看不到半个文件。"""
         import hashlib
@@ -3488,22 +3582,12 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(paths, ("/srv/work/one.txt",))
         self.assertEqual(base, "/srv/work")
 
-    def test_the_prompt_card_asset_and_markup_are_wired(self):
-        script = self.client.get("/assets/prompt-card.js")
-        self.assertEqual(script.status_code, 200)
-        self.assertIn("TmuxPrompt", script.text)
-        self.assertIn("/prompt/choose", script.text)
-        html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
-        app = (Path(__file__).resolve().parent.parent / "web" / "assets" / "console-app.js").read_text()
-        for marker in ('id="prompt-card"', 'id="prompt-card-options"', 'id="prompt-card-esc"',
-                       '/assets/console.bundle.js?v='):
-            self.assertIn(marker, html, marker)
-        self.assertIn("TmuxPrompt.start(()=>state.mode", app)
-        self.assertIn("TmuxPrompt", self.client.get("/assets/console.bundle.js").text)
-        self.assertIn(".prompt-card{", html)
-        # 卡片本身不滚动，只有选项列表滚：标题/开关/Esc 必须常驻可见
-        self.assertIn(".prompt-options{display:flex;flex-direction:column;gap:6px;margin-top:8px;min-height:0;flex:1 1 auto", html)
-        self.assertIn("id=\"prompt-card-toggles\"", html)
+    def test_one_card_handles_notices_and_manual_inspection(self):
+        self.login()
+        html = self.client.get("/").text
+        self.assertEqual(html.count('id="prompt-card"'), 1)
+        self.assertNotIn('id="needs-you-card"', html)
+        self.assertIn("TmuxPrompt.start", self.console_surface())
 
     def test_the_prompt_endpoint_needs_a_login(self):
         for path in ("/api/panes/%254/prompt",):
@@ -3513,28 +3597,95 @@ class TmuxWebTests(unittest.TestCase):
                                     follow_redirects=False)
         self.assertIn(response.status_code, (303, 401, 403))
 
-    def test_a_menu_on_screen_becomes_buttons(self):
-        """kimi 的信任对话框：聊天里要能看见并点，而不是只能切终端。"""
+    def test_legacy_pref_and_saved_grant_do_not_enable_screen_actions(self):
         self.enable_prompt_card()
-        self.tmux.output = (
-            "──────────────────────────────\n"
-            "  Trust this folder?\n"
-            "  ↑↓ navigate · Enter select · Esc exit\n"
-            "\n"
-            "  /tmp\n"
-            "\n"
-            "   ❯ Trust and continue\n"
-            "     Exit\n"
-            " ──────────────────────────────\n"
-        )
-        payload = self.client.get("/api/panes/%254/prompt").json()
-        prompt = payload["prompt"]
-        self.assertIsNotNone(prompt)
-        self.assertEqual(prompt["title"], "Trust this folder?")
-        self.assertEqual([option["label"] for option in prompt["options"]],
-                         ["Trust and continue", "Exit"])
-        self.assertEqual(payload["screen"], payload["screen"])
-        self.assertTrue(payload["screen"], "要带屏幕原文，用户得能核对在答什么")
+        self.tmux.output = self.NEEDS_MENU
+        path = "/api/panes/%254/prompt"
+        from agent_prompts import menu_signature, parse_screen
+        grant = self.client.post("/api/panes/%254/approvals", json={
+            "signature": menu_signature(parse_screen(self.tmux.output)), "scope": "always",
+            "action": {"index": 0}, "label": "Yes"})
+        self.assertEqual(grant.status_code, 200)
+        self.addCleanup(self.client.delete, "/api/panes/%254/approvals/" + grant.json()["id"])
+        self.assertTrue(self.client.get(path).json()["disabled"])
+        prompt = self.client.get(path, params={"inspect": True}).json()
+        self.assertTrue(prompt["screen"])
+        self.assertIsNone(prompt["prompt"])
+        self.assertNotIn("grant", prompt)
+        for body in ({"index": 0}, {"key": "Enter", "revision": "legacy"},
+                     {"toggle": 0, "value": 1, "revision": "legacy"}):
+            self.assertEqual(self.client.post(path + "/choose", json=body).status_code, 409)
+        self.assertEqual(self.tmux.keys, [])
+
+    def test_codex_command_approval_preview_requires_the_live_footer_and_cannot_send(self):
+        self.login()
+        pane = self.tmux.panes[0]
+        pane.update(provider="codex", pane_pid="123")
+        cmd = "bash /tmp/tw-live-color-rollout.41pw8qeg/rollout.sh"
+        text = (f"$ {cmd}\n› 1. Yes, proceed (y)\n"
+                f"  2. Yes, and don't ask again for commands that start with `{cmd}`\n"
+                "     (p)\n  3. No, and tell Codex what to do differently (esc)\n"
+                "  Press enter to confirm or esc to cancel")
+        self.tmux.output = text
+        self.tmux.capture_ansi = lambda *a, **kw: "\x1b[32m" + self.tmux.output + "\x1b[0m"
+        tail = "/api/panes/%254/tail?lines=12&color=1"
+        self.assertTrue(self.client.get(tail).json()["codex_command_approval"])
+        path = "/api/panes/%254/prompt"
+        card = self.client.get(path + "?inspect=true").json()["prompt"]
+        self.assertTrue(card["read_only"])
+        self.assertEqual(card["options"][0]["description"], "$ " + cmd)
+        self.assertEqual(len(card["options"]), 3)
+        self.assertEqual(card["options"][1]["description"], cmd)
+        self.assertEqual(self.client.post(path + "/choose", json={"revision": card["revision"], "index": 1}).status_code, 409)
+        self.assertFalse(self.tmux.keys)
+        self.assertIsNone(tmux_web.native_interaction(pane, text, []))
+        hook = [{"title": "等待工具审批", "id": ["session", "request"]}]
+        self.assertEqual(tmux_web.native_interaction(pane, text, hook)["source"], "codex_command_approval")
+        for screen in (text + "\n› Ask Codex to do anything", text.replace("(p)", ""),
+                       text.replace("› 1.", "1."), text.replace("  3.", "› 3.")):
+            self.assertIsNone(tmux_web.native_interaction(pane, screen, [], inspect_screen=True))
+        self.assertIsNone(tmux_web.native_interaction(dict(pane, provider="kimi"), text, [], inspect_screen=True))
+        self.tmux.output += "\n› Ask Codex to do anything"
+        self.assertNotIn("codex_command_approval", self.client.get(tail).json())
+
+    def test_codex_approval_requires_the_same_native_command_at_click_time(self):
+        from plugins.agent.hooks.observe import observation
+        self.login()
+        self.tmux.panes[0].update(provider="codex", pane_pid="123")
+        self.tmux.output = ("$ example task\n› 1. Yes, proceed (y)\n"
+                            "  2. Yes, and don't ask again for commands that start with `example` (p)\n"
+                            "  3. No, and tell Codex what to do differently (esc)\n  Press enter to confirm or esc to cancel")
+        event = {"session_id": "session", "tool_use_id": "a", "tool_name": "Bash",
+                 "tool_input": {"command": "example task"}}
+
+        def pending(panes, timeout):
+            session, request, _, title, detail = observation("codex", "PermissionRequest", event)
+            return {"%4": {"notices": [{"id": [session, request], "title": title, "detail": detail}]}}
+
+        self.tmux.needs_input_many = pending
+        path = "/api/panes/%254/prompt"
+        def preview():
+            return self.client.get(path + "?inspect=true&fresh=true").json()["prompt"]
+
+        def choose(card, index):
+            return self.client.post(path + "/choose", json={"index": index, "revision": card["revision"]})
+
+        card = preview()
+        self.assertTrue(card["verified"])
+        self.assertTrue(card["options"][1]["native_only"])
+        self.assertEqual(choose(card, 1).status_code, 422)
+        event["tool_input"]["command"] = "another command"
+        self.assertTrue(preview()["read_only"])
+        self.assertEqual(choose(card, 0).status_code, 409)
+        self.assertEqual(self.tmux.keys, [])
+        event["tool_input"]["command"] = "example task"
+        self.assertEqual(choose(card, 0).json()["sent"], ["y"])
+        self.assertEqual(choose(card, 0).status_code, 409)
+        event["tool_use_id"] = "next"
+        self.assertEqual(choose(card, 2).status_code, 409)
+        self.assertEqual(choose(preview(), 2).json()["sent"], ["Escape"])
+        event.pop("tool_use_id")
+        self.assertTrue(preview()["read_only"])
 
     def test_hermes_single_question_uses_one_digit_and_rechecks_the_live_pane(self):
         self.login()
@@ -3544,15 +3695,27 @@ class TmuxWebTests(unittest.TestCase):
                   "│   2. 电脑 │\n│   3. Other (type your answer) │\n╰─────╯\n"
                   "↑/↓ to select, Enter to lock, Tab next question  (100s)\n"
                   "── ❓ 你现在用哪种设备查看 Chat？ ──\n? ❯\n─────\nHermes")
+        notices = [{"id": ["s", "r1"], "title": "需要回答问题", "detail": "你现在用哪种设备查看 Chat？"}]
+        self.tmux.needs_input_many = lambda panes, timeout: {"%4": {"notices": notices}}
         self.tmux.output = screen
         path = "/api/panes/%254/prompt"
         prompt = self.client.get(path, params={"inspect": True}).json()["prompt"]
+        states = self._wait_for_panes(self._fresh_status_client(), lambda rows: rows[0]["needs_input"])
+        self.assertTrue(states[0]["prompt"]["verified"])
+        self.assertEqual(states[0]["prompt"]["revision"], prompt["revision"])
         self.assertEqual(prompt["source"], "hermes_clarify")
         self.assertEqual([o["label"] for o in prompt["options"]], ["手机 (Recommended)", "电脑", "Other (type your answer)"])
         self.assertTrue(prompt["options"][-1]["opens_input"])
         sent = []
         self.tmux.send_keys = lambda pane_id, keys, pane=None: sent.extend(keys)
         choice = {"index": 1, "revision": prompt["revision"]}
+        for bad in ([], [dict(notices[0], id=["s", "new"])],
+                    [dict(notices[0], title="等待操作审批")], [dict(notices[0], detail="另一个问题")],
+                    [*notices, dict(notices[0], id=["s", "another"])]):
+            original = notices
+            notices = bad
+            self.assertEqual(self.client.post(path + "/choose", json=choice).status_code, 409)
+            notices = original
         for stale in (screen.replace("电脑", "平板"), screen.replace("? ❯", "❯ Draft"),
                       screen.replace("1 question", "2 questions"), screen.replace("❯ 1.", "❯ [ ] 1.")):
             self.tmux.output = stale
@@ -3571,6 +3734,8 @@ class TmuxWebTests(unittest.TestCase):
         self.login()
         self.client.put("/api/prefs", json={"prompt_card": "off"})
         self.tmux.panes[0].update(provider="hermes", pane_pid="123")
+        self.tmux.needs_input_many = lambda panes, timeout: {"%4": {"notices": [
+            {"id": ["s", "r1"], "title": "需要回答问题", "detail": "Provider?\nModel?"}]}}
         first = ["▸ Provider?", " ❯ 1. openai", "   2. claude", "   3. Other (type your answer)", "· Model?"]
         second = ["✓ Provider?", "    claude", "▸ Model?", " ❯ 1. Default", "   2. Other (type your answer)"]
         def frame(rows):
@@ -3587,7 +3752,7 @@ class TmuxWebTests(unittest.TestCase):
             return self.client.post(path + "/choose", json={"revision": prompt["revision"], **action}).status_code
         provider = inspect()
         self.assertEqual(provider["question_count"], 2)
-        self.assertEqual(act(provider, key="Enter"), 409)
+        self.assertEqual(act(provider, key="Enter"), 422)
         self.assertEqual(act(provider, key="Tab"), 200)
         self.tmux.output = frame(second)
         self.assertEqual(act(provider, index=1), 409)
@@ -3602,30 +3767,14 @@ class TmuxWebTests(unittest.TestCase):
         self.tmux.output = frame(first[:-1])
         self.assertTrue(inspect()["read_only"])
 
-    def test_manual_inspection_and_revision_protect_checklist_actions(self):
-        self.login()
-        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "off"}).status_code, 200)
+    def test_checklists_are_plain_screen_text_even_after_enabling_the_old_preference(self):
+        self.enable_prompt_card()
+        self.tmux.output = "Select tools?\n  ❯ [ ] Shell\n    [x] Search\n↑↓ navigate · Space toggle · Enter submit"
         path = "/api/panes/%254/prompt"
-        self.tmux.output = ("Select features\n  ❯ [ ] Alpha\n    [x] Beta\n"
-                            "↑↓ navigate · Space toggle · Enter submit\n")
-        self.assertTrue(self.client.get(path).json()["disabled"])
-        prompt = self.client.get(path, params={"inspect": True}).json()["prompt"]
-        self.assertEqual(prompt["kind"], "multi")
-        self.assertTrue(prompt["options"][1]["checked"])
-        payload = {"index": 1, "revision": prompt["revision"]}
-        sent = []
-        self.tmux.send_keys = lambda pane_id, keys, pane=None: sent.extend(keys)
-        self.assertTrue(prompt["read_only"])
-        self.assertEqual(self.client.post(path + "/choose", json=payload).status_code, 409)
-        self.assertEqual(sent, [])
-        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "on"}).status_code, 200)
-        self.tmux.output = self.tmux.output.replace("Beta", "Gamma")
-        self.assertEqual(self.client.post(path + "/choose", json=payload).status_code, 409)
-        self.assertEqual(sent, [])
-        self.tmux.output = self.tmux.output.replace("Gamma", "Beta")
-        self.assertEqual(self.client.post(path + "/choose", json=payload).status_code, 200)
-        self.assertEqual(self.client.post(path + "/choose", json=payload).status_code, 409)
-        self.assertEqual(sent, ["Down", "Space"])
+        data = self.client.get(path, params={"inspect": True}).json()
+        self.assertIsNone(data["prompt"])
+        self.assertIn("Shell", "\n".join(data["screen"]))
+        self.assertEqual(self.client.post(path + "/choose", json={"index": 0, "revision": "old"}).status_code, 409)
 
     def test_parallel_prompt_inspections_share_one_capture(self):
         import asyncio
@@ -3669,162 +3818,16 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIsNone(payload["prompt"])
         self.assertEqual(payload["screen"], [])
 
-    def test_choosing_sends_keys_and_recheck_the_screen(self):
-        self.enable_prompt_card()
-        menu = ("  Select a model  (type to search)\n"
-                "  ↑↓ navigate · Enter select · Esc cancel\n\n"
-                "     Alpha\n"
-                "  ❯ Beta\n"
-                "     Gamma\n")
-        self.tmux.output = menu
-        sent_keys = []
-
-        def recording(pane_id, key, pane=None):
-            sent_keys.append(key)
-            if key == "Enter":
-                self.tmux.output = "  done\n"      # 选完之后菜单消失
-
-        self.tmux.send_key = recording
-        response = self.client.post("/api/panes/%254/prompt/choose", json={"index": 2})
-        self.assertEqual(response.status_code, 200)
-        result = response.json()
-        self.assertTrue(result["ok"], result)
-        self.assertTrue(result["pending"], "发完立刻返回，屏幕由前端轮询")
-        self.assertEqual(sent_keys, ["Down", "Enter"], "从当前第二项移动一步")
-        # 复核交给下一次 /prompt（屏幕已经变了）
-        self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
-
-    def test_a_numbered_menu_can_be_chosen_by_digit(self):
-        self.enable_prompt_card()
-        self.tmux.output = (" Context is getting full.\n\n"
-                            " What would you like to do?\n"
-                            " 1. Compact and continue\n"
-                            " 2. Start a new session\n"
-                            " Enter select · Esc cancel\n")
-        sent_keys = []
-
-        def recording(pane_id, key, pane=None):
-            sent_keys.append(key)
-            if key == "Enter":
-                self.tmux.output = "compacting…\n"
-
-        self.tmux.send_key = recording
-        result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "2"}).json()
-        self.assertTrue(result["ok"], result)
-        self.assertEqual(sent_keys, ["2", "Enter"])
-        self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
-
-    def test_a_switch_can_be_flipped_from_the_card(self):
-        """kimi 的 Thinking 开关：点 Max 就发一次 →，然后复核屏幕真的变了。"""
-        self.enable_prompt_card()
-        self.tmux.output = ("  Select a model  (type to search)\n"
-                            "  ↑↓ navigate · Enter select · Esc cancel\n\n"
-                            "     Alpha\n"
-                            "  ❯ Beta\n"
-                            "  Thinking  (←→ to switch)\n"
-                            "     Low    [ High ]    Max\n")
-        sent_keys = []
-
-        after_screen = ("  Select a model  (type to search)\n"
-                        "  ↑↓ navigate · Enter select · Esc cancel\n\n"
-                        "     Alpha\n"
-                        "     Beta\n"
-                        "  Thinking  (←→ to switch)\n"
-                        "     Low      High    [ Max ]\n")
-
-        def recording(pane_id, key, pane=None):
-            sent_keys.append(key)
-            if key == "Right":
-                self.tmux.output = after_screen
-
-        self.tmux.send_key = recording
-        result = self.client.post("/api/panes/%254/prompt/choose",
-                                  json={"toggle": 0, "value": 2}).json()
-        self.assertTrue(result["ok"], result)
-        self.assertEqual(sent_keys, ["Right"])
-        after = self.client.get("/api/panes/%254/prompt").json()["prompt"]
-        self.assertEqual(after["toggles"][0]["active"], 2)
-
-    def test_mobile_gets_a_button_for_enter(self):
-        """手机上没法敲回车：需要 Enter 确认的界面要有一颗明确的按钮。"""
-        root = Path(__file__).resolve().parents[1]
-        page = (root / "web" / "index.html").read_text()
-        self.assertIn('id="prompt-card-enter"', page)
-        self.assertIn(".prompt-btn-go", page)
-        script = (root / "web" / "assets" / "prompt-card.js").read_text()
-        self.assertIn("enterButton.onclick = () => chooseByKey('enter')", script)
-        self.assertIn("data.kind === 'toggle'", script, "开关类界面总要确认按钮")
-
-    def test_a_click_closes_the_card_before_the_round_trip(self):
-        """点下去卡片先收起来，后台再发键：手机上等 POST + 跟进轮询要好几秒，卡片一直杵着像卡住了。"""
-        root = Path(__file__).resolve().parents[1]
-        script = (root / "web" / "assets" / "prompt-card.js").read_text()
-        # 涂抹式乐观（先在卡片上标“已发送”再等屏幕对齐）已经让位给乐观关闭
-        self.assertNotIn("let optimistic = null", script)
-        self.assertNotIn("paintOptimistic()", script)
-        self.assertNotIn("settleOptimistic(", script)
-        self.assertNotIn("屏幕没有变化，再点一次或切到终端", script)
-        # 点下先记签名、收卡；失败恢复出来、清签名，poll 才不压住重弹
-        self.assertIn("answeredSignature = signatureOf(saved)", script)
-        self.assertIn("if (!checklistChange) hide()", script)
-        self.assertIn("没送到，再试一次", script)
-        page = (root / "web" / "index.html").read_text()
-        self.assertNotIn(".prompt-option.picked", page)
-
-    def test_the_prompt_card_is_off_until_the_preference_says_on(self):
-        """实验性功能：默认关闭时连 /prompt 都不该解析，choose 直接 409。"""
-        self.login()
-        # 这个用例断言的是"关掉之后"的行为，先把偏好摆到 off（别依赖库里现有的值）
-        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "off"}).status_code, 200)
-        idle = self.client.get("/api/panes/%254/prompt").json()
-        self.assertIsNone(idle["prompt"])
-        self.assertTrue(idle.get("disabled"), "默认关闭要明确告诉前端")
-
-        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "on"}).status_code, 200)
-        self.tmux.output = ("  Trust this folder?\n"
-                            "  ↑↓ navigate · Enter select · Esc exit\n\n"
-                            "  ❯ Trust and continue\n"
-                            "     Exit\n")
-        live = self.client.get("/api/panes/%254/prompt").json()
-        self.assertIsNotNone(live["prompt"])
-        self.assertFalse(live.get("disabled"))
-
-        self.assertEqual(self.client.put("/api/prefs", json={"prompt_card": "off"}).status_code, 200)
-        off = self.client.post("/api/panes/%254/prompt/choose", json={"index": 0})
-        self.assertEqual(off.status_code, 409)
-        self.assertIn("设置", off.json()["detail"])
 
     def test_the_preference_rejects_unknown_values(self):
         self.login()
         bad = self.client.put("/api/prefs", json={"prompt_card": "maybe"})
         self.assertEqual(bad.status_code, 400)
 
-    def test_settings_exposes_the_experimental_switch(self):
-        self.login()
-        panel = self.client.get("/assets/settings.js").text   # 设置面板的标记在脚本里
-        self.assertIn('data-ts-prompt="off"', panel)
-        self.assertIn('data-ts-prompt="on"', panel)
-        self.assertIn("交互菜单卡片（实验性）", panel)
-        page = self.console_surface()
-        # 控制台据此决定要不要轮询
-        self.assertIn("tmuxweb:prompt-card", page)
-        self.assertIn("TmuxPrompt.stop()", page)
-
-    def test_the_card_answers_the_arrow_keys_the_switch_advertises(self):
-        """分段开关写着 left/right to switch：卡片必须真的处理 ←→，否则键盘按下去没反应。"""
-        script = (Path(__file__).resolve().parents[1] / "web" / "assets" / "prompt-card.js").read_text()
-        self.assertIn("event.key === 'ArrowLeft'", script)
-        self.assertIn("event.key === 'ArrowRight'", script)
-        self.assertIn("chooseToggle(toggle.index, next)", script)
-        # ↑↓ 只在有列表项时才动光标：只有一个开关时 options 是空的，取模会得到 NaN
-        self.assertIn("(event.key === 'ArrowDown' || event.key === 'ArrowUp') && hasOptions", script)
-        self.assertIn("if (target) target.focus()", script)
-
-    def test_the_card_repaints_when_the_switch_value_changes(self):
-        """只比标题/选项数/光标的话，←→ 切完高亮停在旧值，看起来像没生效。"""
-        script = (Path(__file__).resolve().parents[1] / "web" / "assets" / "prompt-card.js").read_text()
-        self.assertIn("[toggle.label, toggle.active]", script)
-        self.assertIn("sig === signatureOf(prompt)", script)
+    def test_old_clients_read_the_retired_preference_as_off(self):
+        self.enable_prompt_card()
+        self.assertEqual(self.client.get("/api/prefs").json()["prefs"]["prompt_card"], "off")
+        self.assertNotIn("data-ts-prompt", self.client.get("/assets/settings.js").text)
 
     def test_sending_hides_the_attachment_strip_right_away(self):
         """按 Enter 那一刻条带就该收起来，而不是等 POST 回来（那一秒图片还杵着）。"""
@@ -4121,88 +4124,13 @@ class TmuxWebTests(unittest.TestCase):
         response = self.client.get("/api/panes/%254/uploads/a.png", follow_redirects=False)
         self.assertIn(response.status_code, (401, 403, 303))
 
-    def test_a_switch_only_screen_answers_422_not_a_server_error(self):
-        """只有开关、没有选项时点「选第 0 项」不该冒成 503 的 'no options'。"""
+    def test_legacy_card_actions_do_not_send_keys(self):
         self.enable_prompt_card()
-        self.tmux.output = ("  形态\n"
-                            "  ←→ to switch · Enter confirm · Esc cancel\n"
-                            "   Thinking\n"
-                            "      Low    [ High ]    Max\n")
-        sent_keys = []
-        self.tmux.send_key = lambda pane_id, key, pane=None: sent_keys.append(key)
-        response = self.client.post("/api/panes/%254/prompt/choose", json={"index": 0})
-        self.assertEqual(response.status_code, 422)
-        self.assertIn("开关", response.json()["detail"])
-        self.assertEqual(sent_keys, [], "出错时一个键都不该发")
-
-    def test_enter_on_a_switch_only_screen_confirms_it(self):
-        self.enable_prompt_card()
-        self.tmux.output = ("  ←→ to switch · Enter confirm · Esc cancel\n"
-                            "   Thinking\n"
-                            "      Low    [ High ]    Max\n")
-        sent_keys = []
-        original = self.tmux.output
-
-        def recording(pane_id, key, pane=None):
-            sent_keys.append(key)
-            if key == "Enter":
-                self.tmux.output = "  完成\n"
-
-        self.tmux.send_key = recording
-        result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "enter"}).json()
-        self.assertTrue(result["ok"], result)
-        self.assertEqual(sent_keys, ["Enter"])
-        self.assertTrue(original)
-        self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
-
-    def test_clicking_the_value_it_already_has_sends_nothing(self):
-        self.enable_prompt_card()
-        self.tmux.output = ("  Select a model  (type to search)\n"
-                            "  ↑↓ navigate · Enter select · Esc cancel\n\n"
-                            "     Alpha\n"
-                            "  ❯ Beta\n"
-                            "  Thinking  (←→ to switch)\n"
-                            "     Low    [ High ]    Max\n")
-        sent_keys = []
-        self.tmux.send_key = lambda pane_id, key, pane=None: sent_keys.append(key)
-        result = self.client.post("/api/panes/%254/prompt/choose",
-                                  json={"toggle": 0, "value": 1}).json()
-        self.assertTrue(result["ok"])
-        self.assertEqual(sent_keys, [])
-
-    def test_choosing_without_a_menu_is_a_conflict(self):
-        self.enable_prompt_card()
-        self.tmux.output = "idle\n"
-        response = self.client.post("/api/panes/%254/prompt/choose", json={"index": 0})
-        self.assertEqual(response.status_code, 409)
-
-    def test_escape_is_always_available(self):
-        self.enable_prompt_card()
-        self.tmux.output = ("  Select a model  (type to search)\n"
-                            "  ↑↓ navigate · Enter select · Esc cancel\n\n"
-                            "  ❯ Alpha\n"
-                            "    Beta\n")
-        sent_keys = []
-
-        def recording(pane_id, key, pane=None):
-            sent_keys.append(key)
-            if key == "Escape":
-                self.tmux.output = "idle\n"
-
-        self.tmux.send_key = recording
-        result = self.client.post("/api/panes/%254/prompt/choose", json={"key": "esc"}).json()
-        self.assertTrue(result["ok"], result)
-        self.assertEqual(sent_keys, ["Escape"])
-        self.assertIsNone(self.client.get("/api/panes/%254/prompt").json()["prompt"])
-
-    def test_pasted_images_go_through_the_attachment_pipeline(self):
-        """Ctrl/Cmd+V 的图片要走和点「附件」同一条路：上传 + 缩略图。"""
-        script = self.client.get("/assets/composer-files.js")
-        self.assertEqual(script.status_code, 200)
-        self.assertIn("'paste'", script.text)
-        self.assertIn("clipboardData", script.text)
-        self.assertIn("pastedNameFor", script.text)
-        self.assertIn("pasted-", script.text)
+        self.tmux.output = "  ←→ to switch · Enter confirm · Esc cancel\n   Thinking\n      Low    [ High ]    Max\n"
+        for action in ({"toggle": 0, "value": 2}, {"key": "enter"}, {"key": "esc"}, {"index": 0}):
+            response = self.client.post("/api/panes/%254/prompt/choose", json=dict(action, revision="old"))
+            self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.tmux.keys, [])
 
     def test_a_numbered_list_in_the_chat_is_not_a_menu(self):
         """聊天正文里的 1. 2. 3. 曾被当成菜单，点一下往 pane 里敲了个数字。"""
@@ -4844,9 +4772,9 @@ class TmuxWebTests(unittest.TestCase):
     def test_share_and_fullscreen_entries_are_icons_on_phones(self):
         self.login()
         page = self.console_surface()
-        # the share management entry reuses the arrow icon, both actions are icon-only
+        # Both share entries use the Octicons share symbol.
         self.assertIn('<a class="icon-btn" href="/shares" title="管理分享"', page)
-        self.assertIn('href="/shares" title="管理分享" aria-label="管理分享" style="text-decoration:none"><svg class="ico"><use href="#i-external"/></svg>', page)
+        self.assertIn('href="/shares" title="管理分享" aria-label="管理分享" style="text-decoration:none"><svg class="ico"><use href="#i-share"/></svg>', page)
         # the fullscreen label lives in a span so the phone layout can hide it
         self.assertIn('<svg class="ico"><use href="#i-fullscreen"/></svg><span>对话全屏</span>', page)
         self.assertIn(".fullscreen-btn span{display:none}", page)
@@ -4888,9 +4816,9 @@ class TmuxWebTests(unittest.TestCase):
         for marker in ('id="load-earlier"', 'function loadEarlier(', 'TRANSCRIPT_PAGE_MAX',
                        'id="earlier-bar"', 'state.transcriptLimit'):
             self.assertIn(marker, page)
-        # the share action is an icon only (arrow to the upper right)
+        # The share action is icon-only.
         self.assertIn('<button class="share-btn icon-only" id="share-button"', page)
-        self.assertIn('href="#i-external"', page)
+        self.assertIn('aria-label="分享"><svg class="ico"><use href="#i-share"/></svg>', page)
         self.assertNotIn("</svg>分享", page)
 
     def test_markdown_links_open_an_in_console_preview(self):
@@ -5684,6 +5612,13 @@ class FingerprintWindowTests(unittest.TestCase):
         backend.validate_pane = lambda pane_id: {"id": pane_id, "command": "claude"}
         with patch("tmux_web.time.sleep"):
             return backend.send("%4", text, True)
+
+    def test_kimi_framed_editor_excludes_history_and_joins_wrapped_text(self):
+        body = "fixture message spanning two rows"
+        frame = "╭──────╮\n│ > fixture message span │\n│ ning two rows │\n╰──────╯\nNORMAL\nctrl-x help"
+        self.assertTrue(self.Backend([frame]).still_in_prompt("%1", body))
+        cleared = "❯ " + body + "\n╭──────╮\n│ >  │\n╰──────╯\nNORMAL\nctrl-x help"
+        self.assertFalse(self.Backend([cleared]).still_in_prompt("%1", body))
 
     def test_multiline_prompt_tail_is_still_in_the_prompt(self):
         backend = self.Backend([self.SCREEN])

@@ -610,6 +610,23 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(listed, {"%4"})
         self.assertEqual(self.client.get("/api/fed/panes/%254/capture", headers=headers).status_code, 200)
 
+        colored = self.client.get("/api/fed/panes/%254/capture?color=1", headers=headers)
+        self.assertEqual(colored.status_code, 200)
+        self.assertIn("\x1b[32mhello", colored.json()["content"])
+        self.assertEqual(self.client.get("/api/fed/panes/%255/capture?color=1", headers=headers).status_code, 403)
+
+    def test_skill_catalog_delegates_and_checks_pane_scope(self):
+        from unittest.mock import patch
+        self.store.add("skills", "sk", "http://node.invalid", "", "fed_x.y")
+        node = self.store.listing()[0]["id"]
+        with patch.object(federation.FedClient, "_get", return_value={"provider": "kimi", "skills": ["child-only"]}) as get:
+            result = self.client.get(f"/api/panes/{node}~%254/skills")
+            self.assertEqual(result.json()["skills"], ["child-only"])
+            get.assert_called_once_with("/api/fed/panes/%254/skills")
+        issued = self.client.post("/api/fed/tokens", json={"label":"reader", "scopes":["view"], "panes":["%4"]}).json()
+        headers = {"Authorization": f"Bearer {issued['token']}"}
+        self.assertEqual(self.client.get("/api/fed/panes/%255/skills", headers=headers).status_code, 403)
+
     def test_prefix_reference_resolves_to_the_node_pane(self):
         """`ddr#12` 落到 `<node>~%12`；靠 hosts 快照解析，解析时不发 HTTP（会死锁）。"""
         self.store.add("oracle", "ddr", "http://node.invalid", "", "fed_x.y")

@@ -467,7 +467,56 @@ def toggle_keys(prompt: dict[str, Any], toggle_index: int, value_index: int) -> 
     return ["Right"] * delta if delta > 0 else ["Left"] * (-delta)
 
 
-def hermes_question(text: str, pane: dict) -> dict | None:
+def codex_command_approval(text: str) -> dict | None:
+    """Describe a complete command approval at the bottom of the Codex TUI."""
+    rows = (text or "").rstrip().splitlines()[-48:]
+    if not rows or rows[-1].strip().lower() != "press enter to confirm or esc to cancel":
+        return None
+    start = next((i for i in range(len(rows) - 2, -1, -1)
+                  if rows[i].lstrip().startswith("$ ")), None)
+    if start is None:
+        return None
+    command = [rows[start].strip()[2:]]
+    options = []
+    cursors = []
+    for row in rows[start + 1:-1]:
+        if not row.strip():
+            continue
+        option = re.fullmatch(r"\s*(?:(›)\s+)?([1-3])\.\s+(.+)", row)
+        if option:
+            if int(option[2]) != len(options) + 1:
+                return None
+            if option[1]:
+                cursors.append(len(options))
+            options.append(option[3].strip())
+        elif row.startswith("  "):
+            if options:
+                options[-1] += " " + row.strip()
+            else:
+                command.append(row.strip())
+        else:
+            return None
+    if len(cursors) != 1 or len(options) not in (2, 3):
+        return None
+    if options[0] != "Yes, proceed (y)" or options[-1] != "No, and tell Codex what to do differently (esc)":
+        return None
+    labels = [{"label": "仅批准这一次"}, {"label": "拒绝，返回 Codex"}]
+    if len(options) == 3:
+        rule = re.fullmatch(r"Yes, and don't ask again for commands that start with `([^`]+)` \(p\)", options[1])
+        if not rule:
+            return None
+        labels.insert(1, {"label": "批准并记住命令前缀", "description": rule[1]})
+    cmd = " ".join(command)
+    if not cmd.strip():
+        return None
+    labels[0]["description"] = "$ " + cmd
+    return {"kind": "notice", "source": "codex_command_approval", "title": "Codex 命令审批",
+            "hint": "点选项打开实时审批，在 Codex 中确认。", "options": labels,
+            "selected": cursors[0], "read_only": True,
+            "revision": hashlib.sha256(json.dumps([command, options]).encode()).hexdigest()}
+
+
+def hermes_question(text: str, pane: dict, *, expected_questions: str | None = None) -> dict | None:
     """One complete Hermes clarify dialog. Digits lock a choice without Enter."""
     if not text or "↑/↓" not in text or pane.get("provider") != "hermes":
         return None
@@ -499,6 +548,8 @@ def hermes_question(text: str, pane: dict) -> dict | None:
     # Hermes expands one group at a time. A revisited answered question has
     # a check mark too, so the numbered block identifies the active group.
     groups = [rows[start:stop] for start, stop in zip(headings, headings[1:] + [len(rows)])]
+    if expected_questions is not None and "\n".join(group[0][2:] for group in groups) != expected_questions:
+        return None
     expanded = [i for i, group in enumerate(groups)
                 if any(re.fullmatch(r"(?:❯\s+)?1\.\s+.+", row) for row in group[1:])]
     if len(expanded) != 1:
@@ -652,6 +703,13 @@ def choice_keys(prompt: dict[str, Any], index: int) -> list[str]:
     if not 0 <= index < len(options):
         raise ValueError("option index is out of range")
     option = options[index]
+    if prompt.get("source") == "codex_command_approval":
+        if prompt.get("verified") and not prompt.get("read_only"):
+            if index == 0:
+                return ["y"]
+            if index == len(options) - 1:
+                return ["Escape"]
+        raise ValueError("请在 Codex 原生界面确认此选项")
     if prompt.get("source") == "hermes_clarify":
         return [option["number"]]
     if option.get("key"):

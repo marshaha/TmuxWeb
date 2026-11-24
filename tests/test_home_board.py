@@ -568,35 +568,16 @@ class HomeBoardTests(unittest.TestCase):
         # collapsing must still win over the stored width
         self.assertIn(".app.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}", console)
 
-        # a narrow sidebar must not lose its action buttons: the row stays on one line and scrolls
-        # sideways instead of dropping icons onto a second row
-        self.assertIn('<div class="side-actions">', home.text)
-        shell_css = self.client.get("/assets/shell.css").text
-        self.assertIn("flex-wrap:nowrap", shell_css)
-        self.assertIn("overflow-x:auto", shell_css)
-        self.assertNotIn("flex-wrap:wrap;row-gap:", shell_css)
-        self.assertIn("initIconRowScroll", home.text)     # wheel scrolls the row sideways
-        self.assertIn("flex-wrap:nowrap", console)
-        self.assertNotIn("flex-wrap:wrap;row-gap:", console)
-        self.assertIn("initIconRowScroll", console)
-
-    def test_the_title_and_the_icon_row_are_stacked(self):
-        """Title on its own line, the icons in one row underneath, with a fade as the "it scrolls" hint."""
-        home = self.client.get("/home").text
-        shell = self.client.get("/assets/shell.css").text
-        self.assertIn(".side-head{position:relative;flex-direction:column;", shell)
-        self.assertIn(".side-head::after{", shell)                       # background-colour fade
-        self.assertIn("linear-gradient(to right,rgba(255,255,255,0),var(--surface,#fff))", shell)
-        self.assertIn("flex-wrap:wrap", shell)                           # a PC wraps instead of scrolling
-        # a desktop has no touch: no scrolling, the buttons shrink instead
-        self.assertIn("@media (pointer:coarse){\n  .side-actions{flex-wrap:nowrap", shell)
-
-        console = self.console_surface("/?pane=%254")
-        self.assertIn(".brand{position:relative;flex-direction:column;", console)
-        self.assertIn(".brand::after{", console)
-        self.assertIn("linear-gradient(to right,rgba(238,237,232,0),var(--sidebar,#eeeDE8))", console)
-        self.assertIn("@media (pointer:coarse){", console)
-        self.assertIn(".brand-actions{flex-wrap:nowrap;overflow-x:auto;", console)   # phone: swipe
+    def test_sidebars_use_the_same_scrollable_toolbar(self):
+        for path, collapse in (("/?pane=%254", "sidebar-close"), ("/home", "side-collapse"), ("/grid", "side-collapse")):
+            with self.subTest(path=path):
+                page = self.client.get(path).text
+                self.assertIn('class="sidebar-tool-frame"', page)
+                self.assertIn(f'id="{collapse}"', page)
+                self.assertIn('/assets/sidebar-toolbar.css', page)
+                self.assertIn('/assets/sidebar-toolbar.js', page)
+        for ext in ("css", "js"):
+            self.assertEqual(self.client.get(f"/assets/sidebar-toolbar.{ext}").status_code, 200)
 
     def test_a_card_previews_first_and_the_panel_holds_the_ways_in(self):
         """Cards preview; the panel offers full preview / chat / close."""

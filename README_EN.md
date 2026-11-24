@@ -6,6 +6,8 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
 
 > Security notice: TmuxWeb can type into tmux panes and expose an interactive terminal. This is equivalent to access as the operating-system account running the service. Do not expose it directly to the Internet. Use HTTPS, access controls, a strong password, and a firewall.
 
+The two-node deployment uses a single tested package and retains a verified release record and rollback files. [Fleet release workflow](docs/fleet-releases.md)
+
 ## Features
 
 - **Multi-host control plane**: one local service manages localhost and SSH hosts; remote machines only need SSH and tmux.
@@ -32,8 +34,8 @@ TmuxWeb is a self-hosted control center for local and remote tmux sessions and A
   (`ask_agent` / `send_agent` / `read_agent` accept `target: "#12"`, and `list_agents` returns `handle`), and for talking
   about a specific agent in prose. Resolution lives in `pane_or_404` / `pane_transport`, so `read_agent`, `send_agent`, `ask_agent` and any `/api/panes/#12/...` HTTP call accept the short form. A number whose window is gone answers 404 with an explanation instead of resolving to
   somebody else's session.
-- **Sidebar hover preview**: rest the pointer on a session-tree row or a 最近 row (2s by default, 1/2/3s or off
-  in the settings panel) and the last message floats next to it, with 完整预览 / 聊天 / 关闭 at the bottom.
+- **Sidebar hover preview**: hover over another session in the tree or the recent list for 2 seconds to see its last
+  message (the delay can be changed or disabled in Settings), with 完整预览 / 聊天 / 关闭 at the bottom.
   It is the *same* implementation the board cards use (`/assets/pane-preview.js` + `/api/home` data); a pane that is
   not a favourite or recent entry fetches its transcript once on hover (reused for 60s). Mobile web has no hover, so
   it is off by default; `?preview=1` forces it on for browsers that misreport hover support.
@@ -184,56 +186,9 @@ The 「附件」 button sits in the first row **inside** the composer card, sepa
   knows what to read;
 - switching panes clears the strip; the upload limit is the file panel's `TMUX_WEB_FILE_UPLOAD_MAX` (256MB default).
 
-### The agent's own menus are clickable in the chat
+### Interactions in Chat
 
-A harness waiting for a decision takes over the screen: kimi's `/model` picker, claude's
-`Do you want to proceed?`, kimi's `1. Compact and continue`. The chat used to show only "sent"; now those become a
-card above the composer:
-
-- three shapes are recognised: cursor lists (`❯`), numbered lists (`1.`), and yes/no or press-enter confirms;
-- click a button, or with the card focused use `↑↓` to move, `Enter` to choose, `Esc` to cancel;
-- the card carries the raw screen text so you can check what you are answering; `✕` only closes it and sends nothing;
-- never auto-answers, never guesses (no card when the screen is not understood), and the terminal is always there.
-
-**This is experimental and off by default**: it works by reading the screen, so unrelated content (an echoed
-command, a diff, chat prose) is occasionally mistaken for a menu. Turn it on in Settings ›
-**Interactive menu cards (experimental)**; while it is off the console does not even request `/prompt` and
-`choose` answers 409. The switch follows the account (`prefs.prompt_card`).
-
-Two rules make it safe:
-
-```bash
-POST /api/exec                         # {"command":"...","timeout":60} → stdout/stderr/exit
-GET  /api/panes/{pane}/prompt          # parsed prompt, or {"prompt": null}
-POST /api/panes/{pane}/prompt/choose   # {"index": 2} or {"key": "esc"}
-```
-
-1. **No digits for positional lists**: in kimi's picker a digit is a search filter, so the selection would move under
-   us. The key sequence is "press ↑ enough times to reach the top (harmless), then ↓ index times, then Enter".
-2. **Verify after sending**: capture again; success means the menu is gone, the title changed, or the cursor moved.
-   Three unchanged polls report "try again or use the terminal" instead of pretending it worked.
-
-Segmented switches (`Thinking  Low [ High ] Max`) are supported too: the segments are split on wide gaps and the one
-inside brackets is the current value. Clicking a segment sends only the `←`/`→` presses needed to get there (nothing
-when the segment is already active), and the same capture-and-verify step applies.
-
-Shapes seen in practice (all parsed against real captures):
-
-| agent | shape | state |
-|---|---|---|
-| kimi | `❯` cursor list, `1.` numbered list, `Low [ High ] Max` switch | verified end to end |
-| claude code | `❯ No, exit` cursor list with `Enter to confirm · Esc to cancel` | verified end to end, including a remote pane over SSH |
-| codex | `› 1. Yes, continue` numbered list with a `›` cursor | parsing verified; its dialogs ignored both digits and arrows in our test, so key delivery needs a working codex login to confirm |
-| hermes | `[y/N]` / numbered | parsing supported; the current config no longer prompts, so no live sample |
-
-**With a cursor, send arrows - never digits**: digits did nothing in codex's dialog and act as a search filter in kimi's
-picker; only a purely numbered list without any cursor gets the digit.
-
-The whole sequence goes out in **one** `send-keys` call: sending key by key to a remote pane costs one SSH round trip
-each and takes seconds.
-
-Tab bars, progress bars and free-text input are deliberately left to the terminal - guessing those means answering a
-question on the user's behalf.
+Native harness events and pending questions from the selected Codex session appear in a single card. Choose the popup or inline placement beside the inspection button. Hermes single-choice questions accept clicks and keyboard navigation when the active hook request and all question headings match the live pane. The server checks the request and visible options again before sending. For an unverified screen, open the embedded terminal to answer. See [harness configuration](docs/chat-interactions.md).
 
 ### Chinese bold hits a CommonMark quirk
 
@@ -374,8 +329,7 @@ stays on the right. User bubbles, agent bubbles and the embedded `/grid` + `/pre
 ### Icons
 
 UI icons are an inline SVG sprite (`<use href="#i-...">`). The copy glyph follows `icon.png` (two stacked
-rounded sheets, `#i-copy`, 1.7 stroke, `currentColor`); the share icon stays the original arrow — `#i-external`
-in the console and each page's own `#i-share` in the sidebars.
+rounded sheets, `#i-copy`, 1.7 stroke, `currentColor`). Share controls in the console, home and grid use the Primer Octicons share-24 icon.
 
 ## Settings panel
 
@@ -594,6 +548,8 @@ Only do this behind a firewall and an HTTPS reverse proxy or secure tunnel. The 
 Administrator and share-password logins are rate limited by client address (five failures per 60 seconds by default). Cookies automatically use `Secure` on HTTPS requests. Set `TMUX_WEB_SECURE_COOKIES=true` if a TLS proxy does not preserve the request scheme.
 
 ## Add a remote host
+
+The [remote debugging guide](docs/remote-debug.md) covers command execution (`POST /api/exec`), files, panes and MCP.
 
 Open `/hosts` and follow the staged flow:
 
@@ -888,9 +844,7 @@ the pane is busy, the chat has nothing to render.
 
 Two changes:
 
-- **Live tail**: while the last message is from the user (turn still running) a muted
-  `agent 工作中 · 实时输出` block shows the pane's last 12 lines, refreshed every 1.5s and redrawn only
-  when the digest changes.
+- **Live terminal** shows the last 12 nonempty lines of the pane. It opens by default and preserves terminal colors. While visible it polls every 1.5 seconds, or every 5 seconds when idle and unchanged. Collapsing the fragment pauses reads.
 - **Cheap polls**: the poll echoes `sig=`; when the signature is unchanged the server answers
   `{"unchanged": true}`. Measured: the full 300-message response is 85 KB, the probe is **127 B**
   (99.9% less). Cadence is layered too: 2s while a turn runs, 1.5s for 30s after a change, then 3s,
