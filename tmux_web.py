@@ -33,6 +33,7 @@ import git_tools
 import agent_calls
 import event_log
 import approvals
+import hermes_forms
 import message_queue
 from plugin_api import PluginError, PluginManager, PluginServices, install_routes
 import time
@@ -49,7 +50,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, RedirectResponse,
                                Response, StreamingResponse)
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, StrictInt, ValidationError, field_validator
 import file_browser
 from home_store import HomeStore
 import mcp_relay
@@ -202,6 +203,7 @@ CONSOLE_BUNDLE_SOURCES = (
     ("assets", "composer-files.js"),
     ("assets", "path-links.js"),
     ("assets", "prompt-card.js"),
+    ("assets", "native-form.js"),
     ("assets", "agents-panel.js"),
     ("assets", "perf-budget.js"),
     ("assets", "chat-search.js"),
@@ -1257,6 +1259,16 @@ class PromptChoiceRequest(BaseModel):
     revision: str = Field(default="", max_length=32)
     toggle: int | None = Field(default=None, ge=0)
     value: int | None = Field(default=None, ge=0)
+
+
+class NativeFormAnswer(BaseModel):
+    indices: list[StrictInt] = Field(max_length=24)
+    other: str | None = Field(default=None, max_length=2000)
+
+
+class NativeFormSubmit(BaseModel):
+    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    answers: dict[str, NativeFormAnswer] = Field(min_length=1, max_length=5)
 
 
 class TransferTicketRequest(BaseModel):
@@ -2445,6 +2457,9 @@ def create_app(
                     "host_name": host_name, "target": target, "provider": provider,
                     "status": status, "status_source": source, "activity_age": age,
                     "needs_input": gated_prompt is not None,
+                    # A screen hint can schedule a native lookup. It never supplies form content.
+                    "native_probe": provider == "hermes" and any(marker in (text or "") for marker in
+                        ("↑/↓", "Enter to lock", "needs your input", "允许这一次", "approve once")),
                     "agent_waiting": agent_source,
                     # Only a gated prompt ever leaves the server: an ungated
                     # parse is not shipped, so no client can render it as a
@@ -5957,6 +5972,83 @@ def create_app(
             return False
         return True
 
+    form_cache = OrderedDict()
+    form_reads = {}
+    form_slots = asyncio.Semaphore(6)
+
+    def native_form_on_host(pane_id, submission):
+        transport, actual = pane_transport(pane_id, prefer_agent=True)
+        if isinstance(transport, federation.FedTransport):
+            path = "/api/fed/panes/" + quote(actual, safe="") + "/native-form"
+            if submission is None:
+                return transport.client._get(path)
+            return transport.client._call("POST", path, json.dumps(submission).encode(),
+                                          {"Content-Type": "application/json"})
+        pane = pane_or_404(pane_id, prefer_agent=True)
+        pid = str(pane.get("pane_pid") or "")
+        if pane_provider(pane) != "hermes" or not pid.isdigit():
+            return {"status": "closed"}
+        return hermes_forms.on_host(actual, pid, submission, None if transport is tmux else transport)
+
+    async def native_form_for(pane_id, submission=None):
+        pane_id = resolve_pane_ref(pane_id)
+
+        async def load():
+            async with form_slots:
+                try:
+                    return await asyncio.to_thread(native_form_on_host, pane_id, submission)
+                except (RuntimeError, ValueError, OSError, subprocess.SubprocessError):
+                    return {"status": "unavailable"}
+
+        def invalidate():
+            form_cache.pop(pane_id, None)
+            form_reads.pop(pane_id, None)
+
+        if submission is not None:
+            invalidate()
+            try:
+                return await load()
+            finally:
+                invalidate()
+        cached = form_cache.get(pane_id)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+        # Browsers viewing the same pane can share an in-flight snapshot. Writes
+        # always read and validate against the live owner, never this GET result.
+        task = form_reads.get(pane_id)
+        if task is None:
+            task = form_reads[pane_id] = asyncio.create_task(load())
+            def cache_if_current(done):
+                if form_reads.get(pane_id) is done:
+                    form_reads.pop(pane_id, None)
+                    if not done.cancelled() and done.exception() is None:
+                        form_cache[pane_id] = (time.monotonic()+3, done.result())
+                        form_cache.move_to_end(pane_id)
+                        if len(form_cache) > 128:
+                            form_cache.popitem(last=False)
+            task.add_done_callback(cache_if_current)
+        return await asyncio.shield(task)
+
+    @app.get("/api/panes/{pane_id}/native-form")
+    async def native_form_get(request: Request, pane_id: str):
+        require_auth(request)
+        return JSONResponse(await native_form_for(pane_id), headers={"Cache-Control":"private, no-store"})
+
+    @app.post("/api/panes/{pane_id}/native-form")
+    async def native_form_submit(request: Request, pane_id: str, payload: NativeFormSubmit):
+        require_auth(request)
+        return await native_form_for(pane_id, payload.model_dump(exclude_none=True))
+
+    @app.get("/api/fed/panes/{pane_id}/native-form")
+    async def fed_native_form_get(request: Request, pane_id: str):
+        actual = fed_pane_or_403(require_fed(request, "input"), pane_id)
+        return JSONResponse(await native_form_for(actual), headers={"Cache-Control":"private, no-store"})
+
+    @app.post("/api/fed/panes/{pane_id}/native-form")
+    async def fed_native_form_submit(request: Request, pane_id: str, payload: NativeFormSubmit):
+        return await native_form_for(fed_pane_or_403(require_fed(request, "input"), pane_id),
+                                     payload.model_dump(exclude_none=True))
+
     @app.get("/api/panes/{pane_id}/prompt")
     async def pane_prompt(request: Request, pane_id: str, turn: str = "", inspect: bool = False, fresh: bool = False):
         """Manual inspection. Automatic notices arrive in the shared pane status."""
@@ -7944,7 +8036,7 @@ def create_app(
         # it holds anything, and only a cold cache waits, briefly.
         states = await asyncio.to_thread(pane_states_cached, 0.5, 30.0, True)
         return {"panes": [{key: item.get(key) for key in ("id", "provider", "status", "status_source",
-                                                          "needs_input", "prompt")}
+                                                          "needs_input", "prompt", "native_probe")}
                           for item in states]}
 
     # Needs-you inbox (borrow item 7, Open WebUI routers/notifications.py):

@@ -52,3 +52,11 @@ Codex 命令审批在「查看交互」中显示待执行命令、仅批准一�
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks) 和 [Kimi Code hooks](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html)
 - [Hermes 人工输入事件](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks) 和 [Gemini CLI hooks](https://geminicli.com/docs/hooks/reference/)
 - [OpenCode TUI 的会话、权限与表单接口](https://opencode.ai/docs/build/plugins/cli/)
+
+### Hermes 原生表单
+
+选中 Hermes 会话时，Chat 可以在实时终端上方显示 gateway 当前开放的问题。选好每道题后点「提交全部答案」，也支持多选和「其他」。同一浏览器标签页刷新可恢复未提交的选择。临时草稿按 pane 和请求版本隔离。另一个浏览器或原生终端先答时，Hermes 会关闭同一个请求。普通命令审批提供「仅允许这一次」和「拒绝」。
+
+需要支持共享 gateway 与 terminal breadcrumb 的 Hermes CLI。Linux 主机用当前前台 Hermes 进程、TTY、进程启动时间和该终端的 Hermes 会话记录确认归属。有 hook 时还会核对其 session 和问题。服务只连接正在运行的本机 gateway。终端画面只能提示服务复查。旧版 Hermes、身份不匹配、密码、持久授权和文件编辑审批均可通过实时终端处理。
+
+同一 pane、请求版本与答案重试可取回同一回执。主机端 SQLite 只保存答案摘要和结果，跨进程共享；不同答案无法覆盖先提交的决定。连接中断而结果尚未核实时会提示查看终端。
