@@ -4,6 +4,10 @@
 
 - The remote agent raises its own descriptor limit at startup (`ulimit -n 4096` in the keep-alive script, `LimitNOFILE=8192` in the systemd unit). A macOS agent left on the 256-descriptor default eventually failed every command with `cannot start command: [Errno 24] Too many open files`, which made the host look offline with no panes.
 
+## 0.10.3
+
+- Keep each console tab on its own pane and Chat or Terminal view when refreshing after an update, including while a remote host list is still loading.
+
 ## 0.10.2
 
 - Show live Codex command approval notices in the needs-you inbox immediately. Opening the inbox keeps pending requests counted until the dialog clears.

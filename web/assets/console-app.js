@@ -2,7 +2,7 @@ import {AnsiUp} from '/assets/ansi_up.js?v=1';
 import {marked} from '/assets/marked.esm.js?v=1';
 (() => {
   const ansi=new AnsiUp();
-  const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptFailures:0,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},kbShift:false,kbSymbols:false,viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,restored:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0,serverVersion:'',versionToast:{shownFor:'',dismissedFor:'',visible:false},versionPollRound:0};
+  const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptFailures:0,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},kbShift:false,kbSymbols:false,viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0,serverVersion:'',versionToast:{shownFor:'',dismissedFor:'',visible:false},versionPollRound:0};
   const $=id=>document.getElementById(id),list=$('pane-list'),term=$('terminal'),scroll=$('scroll'),input=$('input'),send=$('send');
   try{const saved=JSON.parse(localStorage.getItem('tmux-tree-open')||'[]');if(Array.isArray(saved))state.treeOpen=new Set(saved.filter(key=>typeof key==='string'));}catch{localStorage.removeItem('tmux-tree-open');}
   function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -267,16 +267,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     state.staleSnapshot=true;
     // 顺手把上次看的 pane 也选上：聊天气泡同样先从本地缓存画出来，
     // 不用等 /api/hosts（SSH 探测慢的时候那几秒就是"全量刷新"的观感）
-    if(!state.restored){
-      const params=new URLSearchParams(location.search);
-      const wanted=(params.get('pane')||localStorage.getItem('tmux-last-pane')||'').trim();
-      const target=(()=>{if(!wanted)return '';if(state.panes.some(p=>p.id===wanted))return wanted;
-        if(/^#?\d{1,5}$/.test(wanted)){const number=Number(wanted.replace('#',''));
-          const match=state.panes.find(p=>p.number===number);if(match)return match.id;}
-        return '';})();
-      if(target){state.restored=true;selectPane(target);
-        if(params.get('mode')==='terminal')setMode('terminal');}
-    }
+    applyWantedPane();
     return true;
   }
 
@@ -308,15 +299,45 @@ import {marked} from '/assets/marked.esm.js?v=1';
     if(num&&live.number){num.hidden=false;num.textContent=paneLabel(live);}
   }
   async function loadPanes(force){try{const d=await api('/api/hosts'+(force?'?refresh=1':''));state.hosts=d.hosts||[];
-      if(window.TmuxPaneCache&&d.hosts)TmuxPaneCache.saveHosts(d.hosts);if(window.TmuxRecents)TmuxRecents.setHosts(state.hosts);state.panes=state.hosts.flatMap(host=>(host.panes||[]).map(p=>({...p,host_id:p.host_id||host.id})));const valid=new Set();for(const host of state.hosts){valid.add(host.id);for(const p of host.panes||[]){valid.add(`${host.id}/${p.session}`);valid.add(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}state.treeOpen=new Set([...state.treeOpen].filter(key=>valid.has(key)));localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));$('pane-count').textContent=`${state.hosts.length} hosts · ${state.panes.length} panes`;renderHostList();applyWantedPane();loadFavorites();refreshPaneStates();if(state.selected&&!state.panes.some(p=>p.id===state.selected))selectPane(null);if(!state.restored){state.restored=true;const last=localStorage.getItem('tmux-last-pane');const wantedRaw=new URLSearchParams(location.search).get('pane');const wantedMode=new URLSearchParams(location.search).get('mode');
-      // 编号寻址：?pane=#12 或 ?pane=12 → 按侧栏显示的 #N 找到真正的 pane
-      let wanted=wantedRaw;
-      if(wanted&&/^#?\d{1,5}$/.test(wanted.trim())){const number=Number(wanted.replace('#',''));const match=state.panes.find(p=>p.number===number);
-        if(match)wanted=match.id;else{showError(`没有 #${number} 这个窗口`);wanted='';}}
-      state.wantedPane=wanted||null;state.wantedMode=wantedMode||null;
-      if(wanted&&state.panes.some(p=>p.id===wanted)){applyWantedPane();}else if(last&&!state.selected&&state.panes.some(p=>p.id===last))selectPane(last);}}catch(e){showError(e.message);}}
-  function applyWantedPane(){const target=state.wantedPane;if(!target)return;if(state.panes.some(p=>p.id===target)){state.wantedPane=null;selectPane(target);if(state.wantedMode==='terminal')setMode('terminal');state.wantedMode=null;history.replaceState(null,'','/');}}
-function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)return;const gridButton=$('grid-add');if(gridButton)gridButton.disabled=!state.selected;const on=!!state.selected&&state.favorites.has(state.selected);btn.disabled=!state.selected;const closeButton=$('pane-close');if(closeButton)closeButton.disabled=!state.selected;btn.classList.toggle('on',on);btn.setAttribute('aria-pressed',on?'true':'false');btn.title=on?'取消收藏':'收藏到主页';btn.setAttribute('aria-label',btn.title);const use=btn.querySelector('use');if(use)use.setAttribute('href',on?'#i-star-fill':'#i-star');}
+      if(window.TmuxPaneCache&&d.hosts)TmuxPaneCache.saveHosts(d.hosts);if(window.TmuxRecents)TmuxRecents.setHosts(state.hosts);state.panes=state.hosts.flatMap(host=>(host.panes||[]).map(p=>({...p,host_id:p.host_id||host.id})));const valid=new Set();for(const host of state.hosts){valid.add(host.id);for(const p of host.panes||[]){valid.add(`${host.id}/${p.session}`);valid.add(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}state.treeOpen=new Set([...state.treeOpen].filter(key=>valid.has(key)));localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));$('pane-count').textContent=`${state.hosts.length} hosts · ${state.panes.length} panes`;renderHostList();applyWantedPane();loadFavorites();refreshPaneStates();if(state.selected&&!state.panes.some(p=>p.id===state.selected)){
+        // A partial hosts response can temporarily omit a remote pane.
+        state.wantedPane=state.selected;
+        selectPane(null, {remember:false});
+      }
+      if(state.wantedPane)$('selected-title').textContent='等待窗口 '+state.wantedPane;
+    }catch(e){showError(e.message);}}
+
+  function applyWantedPane(){
+    const wanted=state.wantedPane;
+    if(!wanted)return;
+    let pane=state.panes.find(p=>p.id===wanted);
+    if(!pane && /^#?\d{1,5}$/.test(wanted.trim())){
+      const number=Number(wanted.replace('#',''));
+      pane=state.panes.find(p=>p.number===number);
+    }
+    if(pane)selectPane(pane.id);
+  }
+
+  function replaceConsoleQuery(edit){
+    const url=new URL(location.href);
+    edit(url.searchParams);
+    if(url.href!==location.href)history.replaceState(history.state,'',url);
+  }
+
+  function rememberPane(id){
+    // The URL belongs to this tab. Shared storage is only a default for a new bare URL.
+    replaceConsoleQuery(params=>{
+      if(id){
+        params.set('pane',id);
+        params.set('mode',state.mode);
+      }else{
+        params.delete('pane');
+        params.delete('mode');
+      }
+    });
+    localStorage.setItem('tmux-last-pane',id||'');
+  }
+  function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)return;const gridButton=$('grid-add');if(gridButton)gridButton.disabled=!state.selected;const on=!!state.selected&&state.favorites.has(state.selected);btn.disabled=!state.selected;const closeButton=$('pane-close');if(closeButton)closeButton.disabled=!state.selected;btn.classList.toggle('on',on);btn.setAttribute('aria-pressed',on?'true':'false');btn.title=on?'取消收藏':'收藏到主页';btn.setAttribute('aria-label',btn.title);const use=btn.querySelector('use');if(use)use.setAttribute('href',on?'#i-star-fill':'#i-star');}
   function syncStars(){syncFavButton();document.querySelectorAll('[data-star]').forEach(node=>{const on=state.favorites.has(node.dataset.star);node.classList.toggle('on',on);node.title=on?'取消收藏':'收藏到主页';const use=node.querySelector('use');if(use)use.setAttribute('href',on?'#i-star-fill':'#i-star');});}
   // ---- 改 tmux 会话名 / 窗口名（窗口名就是侧栏显示的那个名字）
   async function renameTmuxSession(host,session){
@@ -1091,7 +1112,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   async function closeSelectedPane(){const id=state.selected;if(!id)return;
     const button=$('pane-close-confirm');button.disabled=true;$('pane-close-status').textContent='正在关闭…';
     try{const result=await api(`/api/panes/${encodeURIComponent(id)}`,{method:'DELETE'});
-      $('pane-close-dialog').close();closeConnections();state.selected=null;localStorage.setItem('tmux-last-pane','');
+      $('pane-close-dialog').close();closeConnections();state.selected=null;rememberPane(null);
       $('message-shell').hidden=true;$('empty').style.display='grid';$('input').disabled=true;$('send').disabled=true;
       $('selected-number').hidden=true;
       if(!result.session_alive){$('selected-title').textContent='选择一个会话';$('selected-sub').textContent='窗格已关闭，会话也随之结束';}
@@ -1486,8 +1507,10 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     const inspect=$('inspect-interaction');
     (inspect.hidden ? ($('live-tail').hidden ? $('chat-mode') : $('live-tail-toggle')) : inspect).focus();
   };
-  function selectPane(id){if(state.selected!==id){closeInputComplete();window.TmuxChatSearch?.close();}closeChatReply();if(state.selected!==id)collapsedTailPane=null;if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
-    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;state.transcriptProvider='';syncNativeForm();localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;$('transcript').classList.remove('active');syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript-messages').innerHTML='';state.renderedMessages=new Map();$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
+  function selectPane(id,{remember=true}={}){
+    if(remember){state.wantedPane=null;rememberPane(id);}
+    if(state.selected!==id){closeInputComplete();window.TmuxChatSearch?.close();}closeChatReply();if(state.selected!==id)collapsedTailPane=null;if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
+    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;state.transcriptProvider='';syncNativeForm();if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;$('transcript').classList.remove('active');syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript-messages').innerHTML='';state.renderedMessages=new Map();$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
       const sb=$('chat-search-button');if(sb)sb.disabled=true;if(window.TmuxChatSearch)TmuxChatSearch.close();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';paintPaneHeader(p);$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);$('agents-button').disabled=false;if(window.TmuxAgents)TmuxAgents.refresh();
     const searchBtn=$('chat-search-button');if(searchBtn)searchBtn.disabled=false;syncLiveButton();syncFavButton();
     queueState.items=[];renderQueueStrip();
@@ -2553,7 +2576,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     });
     setInterval(sync,700);
   }
-  function setMode(mode){if(state.mode===mode)return;closeChatReply();state.mode=mode;syncNativeForm();window.TmuxPrompt?.refresh();document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
+  function setMode(mode){if(state.mode===mode)return;closeChatReply();state.mode=mode;if(state.selected)replaceConsoleQuery(params=>params.set('mode',mode));syncNativeForm();window.TmuxPrompt?.refresh();document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
   function isFullscreen(){return document.fullscreenElement===$('main')||$('main').classList.contains('fullscreen-fallback');}
   function syncFullscreen(){const active=isFullscreen();const label=$('fullscreen').querySelector('span');if(label)label.textContent=active?'退出全屏':(state.mode==='terminal'?'终端全屏':'对话全屏');setTimeout(()=>{if(state.fit&&state.termWs?.readyState===WebSocket.OPEN){state.fit.fit();state.termWs.send(JSON.stringify({type:'resize',cols:state.xterm.cols,rows:state.xterm.rows}));}},80);}
   async function toggleFullscreen(){const main=$('main'),app=document.querySelector('.app');if(isFullscreen()){if(document.fullscreenElement)await document.exitFullscreen();main.classList.remove('fullscreen-fallback');app.classList.remove('fullscreen-fallback');}else if(main.requestFullscreen){try{await main.requestFullscreen();}catch{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}}else{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}syncFullscreen();}
@@ -2989,14 +3012,15 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     $('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupGitPanel();setupQueueStrip();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
 // 会跨页面加载记住的偏好。以前这里会读 localStorage，于是你上次开着文件面板，之后每次
 // 进 chat（主页卡片、多窗口、直接链接）侧栏都先弹文件管理，看起来像是随机的。
-try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(localStorage.getItem('tmux-sidebar-collapsed')==='1'&&!isMobile())document.querySelector('.app').classList.add('sidebar-collapsed');const saved=localStorage.getItem('tmux-web-mode');if(saved==='terminal')setMode('terminal');
-  // Nothing to restore (no ?pane= and no remembered pane) => the board is the entry
-  // point: its 最近访问 cards take you straight back where you were.
+try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(localStorage.getItem('tmux-sidebar-collapsed')==='1'&&!isMobile())document.querySelector('.app').classList.add('sidebar-collapsed');
   (function landOnBoard(){
-    const wanted=new URLSearchParams(location.search).get('pane');
-    let last='';
-    try{last=localStorage.getItem('tmux-last-pane')||'';}catch{}
-    if(!wanted&&!last)location.replace('/home');
+    const initialParams=new URLSearchParams(location.search);
+    const requestedMode=initialParams.get('mode');
+    const initialMode=['chat','terminal'].includes(requestedMode)?requestedMode:localStorage.getItem('tmux-web-mode');
+    if(initialMode==='terminal')setMode('terminal');
+    const wanted=(initialParams.get('pane')||localStorage.getItem('tmux-last-pane')||'').trim();
+    state.wantedPane=wanted||null;
+    if(!wanted&&!initialParams.has('inbox')&&!initialParams.has('settings'))location.replace('/home');
   })();
   // 「最近」块现在是三个页面共用的一份实现（assets/recents.js）
   if(window.TmuxRecents){
@@ -3022,7 +3046,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
     let wanted=false;
     try{wanted=new URLSearchParams(location.search).get('settings')==='1';}catch{}
     if(!wanted)return;
-    history.replaceState(null,'',location.pathname);
+    replaceConsoleQuery(params=>params.delete('settings'));
     const attempt=(tries)=>{
       if(window.TmuxSettings&&TmuxSettings.open){TmuxSettings.open();return;}
       if(tries>0)setTimeout(()=>attempt(tries-1),120);
@@ -3048,7 +3072,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
     let wanted=false;
     try{wanted=new URLSearchParams(location.search).get('inbox')==='1';}catch{}
     if(!wanted)return;
-    history.replaceState(null,'',location.pathname);
+    replaceConsoleQuery(params=>params.delete('inbox'));
     const attempt=(tries)=>{
       if(window.TmuxNeedsYouInbox&&TmuxNeedsYouInbox.open){TmuxNeedsYouInbox.open();return;}
       if(tries>0)setTimeout(()=>attempt(tries-1),120);
