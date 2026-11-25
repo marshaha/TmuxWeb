@@ -9,7 +9,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   // 附件：和 /preview（多窗口里的窗口）共用 /assets/composer-files.js 这一份实现
   let composerFiles=null;
   const tailAnsi=new AnsiUp();
-  let tailLoop=null, collapsedTailPane=null;
+  let tailLoop=null, collapsedTailPane=null, expandedForm='';
   function panePathOf(pane){
     const meta=(state.panes||[]).find(item=>item.id===pane);
     return (meta&&meta.path)||'';
@@ -355,7 +355,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     const pane=state.mode==='chat' && state.panes.find(p=>p.id===state.selected);
     const signal=pane && state.needsInput?.get(pane.id);
     const native=nativeHermesNotice(signal);
-    const isHermes=pane && (pane.provider==='hermes' || pane.command==='hermes');
+    const isHermes=pane && (pane.provider==='hermes' || pane.command==='hermes' || native || state.transcriptProvider==='hermes');
     const probe=isHermes && state.nativeProbe?.has(pane.id);
     window.TmuxNativeForm?.sync(isHermes ? pane.id : '', native ? signal : null, poll, probe);
   }
@@ -1487,7 +1487,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     (inspect.hidden ? ($('live-tail').hidden ? $('chat-mode') : $('live-tail-toggle')) : inspect).focus();
   };
   function selectPane(id){if(state.selected!==id)closeInputComplete();closeChatReply();if(state.selected!==id)collapsedTailPane=null;if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
-    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;syncNativeForm();localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;state.transcriptProvider='';$('transcript').classList.remove('active');syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript').innerHTML='';state.renderedMessages=new Map();$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
+    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;state.transcriptProvider='';syncNativeForm();localStorage.setItem('tmux-last-pane',id||'');if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;$('transcript').classList.remove('active');syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript-messages').innerHTML='';state.renderedMessages=new Map();$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
       const sb=$('chat-search-button');if(sb)sb.disabled=true;if(window.TmuxChatSearch)TmuxChatSearch.close();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';paintPaneHeader(p);$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);$('agents-button').disabled=false;if(window.TmuxAgents)TmuxAgents.refresh();
     const searchBtn=$('chat-search-button');if(searchBtn)searchBtn.disabled=false;syncLiveButton();syncFavButton();
     queueState.items=[];renderQueueStrip();
@@ -1691,7 +1691,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     state.transcriptMessages=messages;
     state.messageText=new Map(messages.map(message=>[String(message.id),String(message.text||'')]));
     reconcilePending(messages);
-    const host=$('transcript'),before=state.renderedMessages||new Map(),next=new Map();
+    const host=$('transcript-messages'),before=state.renderedMessages||new Map(),next=new Map();
     const pending=new Map();
     const local=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
       .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0));
@@ -1920,7 +1920,8 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     const box=$('live-tail'),pre=$('live-tail-text'),toggle=$('live-tail-toggle');
     const available=id&&state.mode==='chat'&&!state.livePaused&&$('transcript').classList.contains('active');
     if(!available){stopLiveTail();return;}
-    const expanded=collapsedTailPane!==id;
+    const revision=$('native-form').dataset.open;
+    const expanded=collapsedTailPane!==id && (!revision || expandedForm===revision);
     if(box.hidden)box.hidden=false;
     const head=$('live-tail-head'),inspect=$('inspect-interaction');
     if(inspect.parentNode!==head)head.append(inspect);
@@ -1980,8 +1981,16 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     }
     tick();
   }
+  $('native-form').addEventListener('native-form-change',()=>{
+    const card=$('native-form'), follow=state.stick;
+    expandedForm='';
+    syncLiveTail();
+    if(card.dataset.open && follow)card.scrollIntoView({block:'start'});
+  });
   $('live-tail-toggle').onclick=()=>{
-    collapsedTailPane=collapsedTailPane===state.selected?null:state.selected;
+    const open=$('live-tail-toggle').getAttribute('aria-expanded')==='true';
+    collapsedTailPane=open?state.selected:null;
+    expandedForm=open?'':$('native-form').dataset.open || '';
     syncLiveTail();
   };
   function scheduleTranscriptPoll(id,delay){
@@ -1992,6 +2001,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     state.transcriptTimer=setTimeout(()=>refreshTranscript(id),delay);
   }
   document.addEventListener('visibilitychange',()=>{
+    syncNativeForm(true);
     syncLiveTail();
     if(!document.hidden&&state.selected&&state.mode==='chat'&&$('transcript').classList.contains('active')){
       refreshTranscript(state.selected);
@@ -2011,7 +2021,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   function showTranscriptNotice(id,text){
     hideLoadCard();
     $('transcript').classList.add('active');
-    $('transcript').innerHTML='<div class="transcript-empty"><b>暂时没有可解析的对话</b>'
+    $('transcript-messages').innerHTML='<div class="transcript-empty"><b>暂时没有可解析的对话</b>'
       +`<p>${esc(text)}</p><p class="transcript-empty-actions"><button type="button" id="empty-screen">用终端打开（xterm）</button></p></div>`;
     const button=$('empty-screen');
     if(button)button.onclick=()=>setMode('terminal');
@@ -2982,7 +2992,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
     closeChatReply();
     window.TmuxPrompt?.inspect(()=>state.mode==='chat'?state.selected:null);
   };
-  setInterval(()=>{if(!document.hidden)refreshPaneStates();},9000);
+  setInterval(()=>{if(!document.hidden){syncNativeForm(true);refreshPaneStates();}},9000);
   // 子 agent 调用图：只在抽屉打开时轮询
   if(window.TmuxAgents)TmuxAgents.mount({getPane:()=>state.selected});
   if(window.TmuxChatSearch)TmuxChatSearch.mount();

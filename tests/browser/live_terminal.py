@@ -47,6 +47,8 @@ def main():
                                                          {"id": "%42", "status": "idle"}]})
                     if path == "/api/panes/%42/transcript":
                         return r.fulfill(json={"messages": []})
+                    if path.endswith("/native-form"):
+                        return r.fulfill(json={"status":"closed"})
                     if path.endswith("/transcript"):
                         return r.fulfill(json={"messages": [{"role": "assistant", "id": "1", "text": "已开始"}],
                                                "provider": "hermes", "waiting": False, "signature": "v1"})
@@ -79,10 +81,9 @@ def main():
                 nav = page.locator("#chat-activity #prompt-card-nav")
                 expect(page.locator("#inspect-interaction")).to_be_hidden()
                 expect(page.locator("#interaction-placement")).to_have_value("inline")
-                expect(nav).to_be_visible()
-                expect(nav.get_by_role("button", name="下一题")).to_be_visible()
-                assert nav.evaluate("""el => [...el.children].filter(b => !b.hidden).every(b =>
-                    b.scrollWidth <= b.clientWidth + 1 && b.scrollHeight <= b.clientHeight + 1)""")
+                # A screen hint alone cannot offer structured answers.
+                expect(nav).to_be_hidden()
+                expect(page.locator("#native-form form")).to_be_hidden()
                 keys = page.locator("#live-keys-nav")
                 opener = page.locator("#live-keyboard-toggle")
                 expect(keys).to_be_hidden()

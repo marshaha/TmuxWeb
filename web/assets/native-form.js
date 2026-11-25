@@ -11,15 +11,23 @@
   function remember() {
     try { sessionStorage.setItem(draftKey(), JSON.stringify({revision:current.revision, draft})); } catch {}
   }
+  function markOpen(revision) {
+    if ((box.dataset.open || '') === revision) return;
+    if (revision) box.dataset.open = revision;
+    else delete box.dataset.open;
+    box.dispatchEvent(new Event('native-form-change'));
+  }
   function status(message) {
     form.hidden = true;
     title.textContent = 'Hermes 交互';
     note.textContent = message;
     box.hidden = false;
+    markOpen('');
   }
   terminal.onclick = () => document.getElementById('chat-reply-panel')
     ?.dispatchEvent(new Event('open-reply'));
   function render(next) {
+    completed = '';
     current = next;
     try {
       const saved = JSON.parse(sessionStorage.getItem(draftKey()));
@@ -78,6 +86,7 @@
     form.hidden = false;
     box.hidden = false;
     note.textContent = '';
+    markOpen(next.revision);
   }
   async function call(method, body) {
     const res = await fetch('/api/panes/'+encodeURIComponent(pane)+'/native-form', {
@@ -119,12 +128,14 @@
       ++epoch;
       pane = id; notice = key; current = null; completed = ''; reading = false; busy = false;
       box.hidden = true;
+      markOpen('');
       poll = true;
     }
     const newNotice = key !== notice;
     notice = key;
     if (!id || !poll || busy || document.hidden || reading) return;
-    if (!first && !current && !signal && !probe && !newNotice && Date.now()-lastRead < 25000) return;
+    const interval = current || signal || probe ? 3000 : 8000;
+    if (!first && !newNotice && Date.now()-lastRead < interval) return;
     lastRead = Date.now();
     const version = epoch;
     reading = true;

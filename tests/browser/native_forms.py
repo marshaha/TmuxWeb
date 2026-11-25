@@ -19,7 +19,7 @@ def main():
         with fixture.client as client, sync_playwright() as pw:
             fixture.login()
             browser = pw.chromium.launch()
-            pane = dict(fixture.tmux.panes[0], provider="hermes", command="hermes", pane_pid="1201")
+            pane = dict(fixture.tmux.panes[0], provider="hermes", command="python3", pane_pid="1201")
             fixture.tmux.panes = [pane]
             def route(r):
                 path = urlsplit(r.request.url).path
@@ -28,6 +28,8 @@ def main():
                                 else client.get(path))
                     return r.fulfill(body=response.content, status=response.status_code,
                                      content_type=response.headers.get("content-type","text/html"))
+                if path == "/api/panes/status":
+                    return r.fulfill(status=503,json={"detail":"status sweep unavailable"})
                 if path == "/api/hosts":
                     return r.fulfill(json={"hosts":[{"id":"localhost","panes":[pane]}]})
                 if path.endswith("/transcript"):
@@ -39,6 +41,10 @@ def main():
                 pane["id"] = pane_id
                 slug = "/api/panes/%25" + str(number) + "/native-form"
                 owner = Owner()
+                delayed = width == 390
+                pending = owner.open
+                if delayed:
+                    owner.open = []
                 def helper(actual, pid, submission, runner):
                     assert (actual,pid,runner) == (pane_id,"1201",None)
                     return asyncio.run(exchange(owner,submission))
@@ -52,7 +58,17 @@ def main():
                         page.goto("http://tmuxweb.test/?pane=%25"+str(number),wait_until="domcontentloaded")
                         pages.append(page)
                     page, second=pages
-                    card=page.locator("#native-form")
+                    card=page.locator("#transcript article.assistant#native-form")
+                    if delayed:
+                        expect(page.locator("#live-tail-surface")).to_be_visible()
+                        expect(card).to_be_hidden()
+                        owner.open = pending
+                    expect(card.get_by_role("heading",name="Hermes 等你回答")).to_be_in_viewport(timeout=22000)
+                    expect(page.locator("#live-tail-surface")).to_be_hidden()
+                    page.locator("#live-tail-toggle").click()
+                    expect(page.locator("#live-tail-surface")).to_be_visible()
+                    page.locator("#live-tail-toggle").click()
+                    expect(card).to_be_visible()
                     option=card.get_by_label("claude",exact=True)
                     option.tap() if width==390 else option.click()
                     page.reload(wait_until="domcontentloaded")
