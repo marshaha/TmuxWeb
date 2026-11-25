@@ -422,11 +422,15 @@
 </style>
 <!-- 等你回答收件箱（借鉴清单第 7 项）：亮灯历史，打开即标已读 -->
 <div class="inbox-drawer" id="inbox-drawer" hidden role="dialog" aria-label="等你回答收件箱">
-  <div class="inbox-head"><b>等你回答</b><span class="inbox-sub">亮灯历史 · 打开即标已读</span><button class="prompt-x" id="inbox-close" type="button" title="关闭" aria-label="关闭"><svg class="ico"><use href="#i-close"/></svg></button></div>
-  <div class="inbox-list" id="inbox-list"></div>
+  <div class="inbox-head"><b>等你回答</b><button class="prompt-x" id="inbox-close" type="button" title="关闭" aria-label="关闭"><svg class="ico"><use href="#i-close"/></svg></button></div>
+  <div class="inbox-list">
+    <h3 id="inbox-pending-title" hidden>待处理</h3><div id="inbox-list"></div>
+    <button class="prompt-btn" id="inbox-more" type="button" hidden>更多待处理</button>
+    <div id="inbox-activity"></div>
+  </div>
   <div class="inbox-state" id="inbox-state" hidden></div>
-  <div class="inbox-empty" id="inbox-empty" hidden>现在没有正在等你的会话</div>
-  <div class="inbox-foot"><span class="prompt-state" id="inbox-status"></span><button class="prompt-btn" id="inbox-more" type="button" hidden>更多</button></div>
+  <div class="inbox-empty" id="inbox-empty" hidden>暂无待处理、完成未读或工作中的会话</div>
+  <div class="inbox-foot"><span class="prompt-state" id="inbox-status"></span></div>
 </div>
 <div class="inbox-backdrop" id="inbox-backdrop" hidden></div>
 <div id="interaction-popup"><div id="interaction-cards">

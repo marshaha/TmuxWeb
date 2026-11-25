@@ -406,7 +406,26 @@ import {marked} from '/assets/marked.esm.js?v=1';
     }:null;
     window.TmuxPrompt?.showStatus(currentInteraction());
   }
-  async function refreshPaneStates(){const now=Date.now();if(now-(state.stateAt||0)<9000)return;state.stateAt=now;try{const d=await api('/api/panes/status');state.paneState=new Map((d.panes||[]).map(p=>[p.id,p.status]));const needs=new Map((d.panes||[]).filter(p=>p.needs_input&&p.prompt).map(p=>[p.id,p.prompt]));const changed=needs.size!==(state.needsInput?state.needsInput.size:0)||[...needs.keys()].some(id=>!state.needsInput||!state.needsInput.has(id));state.needsInput=needs;state.nativeProbe=new Set((d.panes||[]).filter(p=>p.native_probe).map(p=>p.id));syncNativeForm(true);if(state.mode==='chat')window.TmuxPrompt?.showStatus(currentInteraction());applyPaneStates();if(changed)renderList();syncProgress();}catch{}}
+  async function refreshPaneStates(){
+    const now=Date.now();
+    if(now-(state.stateAt||0)<9000)return;
+    state.stateAt=now;
+    try{
+      const {panes=[]}=await api('/api/panes/status');
+      state.paneState=new Map(panes.map(p=>[p.id,p.status]));
+      const needs=new Map(panes.filter(p=>p.needs_input&&p.prompt).map(p=>[p.id,p.prompt]));
+      const changed=needs.size!==(state.needsInput?.size||0) ||
+        [...needs].some(([id,prompt])=>!state.needsInput?.has(id) || state.needsInput.get(id).revision!==prompt.revision);
+      state.needsInput=needs;
+      state.nativeProbe=new Set(panes.filter(p=>p.native_probe).map(p=>p.id));
+      window.TmuxNeedsYouInbox?.setStates(panes);
+      syncNativeForm(true);
+      if(state.mode==='chat')window.TmuxPrompt?.showStatus(currentInteraction());
+      applyPaneStates();
+      if(changed){renderList();window.TmuxNeedsYouInbox?.noticeChanged();}
+      syncProgress();
+    }catch{}
+  }
   function applyPaneStates(){if(window.TmuxRecents)TmuxRecents.setStates(state.paneState);document.querySelectorAll('[data-pane]').forEach(button=>{const dot=button.querySelector('.pane-state');if(!dot)return;const status=state.paneState.get(button.dataset.pane)||'unknown',name='pane-state '+status;if(dot.className!==name){dot.className=name;dot.title=status==='idle'?'空闲，可接收中继':status==='busy'?'正在运行':'状态未知';}});}
   function formatSize(bytes){if(!bytes)return '0 B';const units=['B','KB','MB','GB','TB'];let value=bytes,index=0;while(value>=1024&&index<units.length-1){value/=1024;index++;}return (index?(value<10?value.toFixed(1):Math.round(value)):value)+' '+units[index];}
   function setFileStatus(message){$('file-status').textContent=message||'拖拽文件到此处上传';}
@@ -1862,6 +1881,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
       const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${limit}${refresh?'&refresh=1':''}${sig}${since}${wait}`);if(state.selected!==id||state.mode!=='chat'||state.transcriptLimit!==limit)return;
       // 后台重试的状态也走这条轮询：必须在 unchanged 早退之前同步，否则
       // transcript 不动时气泡永远收不到终态。
+      if(!d.error && (d.messages?.length || (d.unchanged && state.transcriptMessages.length)))window.TmuxNeedsYouInbox?.viewed(id);
       syncResendState(d);
       syncQuestionNotice(id,d);
       showError('');state.transcriptFailures=0;$('status-dot').className='status-dot live';
@@ -3095,7 +3115,12 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
   };
   setInterval(()=>{if(!document.hidden){syncNativeForm(true);refreshPaneStates();}},9000);
   // 子 agent 调用图：只在抽屉打开时轮询
-  if(window.TmuxAgents)TmuxAgents.mount({getPane:()=>state.selected});
+  if(window.TmuxAgents)TmuxAgents.mount({getPane:()=>state.selected, findPane:ref=>{
+    const normalized = String(ref || '').replace(/^localhost~(?=%)/,'').replace(/^[@#]?(\d+)$/,'#$1')
+      .replace(/^([a-zA-Z][\w-]*)[:/](\d+)$/,'$1#$2');
+    const pane = state.panes.find(p=>p.id === normalized || paneLabel(p) === normalized);
+    return pane && {id:pane.id, label:pane.number ? paneLabel(pane) : pane.id};
+  }});
   if(window.TmuxChatSearch)TmuxChatSearch.mount();
   // 等你回答收件箱（借鉴清单第 7 项）：亮灯历史 + 未读数，点记录跳 pane。
   if(window.TmuxNeedsYouInbox)TmuxNeedsYouInbox.start({onJump:pane=>selectPane(pane)});

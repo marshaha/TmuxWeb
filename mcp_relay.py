@@ -538,6 +538,8 @@ def tool_schemas() -> list[dict]:
                 "properties": {
                     "target": target,
                     "question": {"type": "string", "minLength": 1, "maxLength": 20000},
+                    "caller": {"type": "string", "maxLength": 64,
+                               "description": "Your own host-scoped pane or #handle for the call graph, if known."},
                     "timeout": {"type": "integer", "minimum": 5, "maximum": 600, "default": DEFAULT_ASK_TIMEOUT},
                     "force": {"type": "boolean", "default": False,
                               "description": "send even when the pane does not look idle"},

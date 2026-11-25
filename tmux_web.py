@@ -2484,17 +2484,20 @@ def create_app(
                 for pane in local_agents:
                     provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
                     try:
+                        turn = {}
                         state = agent_status.status_for_pane(
-                            provider, pane.get("path", ""), pane.get("title", ""))
+                            provider, pane.get("path", ""), pane.get("title", ""), turn=turn)
                     except Exception:  # noqa: BLE001
                         continue
-                    out.append((pane["id"], state))
+                    out.append((pane["id"], state, turn))
                 return out
         else:
             def probe_local():
                 return []
 
-        for key, state in probe_local():
+        turns = {}
+        for key, state, turn in probe_local():
+            turns[key] = turn
             if state in (agent_status.BUSY, agent_status.IDLE):
                 native[key] = state
 
@@ -2510,6 +2513,8 @@ def create_app(
             activity = pane.get("activity") or 0
             age = (now - activity) if activity else None
             surface = native.get(pane["id"])
+            if isinstance(transport, federation.FedTransport):
+                surface = pane.get("turn_status")
             if surface in (agent_status.BUSY, agent_status.IDLE):
                 status, source = surface, "session"
             elif age is not None and age <= busy_window:
@@ -2533,7 +2538,8 @@ def create_app(
             if not gated_prompt and provider:
                 gated_prompt = cursor_notice(transport, actual_pane_id, pane, text)
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
-                    "host_name": host_name, "target": target, "provider": provider,
+                    "host_name": host_name, "target": target, "provider": provider, "pane_pid": pane.get("pane_pid") or pane.get("turn_owner"),
+                    "turn": turns.get(pane["id"]) or pane.get("turn_record"),
                     "status": status, "status_source": source, "activity_age": age,
                     "needs_input": gated_prompt is not None,
                     # A screen hint can schedule a native lookup. It never supplies form content.
@@ -2587,6 +2593,10 @@ def create_app(
         started_at = time.time()
         try:
             states = collect_pane_states()
+            try:
+                inbox_store.turn_completions(pane_state_cache["states"], states)
+            except sqlite3.Error:
+                LOGGER.warning("could not update completed turns", exc_info=True)
             elapsed = time.time() - started_at
             with pane_state_lock:
                 pane_state_cache.update({"at": time.time(), "states": states})
@@ -3280,6 +3290,9 @@ def create_app(
         else:
             groups = [(host_id, host_name, panes) for host_id, host_name, _transport, panes
                       in await asyncio.to_thread(relay_hosts, False)]
+        with pane_state_lock:
+            fresh_states = pane_state_cache["states"] if time.time() - pane_state_cache["at"] < 45 else []
+        turns = {s["id"]: s for s in fresh_states if s.get("status_source") == "session"}
         for host_id, host_name, panes in groups:
             for pane in panes:
                 raw = pane.get("pane_id") or pane.get("id") or ""
@@ -3297,6 +3310,9 @@ def create_app(
                     "active": pane.get("active"), "provider": pane_provider(pane),
                     "capabilities": {"cursor_menu": bool(pane.get("pane_pid"))},
                 })
+                turn = turns.get(pane_id)
+                if turn and pane.get("pane_pid") and turn.get("pane_pid") == pane["pane_pid"]:
+                    found[-1].update(turn_status=turn["status"], turn_owner=str(pane["pane_pid"]), turn_record=turn.get("turn"))
         numbers = await asyncio.to_thread(home.ensure_numbers, [item["id"] for item in found])
         for item in found:
             item["number"] = numbers.get(item["id"])
@@ -4847,7 +4863,7 @@ def create_app(
                 result = await perform_relay_ask(RelayAskRequest(
                     target=target, question=question[:20000], timeout=timeout,
                     force=bool(arguments.get("force", False)),
-                    source=str(arguments.get("source") or "mcp"),
+                    source=str(arguments.get("source") or "mcp"), caller=str(arguments.get("caller") or ""),
                 ))
             except RelayTimeoutError as exc:
                 raise McpToolError(str(exc), exc.tail) from exc
@@ -8185,7 +8201,7 @@ def create_app(
         # it holds anything, and only a cold cache waits, briefly.
         states = await asyncio.to_thread(pane_states_cached, 0.5, 30.0, True)
         return {"panes": [{key: item.get(key) for key in ("id", "provider", "status", "status_source",
-                                                          "needs_input", "prompt", "native_probe")}
+                                                          "needs_input", "prompt", "native_probe", "title", "completion_id", "finished_at")}
                           for item in states]}
 
     # Needs-you inbox (borrow item 7, Open WebUI routers/notifications.py):
@@ -8226,6 +8242,12 @@ def create_app(
         unread = await asyncio.to_thread(inbox_store.unread_count)
         return {"count": open_count, "open": open_count, "unread": unread}
 
+    @app.post("/api/needs-you/completions/{completion_id}/read")
+    async def read_turn_completion(request: Request, completion_id: int):
+        require_auth(request)
+        await asyncio.to_thread(inbox_store.read_completion, completion_id)
+        return {"ok": True}
+
     @app.post("/api/needs-you/inbox/open")
     async def needs_you_inbox_open(request: Request):
         require_auth(request)
@@ -8243,13 +8265,20 @@ def create_app(
 
     async def perform_relay_ask(payload: RelayAskRequest) -> dict:
         """Ask a pane and wait for the answer: used by the HTTP route and the MCP endpoint."""
-        transport, pane_id, pane, host_name = await asyncio.to_thread(relay_target, payload.target)
+        target = resolve_pane_ref(payload.target)
+        transport, pane_id, pane, host_name = await asyncio.to_thread(relay_target, target)
         provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
-        lock = relay_locks.setdefault(payload.target, asyncio.Lock())
+        lock = relay_locks.setdefault(target, asyncio.Lock())
         if lock.locked():
             raise HTTPException(status_code=409, detail="another relay request is already waiting on this pane")
         started = time.monotonic()
-        call = calls_store.start(payload.caller or "", payload.target,
+        parent = payload.caller or ""
+        if parent:
+            try:
+                parent = resolve_pane_ref(parent)
+            except HTTPException:
+                pass  # Preserve a historical caller label even if its pane is gone.
+        call = calls_store.start(parent, target,
                                  payload.question, payload.source)
         async with lock:
             try:
@@ -8301,9 +8330,24 @@ def create_app(
         return item.as_dict(full=True)
 
     @app.get("/api/agents/calls")
-    async def agent_calls_list(request: Request, pane: str = "", limit: int = 50, full: bool = False):
+    async def agent_calls_list(request: Request, pane: str = "", limit: int = 50, full: bool = False, relations: bool = False):
         """谁问过谁：这个 pane 相关的调用（父或子），新的在前。"""
         require_auth(request)
+        if relations and pane:
+            canonical = resolve_pane_ref(pane)
+            aliases = {canonical, pane}
+            if canonical.startswith("%"):
+                aliases.add("localhost~" + canonical)
+            number = home.existing_number(canonical)
+            if number:
+                aliases.update((str(number), f"#{number}", f"@{number}"))
+            for host in (hosts_snapshot["value"] or {}).get("hosts", []):
+                if host.get("kind") == "fed":
+                    for entry in host.get("panes") or []:
+                        if entry["id"] == canonical and entry.get("number"):
+                            aliases.update(host["prefix"] + sep + str(entry["number"]) for sep in ("#", "/", ":"))
+            items = await asyncio.to_thread(calls_store.relationships, aliases, limit)
+            return {"pane": canonical, "calls": items}
         items = await asyncio.to_thread(calls_store.recent, pane, limit)
         return {"pane": pane, "calls": [item.as_dict(full=full) for item in items]}
 

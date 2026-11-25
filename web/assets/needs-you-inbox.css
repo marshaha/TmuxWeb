@@ -33,3 +33,6 @@
 /* 正文区状态行（载入中 / 没载入）：只放底部小字用户看不见，抽屉看起来就是白板 */
 .inbox-state{padding:32px 16px;text-align:center;color:var(--muted);font-size:13px}
 .inbox-state[hidden]{display:none}
+
+.inbox-list h3{margin:10px 12px 4px;color:var(--muted);font-size:12px}
+.inbox-list .inbox-item{min-width:0;overflow-wrap:anywhere}

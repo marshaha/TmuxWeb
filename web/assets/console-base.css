@@ -398,3 +398,6 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 @media (max-width: 760px) {
   .app .sidebar:not(.open) { box-shadow: none; }
 }
+
+.ag-result{padding:2px 9px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:12px}
+.ag-peer{display:inline-block;margin:0 9px 5px;padding:4px 0;color:var(--accent);font-size:12px}

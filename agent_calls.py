@@ -130,6 +130,26 @@ class AgentCallStore:
                     "SELECT * FROM calls ORDER BY created DESC LIMIT ?", (limit,)).fetchall()
         return [self._call(row) for row in rows]
 
+    def relationships(self, aliases: set[str], limit: int) -> list[dict]:
+        """One active or most recent assignment per peer and direction."""
+        refs = sorted(aliases)
+        slots = ",".join("?" for _ in refs)
+        query = f"""WITH edges AS (
+            SELECT id, child AS peer, 'child' AS relation, status, created
+            FROM calls WHERE parent IN ({slots}) AND child != ''
+            UNION ALL
+            SELECT id, parent AS peer, 'parent' AS relation, status, created
+            FROM calls WHERE child IN ({slots}) AND parent != ''
+        ), ranked AS (
+            SELECT *, row_number() OVER (PARTITION BY peer, relation
+                ORDER BY (status='running') DESC, created DESC, id DESC) AS rank FROM edges
+        )
+        SELECT calls.*, ranked.peer, ranked.relation FROM ranked JOIN calls USING(id)
+        WHERE rank=1 ORDER BY (calls.status='running') DESC, calls.created DESC, calls.id DESC LIMIT ?"""
+        with self._lock:
+            rows = self._connection.execute(query, (*refs, *refs, max(1, min(200, limit)))).fetchall()
+        return [dict(self._call(row).as_dict(), peer=row["peer"], relation=row["relation"]) for row in rows]
+
     def tree(self, pane: str, depth: int = 3, limit: int = 50) -> dict:
         """Children of `pane`, recursively, with cycles cut."""
         seen = {pane}

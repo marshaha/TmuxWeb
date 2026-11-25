@@ -157,6 +157,55 @@
     });
   }
 
+  let states = [];
+  let pendingPanes = new Set();
+  let activityMarkup = '';
+  const acknowledged = new Map();
+  const marking = new Set();
+
+  function renderActivity() {
+    const box = document.getElementById('inbox-activity');
+    if (!box || !opened) return;
+    const done = [], working = [];
+    for (const pane of states) {
+      if (!pane.provider || pane.needs_input || pendingPanes.has(pane.id)) continue;
+      if (pane.completion_id && acknowledged.get(pane.id) !== pane.completion_id) done.push(pane);
+      else if (pane.status === 'busy' && pane.status_source === 'session') working.push(pane);
+    }
+    done.sort((a,b) => b.finished_at - a.finished_at);
+    const sections = [['完成未读', done], ['工作中', working]];
+    const html = sections.filter(([, panes]) => panes.length).map(([name, panes]) =>
+      '<h3>' + name + '</h3>' + panes.map(pane => itemHtml({
+        pane_id:pane.id, pane_alive:true, title:pane.title || pane.target || pane.id,
+        summary:pane.provider, created_at:name === '完成未读' ? pane.finished_at : 0,
+        read_at:name === '工作中' ? 1 : null
+      })).join('')).join('');
+    if (html !== activityMarkup) box.innerHTML = activityMarkup = html;
+    document.getElementById('inbox-pending-title').hidden = !pendingPanes.size;
+    document.getElementById('inbox-empty').hidden = !!(pendingPanes.size || html);
+  }
+
+  function setStates(panes) {
+    states = panes;
+    const byId = new Map(panes.map(s => [s.id, s.completion_id]));
+    for (const [pane, id] of acknowledged) {
+      if (byId.get(pane) !== id) acknowledged.delete(pane);
+    }
+    renderActivity();
+  }
+
+  async function viewed(paneId) {
+    const id = states.find(s => s.id === paneId)?.completion_id;
+    if (!id || opened || document.hidden || marking.has(id) || acknowledged.get(paneId) === id) return;
+    marking.add(id);
+    try {
+      await api('/api/needs-you/completions/' + encodeURIComponent(id) + '/read', {method:'POST'});
+      acknowledged.set(paneId, id);
+      renderActivity();
+    } catch (_error) { /* A later view can retry the same completion. */ }
+    finally { marking.delete(id); }
+  }
+
   let reloadPending = false;
   function noticeChanged() {
     refreshCount();
@@ -179,7 +228,8 @@
     try {
       const query = '?limit=' + PAGE + (before ? '&before=' + encodeURIComponent(before) : '');
       const data = await api('/api/needs-you/inbox' + query);
-      if (!before) box.innerHTML = '';
+      if (!before) { box.innerHTML = ''; pendingPanes.clear(); }
+      for (const item of data.items || []) pendingPanes.add(item.pane_id);
       const empty = document.getElementById('inbox-empty');
       const html = (data.items || []).map(itemHtml).join('');
       if (!before && !(data.items || []).length) {
@@ -195,7 +245,8 @@
       setBodyState('');
       // 这个抽屉只列"现在还开着"的；回答过的留在历史里（/api/needs-you/inbox?history=1），
       // 不在这里占位 —— 以前把历史全列出来，看起来就像铃铛在乱报警。
-      setStatus((data.items || []).length ? '' : '现在没有正在等你的会话');
+      setStatus('');
+      renderActivity();
     } catch (error) {
       setStatus('没载入：' + error.message);
       // 翻页失败列表里已有内容，正文区不用再写一遍；首屏失败必须写在这里。
@@ -260,8 +311,8 @@
       }
       return;
     }
-    if (onJump) onJump(pane);
     close();
+    if (onJump) { onJump(pane); viewed(pane); }
   }
 
   function start(options) {
@@ -276,6 +327,7 @@
     if (more) more.onclick = () => loadPage(cursor);
     const box = list();
     if (box) box.addEventListener('click', onListClick);
+    document.getElementById('inbox-activity')?.addEventListener('click', onListClick);
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape' && opened) close();
     });
@@ -291,5 +343,5 @@
     close();
   }
 
-  window.TmuxNeedsYouInbox = {start, stop, open, close, refreshCount, noticeChanged, itemHtml, formatWhen, menuSummary};
+  window.TmuxNeedsYouInbox = {start, stop, open, close, setStates, viewed, refreshCount, noticeChanged, itemHtml, formatWhen, menuSummary};
 })();

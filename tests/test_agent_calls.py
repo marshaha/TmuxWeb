@@ -44,6 +44,16 @@ class AgentCallStoreTests(unittest.TestCase):
         children = [item.question for item in self.store.recent("%1")]
         self.assertEqual(sorted(children), ["上", "下"], "父边和子边都要算")
 
+    def test_relationships_include_aliases_and_distinguish_both_directions(self):
+        old = self.store.start("%1", "%2", "first")
+        self.store.finish(old.id, "old answer")
+        self.store.start("#3", "%2", "next")
+        self.store.start("%2", "%1", "reverse")
+        self.store.start("", "%1", "human")
+        rows = self.store.relationships({"%1", "#3"}, 40)
+        self.assertEqual([(r["relation"], r["peer"], r["question"]) for r in rows],
+                         [("parent", "%2", "reverse"), ("child", "%2", "next")])
+
     def test_the_tree_nests_and_cuts_cycles(self):
         a = self.store.start("%1", "%2", "A 问 B")
         self.store.finish(a.id, reply="B 答", status="ok")
@@ -130,7 +140,7 @@ class AgentCallApiTests(unittest.TestCase):
                        "CSS.escape", "在等回复"):
             self.assertIn(marker, module)
         app = self.client.get("/assets/console-app.js").text
-        self.assertIn("TmuxAgents.mount({getPane:()=>state.selected})", app)
+        self.assertIn("TmuxAgents.mount({getPane:()=>state.selected", app)
         css = self.client.get("/assets/console.css").text
         self.assertIn(".agents-panel{position:fixed", css)
 

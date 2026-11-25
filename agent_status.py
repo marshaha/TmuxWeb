@@ -11,6 +11,7 @@ the truth in its session file, at the end of the turn:
 so the last complete line is enough: it is one seek plus one read, no full parse.
 """
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -63,7 +64,7 @@ def classify(provider: str, record: str) -> str:
     return UNKNOWN
 
 
-def classify_lines(provider: str, records) -> str:
+def classify_lines(provider: str, records, turn=None) -> str:
     """Newest decisive record wins.
 
     Agents append bookkeeping after the turn boundary (codex writes
@@ -76,6 +77,8 @@ def classify_lines(provider: str, records) -> str:
     for record in reversed(list(records)):
         verdict = classify(provider, record)
         if verdict != UNKNOWN:
+            if turn is not None and verdict == IDLE and '"turn_aborted"' not in record:
+                turn["end"] = hashlib.sha256(record.encode()).hexdigest()[:24]
             return verdict
     return UNKNOWN
 
@@ -98,8 +101,8 @@ def tail_lines(path, tail: int = TAIL_BYTES):
 STALE_BUSY_SECONDS = int(os.environ.get("TMUXWEB_STATUS_STALE_SECONDS", "600"))
 
 
-def status_for_file(provider: str, path) -> str:
-    verdict = classify_lines(provider, tail_lines(path))
+def status_for_file(provider: str, path, turn=None) -> str:
+    verdict = classify_lines(provider, tail_lines(path), turn)
     if verdict == BUSY and STALE_BUSY_SECONDS > 0:
         # a running agent writes to its session file constantly; a file untouched for
         # minutes belongs to a dead or aborted turn (an aborted Kimi session ends on
@@ -176,7 +179,7 @@ def _session_path(provider: str, cwd: str, title: str = "", home=None, screen=No
         return None
 
 
-def status_for_pane(provider: str, cwd: str, title: str = "", home=None, screen=None) -> str:
+def status_for_pane(provider: str, cwd: str, title: str = "", home=None, screen=None, *, turn=None) -> str:
     """Locate a pane's session file and read its verdict.
 
     Resolution is the same code the transcript reader uses, including the Kimi
@@ -186,7 +189,9 @@ def status_for_pane(provider: str, cwd: str, title: str = "", home=None, screen=
     path = _session_path(provider, cwd, title, home, screen)
     if path is None:
         return UNKNOWN
-    return status_for_file(provider, path)
+    if turn is not None:
+        turn.update(session=hashlib.sha256(os.fsencode(path)).hexdigest()[:24], end="")
+    return status_for_file(provider, path, turn)
 
 
 def decision_point_for_pane(provider: str, cwd: str, title: str = "", home=None,

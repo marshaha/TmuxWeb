@@ -133,6 +133,9 @@ class NeedsYouInbox:
                    )"""
             )
             self._conn.execute("CREATE INDEX IF NOT EXISTS inbox_created_idx ON inbox(id DESC)")
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS turn_completions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, pane_id TEXT NOT NULL UNIQUE,
+                pid TEXT NOT NULL, provider TEXT NOT NULL, finished REAL NOT NULL)""")
             self._conn.commit()
 
     def close(self) -> None:
@@ -148,6 +151,42 @@ class NeedsYouInbox:
             item["options"] = []
         del item["options_json"]
         return item
+
+    def turn_completions(self, previous, current):
+        """Attach unread completion ids to the shared sweep, once for all viewers."""
+        before = {s["id"]: s for s in previous}
+        ended = []
+        now = _now()
+        for state in current:
+            old = before.get(state["id"], {})
+            turn, prior = state.get("turn") or {}, old.get("turn") or {}
+            finished = old.get("status") == "busy"
+            if turn:
+                finished = (bool(turn.get("end")) and turn.get("session") == prior.get("session")
+                            and (finished or (bool(prior.get("end")) and turn["end"] != prior["end"])))
+            if (state.get("provider") and state.get("pane_pid")
+                    and (old.get("pane_pid"), old.get("provider")) == (state["pane_pid"], state["provider"])
+                    and old.get("status_source") == state.get("status_source") == "session"
+                    and finished and state.get("status") == "idle"
+                    and not state.get("needs_input")):
+                ended.append((state["id"], str(state["pane_pid"]), state["provider"], now))
+        with self._lock, self._conn:
+            if ended:
+                self._conn.executemany("INSERT OR REPLACE INTO turn_completions "
+                    "(pane_id, pid, provider, finished) VALUES (?, ?, ?, ?)", ended)
+                self._conn.execute("DELETE FROM turn_completions WHERE finished < ?", (now - RETENTION_DAYS * 86400,))
+            rows = self._conn.execute("SELECT * FROM turn_completions WHERE finished >= ?",
+                                      (now - RETENTION_DAYS * 86400,)).fetchall()
+        unread = {(r["pane_id"], r["pid"], r["provider"]): r for r in rows}
+        for state in current:
+            row = unread.get((state["id"], str(state.get("pane_pid")), state.get("provider")))
+            if row:
+                state["completion_id"] = row["id"]
+                state["finished_at"] = row["finished"]
+
+    def read_completion(self, completion_id):
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM turn_completions WHERE id=?", (completion_id,))
 
     def record(self, *, pane_id: str, host_id: str = "", title: str = "",
                kind: str = "", summary: str = "", options: list | None = None) -> int:

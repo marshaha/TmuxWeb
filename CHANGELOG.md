@@ -4,6 +4,11 @@
 
 - The remote agent raises its own descriptor limit at startup (`ulimit -n 4096` in the keep-alive script, `LimitNOFILE=8192` in the systemd unit). A macOS agent left on the 256-descriptor default eventually failed every command with `cannot start command: [Errno 24] Too many open files`, which made the host look offline with no panes.
 
+## 0.14.0
+
+- Group the console inbox by pending requests, unread completed turns and working agents. Reading a completed turn acknowledges that specific result.
+- Show linked parent and child sessions for relay assignments with their task, status and latest result.
+
 ## 0.13.2
 
 - Fit recent sessions and their actions inside the left sidebar on landscape phones with display cutouts.

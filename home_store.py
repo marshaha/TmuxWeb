@@ -121,6 +121,11 @@ class HomeStore:
             rows = self._conn.execute("SELECT pane_id, number FROM pane_numbers").fetchall()
         return {row["pane_id"]: int(row["number"]) for row in rows}
 
+    def existing_number(self, pane_id: str) -> int | None:
+        with self._lock:
+            row = self._conn.execute("SELECT number FROM pane_numbers WHERE pane_id=?", (pane_id,)).fetchone()
+        return int(row["number"]) if row else None
+
     def number_for(self, pane_id: str) -> int:
         """给这个 pane 一个编号，第一次见到时分配；同一 pane 永远同一个号。"""
         pane_id = (pane_id or "").strip()

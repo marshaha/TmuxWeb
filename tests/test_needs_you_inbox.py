@@ -35,6 +35,31 @@ class StoreTests(unittest.TestCase):
         self.store.close()
         self.directory.cleanup()
 
+    def test_completion_requires_session_transition_and_ack_targets_one_turn(self):
+        busy = dict(id="%1", pane_pid="123", provider="codex", status_source="session", status="busy")
+        idle = dict(busy, status="idle")
+        def observe(before, after):
+            row = after.copy()
+            self.store.turn_completions([before], [row])
+            return row.get("completion_id")
+        for before in (idle, dict(busy, pane_pid="222"), dict(busy, status_source="screen")):
+            self.assertIsNone(observe(before, idle))
+        self.assertIsNone(observe(busy, dict(idle, needs_input=True)))
+        self.assertIsNone(observe(dict(busy, turn={"session":"a","end":""}),
+                                  dict(idle, turn={"session":"a","end":""})))
+        seen = dict(idle, turn={"session":"a","end":"first"})
+        self.assertIsNone(observe(seen, dict(idle, turn={"session":"b","end":"next"})))
+        quick = observe(seen, dict(idle, turn={"session":"a","end":"next"}))
+        self.assertTrue(quick)
+        self.store.read_completion(quick)
+        first = observe(busy, idle)
+        self.assertTrue(first)
+        second = observe(busy, idle)
+        self.store.read_completion(first)
+        self.assertEqual(observe(idle, idle), second)
+        self.store.read_completion(second)
+        self.assertIsNone(observe(idle, idle))
+
     def test_record_and_list_newest_first(self):
         first = self.store.record(pane_id="localhost~%4", title="claude",
                                   summary="Do you want to proceed? — 1. Yes / 2. No")

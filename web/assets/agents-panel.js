@@ -8,9 +8,11 @@
 (function () {
   const POLL_MS = 4000;
   let getPane = () => '';
+  let findPane = () => null;
   let timer = 0;
   let open = false;
   const expanded = new Set();
+  const details = new Map();
   let view;
   let loading = false;
   let loaded = false;
@@ -35,6 +37,12 @@
     return '已回复';
   }
 
+  function assignmentBody(call) {
+    const result = call.reply || call.reply_preview || (call.error ? '（没有回复：' + call.error + '）' : '（还在等）');
+    return `<div class="ag-label">任务</div><pre class="ag-text">${esc(call.question || '')}</pre>`
+      + `<div class="ag-label">结果</div><pre class="ag-text">${esc(result)}</pre>`;
+  }
+
   function row(call) {
     const item = document.createElement('div');
     item.className = 'ag-call ' + call.status;
@@ -42,17 +50,34 @@
     const head = document.createElement('button');
     head.type = 'button';
     head.className = 'ag-head';
+    const peer = call.peer || call.child;
+    const target = findPane(peer);
+    head.setAttribute('aria-expanded', String(expanded.has(call.id)));
     head.innerHTML = `<span class="ag-dot ${call.status}" aria-hidden="true"></span>`
-      + `<span class="ag-who">${esc(call.child || '(未知)')}</span>`
+      + `<span class="ag-who">${esc((call.relation === 'parent' ? '父会话 · ' : '子会话 · ') + (target?.label || peer || '(未知)'))}</span>`
       + `<span class="ag-meta">${esc(statusText(call))}${call.duration ? ' · ' + seconds(call.duration) : ''}</span>`
       + `<span class="ag-q">${esc((call.question || '').split('\n')[0].slice(0, 120))}</span>`;
     head.addEventListener('click', () => toggle(call.id));
     item.appendChild(head);
+    const summary = call.reply_preview || call.error;
+    if (summary) {
+      const result = document.createElement('div');
+      result.className = 'ag-result';
+      result.textContent = '结果 · ' + summary;
+      item.appendChild(result);
+    }
+    if (target) {
+      const link = document.createElement('a');
+      link.className = 'ag-peer';
+      link.href = '/?pane=' + encodeURIComponent(target.id);
+      link.textContent = call.relation === 'parent' ? '打开父会话' : '打开子会话';
+      item.appendChild(link);
+    }
     if (expanded.has(call.id)) {
       const body = document.createElement('div');
       body.className = 'ag-body';
-      body.innerHTML = `<div class="ag-label">问</div><pre class="ag-text">${esc(call.question || '')}</pre>`
-        + `<div class="ag-label">答</div><pre class="ag-text">${esc(call.reply || call.reply_preview || (call.error ? '（没有回复：' + call.error + '）' : '（还在等）'))}</pre>`;
+      const full = details.get(call.id);
+      body.innerHTML = assignmentBody(full?.status === call.status ? full : call);
       item.appendChild(body);
     }
     return item;
@@ -65,19 +90,19 @@
       return;
     }
     expanded.add(callId);
+    const active = view;
     renderRows();
     try {
       const response = await fetch(`/api/agents/calls/${encodeURIComponent(callId)}`,
         {credentials: 'same-origin', signal: view.signal});
       if (!response.ok) return;
       const full = await response.json();
+      if (view !== active || !expanded.has(callId)) return;
+      details.set(callId, full);
       const item = document.querySelector(`.ag-call[data-call-id="${CSS.escape(callId)}"]`);
       if (!item) return;
       const body = item.querySelector('.ag-body');
-      if (body) {
-        body.innerHTML = `<div class="ag-label">问</div><pre class="ag-text">${esc(full.question || '')}</pre>`
-          + `<div class="ag-label">答</div><pre class="ag-text">${esc(full.reply || (full.error ? '（没有回复：' + full.error + '）' : '（还在等）'))}</pre>`;
-      }
+      if (body) body.innerHTML = assignmentBody(full);
     } catch (_error) { /* 展开失败就保持预览 */ }
   }
 
@@ -138,6 +163,7 @@
     cache = [];
     events = [];
     expanded.clear();
+    details.clear();
     loaded = loading = false;
     const calls = $('agents-list'), evs = $('events-list');
     calls.replaceChildren();
@@ -179,7 +205,7 @@
     const pane = encodeURIComponent(active.pane);
     const empty = $(calls ? 'agents-empty' : 'events-empty');
     const count = $('agents-count');
-    const url = calls ? `/api/agents/calls?pane=${pane}&limit=40` : `/api/events?pane=${pane}&limit=60`;
+    const url = calls ? `/api/agents/calls?pane=${pane}&limit=40&relations=true` : `/api/events?pane=${pane}&limit=60`;
     loading = true;
     if (!loaded) {
       empty.textContent = '正在读取…';
@@ -260,6 +286,7 @@
   window.TmuxAgents = {
     mount(options) {
       if (options && options.getPane) getPane = options.getPane;
+      if (options?.findPane) findPane = options.findPane;
       bind();
     },
     open: () => setOpen(true),
