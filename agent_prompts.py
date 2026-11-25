@@ -595,6 +595,19 @@ def cursor_menu_notice(frame: str, pane_id: str, pid: str) -> dict | None:
     return None
 
 
+def codex_queued_questions(text: str) -> int:
+    """The async question queue is immediately above the Codex composer."""
+    rows = [row.strip() for row in text.splitlines()[-20:] if row.strip()]
+    for i in range(len(rows) - 4, -1, -1):
+        if rows[i] != "• Queued follow-up inputs" or rows[i + 2].casefold() != "shift+← to answer":
+            continue
+        count = re.fullmatch(r"\? ([1-9]\d?) questions?(?: · [^\n]{1,24})?", rows[i + 1])
+        if (count and (rows[i + 3] == "›" or rows[i + 3].startswith("› "))
+                and len(rows) - i <= 7 and not any(row.startswith(("›", "•")) for row in rows[i + 4:])):
+            return int(count[1])
+    return 0
+
+
 def codex_command_approval(text: str) -> dict | None:
     """Describe a complete command approval at the bottom of the Codex TUI."""
     rows = (text or "").rstrip().splitlines()[-48:]

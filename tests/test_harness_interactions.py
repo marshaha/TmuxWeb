@@ -41,6 +41,25 @@ class InteractionTests(unittest.TestCase):
                 {"type": "text", "text": "hello"}, block]}})], 10)["messages"]
         self.assertEqual([m["role"] for m in messages], ["assistant", "interaction"])
 
+    def test_delivered_async_question_is_history_and_acceptance_is_not_an_answer(self):
+        args = {"questions": [{"title": "Which color?", "options": ["Blue", "Green"]}]}
+        call = {"type": "function_call", "name": "request_user_input_async", "call_id": "q", "arguments": args}
+        delivered = {"type": "item_completed", "item": {"type": "AgentMessage", "id": "q",
+                     "delivery": "async", **args}}
+        rows = [{"type": "response_item", "payload": call}, {"type": "event_msg", "payload": delivered},
+                {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "q",
+                                                     "output": '{"accepted":true}'}}]
+        def parse(rows):
+            return transcript_reader.parse_codex(map(json.dumps, rows), 10)
+        for events in (rows, rows[1:]):
+            data = parse(events)
+            self.assertEqual(len(data["messages"]), 1)
+            self.assertEqual(data["open_questions"], [])
+            self.assertIn("• Green", data["async_question_record"]["text"])
+        self.assertIsNotNone(parse(rows + [{"type": "event_msg", "payload": {"type": "task_complete"}}])["async_question_record"])
+        self.assertIsNone(parse(rows[:1])["async_question_record"])
+        self.assertIsNone(parse(rows + [{"type": "event_msg", "payload": {"type": "turn_aborted"}}])["async_question_record"])
+
     def test_guessed_codex_rollout_never_alerts_for_another_pane(self):
         events = [{"type": "session_meta", "payload": {"id": "fixture-session", "cwd": "/shared"}},
                   {"type": "response_item", "payload": {"type": "function_call", "call_id": "q",

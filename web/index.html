@@ -192,6 +192,7 @@
     </div><div class="scroll" id="scroll"><div class="empty" id="empty"><div><strong>选择一个 tmux 会话</strong>实时查看内容，并在下方继续输入</div></div><div class="earlier-bar" id="earlier-bar" hidden><button class="earlier-btn" id="load-earlier" type="button">加载更早的消息</button></div><div class="transcript" id="transcript"><div id="transcript-messages"></div><article class="chat-message assistant" id="native-form" hidden aria-labelledby="native-form-title"><div class="assistant-body"><h3 id="native-form-title"></h3><form hidden aria-labelledby="native-form-title"><div class="native-fields"></div><button type="submit">提交全部答案</button></form><p role="status"></p><button id="native-open-terminal" class="native-terminal" type="button" aria-controls="live-tail-surface live-keys-nav">展开实时终端</button></div></article></div><div class="message-shell" id="message-shell" hidden><div class="agent-label"><span class="agent-mark" id="agent-mark">T</span><span id="agent-name">tmux</span></div><div class="terminal-frame"><pre class="capture-output" id="terminal"></pre></div></div><article class="chat-message assistant" id="cursor-chat" hidden aria-labelledby="cursor-chat-question">
 <div class="assistant-body"><h3 id="cursor-chat-question"></h3><ol aria-label="终端选项"></ol><small>根据终端画面识别 · 仅供查看</small></div>
 </article><div id="chat-activity"><section id="live-tail" class="live-tail" aria-label="终端片段" hidden><div id="live-tail-head"><button id="live-tail-toggle" type="button" aria-expanded="true" aria-controls="live-tail-surface">实时终端</button></div><div id="live-tail-surface"><pre id="live-tail-text" aria-label="实时终端输出" aria-description="桌面键盘可操作终端，Shift 加 Escape 退出"></pre><button type="button" id="live-keyboard-toggle" aria-controls="live-keys-nav" aria-expanded="false" aria-label="终端按键" title="终端按键"><svg class="ico" aria-hidden="true"><use href="#i-keyboard"/></svg></button><fieldset id="live-keys-nav" aria-label="实时终端按键" hidden disabled>
+<button type="button" id="codex-followup-key" data-key="S-Left" aria-label="打开 Codex 待答题" hidden>Shift+←</button>
 <button type="button" data-key="Up" aria-label="向上">↑</button>
 <button type="button" data-key="Down" aria-label="向下">↓</button>
 <button type="button" data-key="Left" aria-label="向左">←</button>
@@ -305,6 +306,7 @@
   /* 卡片本身不滚动：只有选项列表滚，标题/开关/Esc 永远钉在可见位置 */
   .prompt-card{position:absolute;left:16px;right:16px;bottom:100%;margin:0 auto 8px;max-width:820px;padding:10px 12px 9px;border:1px solid var(--line-strong);border-radius:16px;background:var(--card);box-shadow:0 14px 34px rgba(32,31,28,.18);z-index:6;max-height:min(52vh,430px);display:flex;flex-direction:column;overflow:hidden}
   .prompt-card>.prompt-head,.prompt-card>.prompt-hint,.prompt-card>.prompt-toggles,.prompt-card>.prompt-foot,.prompt-card>.prompt-raw{flex:none}
+  #prompt-card-record{min-height:0;overflow:auto;font-size:13px;overflow-wrap:anywhere}
   #prompt-card-screen-choices{padding-inline-start:1.75em;margin:.4em 0;overflow:auto;overflow-wrap:anywhere}
   #prompt-card-screen-choices li[aria-current]{font-weight:600;color:var(--accent)}
   .prompt-card [hidden],.prompt-card[hidden]{display:none}
@@ -432,6 +434,7 @@
 <div class="prompt-card" id="prompt-card" hidden tabindex="0" role="dialog" aria-label="agent 正在等待选择">
   <div class="prompt-head"><span class="prompt-title" id="prompt-card-title"></span><button class="prompt-x" id="prompt-card-close" type="button" title="收起（不发任何键）" aria-label="收起"><svg class="ico"><use href="#i-close"/></svg></button></div>
   <p class="prompt-hint" id="prompt-card-hint" hidden></p>
+  <section id="prompt-card-record" hidden><strong>本轮最近发布的提问</strong><pre class="interaction-text"></pre></section>
   <ol id="prompt-card-screen-choices" aria-label="终端选项（只读）" hidden></ol>
   <div class="prompt-options" id="prompt-card-options" role="listbox"></div>
   <div class="prompt-nav" id="prompt-card-nav" role="group" aria-label="交互按键" hidden>

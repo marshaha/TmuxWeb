@@ -529,6 +529,7 @@ def parse_codex(lines, limit, session_id="", mtime=0):
     seen = set()
     model = ""
     pending = {}
+    delivered_question = None
     for line in lines:
         try:
             event = json.loads(line)
@@ -540,6 +541,17 @@ def parse_codex(lines, limit, session_id="", mtime=0):
             marker = event.get("payload")
             if isinstance(marker, dict) and marker.get("type") in ("task_started", "task_complete", "turn_aborted"):
                 pending.clear()
+                if marker["type"] != "task_complete":
+                    delivered_question = None
+            if isinstance(marker, dict) and marker.get("type") == "item_completed":
+                item = marker.get("item")
+                if isinstance(item, dict) and item.get("type") == "AgentMessage" and item.get("delivery") == "async":
+                    record = question_record(item.get("id"), item, event.get("timestamp"))
+                    if record:
+                        delivered_question = {"id": record["id"], "text": record["text"]}
+                        if record["id"] not in seen:
+                            seen.add(record["id"])
+                            records.append(record)
         if event.get("type") == "turn_context":
             context = event.get("payload")
             if isinstance(context, dict) and isinstance(context.get("model"), str):
@@ -575,6 +587,7 @@ def parse_codex(lines, limit, session_id="", mtime=0):
         records.append({"id": message_id, "role": payload["role"], "text": text,
                         "timestamp": event.get("timestamp")})
     return {"provider": "codex", "session_id": session_id, "model": model,
+            "async_question_record": delivered_question,
             "open_questions": [{"id": item["id"], "text": item["text"]} for item in pending.values()],
             "messages": list(records)[-cap:], "mtime": mtime, "has_more": len(records) > cap}
 

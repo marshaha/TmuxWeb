@@ -386,11 +386,19 @@ import {marked} from '/assets/marked.esm.js?v=1';
       const pane=state.panes.find(p=>p.id===state.selected);
       if(pane?.provider==='hermes' || pane?.command==='hermes')return null;
     }
-    if(status?.kind==='notice')return status;
+    if(status?.kind==='notice' && status.source!=='codex_followup')return status;
+    const followup=tailLoop?.pane===state.selected && tailLoop.followup!==undefined
+      ? tailLoop.followup : status?.source==='codex_followup' && status;
+    if(followup){
+      const record=state.questionPane===state.selected && state.asyncQuestionRecord;
+      return {...followup,recordText:record?.text || '',revision:followup.revision+':'+(record?.id || '')};
+    }
+    if(status?.source==='codex_followup')return null;
     return (state.questionPane===state.selected&&state.questionNotice)||status;
   }
   function syncQuestionNotice(id,data){
-    if(data.unchanged&&!Object.hasOwn(data,'open_questions'))return;
+    if(data.unchanged&&!Object.hasOwn(data,'open_questions')&&!Object.hasOwn(data,'async_question_record'))return;
+    state.asyncQuestionRecord=data.async_question_record || null;
     const questions=data.open_questions||[];
     state.questionPane=id;
     state.questionNotice=questions.length?{
@@ -1920,7 +1928,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
       const letter=event.key.toLowerCase();
       if(event.shiftKey || !['c','d','q','u'].includes(letter) || (letter==='c' && !window.getSelection().isCollapsed))return;
       key='C-'+letter;
-    }else if(event.shiftKey && event.key==='Tab')key='BTab';
+    }else if(event.shiftKey && event.key==='ArrowLeft')key='S-Left';
+    else if(event.shiftKey && event.key==='Tab')key='BTab';
     else if(!key && /^[A-Za-z0-9]$/.test(event.key))key=event.key;
     else if(!key && [...event.key].length===1)text=event.key;
     if(!key && !text)return;
@@ -1963,7 +1972,10 @@ import {marked} from '/assets/marked.esm.js?v=1';
     window.TmuxPrompt?.observeCodexScreen(tailLoop.pane, null);
     clearTimeout(tailLoop.timer);
     tailLoop.controller.abort();
+    const hadQuestions=tailLoop.followup;
     tailLoop=null;
+    $('codex-followup-key').hidden=true;
+    if(hadQuestions)window.TmuxPrompt?.showStatus(currentInteraction());
     expandTailKeys(false);
     tailNav.disabled=true;
   }
@@ -2017,6 +2029,13 @@ import {marked} from '/assets/marked.esm.js?v=1';
         const data=await api('/api/panes/'+encodeURIComponent(id)+'/tail?lines=12&color=1',{signal:loop.controller.signal});
         if(tailLoop!==loop)return;
         tailNav.disabled=false;
+        const followup=data.codex_followup || null;
+        const followupChanged=loop.followup?.revision!==followup?.revision || loop.followup===undefined;
+        loop.followup=followup;
+        if(followupChanged){
+          $('codex-followup-key').hidden=!followup;
+          window.TmuxPrompt?.showStatus(currentInteraction());
+        }
         showApprovalHint(data.codex_command_approval===true);
         const notice=data.codex_screen_notice || data.cursor_menu_notice;
         window.TmuxPrompt?.observeCodexScreen(id, data.codex_screen_revision || '', notice);
@@ -2037,6 +2056,9 @@ import {marked} from '/assets/marked.esm.js?v=1';
         }
       }catch(error){
         if(tailLoop!==loop)return;
+        loop.followup=null;
+        $('codex-followup-key').hidden=true;
+        window.TmuxPrompt?.showStatus(currentInteraction());
         showApprovalHint(false);
         window.TmuxPrompt?.observeCodexScreen(id, '');
         tailNav.disabled=true;

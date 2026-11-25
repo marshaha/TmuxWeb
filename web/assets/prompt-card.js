@@ -112,6 +112,10 @@
     hint.textContent = data.hint || '';
     hint.hidden = !hint.textContent;
 
+    const followup = data.source === 'codex_followup';
+    const record = $('record');
+    record.hidden = !followup || !data.recordText;
+    if (!record.hidden) record.querySelector('pre').textContent = data.recordText;
     const screenOnly = data.source === 'codex_screen_notice';
     const choices = $('screen-choices');
     choices.hidden = !screenOnly || !data.choices?.length;
@@ -127,7 +131,7 @@
       }
       markScreenChoice(data.selected);
     }
-    $('terminal').textContent = screenOnly ? '展开终端作答' : '实时作答';
+    $('terminal').textContent = screenOnly || followup ? '展开终端作答' : '实时作答';
     const list = $('options');
     list.innerHTML = '';
     list.setAttribute('aria-multiselectable', String(data.kind === 'multi'));
@@ -352,7 +356,7 @@
       refresh(false);
     };
     $('terminal').onclick = () => {
-      if (current?.source === 'codex_screen_notice') openInlineTerminal();
+      if (['codex_screen_notice', 'codex_followup'].includes(current?.source)) openInlineTerminal();
       else document.getElementById('chat-reply-panel')?.dispatchEvent(new Event('open-reply'));
     };
     $('nav').addEventListener('click', event => {

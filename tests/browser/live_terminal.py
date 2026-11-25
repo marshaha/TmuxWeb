@@ -124,7 +124,7 @@ def main():
                                                         "Esc", "Shift+Tab", "Space", "Ctrl+C", "Ctrl+D"]
                 assert keys.evaluate("""el => {
                     const box = el.getBoundingClientRect();
-                    const buttons = [...el.children];
+                    const buttons = [...el.querySelectorAll("button:not([hidden])")];
                     return buttons.every(b => b.offsetTop === buttons[0].offsetTop &&
                         b.scrollWidth <= b.clientWidth + 1) &&
                         buttons.slice(0, 7).every(b => b.getBoundingClientRect().right <= box.right + 1);

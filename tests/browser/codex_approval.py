@@ -42,6 +42,8 @@ def main():
                 submissions = []
                 manual_enabled = False
 
+                question_record = {"id": "question:colors", "text": "【选择】Which color?\n• Blue\n• Green"}
+
                 def route(r):
                     url = urlsplit(r.request.url)
                     path = unquote(url.path)
@@ -50,6 +52,9 @@ def main():
                         return r.fulfill(status=response.status_code, json=response.json())
                     if path == "/api/prefs":
                         return r.fulfill(json={"prefs": {"manual_inspect": "on" if manual_enabled else "off"}})
+                    if path.endswith("/transcript"):
+                        return r.fulfill(json={"provider":"codex","messages":[], "open_questions":[],
+                                               "async_question_record":question_record})
                     if path.endswith("/key"):
                         result = client.post(url.path, json=r.request.post_data_json)
                         return r.fulfill(status=result.status_code, json=result.json())
@@ -67,6 +72,27 @@ def main():
                 page.route_web_socket("**/*", lambda ws: ws.close())
                 page.goto("http://tmuxweb.test/?pane=%254", wait_until="domcontentloaded")
                 inspect = page.locator("#inspect-interaction")
+                fixture.tmux.output = ("• Queued follow-up inputs\n  ? 1 question · 16s\n"
+                                       "    shift+← to answer\n\n› Ask Codex to do anything\n"
+                                       "  ← for agents · ? for shortcuts")
+                card = page.locator("#interaction-inline #prompt-card")
+                expect(card).to_contain_text("Codex 有 1 道待答题", timeout=16000)
+                expect(card.locator("#prompt-card-record")).to_contain_text("• Green")
+                expect(card.get_by_role("button", name="确认当前选项")).to_be_hidden()
+                assert card.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
+                open_queue = card.get_by_role("button", name="展开终端作答")
+                open_queue.tap() if width == 390 else open_queue.click()
+                shortcut = page.get_by_role("button", name="打开 Codex 待答题")
+                expect(shortcut).to_be_visible()
+                assert shortcut.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
+                assert not submissions and not fixture.tmux.keys
+                with page.expect_response(lambda r: r.url.endswith("/key")):
+                    shortcut.tap() if width == 390 else shortcut.click()
+                assert fixture.tmux.keys == [("%4", "S-Left")]
+                fixture.tmux.keys.clear()
+                fixture.tmux.output = "› Ask Codex to do anything"
+                expect(card).to_be_hidden(timeout=12000)
+                expect(shortcut).to_be_hidden()
                 fixture.tmux.output = ("Would you like to run the following command?\n"
                                        "Environment: local\nReason: 发布已测试的版本\n" + approval)
                 card = page.locator("#interaction-inline #prompt-card")
