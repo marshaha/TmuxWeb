@@ -4,6 +4,10 @@
 
 - The remote agent raises its own descriptor limit at startup (`ulimit -n 4096` in the keep-alive script, `LimitNOFILE=8192` in the systemd unit). A macOS agent left on the 256-descriptor default eventually failed every command with `cannot start command: [Errno 24] Too many open files`, which made the host look offline with no panes.
 
+## 0.13.1
+
+- Show queued Codex questions once in the Chat form. Remove the repeated read-only question and choices below the live terminal.
+
 ## 0.13.0
 
 - Answer a verified Codex async follow-up in Chat using the same editable form as Hermes. Submission delivers a user message to the active Codex turn through its local daemon. Federated children verify and deliver their own forms.

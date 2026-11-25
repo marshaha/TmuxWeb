@@ -113,9 +113,6 @@
     hint.hidden = !hint.textContent;
 
     const followup = data.source === 'codex_followup';
-    const record = $('record');
-    record.hidden = !followup || !data.recordText;
-    if (!record.hidden) record.querySelector('pre').textContent = data.recordText;
     const screenOnly = data.source === 'codex_screen_notice';
     const choices = $('screen-choices');
     choices.hidden = !screenOnly || !data.choices?.length;

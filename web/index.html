@@ -306,7 +306,6 @@
   /* 卡片本身不滚动：只有选项列表滚，标题/开关/Esc 永远钉在可见位置 */
   .prompt-card{position:absolute;left:16px;right:16px;bottom:100%;margin:0 auto 8px;max-width:820px;padding:10px 12px 9px;border:1px solid var(--line-strong);border-radius:16px;background:var(--card);box-shadow:0 14px 34px rgba(32,31,28,.18);z-index:6;max-height:min(52vh,430px);display:flex;flex-direction:column;overflow:hidden}
   .prompt-card>.prompt-head,.prompt-card>.prompt-hint,.prompt-card>.prompt-toggles,.prompt-card>.prompt-foot,.prompt-card>.prompt-raw{flex:none}
-  #prompt-card-record{min-height:0;overflow:auto;font-size:13px;overflow-wrap:anywhere}
   #prompt-card-screen-choices{padding-inline-start:1.75em;margin:.4em 0;overflow:auto;overflow-wrap:anywhere}
   #prompt-card-screen-choices li[aria-current]{font-weight:600;color:var(--accent)}
   .prompt-card [hidden],.prompt-card[hidden]{display:none}
@@ -434,7 +433,6 @@
 <div class="prompt-card" id="prompt-card" hidden tabindex="0" role="dialog" aria-label="agent 正在等待选择">
   <div class="prompt-head"><span class="prompt-title" id="prompt-card-title"></span><button class="prompt-x" id="prompt-card-close" type="button" title="收起（不发任何键）" aria-label="收起"><svg class="ico"><use href="#i-close"/></svg></button></div>
   <p class="prompt-hint" id="prompt-card-hint" hidden></p>
-  <section id="prompt-card-record" hidden><strong>本轮最近发布的提问</strong><pre class="interaction-text"></pre></section>
   <ol id="prompt-card-screen-choices" aria-label="终端选项（只读）" hidden></ol>
   <div class="prompt-options" id="prompt-card-options" role="listbox"></div>
   <div class="prompt-nav" id="prompt-card-nav" role="group" aria-label="交互按键" hidden>

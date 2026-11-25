@@ -390,19 +390,13 @@ import {marked} from '/assets/marked.esm.js?v=1';
       const pane=state.panes.find(p=>p.id===state.selected);
       if(pane?.provider==='hermes' || pane?.command==='hermes')return null;
     }
-    if(status?.kind==='notice' && status.source!=='codex_followup')return status;
-    const followup=tailLoop?.pane===state.selected && tailLoop.followup!==undefined
-      ? tailLoop.followup : status?.source==='codex_followup' && status;
-    if(followup){
-      const record=state.questionPane===state.selected && state.asyncQuestionRecord;
-      return {...followup,recordText:record?.text || '',revision:followup.revision+':'+(record?.id || '')};
-    }
+    // The native form owns queued Codex questions, including its terminal fallback.
     if(status?.source==='codex_followup')return null;
+    if(status?.kind==='notice')return status;
     return (state.questionPane===state.selected&&state.questionNotice)||status;
   }
   function syncQuestionNotice(id,data){
-    if(data.unchanged&&!Object.hasOwn(data,'open_questions')&&!Object.hasOwn(data,'async_question_record'))return;
-    state.asyncQuestionRecord=data.async_question_record || null;
+    if(data.unchanged&&!Object.hasOwn(data,'open_questions'))return;
     const questions=data.open_questions||[];
     state.questionPane=id;
     state.questionNotice=questions.length?{
@@ -1976,10 +1970,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
     window.TmuxPrompt?.observeCodexScreen(tailLoop.pane, null);
     clearTimeout(tailLoop.timer);
     tailLoop.controller.abort();
-    const hadQuestions=tailLoop.followup;
     tailLoop=null;
     $('codex-followup-key').hidden=true;
-    if(hadQuestions)window.TmuxPrompt?.showStatus(currentInteraction());
     expandTailKeys(false);
     tailNav.disabled=true;
   }
@@ -2039,7 +2031,6 @@ import {marked} from '/assets/marked.esm.js?v=1';
         if(followupChanged){
           $('codex-followup-key').hidden=!followup;
           syncNativeForm(true);
-          window.TmuxPrompt?.showStatus(currentInteraction());
         }
         showApprovalHint(data.codex_command_approval===true);
         const notice=data.codex_screen_notice || data.cursor_menu_notice;
