@@ -93,8 +93,9 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
   color:var(--muted);font:13px/1 inherit;cursor:pointer}
 .cs-btn:hover{color:var(--ink);border-color:var(--accent)}
 .cs-close{font-size:15px}
-mark.cs-hit{background:color-mix(in srgb,var(--accent) 26%,transparent);color:inherit;border-radius:3px;padding:0 1px}
-mark.cs-hit.cs-current{background:var(--accent);color:#fff;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 40%,transparent)}
+::highlight(cs-hit){background-color:color-mix(in srgb,var(--accent) 30%,transparent);color:inherit}
+::highlight(cs-current){background-color:var(--accent);color:white}
+.cs-fallback{outline:2px solid var(--accent)}
 @media(max-width:760px){.chat-search{padding:6px 8px;gap:6px}.chat-search input{font-size:16px;height:34px}
   .cs-btn{width:30px;height:30px}}
 .queue-strip{display:flex;flex-wrap:wrap;gap:5px;padding:0 2px 8px}

@@ -1969,18 +1969,16 @@ class TmuxWebTests(unittest.TestCase):
                        'id="cs-count"', 'id="cs-prev"', 'id="cs-next"', 'id="cs-close"'):
             self.assertIn(marker, page)
         module = self.client.get("/assets/chat-search.js").text
-        for marker in ("function highlight(", "createTreeWalker", "MutationObserver",
-                       "const MARK = 'cs-hit'", "scrollIntoView", "'f'"):
+        for marker in ("createTreeWalker", "MutationObserver", "new Highlight(", "'f'"):
             self.assertIn(marker, module)
-        # 只包文本节点：撤掉高亮必须能还原原文
-        self.assertIn("parent.replaceChild(document.createTextNode(mark.textContent), mark)", module)
+        self.assertNotIn("replaceChild", module)
         app = self.client.get("/assets/console-app.js").text
         self.assertIn("TmuxChatSearch.mount()", app)
         self.assertIn("searchBtn=$('chat-search-button')", app)
         self.assertIn("searchBtn.disabled=false", app)
         self.assertIn("TmuxChatSearch.close()", app, "切走时要收掉搜索条和高亮")
         css = self.client.get("/assets/console.css").text
-        self.assertIn("mark.cs-hit.cs-current", css)
+        self.assertIn("::highlight(cs-current)", css)
 
     def test_the_header_subtitle_never_prints_undefined(self):
         """#212 的老毛病：缓存里的 pane 少字段，顶栏就印 "undefined · undefined · /path"。"""

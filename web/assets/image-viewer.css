@@ -1,25 +1,22 @@
-/* 图片查看层：聊天里点开上传的图片用（见 assets/image-viewer.js）。 */
-.iview{position:fixed;inset:0;z-index:96;display:flex;flex-direction:column;
-  background:rgba(8,8,6,.97);opacity:0;transition:opacity .14s ease}
-.iview[hidden]{display:none}
-.iview.on{opacity:1}
-.iview-backdrop{position:absolute;inset:0;background:rgba(8,8,6,.97)}
-.iview-head{position:relative;display:flex;align-items:center;justify-content:space-between;gap:12px;
-  padding:calc(8px + env(safe-area-inset-top)) 14px 8px;color:#f2f0ea;z-index:1}
-.iview-head strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  font-size:13px;font-weight:600}
-.iview-tools{display:flex;flex:none;gap:8px}
-.iview-btn{flex:none;display:inline-flex;align-items:center;justify-content:center;
-  min-width:52px;height:30px;padding:0 10px;border:1px solid rgba(255,255,255,.28);border-radius:8px;
-  background:rgba(255,255,255,.08);color:#f2f0ea;font:12px inherit;cursor:pointer;text-decoration:none}
-.iview-btn:hover{background:rgba(255,255,255,.18)}
-.iview-stage{position:relative;flex:1;min-height:0;overflow:hidden;display:grid;place-items:center;
-  padding:0 10px calc(14px + env(safe-area-inset-bottom));touch-action:none;cursor:zoom-in}
+dialog.iview{box-sizing:border-box;position:fixed;inset:0;margin:auto;padding:0;
+  width:fit-content;min-width:min(19rem,86vw);max-width:min(86vw,1000px);
+  max-height:80vh;max-height:80dvh;overflow:hidden;border:1px solid var(--line,#888);
+  border-radius:16px;background:var(--card,#fff);color:var(--ink,#242421);
+  box-shadow:0 12px 48px rgb(0 0 0 / .25)}
+.iview[open]{display:flex;flex-direction:column}
+.iview::backdrop{background:rgb(0 0 0 / .24)}
+.iview-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px}
+.iview-head strong{flex:1 1 0;width:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.iview-tools{display:flex;flex:none;gap:4px}
+.iview-btn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;
+  min-width:42px;min-height:32px;padding:4px 8px;border:1px solid var(--line,#aaa);border-radius:8px;
+  color:inherit;background:var(--card,#fff);font:inherit;font-size:13px;text-decoration:none;cursor:pointer}
+#iview-zoom{width:54px}
+.iview-btn[hidden]{display:none}
+.iview-btn:hover{background:var(--card-hover,#eee)}
+.iview-stage{display:grid;place-items:center;min-width:0;min-height:0;overflow:hidden;
+  background:var(--surface2,#f4f4f4);touch-action:none;cursor:zoom-in}
 .iview.zoomed .iview-stage{cursor:grab}
-.iview-stage img{max-width:100%;max-height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none;
-  transform-origin:center center;will-change:transform}
-@media(max-width:760px){
-  .iview-head{padding:calc(6px + env(safe-area-inset-top)) 10px 6px}
-  .iview-btn{min-width:46px;height:28px;padding:0 8px}
-  .iview-stage{padding:0 4px calc(10px + env(safe-area-inset-bottom))}
-}
+.iview-stage img{display:block;grid-area:1/1;width:auto;height:auto;max-width:min(84vw,998px);
+  max-height:64vh;max-height:64dvh;object-fit:contain;user-select:none;-webkit-user-drag:none}
+@media(max-width:760px){.iview-btn{min-height:44px}.iview-head{gap:4px;padding:4px 6px}}

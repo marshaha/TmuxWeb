@@ -1,14 +1,4 @@
-/* 聊天里点开上传的图片：全屏查看，可缩放、可拖动、返回不白屏。
- *
- * 以前 <a href="原图" target="_blank"> 在手机上一点就跳到一个裸图片页面：
- * 没有返回按钮，被挤进浏览器自带的图片视图里，看着就是"白屏"。
- * 这里换成应用内的一层：点背景/关闭/系统返回都能回来。
- *
- *   TmuxImageViewer.open(url, name)
- *   TmuxImageViewer.close()
- *
- * 手势：双指捏合缩放、单指拖动（放大后）、双击在 1:1 与适应屏幕之间切换。
- */
+/* In-chat image dialog. Keep zoom and pan within the stage. */
 (function () {
   const MIN_SCALE = 1;
   const MAX_SCALE = 6;
@@ -26,21 +16,15 @@
   let dragging = null;
   let pushed = false;
 
-  function esc(value) {
-    return String(value == null ? '' : value).replace(/[&<>"']/g,
-      ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
-  }
-
   function ensure() {
     if (root) return root;
-    root = document.createElement('div');
+    root = document.createElement('dialog');
     root.className = 'iview';
     root.id = 'iview';
-    root.hidden = true;
-    root.innerHTML = '<div class="iview-backdrop" data-iview-close></div>'
-      + '<header class="iview-head"><strong id="iview-name">图片</strong>'
+    root.setAttribute('aria-labelledby', 'iview-name');
+    root.innerHTML = '<header class="iview-head"><strong id="iview-name">图片</strong>'
       + '<div class="iview-tools">'
-      + '<button class="iview-btn" type="button" id="iview-zoom" aria-pressed="false">1:1</button>'
+      + '<button class="iview-btn" type="button" id="iview-zoom" aria-pressed="false" aria-label="放大图片">放大</button>'
       + '<a class="iview-btn" id="iview-open" target="_blank" rel="noopener noreferrer">原图</a>'
       + '<button class="iview-btn" type="button" id="iview-close" data-iview-close>关闭</button>'
       + '</div></header>'
@@ -52,14 +36,23 @@
     zoomButton = root.querySelector('#iview-zoom');
     openLink = root.querySelector('#iview-open');
 
+    function outside(event) {
+      const box = root.getBoundingClientRect();
+      return event.clientX < box.left || event.clientX >= box.right ||
+        event.clientY < box.top || event.clientY >= box.bottom;
+    }
+    let outsideDown = false;
+    root.addEventListener('pointerdown', event => { outsideDown = event.target === root && outside(event); });
     root.addEventListener('click', event => {
-      if (event.target.closest('[data-iview-close]')) close();
+      if (event.target.closest('[data-iview-close]') || (outsideDown && event.target === root && outside(event))) close();
+      outsideDown = false;
     });
+    root.addEventListener('cancel', event => { event.preventDefault(); close(); });
     zoomButton.addEventListener('click', () => {
       if (scale > 1.01) apply(1, 0, 0);
       else apply(2, 0, 0);
     });
-    image.addEventListener('dblclick', event => {
+    stage.addEventListener('dblclick', event => {
       event.preventDefault();
       if (scale > 1.01) {
         apply(1, 0, 0);
@@ -71,7 +64,7 @@
       apply(2.4, -x * 1.4, -y * 1.4);
     });
     stage.addEventListener('wheel', event => {
-      if (!root || root.hidden) return;
+      if (!root?.open) return;
       event.preventDefault();
       const next = clamp(scale * (event.deltaY < 0 ? 1.12 : 1 / 1.12));
       apply(next, offsetX, offsetY);
@@ -121,12 +114,8 @@
     stage.addEventListener('pointerup', release);
     stage.addEventListener('pointercancel', release);
 
-    window.addEventListener('keydown', event => {
-      if (!root || root.hidden) return;
-      if (event.key === 'Escape') close();
-    });
     window.addEventListener('popstate', () => {
-      if (root && !root.hidden) close(true);
+      if (root.open) close(true);
     });
     return root;
   }
@@ -137,26 +126,30 @@
 
   function apply(nextScale, x, y) {
     scale = clamp(nextScale);
-    const limit = Math.max(0, (scale - 1) * (stage.clientWidth || 1) / 2);
-    const limitY = Math.max(0, (scale - 1) * (stage.clientHeight || 1) / 2);
+    const limit = Math.max(0, (image.clientWidth * scale - stage.clientWidth) / 2);
+    const limitY = Math.max(0, (image.clientHeight * scale - stage.clientHeight) / 2);
     offsetX = scale <= 1.01 ? 0 : Math.max(-limit, Math.min(limit, x));
     offsetY = scale <= 1.01 ? 0 : Math.max(-limitY, Math.min(limitY, y));
     image.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
     root.classList.toggle('zoomed', scale > 1.01);
     if (zoomButton) {
-      zoomButton.textContent = scale > 1.01 ? `${scale.toFixed(1)}×` : '1:1';
+      zoomButton.textContent = scale > 1.01 ? `${scale.toFixed(1)}×` : '放大';
+      zoomButton.setAttribute('aria-label', scale > 1.01 ? '还原图片' : '放大图片');
       zoomButton.setAttribute('aria-pressed', String(scale > 1.01));
     }
   }
 
   function open(url, name) {
+    const source = new URL(url, document.baseURI);
+    if (!['http:', 'https:', 'blob:'].includes(source.protocol) && !/^data:image\//i.test(url)) return;
     ensure();
     label.textContent = name || '图片';
-    openLink.href = url;
+    openLink.hidden = !['http:', 'https:'].includes(source.protocol);
+    if (openLink.hidden) openLink.removeAttribute('href');
+    else openLink.href = source.href;
     image.alt = name || '';
     image.src = url;
-    root.hidden = false;
-    requestAnimationFrame(() => root.classList.add('on'));
+    if (!root.open) root.showModal();
     apply(1, 0, 0);
     // 系统返回（安卓返回键 / iOS 侧滑）先关这一层，而不是退出整个控制台
     if (!pushed) {
@@ -168,9 +161,10 @@
   }
 
   function close(fromPop) {
-    if (!root || root.hidden) return;
-    root.classList.remove('on');
-    root.hidden = true;
+    if (!root?.open) return;
+    root.close();
+    stage.__pointers = [];
+    pinching = dragging = null;
     image.removeAttribute('src');
     if (pushed && !fromPop) {
       pushed = false;
@@ -183,18 +177,19 @@
   // 气泡里点上传的图片 → 应用内查看，不要跳到裸图片页（手机上是白屏）
   document.addEventListener('click', event => {
     const thumb = event.target.closest ? event.target.closest('a.upload-thumb[data-upload]') : null;
-    if (!thumb) return;
-    if (thumb.classList.contains('broken')) {
+    const inline = event.target.closest?.('#transcript-messages .chat-message img, #messages article img');
+    if ((!thumb && !inline) || event.defaultPrevented || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    if (thumb?.classList.contains('broken')) {
       // 文件已经不在了：别跳过去白屏，什么都不做（气泡上本来就写着「图片已不在这里」）
       event.preventDefault();
       event.stopPropagation();
       return;
     }
-    const url = thumb.getAttribute('href');
+    const url = thumb?.getAttribute('href') || inline?.currentSrc || inline?.src;
     if (!url) return;
     event.preventDefault();
     event.stopPropagation();
-    const name = thumb.getAttribute('title') || url.split('/').filter(Boolean).pop() || '图片';
+    const name = thumb?.title || inline?.alt || inline?.title || '图片';
     open(url, name);
   });
 
