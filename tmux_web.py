@@ -64,7 +64,7 @@ import relay
 import transcript_reader
 import tunnel as tunnel_mod
 import transfer_tickets
-from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, prompt_region_lines, RemoteHostStore, RemoteTerminalSession, SSHRunner,
+from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, cursor_frame_args, prompt_region_lines, RemoteHostStore, RemoteTerminalSession, SSHRunner,
                            UploadOffsetMismatch,
                           host_key_fingerprint, normalize_session_name, normalize_window_name,
                           pane_ref, scan_host_key, split_pane_ref,
@@ -683,6 +683,9 @@ class TmuxBackend:
         history = max(20, min(history, 5000))
         extra = () if visible_only else ("-S", f"-{history}")
         return self._run("capture-pane", "-p", "-J", "-e", "-t", pane_id, *extra)
+
+    def cursor_frame(self, pane_id: str) -> str:
+        return self._run(*cursor_frame_args(pane_id))
 
     def pane_pid(self, pane_id: str) -> str:
         return self._run("display-message", "-p", "-t", pane_id, "#{pane_pid}").strip()
@@ -2288,7 +2291,7 @@ def create_app(
             for state in states:
                 key = state["id"]
                 prompt = state.get("prompt")
-                screen = (prompt or {}).get("source") in ("codex_screen_notice", "codex_command_approval")
+                screen = (prompt or {}).get("source") in ("codex_screen_notice", "codex_command_approval", "cursor_menu_notice")
                 if (tail or screen or not prompt) and started < inbox_observed.get(key, 0):
                     continue
                 if tail and key in inbox_lit and key not in inbox_screen:
@@ -2312,6 +2315,16 @@ def create_app(
     # Last sweep's per-phase seconds (capture / needs_input / describe),
     # for the log line: the total alone never says which phase is slow.
     pane_state_phases: dict = {}
+
+    def cursor_notice(transport, actual, pane, text):
+        capture = getattr(transport, "cursor_frame", None)
+        if not capture or not pane.get("pane_pid") or not agent_prompts.possible_cursor_menu(text):
+            return None
+        try:
+            return agent_prompts.cursor_menu_notice(capture(actual), actual, pane["pane_pid"])
+        except (TmuxError, RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+            LOGGER.debug("cursor snapshot unavailable for %s", actual, exc_info=True)
+            return None
 
     def collect_pane_states() -> list[dict]:
         # Reuse the pane list /api/hosts just probed (the console and the board poll
@@ -2497,6 +2510,8 @@ def create_app(
             agent_source = _agent_waiting_source(agent_entry)
             gated_prompt = native_interaction(dict(pane, provider=provider), text,
                                               agent_entry.get("notices") or [])
+            if not gated_prompt and provider:
+                gated_prompt = cursor_notice(transport, actual_pane_id, pane, text)
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
                     "host_name": host_name, "target": target, "provider": provider,
                     "status": status, "status_source": source, "activity_age": age,
@@ -6450,7 +6465,7 @@ def create_app(
     tail_reads: dict[tuple[str, int, bool], asyncio.Task] = {}
     tail_slots = asyncio.Semaphore(8)
 
-    def capture_tail(pane_id, pane, transport, actual, lines, color, *, visible_only=False):
+    def capture_tail(pane_id, pane, transport, actual, lines, color, *, visible_only=False, inspect_cursor=False):
         grab = getattr(transport, "capture_ansi", transport.capture) if color else transport.capture
         raw = (grab(actual, lines, pane=pane, visible_only=True) if visible_only else grab(actual, lines, pane=pane)) or ""
         result = terminal_fragment(raw, lines)
@@ -6485,6 +6500,12 @@ def create_app(
             if pane.get("pane_pid") and not isinstance(transport, federation.FedTransport):
                 identity = [pane_id, pane["pane_pid"], result["digest"], menu["revision"], menu["selected"]]
                 result["screen_menu"]["snapshot"] = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        if inspect_cursor and "codex_screen_notice" not in result:
+            tail = raw[-32768:]
+            if agent_prompts.possible_cursor_menu(tail) and pane_provider(pane):
+                notice = cursor_notice(transport, actual, pane, tail)
+                if notice:
+                    result["cursor_menu_notice"] = notice
         return result
 
     tail_moves: OrderedDict[str, tuple[str, float]] = OrderedDict()
@@ -6517,8 +6538,8 @@ def create_app(
 
     def read_chat_tail(pane_id, pane, transport, actual, lines, color):
         started = time.monotonic()
-        fragment = capture_tail(pane_id, pane, transport, actual, lines, color)
-        notice = fragment.get("codex_screen_notice")
+        fragment = capture_tail(pane_id, pane, transport, actual, lines, color, inspect_cursor=True)
+        notice = fragment.get("codex_screen_notice") or fragment.get("cursor_menu_notice")
         # A clipped frame can show the footer without its header.
         if notice or not fragment["text"].rstrip().lower().endswith(
                 "press enter to confirm or esc to cancel"):

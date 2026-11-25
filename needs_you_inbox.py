@@ -80,7 +80,7 @@ def menu_summary(prompt: dict | None, max_len: int = MAX_SUMMARY) -> str:
             continue
         number = option.get("number")
         labels.append(f"{number}. {label}" if number else label)
-    body = " / ".join(labels)
+    body = str(prompt.get("hint") or "") if prompt.get("source") == "cursor_menu_notice" else " / ".join(labels)
     if len(options) > MAX_OPTIONS:
         body += f" 等 {len(options)} 项"
     summary = " — ".join(part for part in (title, body) if part)

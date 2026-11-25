@@ -36,7 +36,7 @@
 
   function observeCodexScreen(pane, screen, notice = null) {
     if (pane !== paneNow()) return;
-    const changed = screenNotice?.revision !== notice?.revision;
+    const changed = observedScreen === null || screenNotice?.revision !== notice?.revision;
     screenNotice = notice;
     observedScreen = screen ?? null;
     if (screen && retiredCodex?.screen === screen) retiredCodex = null;
@@ -142,6 +142,7 @@
   function showStatus(found) {
     if (!automatic || !paneNow() || sending || reading || followTimer || document.hidden) return;
     if (found?.source === 'codex_screen_notice' && observedScreen !== null && found.revision !== 'screen-' + observedScreen) found = null;
+    if (found?.source === 'cursor_menu_notice' && observedScreen !== null && found.revision !== screenNotice?.revision) found = null;
     found ||= screenNotice;
     const previous = lastStatus;
     lastStatus = found?.revision || '';

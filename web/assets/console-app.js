@@ -2018,8 +2018,9 @@ import {marked} from '/assets/marked.esm.js?v=1';
         if(tailLoop!==loop)return;
         tailNav.disabled=false;
         showApprovalHint(data.codex_command_approval===true);
-        window.TmuxPrompt?.observeCodexScreen(id, data.codex_screen_revision || '', data.codex_screen_notice);
-        const noticeRevision=data.codex_screen_notice?.revision || '';
+        const notice=data.codex_screen_notice || data.cursor_menu_notice;
+        window.TmuxPrompt?.observeCodexScreen(id, data.codex_screen_revision || '', notice);
+        const noticeRevision=notice?.revision || '';
         if((loop.noticeRevision || '')!==noticeRevision)window.TmuxNeedsYouInbox?.noticeChanged();
         loop.noticeRevision=noticeRevision;
         if(loop.digest!==data.digest){

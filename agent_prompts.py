@@ -467,6 +467,118 @@ def toggle_keys(prompt: dict[str, Any], toggle_index: int, value_index: int) -> 
     return ["Right"] * delta if delta > 0 else ["Left"] * (-delta)
 
 
+_CURSOR_HINT = re.compile(r"(?:Enter\s+(?:to\s+)?(?:select|confirm|submit|accept)|回[车車](?:确认|確認|提交|选择|選擇))", re.I)
+_EDITOR_TOP = re.compile(r"(?:╭─{3,}╮|┌─{3,}┐|─{4,}.*─{4,})")
+_EDITOR_BOTTOM = re.compile(r"(?:╰─{3,}╯|└─{3,}┘|─{4,})")
+_SGR = re.compile(r"\x1b\[[0-9;:]*m")
+
+
+def possible_cursor_menu(text: str) -> bool:
+    """Cheap gate on the already captured tail; ordinary output needs no extra tmux call."""
+    return bool(text and "─" in text and _CURSOR_HINT.search(text) and MOVE_HINT_RE.search(text))
+
+
+def _cursor_menu_labels(options, physical, y):
+    """Require one selected row and a consistent layout for every option."""
+    labels, selected = [], []
+    numbered = None
+    label_column = None
+    for index, (i, text) in enumerate(options, 1):
+        marker = re.match(r"^[›❯▸▶]\s+", text)
+        label = text[marker.end():] if marker else text
+        number = NUMBERED_RE.fullmatch(label)
+        if numbered is None:
+            numbered = bool(number)
+        if bool(number) != numbered:
+            return None
+        if number:
+            if int(number[1]) != index:
+                return None
+            label = number[2]
+        else:
+            row = _SGR.sub("", physical[i])
+            column = len(row) - len(row.lstrip(" ")) + (marker.end() if marker else 0)
+            if label_column is not None and column != label_column:
+                return None
+            label_column = column
+        if not label or len(label) > OPTION_MAX:
+            return None
+        labels.append(label)
+        # A standalone inverse-video SGR before the label is unambiguous.
+        # An indexed foreground/background colour numbered 7 is unrelated.
+        if marker or re.match(r"^\s*\x1b\[7m\s*\S", physical[i]):
+            selected.append(i)
+    return labels if selected == [y] else None
+
+
+def cursor_menu_notice(frame: str, pane_id: str, pid: str) -> dict | None:
+    rows = frame.split("\n")
+    if rows and not rows[-1]:
+        rows.pop()
+    if len(rows) < 5 or rows[0] != rows[-1]:
+        return None
+    meta = rows[0].split()
+    if (len(meta) != 8 or meta[:2] != [pane_id, str(pid)] or meta[6:] != ["1", "0"]
+            or not all(v.isascii() and v.isdecimal() and len(v) <= 6 for v in meta[2:6])):
+        return None
+    width, height, x, y = map(int, meta[2:6])
+    physical = rows[1:-1]
+    if len(physical) != height or not (0 <= x < width and 0 <= y < height):
+        return None
+    plain = [_SGR.sub("", row).rstrip() for row in physical]
+    # Only a bounded editor with its prompt glyph establishes an input region.
+    editors = []
+    for top, row in enumerate(plain[:-2]):
+        if not _EDITOR_TOP.fullmatch(row.strip()):
+            continue
+        boxed = row.strip()[0] in "╭┌"
+        first = plain[top + 1].strip()
+        if boxed:
+            if not (first.startswith("│") and first.endswith("│")):
+                continue
+            first = first[1:-1].strip()
+        if not re.match(r"^[>❯›](?:\s|$)", first):
+            continue
+        for bottom in range(top + 2, min(top + 16, height)):
+            border = plain[bottom].strip()
+            if _EDITOR_BOTTOM.fullmatch(border) and ((border[0] in "╰└") == boxed):
+                editors.append((top, bottom))
+                break
+            if boxed and not (border.startswith("│") and border.endswith("│")):
+                break
+    if len(editors) != 1:
+        return None
+    top, bottom = editors[0]
+    # Constrain the cursor to the visible option text. Restricting the right
+    # edge to code-point length is conservative for wide terminal glyphs.
+    row = plain[y]
+    if not (len(row) - len(row.lstrip(" ")) <= x < len(row)) or top <= y <= bottom:
+        return None
+    # Only the block directly adjacent to the editor is eligible. Ignore older output.
+    start, end = (max(0, top - 20), top) if y < top else (bottom + 1, min(height, bottom + 21))
+    if not start <= y < end:
+        return None
+    block = [(i, plain[i].strip()) for i in range(start, end) if plain[i].strip()]
+    for hint_idx, (_, hint) in enumerate(block):
+        if not (MOVE_HINT_RE.search(hint) and _CURSOR_HINT.search(hint)):
+            continue
+        if hint_idx != len(block) - 1:
+            continue
+        for title_idx in range(hint_idx - 3, -1, -1):
+            _, title = block[title_idx]
+            if len(title) > 160 or not (title.endswith(("?", "？")) or re.match(r"^(?:Select|Choose)\s", title, re.I)):
+                continue
+            options = block[title_idx + 1:hint_idx]
+            labels = _cursor_menu_labels(options, physical, y)
+            if not labels:
+                continue
+            signature = hashlib.sha256(json.dumps([title, labels]).encode()).hexdigest()[:32]
+            return {"kind": "notice", "source": "cursor_menu_notice", "read_only": True,
+                    "title": "终端可能正在等你选择", "hint": title, "options": [],
+                    "revision": "cursor-" + signature}
+    return None
+
+
 def codex_command_approval(text: str) -> dict | None:
     """Describe a complete command approval at the bottom of the Codex TUI."""
     rows = (text or "").rstrip().splitlines()[-48:]

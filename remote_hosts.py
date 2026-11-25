@@ -46,6 +46,15 @@ TRANSPORTS = ("ssh", "agent")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
+def cursor_frame_args(pane_id: str) -> tuple[str, ...]:
+    """Bracket the physical viewport capture with matching pane and cursor metadata."""
+    if not PANE_ID_RE.fullmatch(pane_id):
+        raise ValueError("invalid pane id")
+    metadata = ("display-message", "-p", "-t", pane_id,
+                "#{pane_id} #{pane_pid} #{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag} #{pane_in_mode}")
+    return (*metadata, ";", "capture-pane", "-p", "-e", "-t", pane_id, ";", *metadata)
+
+
 def prompt_region_lines(screen: str, lines: int = 3) -> list[str]:
     """Locate the editable input, excluding assistant history and terminal footers."""
     rows = screen.rstrip().splitlines()
@@ -1860,6 +1869,13 @@ class SSHRunner:
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
         return self._parse_list_output(completed.stdout.decode(errors="replace"))
+
+    def cursor_frame(self, pane_id: str) -> str:
+        command = "${TMUX_BIN:-tmux} " + shlex.join(cursor_frame_args(pane_id))
+        result = self.run(command, timeout=self.capture_timeout or 15)
+        if result.returncode:
+            raise RuntimeError("remote cursor capture failed")
+        return result.stdout.decode(errors="replace")
 
     @staticmethod
     def _capture_ansi_command(pane_id: str, history: int = 5000, visible_only: bool = False) -> str:
