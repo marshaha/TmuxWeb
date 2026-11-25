@@ -135,11 +135,13 @@
     }
   }
 
+  let countRequest = 0;
   async function refreshCount() {
     if (document.hidden) return;
+    const request = ++countRequest;
     try {
       const data = await api('/api/needs-you/inbox/count');
-      setBadge(data.count);
+      if (request === countRequest) setBadge(data.count);
     } catch (_error) {
       // 网络抖动：角标保持旧值，下一轮再说
     }
@@ -153,6 +155,14 @@
     box.querySelectorAll('.inbox-item.unread').forEach(row => {
       if (row.classList) row.classList.remove('unread');
     });
+  }
+
+  let reloadPending = false;
+  function noticeChanged() {
+    refreshCount();
+    if (!opened) return;
+    if (loading) reloadPending = true;
+    else loadPage(null);
   }
 
   async function loadPage(before) {
@@ -192,6 +202,10 @@
       if (!before) setBodyState('没载入：' + error.message);
     } finally {
       loading = false;
+      if (reloadPending) {
+        reloadPending = false;
+        if (opened) loadPage(null);
+      }
     }
   }
 
@@ -199,8 +213,9 @@
   // 标已读挂住不能挡着看列表，失败不挡着看列表，角标下一轮轮询再对。
   async function markRead() {
     try {
+      const request = ++countRequest;
       const data = await api('/api/needs-you/inbox/open', {method: 'POST'});
-      setBadge(data.count);
+      if (request === countRequest) setBadge(data.count);
       readMarked = true;
       clearUnreadDots();
     } catch (_error) {
@@ -276,5 +291,5 @@
     close();
   }
 
-  window.TmuxNeedsYouInbox = {start, stop, open, close, refreshCount, itemHtml, formatWhen, menuSummary};
+  window.TmuxNeedsYouInbox = {start, stop, open, close, refreshCount, noticeChanged, itemHtml, formatWhen, menuSummary};
 })();

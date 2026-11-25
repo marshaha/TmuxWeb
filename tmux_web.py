@@ -2278,6 +2278,36 @@ def create_app(
     # lights up and resolved when the wait clears; the history outlives the
     # card (see needs_you_inbox.sync_lighting).
     inbox_lit: dict = {}
+    inbox_lock = threading.Lock()
+    inbox_observed: dict[str, float] = {}
+    inbox_screen: set[str] = set()
+
+    def observe_inbox(states, started, *, tail=False):
+        # Capture timestamps order a fast tail read and a slow fleet sweep.
+        with inbox_lock:
+            for state in states:
+                key = state["id"]
+                prompt = state.get("prompt")
+                screen = (prompt or {}).get("source") in ("codex_screen_notice", "codex_command_approval")
+                if (tail or screen or not prompt) and started < inbox_observed.get(key, 0):
+                    continue
+                if tail and key in inbox_lit and key not in inbox_screen:
+                    continue  # Only the native watcher can clear its own request.
+                try:
+                    needs_you_inbox.sync_lighting(inbox_store, inbox_lit, [state])
+                except (sqlite3.Error, ValueError):
+                    LOGGER.warning("needs-you inbox sync failed", exc_info=True)
+                    continue
+                inbox_observed[key] = max(started, inbox_observed.get(key, 0))
+                if screen:
+                    inbox_screen.add(key)
+                else:
+                    inbox_screen.discard(key)
+            if not tail:
+                present = {state["id"] for state in states}
+                for key in set(inbox_observed) - present - inbox_lit.keys():
+                    if inbox_observed[key] < started:
+                        del inbox_observed[key]
 
     # Last sweep's per-phase seconds (capture / needs_input / describe),
     # for the log line: the total alone never says which phase is slow.
@@ -2491,10 +2521,9 @@ def create_app(
         # A lighting is history, not just a card: record the first sighting,
         # resolve it when the wait clears. A failed write must never fail the
         # sweep — the card is the live signal, the inbox is only history.
-        try:
-            needs_you_inbox.sync_lighting(inbox_store, inbox_lit, states)
-        except (sqlite3.Error, ValueError):
-            LOGGER.warning("needs-you inbox sync failed", exc_info=True)
+        observe_inbox([state for state, job in zip(states, jobs)
+                       if state["prompt"] or captured.get(id(job[2]), {}).get(state["pane_id"]) is not None],
+                      sweep_t0)
         # 编号在这里统一带上：relay / 主页 / MCP 拿到的 peer 都自带 #N
         try:
             numbers = home.ensure_numbers([state["id"] for state in states if state.get("id")])
@@ -6486,6 +6515,19 @@ def create_app(
             except (TmuxError, RuntimeError, OSError, ValueError) as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    def read_chat_tail(pane_id, pane, transport, actual, lines, color):
+        started = time.monotonic()
+        fragment = capture_tail(pane_id, pane, transport, actual, lines, color)
+        notice = fragment.get("codex_screen_notice")
+        # A clipped frame can show the footer without its header.
+        if notice or not fragment["text"].rstrip().lower().endswith(
+                "press enter to confirm or esc to cancel"):
+            host, _ = split_pane_ref(pane_id)
+            key = actual if host == "localhost" else pane_id
+            observe_inbox([{"id": key, "host_id": host, "title": pane.get("title"),
+                            "needs_input": bool(notice), "prompt": notice}], started, tail=True)
+        return fragment
+
     @app.get("/api/panes/{pane_id}/tail")
     async def pane_tail(request: Request, pane_id: str, lines: int = 10, color: bool = False):
         """Share concurrent reads of the same terminal fragment across Chat viewers."""
@@ -6498,7 +6540,7 @@ def create_app(
             try:
                 async with tail_slots:
                     transport, actual, pane = await file_target(pane_id)
-                    return await asyncio.to_thread(capture_tail, pane_id, pane, transport, actual, lines, color)
+                    return await asyncio.to_thread(read_chat_tail, pane_id, pane, transport, actual, lines, color)
             except (TmuxError, RuntimeError, OSError, ValueError) as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
             finally:
@@ -8077,6 +8119,12 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         states = await asyncio.to_thread(pane_states_cached, 0, 30.0, True)
         alive = {state.get("id") for state in states}
+        def recent_screen_panes():
+            cutoff = time.monotonic() - 30
+            with inbox_lock:
+                return {key for key in inbox_screen if inbox_observed[key] > cutoff}
+
+        alive.update(await asyncio.to_thread(recent_screen_panes))
         for item in page["items"]:
             item["pane_alive"] = item["pane_id"] in alive
         return page
@@ -8094,7 +8142,7 @@ def create_app(
         require_auth(request)
         marked = await asyncio.to_thread(inbox_store.mark_all_read)
         return {"acknowledged_count": marked,
-                "count": await asyncio.to_thread(inbox_store.unread_count)}
+                "count": await asyncio.to_thread(inbox_store.open_count)}
 
     @app.patch("/api/needs-you/inbox/{item_id}")
     async def needs_you_inbox_read(request: Request, item_id: int):

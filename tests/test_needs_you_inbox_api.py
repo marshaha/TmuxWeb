@@ -85,6 +85,7 @@ class InboxApiTests(unittest.TestCase):
         self.assertEqual(page["items"][0]["summary"], "Do you want to proceed? — 2")
         opened = self.client.post("/api/needs-you/inbox/open").json()
         self.assertEqual(opened["acknowledged_count"], 3)
+        self.assertEqual(opened["count"], 3)
         # 标成已读不等于回答过：菜单还在等，铃铛就该还亮着（数字是"还开着的"）。
         counts = self.client.get("/api/needs-you/inbox/count").json()
         self.assertEqual(counts["unread"], 0)

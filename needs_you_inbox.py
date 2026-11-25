@@ -310,11 +310,14 @@ def sync_lighting(store: NeedsYouInbox, lit: dict, states: list[dict]) -> dict:
             continue
         prompt = state.get("prompt") if state.get("needs_input") else None
         if prompt is None:
-            entry = lit.pop(pane_id, None)
+            entry = lit.get(pane_id)
             if entry is not None:
                 store.resolve_record(entry["record_id"], "cleared")
+                del lit[pane_id]
             continue
         signature = needs_input.prompt_signature(prompt)
+        if prompt.get("source") == "codex_command_approval" and prompt.get("screen_revision"):
+            signature = ("notice", "screen-" + prompt["screen_revision"])
         entry = lit.get(pane_id)
         if entry is not None and entry.get("signature") == signature:
             continue

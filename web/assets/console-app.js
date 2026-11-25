@@ -1996,6 +1996,9 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
         tailNav.disabled=false;
         showApprovalHint(data.codex_command_approval===true);
         window.TmuxPrompt?.observeCodexScreen(id, data.codex_screen_revision || '', data.codex_screen_notice);
+        const noticeRevision=data.codex_screen_notice?.revision || '';
+        if((loop.noticeRevision || '')!==noticeRevision)window.TmuxNeedsYouInbox?.noticeChanged();
+        loop.noticeRevision=noticeRevision;
         if(loop.digest!==data.digest){
           loop.digest=data.digest;
           const styled=data.ansi;

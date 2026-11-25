@@ -428,7 +428,7 @@ class TmuxWebTests(unittest.TestCase):
             password="unit-test-admin-password",
             session_secret="test-secret",
             terminal_factory=self.terminals,
-            share_db=":memory:", queue_db=":memory:",
+            share_db=":memory:", queue_db=":memory:", needs_you_inbox_db=":memory:",
             remote_store=self.remote_store,
             remote_runner_factory=FakeSSHRunner,
         ))
@@ -3644,6 +3644,15 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(notice["options"], [])
         self.tmux.output = framed
         self.assertEqual(self.client.get(tail).json()["codex_screen_notice"], notice)
+        inbox = "/api/needs-you/inbox"
+        self.client.get(tail)
+        rows = self.client.get(inbox).json()["items"]
+        self.assertEqual([(item["pane_id"], item["summary"], item["pane_alive"]) for item in rows],
+                         [("%4", notice["title"], True)])
+        self.tmux.output = text  # A partial frame cannot dismiss the preceding complete one.
+        self.client.get(tail)
+        self.assertEqual(self.client.get(inbox + "/count").json()["open"], 1)
+        self.tmux.output = framed
         self.assertEqual(self.client.post(path + "/choose", json={"revision": notice["revision"], "index": 0}).status_code, 422)
         self.assertFalse(self.tmux.keys)
         hook = [{"title": "等待工具审批", "id": ["session", "request"]}]
@@ -3654,6 +3663,10 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIsNone(tmux_web.native_interaction(dict(pane, provider="kimi"), text, [], inspect_screen=True))
         self.tmux.output += "\n› Ask Codex to do anything"
         self.assertNotIn("codex_command_approval", self.client.get(tail).json())
+        self.assertEqual(self.client.get(inbox + "/count").json()["open"], 0)
+        history = self.client.get(inbox, params={"history": 1}).json()["items"]
+        self.assertEqual([(item["id"], item["resolved_reason"]) for item in history],
+                         [(rows[0]["id"], "cleared")])
 
     def test_codex_approval_requires_the_same_native_command_at_click_time(self):
         from plugins.agent.hooks.observe import observation

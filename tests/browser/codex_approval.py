@@ -45,6 +45,9 @@ def main():
                 def route(r):
                     url = urlsplit(r.request.url)
                     path = unquote(url.path)
+                    if path.startswith("/api/needs-you/inbox"):
+                        response = client.request(r.request.method, url.path, params=url.query)
+                        return r.fulfill(status=response.status_code, json=response.json())
                     if path == "/api/prefs":
                         return r.fulfill(json={"prefs": {"manual_inspect": "on" if manual_enabled else "off"}})
                     if path.endswith("/key"):
@@ -72,7 +75,15 @@ def main():
                 expect(card.get_by_role("button",name="确认当前选项")).to_be_hidden()
                 expect(inspect).to_be_hidden()
                 assert not submissions and not fixture.tmux.keys
+                page.evaluate("TmuxNeedsYouInbox.open()")
+                row = page.locator("#inbox-list .inbox-item", has_text="Codex 等待命令审批")
+                expect(row).to_have_count(1)
+                expect(row).to_have_attribute("data-alive", "1")
+                expect(page.locator("#inbox-badge")).to_have_text("1")
                 fixture.tmux.output = "› Ask Codex to do anything"
+                expect(row).to_have_count(0, timeout=12000)
+                expect(page.locator("#inbox-badge")).to_be_hidden()
+                page.locator("#inbox-close").click()
                 expect(card).to_be_hidden(timeout=12000)
                 manual_enabled = True
                 fixture.tmux.output = approval
