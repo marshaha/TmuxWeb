@@ -814,6 +814,49 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("agent.py", script)
         self.assertIn("config.json", script)
 
+    def test_the_ping_op_answers_without_a_shell(self):
+        # The console's handshake must be cheap: no process, no tmux, no
+        # pipes — only an answer, so a busy agent still reports "online".
+        self.assertEqual(agent_program.run_op({"op": "ping"}, resolver=None),
+                         {"ok": True, "pong": True})
+
+    def test_both_wrappers_raise_the_descriptor_limit(self):
+        # macOS gives a launchd/nohup shell 256 descriptors. The agent starts
+        # a process per operation and each one costs three pipes, so a bridge
+        # that stays up for weeks hits EMFILE and every exec starts failing
+        # with "cannot start command: [Errno 24] Too many open files".
+        unit = agent_program._unit_content("/a/agent.py", "/a/config.json")
+        self.assertIn("LimitNOFILE=8192", unit)
+        script = agent_program._run_sh_content("/a/agent.py", "/a/config.json")
+        self.assertIn("ulimit -n 4096", script)
+        # And it has to run before the keep-alive loop starts the agent.
+        self.assertLess(script.index("ulimit -n"), script.index("while true"))
+
+    def test_raise_fd_limit_never_lowers_the_soft_limit(self):
+        import resource
+        before_soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        after = agent_program._raise_fd_limit()
+        soft = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        self.assertGreaterEqual(soft, before_soft)
+        # The helper reports what the process ended up with, clamped by the
+        # hard limit; a soft limit that already exceeded the target stays put.
+        if before_soft == resource.RLIM_INFINITY:
+            self.assertEqual(after, 0)  # already unlimited: nothing to do
+        else:
+            want = 8192 if hard == resource.RLIM_INFINITY else min(8192, int(hard))
+            self.assertEqual(after, max(int(before_soft), want))
+            self.assertEqual(soft, after)
+
+    def test_raise_fd_limit_tolerates_a_refusing_kernel(self):
+        # Container runtimes can refuse setrlimit even below the hard limit;
+        # the agent must start anyway rather than crash before connecting.
+        import resource
+        with mock.patch.object(resource, "setrlimit",
+                               side_effect=ValueError("nope")):
+            with mock.patch.object(resource, "getrlimit",
+                                   return_value=(64, 1024)):
+                self.assertEqual(agent_program._raise_fd_limit(), 64)
+
 
 # ---------------------------------------------------------------------------
 # install / status / uninstall (HOME pointed at a temp dir)

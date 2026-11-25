@@ -670,6 +670,10 @@ class FedTransport:
         self._panes_cache: tuple[float, list[dict]] | None = None
 
     # -- panes -------------------------------------------------------------
+    def ping(self) -> None:
+        if self.client.ping().get("tmuxweb") is not True:
+            raise FederationError("远端未返回 TmuxWeb 握手")
+
     def list_panes(self) -> list[dict]:
         now = time.time()
         if self._panes_cache and now - self._panes_cache[0] < 5:

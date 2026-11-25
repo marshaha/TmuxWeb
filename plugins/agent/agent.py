@@ -984,6 +984,11 @@ def run_op(op, resolver: TmuxResolver, watcher: HostWatcher | None = None) -> di
         return {"ok": False, "error": "op must be an object"}
     if op.get("op") == "needs_input":
         return run_needs_input(op, resolver, watcher)
+    if op.get("op") == "ping":
+        # Liveness only: no shell, no tmux, no pipes. The console uses this
+        # as its online/offline handshake, so it has to answer even while
+        # slow work (transcript pulls) keeps the pool busy.
+        return {"ok": True, "pong": True}
     if op.get("op") != "exec":
         return {"ok": False, "error": f"unknown op: {op.get('op')!r}"}
     return run_exec(op, resolver)
@@ -3098,6 +3103,38 @@ def _is_running() -> tuple[bool, str]:
     return False, ""
 
 
+def _raise_fd_limit(target: int = 8192) -> int:
+    """Best-effort raise of RLIMIT_NOFILE for the long-lived agent process.
+
+    macOS hands a shell the soft limit of 256. An agent that runs for days
+    and starts a process per operation (each one costs three pipes) burns
+    through that, then every exec fails with ``[Errno 24] Too many open
+    files`` and the host looks offline. The hard limit is usually far
+    higher (10240 on macOS, 1M on Linux), so raising the soft limit is
+    enough. Returns the soft limit the process ends up with (0 when the
+    platform has no ``resource`` module).
+    """
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - not on Windows
+        return 0
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):  # pragma: no cover - exotic sandboxes
+        return 0
+    unlimited = (resource.RLIM_INFINITY, -1)
+    if soft in unlimited:
+        return 0  # already unlimited: nothing to raise, nothing to lower
+    want = target if hard in unlimited else min(target, int(hard))
+    if int(soft) >= want:
+        return int(soft)
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+    except (OSError, ValueError):  # pragma: no cover - hard limit refused
+        return int(soft)
+    return want
+
+
 def _unit_content(agent_abs: str, config_abs: str) -> str:
     return (
         "[Unit]\n"
@@ -3108,6 +3145,9 @@ def _unit_content(agent_abs: str, config_abs: str) -> str:
         "[Service]\n"
         "Type=simple\n"
         f"ExecStart={python_command()} {agent_abs} --config {config_abs}\n"
+        # One process per operation costs three pipes; the shipped default
+        # (1024) is thin for a bridge that stays up for weeks.
+        "LimitNOFILE=8192\n"
         "Restart=on-failure\n"
         "RestartSec=5\n"
         "\n"
@@ -3126,6 +3166,9 @@ def _run_sh_content(agent_abs: str, config_abs: str) -> str:
         f"PID_FILE=\"{pid_path()}\"\n"
         f"LOG_FILE=\"{log_path()}\"\n"
         f"PYTHON=\"{python_command()}\"\n"
+        # macOS soft limit is 256 by default: raise it before the loop so a
+        # long-lived agent cannot run out of descriptors mid-week.
+        "ulimit -n 4096 2>/dev/null || true\n"
         "delay=1\n"
         "while true; do\n"
         "    \"$PYTHON\" \"$AGENT\" --config \"$CONFIG\" >> \"$LOG_FILE\" 2>&1 &\n"
@@ -3368,6 +3411,9 @@ def main(argv: list[str] | None = None) -> int:
     if not token:
         parser.error("missing token: pass --token, --config, or set "
                      "TMUXWEB_AGENT_TOKEN")
+    limit = _raise_fd_limit()
+    if limit:
+        print(f"fd limit: {limit}", flush=True)
     return run_daemon(server, token, tmux=tmux)
 
 

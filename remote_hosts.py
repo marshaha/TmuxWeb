@@ -13,6 +13,7 @@ import secrets
 import sqlite3
 import select
 import shutil
+import socket
 import subprocess
 import time
 
@@ -1869,6 +1870,34 @@ class SSHRunner:
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
         return self._parse_list_output(completed.stdout.decode(errors="replace"))
+
+    def ping(self, timeout: float = 3) -> None:
+        """Cheapest liveness check: a TCP connect to the ssh port.
+
+        No handshake, no auth, no tmux probe. A cold ``ssh true`` costs
+        seconds — 17s on one of our links — and that latency is what used to
+        turn a live host into "offline" in the sidebar. Through a jump host a
+        direct socket says nothing about the far end, so that case falls back
+        to ``true`` over SSH.
+        """
+        if self.jump_chain:
+            completed = self.run("true", timeout=int(max(1, timeout)), resolve_tmux=False)
+            if completed.returncode != 0:
+                detail = completed.stderr.decode(errors="replace").strip()
+                raise RuntimeError(detail or "remote host did not answer")
+            return
+        host = (self.host.get("hostname") or "").strip()
+        try:
+            port = int(self.host.get("port") or 22)
+        except (TypeError, ValueError):
+            port = 22
+        if not host:
+            raise RuntimeError("host has no address")
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return
+        except OSError as exc:
+            raise RuntimeError("%s:%d 连不上: %s" % (host, port, exc)) from exc
 
     def cursor_frame(self, pane_id: str) -> str:
         command = "${TMUX_BIN:-tmux} " + shlex.join(cursor_frame_args(pane_id))

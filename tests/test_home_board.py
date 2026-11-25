@@ -536,6 +536,17 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("/api/hosts?refresh=1&host=", shell)
         self.assertIn("/api/hosts?refresh=1&host=", console)
 
+    def test_a_stale_host_row_says_so_instead_of_looking_current(self):
+        # Online/offline comes from the ping; a listing that failed keeps the
+        # last pane list, so the row has to advertise that it is cached.
+        console = self.console_surface()
+        self.assertIn("host.stale", console)
+        self.assertIn("host.status==='offline'", console)
+        css = self.client.get("/assets/console.css").text
+        self.assertIn(".tree-host.stale>summary>.tree-count::after", css)
+        self.assertIn("缓存", css)
+        self.assertIn(".tree-host.offline .host-status", css)
+
     def test_the_board_sidebar_is_a_column_on_a_desktop_and_a_drawer_on_a_phone(self):
         """The phone drawer rules must stay inside their media query."""
         shell = self.client.get("/assets/shell.css").text

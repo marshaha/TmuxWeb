@@ -80,6 +80,15 @@ def prepare(args):
                 raise ValueError("merge the other node's release notes before packaging")
             prior.add(digest(changelog))
         entries["CHANGELOG.md"]["prior"] = sorted(prior)
+    # A reviewed hotfix from a live node may already be partially integrated.
+    # Accept only the exact named bytes; the installer saves the actual node's
+    # original bytes and checks their digest again when restoring them.
+    for name, source in args.reviewed_prior:
+        if name not in entries or not Path(source).is_file():
+            raise ValueError(f"unknown reviewed baseline: {name}")
+        prior = set(entries[name].get("prior", []))
+        prior.add(digest(Path(source)))
+        entries[name]["prior"] = sorted(prior)
     head = git(base, "rev-parse", "HEAD")
     manifest = {"installer_sha": digest(ROOT / "scripts/release_node.py"), "release": release, "previous": previous, "head": head, "files": entries,
                 "version": release + "+" + git(base, "rev-parse", "--short", "HEAD"),
@@ -215,6 +224,7 @@ if __name__ == "__main__":
     p.add_argument("--tested", required=True, type=Path)
     p.add_argument("--checks", required=True, type=Path)
     p.add_argument("--prior-changelog", action="append", type=Path, default=[])
+    p.add_argument("--reviewed-prior", nargs=2, metavar=("PACKAGE_PATH", "REVIEWED_FILE"), action="append", default=[])
     p.add_argument("--browser", action="append", default=[])
     p.add_argument("files", nargs="+")
     d = sub.add_parser("deploy")

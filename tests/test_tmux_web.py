@@ -318,6 +318,9 @@ class FakeSSHRunner:
 
     def probe_agents(self, timeout=12):
         return [dict(item) for item in getattr(self, "agents", [])]
+    def ping(self, timeout=3):
+        """The console's liveness handshake: a healthy fake host answers."""
+        FakeSSHRunner.last_ping_timeout = timeout
     def list_panes(self, timeout=15):
         FakeSSHRunner.last_list_timeout = timeout
         extra = [{"id": pane_ref(self.host["id"], "%11"), "pane_id": "%11", "host_id": self.host["id"],
@@ -897,6 +900,10 @@ class TmuxWebTests(unittest.TestCase):
             def __init__(self, host):
                 self.host = host
 
+            def ping(self, timeout=3):
+                # answers the handshake: the host is up, only the listing hangs
+                return None
+
             def list_panes(self, timeout=15):
                 raise subprocess.TimeoutExpired(cmd=["ssh"], timeout=timeout)
 
@@ -919,9 +926,82 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(local["status"], "online")
         self.assertNotEqual(local["panes"], [])
         hung = next(host for host in hosts if host["id"] == host_id)
-        self.assertEqual(hung["status"], "offline")
+        # The ping answered, so the host is online; only its pane listing timed
+        # out, and that is reported as an error on the row, not as "offline".
+        self.assertEqual(hung["status"], "online")
         self.assertIn("timed out", hung["error"])
         self.assertEqual(hung["panes"], [])
+
+    def test_a_failed_listing_keeps_the_last_panes_and_marks_them_stale(self):
+        self.login()
+        host_key = "10.0.0.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDoNcEyBJB6EHylGUOrjANaF/n45q3A0l+Kg3QGMCbo2"
+        fingerprint = host_key_fingerprint(host_key)
+        created = self.client.post("/api/remote-hosts", json={
+            "name": "slow-box", "hostname": "10.0.0.10", "port": 22, "username": "ubuntu",
+            "auth_type": "password", "credential": "secret", "host_key": host_key,
+            "fingerprint": fingerprint, "confirm_fingerprint": fingerprint
+        })
+        self.assertEqual(created.status_code, 201)
+        host_id = created.json()["id"]
+
+        class FlakyRunner:
+            """Lists once, then hangs: the link got slow, the host did not die."""
+            calls = 0
+
+            def __init__(self, host):
+                self.host = host
+
+            connected = True
+
+            def ping(self, timeout=3):
+                if not self.connected:
+                    raise OSError("unreachable")
+
+            def list_panes(self, timeout=15):
+                FlakyRunner.calls += 1
+                if FlakyRunner.calls == 2:
+                    raise subprocess.TimeoutExpired(cmd=["ssh"], timeout=timeout)
+                return [{"id": f"{self.host['id']}~%21", "pane_id": "%21",
+                         "host_id": self.host["id"], "target": "slow:0.0",
+                         "session": "slow", "window": "0", "window_name": "shell",
+                         "index": "0", "command": "zsh", "title": "kept",
+                         "path": "/srv/slow", "active": True, "width": 80, "height": 24}]
+
+        client = TestClient(create_app(
+            self.tmux,
+            password="unit-test-admin-password",
+            session_secret="test-secret",
+            terminal_factory=self.terminals,
+            share_db=":memory:", queue_db=":memory:",
+            remote_store=self.remote_store,
+            remote_runner_factory=FlakyRunner,
+        ))
+        client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+
+        first = next(host for host in client.get("/api/hosts").json()["hosts"] if host["id"] == host_id)
+        self.assertEqual(first["status"], "online")
+        self.assertEqual(len(first["panes"]), 1)
+        self.assertNotIn("stale", first)
+
+        # Second round: same host, listing hangs. The cached pane list has to
+        # survive (flagged stale) instead of the row collapsing to 0 panes.
+        again = next(host for host in
+                     client.get(f"/api/hosts?refresh=1&host={host_id}").json()["hosts"]
+                     if host["id"] == host_id)
+        self.assertEqual(again["status"], "online")
+        self.assertTrue(again["stale"])
+        self.assertIn("timed out", again["error"])
+        self.assertEqual([pane["pane_id"] for pane in again["panes"]], ["%21"])
+        FlakyRunner.connected = False
+        url = "/api/hosts?refresh=1&host=" + host_id
+        down = next(h for h in client.get(url).json()["hosts"] if h["id"] == host_id)
+        self.assertEqual((down["status"], down["listing_state"], down["panes"]),
+                         ("offline", "cached", first["panes"]))
+        FlakyRunner.connected = True
+        restored = next(h for h in client.get(url).json()["hosts"] if h["id"] == host_id)
+        self.assertEqual((restored["status"], restored["listing_state"]), ("online", "fresh"))
+        self.assertNotIn("error", restored)
+        self.assertFalse(restored.get("stale"))
 
     def test_adds_remote_host_and_routes_remote_pane_operations(self):
         self.login()
@@ -2924,6 +3004,67 @@ class TmuxWebTests(unittest.TestCase):
         shares = self.client.get("/api/shares").json()["shares"]
         share_id = next(item["id"] for item in shares if item["slug"] == "shell-share")
         self.assertEqual(self.client.delete(f"/api/shares/{share_id}").status_code, 200)
+
+    def test_an_expired_snapshot_answers_at_once_and_refreshes_behind_it(self):
+        """The sidebar must never wait on the slowest host: ping first, panes later."""
+        calls = {"count": 0}
+        tmux = FakeTmux()
+        original = tmux.list_panes
+
+        def counting(*args, **kwargs):
+            calls["count"] += 1
+            return original(*args, **kwargs)
+
+        tmux.list_panes = counting
+        with mock.patch.dict(os.environ, {"TMUX_WEB_HOSTS_TTL": "0"}):
+            client = TestClient(create_app(
+                tmux, password="unit-test-admin-password", session_secret="test-secret",
+                terminal_factory=self.terminals, share_db=":memory:", queue_db=":memory:",
+                remote_store=self.remote_store, remote_runner_factory=FakeSSHRunner,
+            ))
+        client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+
+        first = client.get("/api/hosts").json()["hosts"]
+        self.assertTrue(first)
+        after_first = calls["count"]
+
+        # TTL 0 => always expired: the second answer is the cached one, served
+        # without touching tmux, and a sweep is kicked off in the background.
+        second = client.get("/api/hosts").json()["hosts"]
+        self.assertEqual([h["id"] for h in second], [h["id"] for h in first])
+        self.assertEqual(second[0]["panes"], first[0]["panes"])
+
+        for _ in range(40):
+            if calls["count"] > after_first:
+                break
+            time.sleep(0.05)
+        self.assertGreater(calls["count"], after_first,
+                           "the background sweep never ran")
+
+    def test_concurrent_cold_sidebar_reads_share_one_probe(self):
+        import httpx
+        calls = []
+        started, release = threading.Event(), threading.Event()
+        original = self.tmux.list_panes
+        def slow():
+            calls.append(1)
+            started.set()
+            release.wait(4)
+            return original()
+
+        async def exercise():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.client.app),
+                                         base_url="http://localhost") as client:
+                await client.post("/login", data={"password":"unit-test-admin-password"})
+                readers = [asyncio.create_task(client.get("/api/hosts")) for _ in range(12)]
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                await asyncio.sleep(0.05)
+                release.set()
+                for response in await asyncio.gather(*readers):
+                    self.assertEqual(response.json()["hosts"][0]["status"], "online")
+        with mock.patch.object(self.tmux, "list_panes", side_effect=slow):
+            asyncio.run(exercise())
+        self.assertEqual(len(calls), 1)
 
     def test_hosts_list_is_snapshotted_between_polls(self):
         calls = {"count": 0}

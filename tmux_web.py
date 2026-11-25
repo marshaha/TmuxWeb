@@ -2357,7 +2357,7 @@ def create_app(
             for host in snapshot.get("hosts") or []:
                 host_id = str(host.get("id") or "")
                 panes = host.get("panes") or []
-                if not panes:
+                if not panes or host.get("status") == "offline":
                     continue
                 if host_id == "localhost":
                     transport = tmux
@@ -2677,7 +2677,8 @@ def create_app(
                             # in ~10ms. Same freshness class as the 30s pane-state
                             # cache and close to the 25s home-entry TTL. ?refresh=1
                             # and per-host refresh still force a re-probe.
-                            "ttl": float(os.environ.get("TMUX_WEB_HOSTS_TTL", "30"))}
+                            "ttl": float(os.environ.get("TMUX_WEB_HOSTS_TTL", "30")),
+                            "task": None}
     relay_log: deque[dict] = deque(maxlen=100)
     relay_locks: dict[str, asyncio.Lock] = {}
 
@@ -3284,7 +3285,7 @@ def create_app(
             # 有快照就用快照，哪怕旧一点：一个联邦读者不该触发整台机的 SSH 探测
             # （7 台主机就是 3 秒多，父节点每个请求都等它）。过期了就在后台刷一次。
             if (time.time() - hosts_snapshot["at"]) >= hosts_snapshot["ttl"]:
-                asyncio.get_running_loop().run_in_executor(None, relay_hosts, False)
+                hosts_refresh()
             groups = [(host.get("id"), host.get("name") or host.get("id"), host.get("panes") or [])
                       for host in snapshot.get("hosts") or [] if host.get("kind") != "fed"]
         else:
@@ -4519,33 +4520,65 @@ def create_app(
         except TmuxError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    async def refresh_one_host(host_id: str, payload: dict) -> dict | None:
-        """Re-list the panes of a single host; None when it is not in the snapshot."""
-        fresh = copy.deepcopy(payload)
-        target = next((item for item in fresh.get("hosts") or [] if item.get("id") == host_id), None)
-        if target is None:
-            return None
-        if host_id == "localhost":
-            try:
-                panes = [pane_metadata(pane) for pane in await asyncio.to_thread(tmux.list_panes)]
+    # Accessed only on the app event loop. The full sweep and single-host refresh
+    # share the same probe, including when several clients open a cold sidebar.
+    host_probes: dict[str, asyncio.Task] = {}
+
+    def probe_host(public: dict, previous: dict) -> dict:
+        row = {k: v for k, v in public.items()
+               if k not in ("panes", "status", "error", "stale", "listing_state")}
+        host_id, kind = row["id"], row["kind"]
+        reachable = False
+        try:
+            if kind == "local":
+                panes = [pane_metadata(pane) for pane in tmux.list_panes()]
                 for pane in panes:
                     pane.setdefault("host_id", "localhost")
                     pane.setdefault("window_name", "")
-                target.update({"panes": panes, "status": "online"})
-                target.pop("error", None)
-            except (TmuxError, OSError) as exc:
-                target.update({"panes": [], "status": "offline", "error": str(exc)})
+            elif kind == "fed":
+                node = fed_nodes.get_node(host_id, include_token=True)
+                runner = federation.FedTransport(node)
+                if hasattr(runner, "ping"):
+                    runner.ping()
+                    reachable = True
+                panes = [pane | {"prefix": row["prefix"]} for pane in runner.list_panes()]
+            else:
+                runner = runner_for(remote_hosts.get_host(host_id, include_credential=True))
+                if hasattr(runner, "ping"):
+                    runner.ping(timeout=float(os.environ.get("TMUX_WEB_HOSTS_PING_TIMEOUT", "3")))
+                    reachable = True
+                timeout = int(os.environ.get("TMUX_WEB_HOSTS_LIST_TIMEOUT", "8"))
+                panes = [pane_metadata(pane) for pane in runner.list_panes(timeout=timeout)]
+        except Exception as exc:  # Report a transport failure on its own host row.
+            known = previous.get("listing_state") in ("fresh", "cached") or bool(previous.get("panes"))
+            row.update(status="online" if reachable else "offline", error=str(exc),
+                       panes=previous.get("panes", []), listing_state="cached" if known else "unavailable")
+            if known:
+                row["stale"] = True
         else:
-            timeout = int(os.environ.get("TMUX_WEB_HOSTS_LIST_TIMEOUT", "8"))
-            try:
-                credentialed = await asyncio.to_thread(remote_hosts.get_host, host_id, include_credential=True)
-                panes = await asyncio.to_thread(runner_for(credentialed).list_panes, timeout=timeout)
-                target.update({"panes": [pane_metadata(pane) for pane in panes], "status": "online"})
-                target.pop("error", None)
-            except Exception as exc:  # noqa: BLE001 - report it on the host row
-                target.update({"panes": [], "status": "offline", "error": str(exc)})
+            row.update(status="online", panes=panes, listing_state="fresh")
+        return row
+
+    def host_probe(public: dict, previous: dict) -> asyncio.Task:
+        key = public["id"]
+        if key not in host_probes:
+            async def run():
+                try:
+                    return await asyncio.to_thread(probe_host, public, previous)
+                finally:
+                    host_probes.pop(key, None)
+            host_probes[key] = asyncio.create_task(run())
+        return host_probes[key]
+
+    async def refresh_one_host(host_id: str, payload: dict) -> dict | None:
+        target = next((row for row in payload["hosts"] if row["id"] == host_id), None)
+        if target is None:
+            return None
+        row = await asyncio.shield(host_probe(target, target))
+        # Another host may have finished while this one was waiting.
+        latest = hosts_snapshot["value"] or payload
+        fresh = {"hosts": [row if h["id"] == host_id else h for h in latest["hosts"]]}
         hosts_snapshot["value"] = fresh
-        hosts_snapshot["at"] = time.time()
         return fresh
 
     async def refresh_snapshot_after_close(host_id: str) -> None:
@@ -4555,13 +4588,6 @@ def create_app(
         so a refresh failure must never turn the close into an error."""
         cached = hosts_snapshot["value"]
         if cached is None:
-            return
-        target = next((item for item in cached.get("hosts") or [] if item.get("id") == host_id), None)
-        if target is not None and target.get("kind") == "fed":
-            # a federated node's pane list does not come from remote_hosts:
-            # refresh_one_host would mistake it for a dead SSH host and mark
-            # it offline, so a fed pane closed from the web still waits out
-            # the snapshot cycle (rare; the full re-probe lists fed correctly)
             return
         try:
             await refresh_one_host(host_id, cached)
@@ -4584,91 +4610,59 @@ def create_app(
                     pane["number"] = number
         return payload
 
+    def hosts_refresh() -> asyncio.Task:
+        if hosts_snapshot["task"] is None:
+            async def run():
+                try:
+                    return await build_hosts_snapshot()
+                finally:
+                    hosts_snapshot["task"] = None
+            task = asyncio.create_task(run())
+            def report_failure(done):
+                if not done.cancelled() and done.exception():
+                    LOGGER.error("hosts snapshot refresh failed", exc_info=done.exception())
+            task.add_done_callback(report_failure)
+            hosts_snapshot["task"] = task
+        return hosts_snapshot["task"]
+
+    async def build_hosts_snapshot() -> dict:
+        previous = {r["id"]: r for r in (hosts_snapshot["value"] or {}).get("hosts", [])}
+        hosts = [{"id": "localhost", "name": "localhost", "kind": "local"}]
+        for remote in remote_hosts.list_hosts():
+            public = {k: remote[k] for k in ("id", "name", "hostname", "port", "username", "auth_type", "fingerprint")}
+            hosts.append(dict(public, kind="ssh"))
+        for node in fed_nodes.listing():
+            if node.get("enabled", True):
+                hosts.append({"id": node["id"], "name": node.get("label") or node["prefix"],
+                              "kind": "fed", "prefix": node["prefix"],
+                              "url": node.get("base_url") or node.get("fallback_url")})
+        rows = await asyncio.gather(*(host_probe(h, previous.get(h["id"], {})) for h in hosts))
+        latest = {r["id"]: r for r in (hosts_snapshot["value"] or {}).get("hosts", [])}
+        # Preserve a newer single-host refresh while the sweep was waiting for a peer.
+        rows = [latest[r["id"]] if r["id"] in latest and latest[r["id"]] is not previous.get(r["id"])
+                else r for r in rows]
+        payload = {"hosts": number_panes(rows)}
+        hosts_snapshot.update(value=payload, at=time.time())
+        return payload
+
     @app.get("/api/hosts")
     async def list_hosts(request: Request, refresh: int = 0, host: str = ""):
         require_auth(request)
-        # every 20s poll used to re-probe each remote host over SSH; a 30s snapshot
-        # keeps the sidebar fresh without hammering them (?refresh=1 forces it,
-        # &host=<id> re-lists only that host so one click stays cheap)
         cached = hosts_snapshot["value"]
         if host and refresh and cached is not None:
             refreshed = await refresh_one_host(host, cached)
             if refreshed is not None:
                 return number_panes(refreshed)
-        if cached is not None and not refresh and (time.time() - hosts_snapshot["at"]) < hosts_snapshot["ttl"]:
+        if cached is not None and not refresh:
+            # A warm snapshot answers at once; an expired one still
+            # answers at once, because the ping+listing sweep now runs
+            # behind the request instead of inside it. The panes a slow
+            # host could not refresh are already kept from the last sweep.
+            if (time.time() - hosts_snapshot["at"]) < hosts_snapshot["ttl"]:
+                return number_panes(cached)
+            hosts_refresh()
             return number_panes(cached)
-        hosts = []
-        try:
-            panes = [pane_metadata(pane) for pane in tmux.list_panes()]
-            for pane in panes:
-                pane.setdefault("host_id", "localhost")
-                pane.setdefault("window_name", "")
-            hosts.append({
-                "id": "localhost",
-                "name": "localhost",
-                "kind": "local",
-                "status": "online",
-                "panes": panes,
-            })
-        except (TmuxError, OSError) as exc:
-            hosts.append({"id": "localhost", "name": "localhost", "kind": "local",
-                          "status": "offline", "error": str(exc), "panes": []})
-        remotes = remote_hosts.list_hosts()
-        list_timeout = int(os.environ.get("TMUX_WEB_HOSTS_LIST_TIMEOUT", "8"))
-        public_hosts = []
-        for remote in remotes:
-            public = {key: remote[key] for key in ("id", "name", "hostname", "port", "username", "auth_type", "fingerprint")}
-            public.update({"kind": "ssh", "status": "offline", "panes": []})
-            public_hosts.append(public)
-
-        async def load_remote(public: dict) -> None:
-            try:
-                credentialed = remote_hosts.get_host(public["id"], include_credential=True)
-                panes = await asyncio.to_thread(
-                    runner_for(credentialed).list_panes, timeout=list_timeout
-                )
-                public["panes"] = [pane_metadata(pane) for pane in panes]
-                public["status"] = "online"
-            except Exception as exc:  # noqa: BLE001 - one dead host must not break the tree
-                # SSH failures surface as RuntimeError/OSError, but a hung host
-                # raises subprocess.TimeoutExpired and httpx raises its own types.
-                public["error"] = str(exc)
-
-        # Concurrently, so the slowest host sets the latency instead of the sum.
-        await asyncio.gather(*(load_remote(public) for public in public_hosts))
-        hosts.extend(public_hosts)
-
-        fed_public = []
-        for node in fed_nodes.listing():
-            if not node.get("enabled", True):
-                continue
-            fed_public.append({"id": node["id"], "name": node.get("label") or node["prefix"],
-                               "kind": "fed", "prefix": node.get("prefix"),
-                               "url": node.get("base_url") or node.get("fallback_url"),
-                               "status": "offline", "panes": []})
-
-        async def load_fed(public: dict) -> None:
-            node = await asyncio.to_thread(fed_nodes.get_node, public["id"], True)
-            federated = federation.FedTransport(node)
-            try:
-                panes = await asyncio.to_thread(federated.list_panes)
-            except (federation.FederationError, RuntimeError, OSError) as exc:
-                public["error"] = str(exc)
-                return
-            public["panes"] = [pane | {"prefix": node.get("prefix")} for pane in panes]
-            public["status"] = "online"
-
-        await asyncio.gather(*(load_fed(item) for item in fed_public))
-        for host in fed_public:
-            for pane in host.get("panes") or []:
-                # 编号沿用对端的，只有前缀区分；本机号段不参与
-                pane["number"] = pane.get("number")
-                pane["prefix"] = host.get("prefix")
-        hosts.extend(fed_public)
-        payload = {"hosts": number_panes(hosts)}      # 短编号：跨主机唯一的 #N
-        hosts_snapshot["value"] = payload
-        hosts_snapshot["at"] = time.time()
-        return payload
+        return await asyncio.shield(hosts_refresh())
 
     def mcp_validation_error(exc: ValidationError) -> McpToolError:
         """Pydantic input errors are tool errors, not 500s."""

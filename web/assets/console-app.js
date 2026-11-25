@@ -949,19 +949,22 @@ import {marked} from '/assets/marked.esm.js?v=1';
         return ok;});
       if(panes.length)filtered.push({...host,panes});}
     return {hosts:filtered,matched};}
-  function treeDetails(key,label,children,kind,count,extra='',tail='',forceOpen=false){const open=(forceOpen||state.treeOpen.has(key))?' open':'';return `<details class="tree-group tree-${kind}" data-tree="${esc(key)}"${open}><summary>${extra}<span class="tree-label">${esc(label)}</span><span class="tree-count">${count}</span>${tail}</summary><div class="tree-children">${children}</div></details>`;}
+  function treeDetails(key,label,children,kind,count,extra='',tail='',forceOpen=false,cls=''){const open=(forceOpen||state.treeOpen.has(key))?' open':'';return `<details class="tree-group tree-${kind}${cls?' '+cls:''}" data-tree="${esc(key)}"${open}><summary>${extra}<span class="tree-label">${esc(label)}</span><span class="tree-count">${count}</span>${tail}</summary><div class="tree-children">${children}</div></details>`;}
   function renderList(){const terms=parsePaneSearchTerms(paneSearchQuery);const searching=terms.length>0;
     const view=searching?filterHostsForSearch(state.hosts,terms,state.needsInput,contentHits):{hosts:state.hosts,matched:0};
     const html=view.hosts.map(host=>{const sessions=new Map();for(const p of host.panes||[]){if(!sessions.has(p.session))sessions.set(p.session,new Map());const windows=sessions.get(p.session),windowKey=`${p.window}:${p.window_name||''}`;if(!windows.has(windowKey))windows.set(windowKey,[]);windows.get(windowKey).push(p);}const sessionHtml=[...sessions].map(([session,windows])=>{const windowHtml=[...windows].map(([windowKey,panes])=>{const first=panes[0],label=`${first.window}${first.window_name?': '+first.window_name:''}`,leaves=[...panes].sort((a,b)=>((state.needsInput&&state.needsInput.has(b.id)?1:0)-(state.needsInput&&state.needsInput.has(a.id)?1:0))).map(p=>`<button class="pane ${p.id===state.selected?'selected':''}${state.needsInput&&state.needsInput.has(p.id)?' needs-you':''}" data-pane="${esc(p.id)}"><div class="pane-row"><span class="dot ${p.active?'active':''}"></span><span class="pane-num">${paneLabel(p)}</span>${state.needsInput&&state.needsInput.has(p.id)?'<span class="pane-need">等你</span>':''}<span class="pane-target">pane ${esc(p.index)} · ${esc(p.command)}</span><span class="pane-star ${state.favorites.has(p.id)?'on':''}" data-star="${esc(p.id)}" role="button" tabindex="-1" title="${state.favorites.has(p.id)?'取消收藏':'收藏到主页'}"><svg class="ico"><use href="#i-${state.favorites.has(p.id)?'star-fill':'star'}"/></svg></span><span class="pane-state ${state.paneState.get(p.id)||'unknown'}"></span></div><div class="pane-title">${esc(p.title||'(无标题)')}</div><div class="pane-meta">${esc(p.path)}</div>${contentSnippet(p.id)}</button>`).join('');return treeDetails(`${host.id}/${session}/${windowKey}`,label,leaves,'window',`${panes.length}`,'',
       `<button class="tree-tool tree-rename" type="button" data-rename-window="${esc(first.id)}" data-rename-value="${esc(first.window_name||'')}" title="改窗口名" aria-label="改窗口名"><svg class="ico"><use href="#i-pencil"/></svg></button>`,searching);}).join('');
       return treeDetails(`${host.id}/${session}`,session,windowHtml,'session',`${windows.size} windows`,'',
       `<button class="tree-tool tree-rename" type="button" data-rename-session="${esc(session)}" data-rename-host="${esc(host.id)}" title="改会话名" aria-label="改会话名"><svg class="ico"><use href="#i-pencil"/></svg></button>`,searching);}).join('');const firstPath=(host.panes&&host.panes[0]&&host.panes[0].path)||'';
-  return treeDetails(host.id,host.name||host.id,sessionHtml,'host',`${(host.panes||[]).length}`,
-    `<span class="host-icon"><svg class="ico"><use href="#i-server"/></svg></span><span class="host-status"></span>`,
+  return treeDetails(host.id,host.name||host.id,sessionHtml,'host',host.listing_state==='unavailable'?'待获取':String((host.panes||[]).length),
+    `<span class="host-icon"><svg class="ico"><use href="#i-server"/></svg></span><span class="host-status" title="${esc(host.error || (host.status==='offline'?'连接不可达':'连接可达'))}"></span>`,
     `<button class="host-add" type="button" data-new-session="${esc(host.id)}" data-session-path="${esc(firstPath)}"`
     + ` title="在该主机新建 tmux 会话" aria-label="新建 tmux 会话"><svg class="ico"><use href="#i-plus"/></svg></button>`
     + `<button class="host-refresh" type="button" data-refresh-host="${esc(host.id)}"`
-    + ` title="刷新这台主机的 pane 列表" aria-label="刷新主机"><svg class="ico"><use href="#i-refresh"/></svg></button>`,searching);}).join('');
+    + ` title="刷新这台主机的 pane 列表" aria-label="刷新主机"><svg class="ico"><use href="#i-refresh"/></svg></button>`,searching,
+    // status comes from the cheap ping; a failed pane listing keeps the last
+    // list on the row, so mark it instead of pretending these are live panes
+    (host.status==='offline'?'offline ':'')+(host.stale?'stale':''));}).join('');
     const countEl=$('pane-search-count');
     if(countEl){
       countEl.hidden=!searching;

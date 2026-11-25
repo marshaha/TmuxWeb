@@ -66,7 +66,7 @@ def main():
                 if path == "/api/hosts":
                     return r.fulfill(json={"hosts": [
                         {"id": "localhost", "name": "Local-" + "long-host-name-" * 5, "panes": panes},
-                        {"id": "nas", "name": "nas", "panes": []},
+                        {"id": "nas", "name": "nas", "panes": [], "status":"online", "listing_state":"unavailable"},
                     ]})
                 if path == "/api/search/pane-content":
                     batch = r.request.post_data_json
@@ -91,6 +91,15 @@ def main():
             expect(page.locator("#selected-number")).to_contain_text("420")
             page.locator("#menu").click()
             check_host_rows(page)
+            expect(page.locator('.tree-host[data-tree="nas"] > summary .tree-count')).to_have_text("待获取")
+            row = page.locator('.tree-host[data-tree="localhost"]')
+            row.evaluate("e => e.classList.add('stale','offline')")
+            assert "缓存" in row.locator(":scope > summary .tree-count").evaluate(
+                "e => getComputedStyle(e,'::after').content")
+            assert row.locator(".tree-session .tree-count").first.evaluate(
+                "e => getComputedStyle(e,'::after').content") in ("none","normal")
+            assert row.locator(":scope > summary").evaluate("e => e.scrollWidth <= e.clientWidth + 1")
+            row.evaluate("e => e.classList.remove('stale','offline')")
             field = page.locator("#pane-search")
             count = page.locator("#pane-search-count")
             progress = page.locator("#pane-search-progress")

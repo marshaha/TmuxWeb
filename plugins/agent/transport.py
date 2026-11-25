@@ -60,7 +60,7 @@ LOGGER = logging.getLogger("tmuxweb.agent")
 # "needs_input" (the host watcher, plugins/agent/agent.py): an agent
 # that does not know it answers with an error result, and the server
 # treats that as "no agent signal" — never as a sweep failure.
-ALLOWED_OPS = ("exec", "needs_input")
+ALLOWED_OPS = ("exec", "needs_input", "ping")
 
 
 class AgentUnavailable(RuntimeError):
@@ -448,6 +448,11 @@ class AgentTransport(SSHRunner):
         return subprocess.CompletedProcess(args=remote_command,
                                            returncode=int(result.get("returncode", 0)),
                                            stdout=stdout, stderr=stderr)
+
+    def ping(self, timeout: float = 3) -> None:
+        """Use the authenticated agent connection, or the same SSH fallback as run()."""
+        if not self.registry.is_online(str(self.host.get("id") or "")):
+            super().ping(timeout=timeout)
 
     def run_many(self, remote_commands, *, timeout: int = 15,
                  resolve_tmux: bool = True) -> list[subprocess.CompletedProcess]:

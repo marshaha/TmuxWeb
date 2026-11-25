@@ -233,6 +233,17 @@ class StoreTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+    def test_transport_ping_checks_node_identity_without_listing_panes(self):
+        from unittest.mock import Mock
+        transport = federation.FedTransport({"id":"a1b2c3d4e5f60718","base_url":"http://node","prefix":"mac","token":"t"})
+        transport.client = Mock()
+        transport.client.ping.return_value = {"tmuxweb": True}
+        transport.ping()
+        transport.client.panes.assert_not_called()
+        transport.client.ping.return_value = {"other": True}
+        with self.assertRaises(federation.FederationError):
+            transport.ping()
+
     def test_remote_panes_get_a_host_scoped_id_and_their_prefix(self):
         node = {"id": "a1b2c3d4e5f60718", "prefix": "ddr", "base_url": "http://node", "token": "t"}
         transport = federation.FedTransport(node)
@@ -636,6 +647,8 @@ class EndpointTests(unittest.TestCase):
 
         def fake_get(client, path, timeout=None):
             calls.append(path)
+            if path == "/api/fed/ping":
+                return {"tmuxweb": True}
             if path.startswith("/api/fed/panes/") and "/capture" in path:
                 return {"pane": "%12", "content": "hello from oracle"}
             if path.startswith("/api/fed/panes"):

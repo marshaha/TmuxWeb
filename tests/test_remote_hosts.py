@@ -1666,6 +1666,70 @@ class RemoteHostTests(unittest.TestCase):
             validate_private_key_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest user@example")
 
 
+class SSHRunnerPingTests(unittest.TestCase):
+    """ping() is the console's online/offline handshake: one cheap check."""
+
+    class _Completed:
+        def __init__(self, returncode=0, stdout=b"", stderr=b""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class Runner(remote_hosts.SSHRunner):
+        def __init__(self, returncode=0, stderr=b"", jump=None):
+            host = {"id": "test", "hostname": "example.test", "port": 2222}
+            if jump:
+                host["jump_chain"] = [jump]
+            super().__init__(host)
+            self.calls = []
+            self.returncode = returncode
+            self.stderr = stderr
+
+        def run(self, command, *, input_bytes=None, timeout=15, resolve_tmux=True):
+            self.calls.append((command, timeout, resolve_tmux))
+            return SSHRunnerPingTests._Completed(self.returncode, b"", self.stderr)
+
+    def test_ping_is_a_tcp_connect_with_no_ssh_and_no_tmux(self):
+        runner = self.Runner()
+        seen = []
+
+        def fake_connect(address, timeout=None):
+            seen.append((address, timeout))
+            return mock.MagicMock()
+
+        with mock.patch("remote_hosts.socket.create_connection", fake_connect):
+            self.assertIsNone(runner.ping(timeout=2.5))
+        # A cold `ssh true` costs seconds (17s on one of our links); a socket
+        # to the ssh port answers in milliseconds and needs no credentials.
+        self.assertEqual(seen, [(("example.test", 2222), 2.5)])
+        self.assertEqual(runner.calls, [])
+
+    def test_ping_raises_when_the_port_refuses(self):
+        def refuse(address, timeout=None):
+            raise ConnectionRefusedError(111, "Connection refused")
+
+        with mock.patch("remote_hosts.socket.create_connection", refuse):
+            with self.assertRaises(RuntimeError) as caught:
+                self.Runner().ping()
+        self.assertIn("example.test:2222", str(caught.exception))
+
+    def test_a_jump_host_still_pings_over_ssh(self):
+        # The far end is not reachable directly, so the socket proves nothing:
+        # this is the one case that pays for `true` over SSH.
+        runner = self.Runner(jump={"id": "hop", "hostname": "hop.test", "port": 22})
+        with mock.patch("remote_hosts.socket.create_connection") as connect:
+            self.assertIsNone(runner.ping(timeout=3))
+        connect.assert_not_called()
+        self.assertEqual(runner.calls, [("true", 3, False)])
+
+    def test_a_failed_ssh_ping_carries_the_reason(self):
+        runner = self.Runner(returncode=255, stderr=b"ssh: connect to host: refused",
+                             jump={"id": "hop", "hostname": "hop.test", "port": 22})
+        with self.assertRaises(RuntimeError) as caught:
+            runner.ping()
+        self.assertIn("refused", str(caught.exception))
+
+
 class SSHRunnerSendTests(unittest.TestCase):
     """Remote send() resends Enter until the text leaves the prompt, and says so when it cannot."""
 

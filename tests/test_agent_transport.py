@@ -377,6 +377,30 @@ class AgentRegistryUnitTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.registry.call("nope", [{"op": "exec"}])
 
+    def test_the_liveness_ping_is_an_allowed_op(self):
+        # The console's online/offline handshake: allowed through validation,
+        # and with no connection it is still "unavailable" (=> offline).
+        with self.assertRaises(agent_transport.AgentUnavailable):
+            self.registry.call("nope", [{"op": "ping"}], timeout=1)
+
+    def test_agent_liveness_needs_no_round_trip(self):
+        # An open agent socket IS the handshake: asking a question would queue
+        # behind a slow transcript pull, which is how a live host used to look
+        # offline. The runner only looks at the registry.
+        transport = agent_transport.AgentTransport({"id": "h1", "hostname": "x"}, self.registry)
+        with self.assertRaises(RuntimeError):
+            transport.ping()
+        connection = mock.MagicMock()
+        connection.alive = True
+        self.registry._connections["h1"] = connection
+        try:
+            self.assertIsNone(transport.ping())
+            connection.alive = False
+            with self.assertRaises(RuntimeError):
+                transport.ping()
+        finally:
+            self.registry._connections.pop("h1", None)
+
     def test_status_defaults_for_an_unknown_host(self):
         self.assertEqual(self.registry.status("nope"), {
             "agent_online": False, "agent_last_seen": None,
@@ -512,6 +536,7 @@ class SidebarSearchTransportTests(unittest.TestCase):
             runner.used_transports.add("ssh")
             return subprocess.CompletedProcess(command, 0, b"ssh fixture", b"")
         with TestClient(app) as client, mock.patch.object(SSHRunner, "list_panes", listing), \
+                mock.patch.object(SSHRunner, "ping", lambda *a, **k: None), \
                 mock.patch.object(SSHRunner, "capture", capture), mock.patch.object(SSHRunner, "run", autospec=True, side_effect=ssh) as ssh_call, \
                 mock.patch.object(registry, "status", return_value={"agent_online": True}) as status, \
                 mock.patch.object(registry, "call") as call:
@@ -1007,8 +1032,13 @@ class AgentTransportTests(unittest.TestCase, _UvicornServer):
     def test_fallback_to_ssh_after_the_agent_disconnects(self):
         agent = self._connect_agent()
         self.assertTrue(self._wait_online(self.host_id, True))
-        agent.stop()
-        self.assertTrue(self._wait_online(self.host_id, False))
+        with mock.patch.object(agent_transport.SSHRunner, "ping") as ssh_ping:
+            self._transport().ping()
+            ssh_ping.assert_not_called()
+            agent.stop()
+            self.assertTrue(self._wait_online(self.host_id, False))
+            self._transport().ping(timeout=2)
+            ssh_ping.assert_called_once_with(timeout=2)
         calls = []
 
         def fake_ssh_run(self, remote_command, *, input_bytes=None, timeout=15,

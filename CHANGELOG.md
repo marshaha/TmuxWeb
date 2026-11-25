@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.14.1
 
-- The remote agent raises its own descriptor limit at startup (`ulimit -n 4096` in the keep-alive script, `LimitNOFILE=8192` in the systemd unit). A macOS agent left on the 256-descriptor default eventually failed every command with `cannot start command: [Errno 24] Too many open files`, which made the host look offline with no panes.
+- Host reachability and pane inventory refresh independently. A connected agent, an SSH port (SSH command via a jump host), or a federation handshake can keep a host online while its pane list is slow. A failed refresh shows the previous list as cached, or an unverified count if no list has arrived.
+- Concurrent sidebar requests share probes. Refreshing one host preserves other hosts' updates and does not postpone their next fleet refresh.
+- Raise the remote agent's file-descriptor limit on startup when the operating system permits.
 
 ## 0.14.0
 
