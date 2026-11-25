@@ -4,6 +4,10 @@
 
 - The remote agent raises its own descriptor limit at startup (`ulimit -n 4096` in the keep-alive script, `LimitNOFILE=8192` in the systemd unit). A macOS agent left on the 256-descriptor default eventually failed every command with `cannot start command: [Errno 24] Too many open files`, which made the host look offline with no panes.
 
+## 0.10.0
+
+- Use a physical keyboard in the focused desktop Chat terminal preview. Surface a complete live Codex command approval as a read-only notice when its native hook is unavailable.
+
 ## 0.9.2
 
 - Select or revise Chat choices before confirming. Keep historical input outside the framed Hermes composer from triggering an extra Enter.

@@ -3640,6 +3640,14 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(self.client.post(path + "/choose", json={"revision": card["revision"], "index": 1}).status_code, 409)
         self.assertFalse(self.tmux.keys)
         self.assertIsNone(tmux_web.native_interaction(pane, text, []))
+        framed = "Would you like to run the following command?\nEnvironment: local\nReason: deploy\n" + text
+        notice = tmux_web.native_interaction(pane, framed, [])
+        self.assertTrue(notice["read_only"])
+        self.assertEqual(notice["options"], [])
+        self.tmux.output = framed
+        self.assertEqual(self.client.get(tail).json()["codex_screen_notice"], notice)
+        self.assertEqual(self.client.post(path + "/choose", json={"revision": notice["revision"], "index": 0}).status_code, 422)
+        self.assertFalse(self.tmux.keys)
         hook = [{"title": "等待工具审批", "id": ["session", "request"]}]
         self.assertEqual(tmux_web.native_interaction(pane, text, hook)["source"], "codex_command_approval")
         for screen in (text + "\n› Ask Codex to do anything", text.replace("(p)", ""),

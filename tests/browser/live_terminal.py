@@ -88,6 +88,26 @@ def main():
                 opener = page.locator("#live-keyboard-toggle")
                 expect(keys).to_be_hidden()
                 expect(opener).to_have_attribute("aria-expanded", "false")
+                if width == 390:
+                    expect(fragment).to_have_attribute("tabindex", "-1")
+                    fragment.focus()
+                    page.keyboard.press("ArrowDown")
+                    assert fixture.tmux.keys == []
+                else:
+                    fragment.click()
+                    expect(fragment).to_be_focused()
+                    for physical,native in (("ArrowDown","Down"),("2","2"),("Tab","Tab"),
+                                            ("Enter","Enter"),("Escape","Escape"),("Backspace","BSpace")):
+                        with page.expect_response(lambda r: r.url.endswith("/key") and r.ok):
+                            page.keyboard.press(physical)
+                        assert fixture.tmux.keys[-1] == ("%41",native)
+                    page.keyboard.press("Shift+Escape")
+                    expect(toggle).to_be_focused()
+                    count=len(fixture.tmux.keys)
+                    page.locator("#input").fill("composer")
+                    page.keyboard.press("ArrowLeft")
+                    assert len(fixture.tmux.keys)==count
+                    fixture.tmux.keys.clear()
                 folded_height = page.locator("#live-tail-surface").bounding_box()["height"]
                 opener.click()
                 expect(keys).to_be_visible()

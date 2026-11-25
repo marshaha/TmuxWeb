@@ -407,15 +407,29 @@ def _pane_needs_input_descriptor(pane: dict) -> dict:
             "title": pane.get("title") or ""}
 
 
+def codex_screen_notice(text, menu):
+    """A terminal-only notification for a complete live Codex permission dialog."""
+    rows = (text or "").rstrip().splitlines()[-48:]
+    command = next((i for i in reversed(range(len(rows))) if rows[i].lstrip().startswith("$ ")), 0)
+    if not any(row.strip() == "Would you like to run the following command?" for row in rows[:command]):
+        return None
+    return {"kind": "notice", "source": "codex_screen_notice", "read_only": True,
+            "title": "Codex 等待命令审批", "hint": menu["options"][0]["description"],
+            "revision": "screen-" + menu["revision"], "options": []}
+
+
 def native_interaction(pane: dict, text: str, notices: list, *, inspect_screen: bool = False) -> dict | None:
-    """Automatic notices require native evidence. An explicit inspection may preview the screen."""
+    """Require a native request for actions. A full Codex dialog can raise a read-only notice."""
     valid = [n for n in notices if isinstance(n, dict) and isinstance(n.get("title"), str)
              and n["title"] and isinstance(n.get("id"), list) and len(n["id"]) == 2
              and all(isinstance(part, str) for part in n["id"]) and n["id"][1]]
     permission = len(valid) == 1 and valid[0]["title"] == "等待工具审批"
-    if pane.get("provider") == "codex" and (permission or inspect_screen):
+    if pane.get("provider") == "codex" and (permission or inspect_screen or
+            (not valid and (text or "").rstrip().lower().endswith("press enter to confirm or esc to cancel"))):
         prompt = agent_prompts.codex_command_approval(text)
         if prompt:
+            if not permission and not inspect_screen:
+                return codex_screen_notice(text, prompt)
             prompt["screen_revision"] = prompt["revision"]
             if permission and len(notices) == 1 and pane.get("pane_pid"):
                 session, request = valid[0]["id"]
@@ -1202,7 +1216,7 @@ class InputRequest(BaseModel):
     submit: bool = True
 
 
-ALLOWED_KEYS = {"Escape", "Enter", "Tab", "BTab", "Space", "C-c", "C-d", "C-q", "C-u", "Up", "Down", "Left", "Right"}
+ALLOWED_KEYS = {"BSpace", "DC", "Home", "End", "PPage", "NPage", "Escape", "Enter", "Tab", "BTab", "Space", "C-c", "C-d", "C-q", "C-u", "Up", "Down", "Left", "Right"}
 # Single-character keys: a menu answer is one character plus Enter ("y"/"n",
 # a digit for a numbered list), and /prompt/choose already allows precisely
 # this alphabet (keys_are_safe). Without them the needs-you card could only
@@ -6421,8 +6435,12 @@ def create_app(
             footer = box[1].strip()
         menu = None
         if footer.lower() == "press enter to confirm or esc to cancel" and pane_provider(pane) == "codex":
-            menu = agent_prompts.codex_command_approval(ANSI_RE.sub("", raw))
+            plain = ANSI_RE.sub("", raw)
+            menu = agent_prompts.codex_command_approval(plain)
             if menu:
+                notice = codex_screen_notice(plain, menu)
+                if notice:
+                    result["codex_screen_notice"] = notice
                 result["codex_command_approval"] = True
                 result["codex_screen_revision"] = menu["revision"]
         elif (agent_prompts.HINT_RE.search(footer) and ("enter" in footer.lower() or "回车" in footer)

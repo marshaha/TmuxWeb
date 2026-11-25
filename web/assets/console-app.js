@@ -1867,23 +1867,64 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
     keyboardToggle.setAttribute('aria-expanded',String(open));
     tailNav.hidden=!open;
     if(open)tailNav.scrollLeft=0;
-    else if(tailLoop)tailLoop.keys.length=0;
+    else if(tailLoop)tailLoop.keys=tailLoop.keys.filter(entry=>entry.physical);
   }
   keyboardToggle.onclick=()=>{
     if(tailLoop)expandTailKeys(tailNav.hidden);
   };
-  tailNav.onclick=async event=>{
+  const tailText=$('live-tail-text');
+  const desktopKeys=matchMedia('(hover:hover) and (pointer:fine)');
+  function syncTailKeyboard(){
+    tailText.tabIndex=desktopKeys.matches ? 0 : -1;
+    tailText.title=desktopKeys.matches?'点击使用物理键盘，Shift+Esc 退出':'';
+    if(!desktopKeys.matches && document.activeElement===tailText)tailText.blur();
+  }
+  desktopKeys.addEventListener('change',syncTailKeyboard);
+  syncTailKeyboard();
+  const tailNamedKeys={ArrowUp:'Up',ArrowDown:'Down',ArrowLeft:'Left',ArrowRight:'Right',
+    Enter:'Enter',Escape:'Escape',Tab:'Tab',' ':'Space',Backspace:'BSpace',Delete:'DC',
+    Home:'Home',End:'End',PageUp:'PPage',PageDown:'NPage'};
+  tailText.addEventListener('keydown',event=>{
+    if(!desktopKeys.matches || document.activeElement!==tailText || document.hidden ||
+        !tailLoop || tailNav.disabled || event.isComposing || event.metaKey || event.altKey)return;
+    if(event.shiftKey && event.key==='Escape'){
+      event.preventDefault();
+      $('live-tail-toggle').focus({preventScroll:true});
+      return;
+    }
+    let key=tailNamedKeys[event.key], text='';
+    if(event.ctrlKey){
+      const letter=event.key.toLowerCase();
+      if(event.shiftKey || !['c','d','q','u'].includes(letter) || (letter==='c' && !window.getSelection().isCollapsed))return;
+      key='C-'+letter;
+    }else if(event.shiftKey && event.key==='Tab')key='BTab';
+    else if(!key && /^[A-Za-z0-9]$/.test(event.key))key=event.key;
+    else if(!key && [...event.key].length===1)text=event.key;
+    if(!key && !text)return;
+    event.preventDefault();
+    event.stopPropagation();
+    if(event.repeat && (tailLoop.keys.length || key==='Enter' || key==='Escape' || event.ctrlKey))return;
+    queueTailInput(key,text,true);
+  });
+  tailText.addEventListener('blur',()=>{
+    if(tailLoop)tailLoop.keys=tailLoop.keys.filter(entry=>!entry.physical);
+  });
+  tailNav.onclick=event=>{
     const button=event.target.closest('button[data-key]');
+    if(button && !tailNav.hidden)queueTailInput(button.dataset.key);
+  };
+  async function queueTailInput(key,text='',physical=false){
     const loop=tailLoop;
-    if(!button || !loop || tailNav.hidden || tailNav.disabled || loop.pane!==state.selected)return;
-    loop.keys.push(button.dataset.key);
+    if(!loop || tailNav.disabled || loop.pane!==state.selected)return;
+    loop.keys.push({key,text,physical});
     if(loop.sending)return;
     loop.sending=true;
     try{
       while(loop.keys.length && tailLoop===loop && loop.pane===state.selected && !tailNav.disabled){
-        await api('/api/panes/'+encodeURIComponent(loop.pane)+'/key',{
+        const entry=loop.keys.shift();
+        await api('/api/panes/'+encodeURIComponent(loop.pane)+(entry.text?'/input':'/key'),{
           method:'POST',headers:{'Content-Type':'application/json'},signal:loop.controller.signal,
-          body:JSON.stringify({key:loop.keys.shift()})
+          body:JSON.stringify(entry.text?{text:entry.text,submit:false}:{key:entry.key})
         });
       }
     }catch(error){
@@ -1896,6 +1937,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
   };
   function cancelTailRead(){
     if(!tailLoop)return;
+    window.TmuxPrompt?.observeCodexScreen(tailLoop.pane, null);
     clearTimeout(tailLoop.timer);
     tailLoop.controller.abort();
     tailLoop=null;
@@ -1953,7 +1995,7 @@ function syncFavButton(){syncAttachments();const btn=$('fav-toggle');if(!btn)ret
         if(tailLoop!==loop)return;
         tailNav.disabled=false;
         showApprovalHint(data.codex_command_approval===true);
-        window.TmuxPrompt?.observeCodexScreen(id, data.codex_screen_revision || '');
+        window.TmuxPrompt?.observeCodexScreen(id, data.codex_screen_revision || '', data.codex_screen_notice);
         if(loop.digest!==data.digest){
           loop.digest=data.digest;
           const styled=data.ansi;

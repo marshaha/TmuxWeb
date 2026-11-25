@@ -40,12 +40,13 @@ def main():
                 page = browser.new_page(viewport={"width": width, "height": 844}, has_touch=width == 390,
                                         service_workers="block")
                 submissions = []
+                manual_enabled = False
 
                 def route(r):
                     url = urlsplit(r.request.url)
                     path = unquote(url.path)
                     if path == "/api/prefs":
-                        return r.fulfill(json={"prefs": {"manual_inspect": "on"}})
+                        return r.fulfill(json={"prefs": {"manual_inspect": "on" if manual_enabled else "off"}})
                     if path.endswith("/key"):
                         result = client.post(url.path, json=r.request.post_data_json)
                         return r.fulfill(status=result.status_code, json=result.json())
@@ -63,6 +64,19 @@ def main():
                 page.route_web_socket("**/*", lambda ws: ws.close())
                 page.goto("http://tmuxweb.test/?pane=%254", wait_until="domcontentloaded")
                 inspect = page.locator("#inspect-interaction")
+                fixture.tmux.output = ("Would you like to run the following command?\n"
+                                       "Environment: local\nReason: 发布已测试的版本\n" + approval)
+                card = page.locator("#interaction-inline #prompt-card")
+                expect(card.get_by_text("Codex 等待命令审批")).to_be_visible(timeout=16000)
+                expect(card).to_contain_text(cmd)
+                expect(card.get_by_role("button",name="确认当前选项")).to_be_hidden()
+                expect(inspect).to_be_hidden()
+                assert not submissions and not fixture.tmux.keys
+                fixture.tmux.output = "› Ask Codex to do anything"
+                expect(card).to_be_hidden(timeout=12000)
+                manual_enabled = True
+                fixture.tmux.output = approval
+                page.reload(wait_until="domcontentloaded")
                 expect(inspect).to_have_text("查看命令审批", timeout=16000)
                 assert inspect.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
                 live_keys = page.locator("#live-keys-nav")

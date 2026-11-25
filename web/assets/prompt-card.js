@@ -5,6 +5,7 @@
   let current = null;
   let cursor = 0;
   let retiredCodex = null;
+  let screenNotice = null, observedScreen = null;
   let epoch = 0;
   let reading = null;
   let sending = false;
@@ -33,13 +34,18 @@
     return data?.source === 'codex_command_approval' && !!data.revision;
   }
 
-  function observeCodexScreen(pane, screen) {
+  function observeCodexScreen(pane, screen, notice = null) {
     if (pane !== paneNow()) return;
+    const changed = screenNotice?.revision !== notice?.revision;
+    screenNotice = notice;
+    observedScreen = screen ?? null;
     if (screen && retiredCodex?.screen === screen) retiredCodex = null;
-    if (!codexCard(current) || !current.screen_revision || current.screen_revision === screen) return;
-    retiredCodex = {screen: current.screen_revision, revision: current.revision};
-    manual = false;
-    hide();
+    if (screen != null && codexCard(current) && current.screen_revision && current.screen_revision !== screen) {
+      retiredCodex = {screen: current.screen_revision, revision: current.revision};
+      manual = false;
+      hide();
+    }
+    if (changed) showStatus(sharedStatus());
   }
 
   function cancelTimeout() {
@@ -135,6 +141,8 @@
 
   function showStatus(found) {
     if (!automatic || !paneNow() || sending || reading || followTimer || document.hidden) return;
+    if (found?.source === 'codex_screen_notice' && observedScreen !== null && found.revision !== 'screen-' + observedScreen) found = null;
+    found ||= screenNotice;
     const previous = lastStatus;
     lastStatus = found?.revision || '';
     if (!found || !lastStatus) {
@@ -315,6 +323,8 @@
     hide();
     if (clear) {
       retiredCodex = null;
+      screenNotice = null;
+      observedScreen = null;
       suppressed = '';
       lastStatus = '';
       showStatus(sharedStatus());
