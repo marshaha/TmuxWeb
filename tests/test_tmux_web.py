@@ -3682,7 +3682,12 @@ class TmuxWebTests(unittest.TestCase):
             session, request, _, title, detail = observation("codex", "PermissionRequest", event)
             return {"%4": {"notices": [{"id": [session, request], "title": title, "detail": detail}]}}
 
+        tail = "/api/panes/%254/tail?lines=12"
+        other = pending([], 2)["%4"]
+        self.tmux.needs_input_many = lambda panes, timeout: {"%170": other}
+        self.assertNotIn("codex_verified_approval", self.client.get(tail).json())
         self.tmux.needs_input_many = pending
+        self.assertTrue(self.client.get(tail).json()["codex_verified_approval"]["verified"])
         path = "/api/panes/%254/prompt"
         def preview():
             return self.client.get(path + "?inspect=true&fresh=true").json()["prompt"]

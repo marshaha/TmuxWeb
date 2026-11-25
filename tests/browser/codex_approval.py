@@ -175,24 +175,23 @@ def main():
                     "session_id": "session", "turn_id": f"test-{width}", "tool_name": "Bash",
                     "tool_input": {"command": cmd}})
                 notices.append({"id": [session, request], "title": title, "detail": detail})
-                # A new native request may arrive inside the manual preview cache window.
-                page.wait_for_timeout(1300)
-                inspect.click()
-                expect(page.locator("#prompt-card-hint")).to_contain_text("选好后点「确认选择」")
-                if width == 390:
-                    nav = card.locator("#prompt-card-nav")
-                    expect(nav.get_by_role("button", name="下一题")).to_be_hidden()
-                    nav.get_by_role("button", name="下一项").tap()
-                    expect(options.nth(1)).to_have_attribute("aria-selected", "true")
-                    nav.get_by_role("button", name="上一项").tap()
-                    assert not submissions and not fixture.tmux.keys
-                    card.get_by_role("button", name="确认当前选项").tap()
-                else:
-                    options.last.click()
-                    first.click()
-                    first.press("Enter")
-                    assert not submissions and not fixture.tmux.keys
-                    card.get_by_role("button",name="确认当前选项").press("Enter")
+                # Re-enter the live Chat with a matching hook, without using manual inspection.
+                manual_enabled = False
+                page.reload(wait_until="domcontentloaded")
+                radios = card.get_by_role("radio")
+                expect(radios).to_have_count(3, timeout=15000)
+                expect(card.get_by_role("radiogroup")).to_be_visible()
+                expect(card.locator("#prompt-card-hint")).to_contain_text("选好后点「确认选择」")
+                decline = card.get_by_role("radio", name="拒绝，返回 Codex")
+                once = card.get_by_role("radio", name="仅批准这一次", exact=False)
+                decline.tap() if width == 390 else decline.click()
+                expect(decline).to_be_checked()
+                once.tap() if width == 390 else once.click()
+                expect(once).to_be_checked()
+                expect(decline).not_to_be_checked()
+                assert not submissions and not fixture.tmux.keys
+                confirm = card.get_by_role("button", name="确认当前选项")
+                confirm.tap() if width == 390 else confirm.press("Enter")
                 expect(card).to_be_hidden()
                 expect(page.locator("#toast")).to_have_text("已发送「仅批准这一次」")
                 assert len(submissions) == 1 and submissions[0]["index"] == 0

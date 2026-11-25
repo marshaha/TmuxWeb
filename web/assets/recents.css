@@ -84,3 +84,14 @@ body.recent-resizing{cursor:row-resize;user-select:none}
   .recent-clear{width:28px;height:28px}
   .recent-clear .ico{width:13px;height:13px}
 }
+
+/* The right edge of the left sidebar is an internal divider, even on a notched phone. */
+@media (pointer:coarse) and (orientation:landscape){
+  .recent{padding:6px 6px 4px max(6px,env(safe-area-inset-left))}
+  .recent-title{white-space:nowrap}
+  .recent-row .when{display:none}
+  .recent-open{display:grid;grid-template-columns:auto minmax(0,1fr);gap:1px 4px;
+    padding:3px 2px 3px 4px}
+  .recent-open .label{grid-column:1/-1;text-align:left}
+  .recent-open .pane-num{justify-self:start}
+}

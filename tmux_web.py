@@ -6537,6 +6537,18 @@ def create_app(
                 notice = codex_screen_notice(plain, menu)
                 if notice:
                     result["codex_screen_notice"] = notice
+                if inspect_cursor and transport is tmux and pane.get("pane_pid"):
+                    # Only look up this pane's native event while a command approval is on screen.
+                    descriptor = _pane_needs_input_descriptor(dict(pane, provider="codex"))
+                    try:
+                        waiting = tmux.needs_input_many([descriptor], timeout=2)
+                    except (OSError, RuntimeError, ValueError):
+                        waiting = {}
+                    notices = (waiting.get(actual) or {}).get("notices") or []
+                    if notices:
+                        verified = native_interaction(dict(pane, id=pane_id, provider="codex"), plain, notices)
+                        if verified and verified.get("verified"):
+                            result["codex_verified_approval"] = verified
                 result["codex_command_approval"] = True
                 result["codex_screen_revision"] = menu["revision"]
         elif (agent_prompts.HINT_RE.search(footer) and ("enter" in footer.lower() or "回车" in footer)

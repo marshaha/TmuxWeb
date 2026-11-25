@@ -64,12 +64,19 @@
     onNavigation?.();
   }
 
+  function focusedOption() {
+    const row = $('options').children[cursor];
+    return row?.querySelector?.('input[type="radio"]') || row;
+  }
+
   function paintCursor() {
     [...$('options').children].forEach((button, index) => {
       const selected = (actionable(current) || codexCard(current)) && index === cursor;
-      button.tabIndex = selected ? 0 : -1;
+      const radio = button.querySelector?.('input[type="radio"]');
+      if (radio) radio.checked = selected;
+      else button.tabIndex = selected ? 0 : -1;
       button.classList.toggle('on', selected);
-      button.setAttribute('aria-selected', String(selected));
+      if (!radio) button.setAttribute('aria-selected', String(selected));
     });
     onNavigation?.();
   }
@@ -131,12 +138,22 @@
     $('terminal').textContent = screenOnly || followup ? '展开终端作答' : '实时作答';
     const list = $('options');
     list.innerHTML = '';
-    list.setAttribute('aria-multiselectable', String(data.kind === 'multi'));
+    const approval = codexCard(data) && actionable(data);
+    list.setAttribute('role', approval ? 'radiogroup' : 'listbox');
+    if (approval) list.removeAttribute('aria-multiselectable');
+    else list.setAttribute('aria-multiselectable', String(data.kind === 'multi'));
     data.options.forEach((option, index) => {
-      const button = document.createElement('button');
-      button.type = 'button';
+      const button = document.createElement(approval ? 'label' : 'button');
+      if (approval) {
+        const input = document.createElement('input');
+        input.type = 'radio';
+        input.name = 'codex-command-choice';
+        button.appendChild(input);
+      } else {
+        button.type = 'button';
+        button.setAttribute('role', 'option');
+      }
       button.className = 'prompt-option';
-      button.setAttribute('role', 'option');
       button.dataset.index = String(index);
       button.disabled = !actionable(data) && !codexCard(data);
       const label = document.createElement('span');
@@ -164,7 +181,7 @@
         meta.textContent = option.meta;
         button.appendChild(meta);
       }
-      button.addEventListener('click', () => {
+      button.addEventListener(approval ? 'change' : 'click', () => {
         if (data !== current || button.disabled) return;
         cursor = index;
         paintCursor();
@@ -178,7 +195,7 @@
       button.hidden = ['Tab', 'BTab'].includes(button.dataset.nav) && !(data.question_count > 1);
     }
     $('confirm').hidden = !data.options.length || (!actionable(data) && !codexCard(data));
-    $('state').textContent = '';
+    $('state').textContent = screenOnly ? '尚未匹配到此窗格的审批事件，请在终端确认。' : '';
     $('raw').textContent = screen.join('\n');
     $('raw-wrap').hidden = !screen.length;
     $('raw-wrap').open = data.kind === 'screen';
@@ -188,6 +205,8 @@
 
   function showStatus(found) {
     if (!automatic || !paneNow() || sending || reading || followTimer || document.hidden) return;
+    if (actionable(screenNotice) && codexCard(screenNotice) && screenNotice.screen_revision === observedScreen) found = screenNotice;
+    if (codexCard(found) && observedScreen !== null && found.screen_revision && found.screen_revision !== observedScreen) found = null;
     if (found?.source === 'codex_screen_notice' && observedScreen !== null && found.revision !== 'screen-' + observedScreen) found = null;
     if (found?.source === 'cursor_menu_notice' && observedScreen !== null) found = screenNotice;
     if (found?.source === 'codex_screen_notice' && found.revision === screenNotice?.revision) found = screenNotice;
@@ -258,7 +277,7 @@
       }
       render(data.prompt || {kind: 'screen', title: '暂无已确认的交互',
         hint: '可查看屏幕原文，或点「实时作答」操作终端。', options: []}, data.screen);
-      if (actionable(current)) $('options').children[cursor]?.focus();
+      if (actionable(current)) focusedOption()?.focus();
     } catch (error) {
       if (active()) render({kind: 'screen', title: '读取交互失败', hint: error.message, options: []});
     } finally {
@@ -329,7 +348,7 @@
       cursor = (cursor + (key === 'ArrowDown' ? 1 : -1) + current.options.length) % current.options.length;
       paintCursor();
       if (focus) {
-        $('options').children[cursor]?.focus({preventScroll: true});
+        focusedOption()?.focus({preventScroll: true});
         $('options').children[cursor]?.scrollIntoView?.({block: 'nearest'});
       }
     }

@@ -2033,7 +2033,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
           syncNativeForm(true);
         }
         showApprovalHint(data.codex_command_approval===true);
-        const notice=data.codex_screen_notice || data.cursor_menu_notice;
+        const notice=data.codex_verified_approval || data.codex_screen_notice || data.cursor_menu_notice;
         window.TmuxPrompt?.observeCodexScreen(id, data.codex_screen_revision || '', notice);
         const noticeRevision=notice?.revision || '';
         if((loop.noticeRevision || '')!==noticeRevision)window.TmuxNeedsYouInbox?.noticeChanged();
