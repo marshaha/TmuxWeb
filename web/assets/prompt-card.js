@@ -18,6 +18,7 @@
   let currentScreen = [];
   let sharedStatus = () => null;
   let notify;
+  let openInlineTerminal;
   let onNavigation;
   let lastStatus;
   let timeoutMs = 300000;
@@ -73,6 +74,14 @@
     onNavigation?.();
   }
 
+  function markScreenChoice(selected) {
+    Array.from($('screen-choices').children).forEach((row, index) => {
+      if (index === selected) row.setAttribute('aria-current', 'true');
+      else row.removeAttribute('aria-current');
+      row.lastChild.hidden = index !== selected;
+    });
+  }
+
   function render(data, screen = []) {
     cancelTimeout();
     // A manual refresh can finish just after the user selects an option.
@@ -103,6 +112,22 @@
     hint.textContent = data.hint || '';
     hint.hidden = !hint.textContent;
 
+    const screenOnly = data.source === 'codex_screen_notice';
+    const choices = $('screen-choices');
+    choices.hidden = !screenOnly || !data.choices?.length;
+    choices.innerHTML = '';
+    if (!choices.hidden) {
+      for (const label of data.choices) {
+        const row = document.createElement('li');
+        row.textContent = label;
+        const marker = document.createElement('span');
+        marker.textContent = '（当前）';
+        row.appendChild(marker);
+        choices.appendChild(row);
+      }
+      markScreenChoice(data.selected);
+    }
+    $('terminal').textContent = screenOnly ? '展开终端作答' : '实时作答';
     const list = $('options');
     list.innerHTML = '';
     list.setAttribute('aria-multiselectable', String(data.kind === 'multi'));
@@ -164,6 +189,7 @@
     if (!automatic || !paneNow() || sending || reading || followTimer || document.hidden) return;
     if (found?.source === 'codex_screen_notice' && observedScreen !== null && found.revision !== 'screen-' + observedScreen) found = null;
     if (found?.source === 'cursor_menu_notice' && observedScreen !== null) found = screenNotice;
+    if (found?.source === 'codex_screen_notice' && found.revision === screenNotice?.revision) found = screenNotice;
     found ||= screenNotice;
     const previous = lastStatus;
     lastStatus = found?.revision || '';
@@ -178,6 +204,10 @@
     if (manual && current && (lastStatus === previous || current.revision === lastStatus)) return;
     if (codexCard(found) && found.revision === retiredCodex?.revision) return;
     if (current?.revision === lastStatus) {
+      if (found.source === 'codex_screen_notice' && found.selected !== current.selected) {
+        markScreenChoice(found.selected);
+        current = found;
+      }
       if (found.source === 'cursor_menu_notice' && found.selected !== current.selected) render(found);
       return;
     }
@@ -321,7 +351,10 @@
       reshowAt = Infinity;
       refresh(false);
     };
-    $('terminal').onclick = () => document.getElementById('chat-reply-panel')?.dispatchEvent(new Event('open-reply'));
+    $('terminal').onclick = () => {
+      if (current?.source === 'codex_screen_notice') openInlineTerminal();
+      else document.getElementById('chat-reply-panel')?.dispatchEvent(new Event('open-reply'));
+    };
     $('nav').addEventListener('click', event => {
       const button = event.target.closest('button[data-nav]');
       if (button && actionable(current)) navigate(button.dataset.nav);
@@ -357,7 +390,8 @@
     }
   }
 
-  function start(getter, status, onNotice, onNavigationChange) {
+  function start(getter, status, onNotice, onNavigationChange, openTerminal) {
+    openInlineTerminal = openTerminal;
     notify = onNotice;
     onNavigation = onNavigationChange;
     paneNow = getter;

@@ -2057,7 +2057,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     syncLiveTail();
     if(card.dataset.open && follow)card.scrollIntoView({block:'start'});
   });
-  $('native-open-terminal').onclick=()=>{
+  function openInlineTerminal(){
     if(!state.selected || state.mode!=='chat')return;
     collapsedTailPane=null;
     expandedForm=$('native-form').dataset.open || '';
@@ -2067,7 +2067,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
     expandTailKeys(true);
     keyboardToggle.focus({preventScroll:true});
     keyboardToggle.scrollIntoView({block:'nearest',inline:'nearest'});
-  };
+  }
+  $('native-open-terminal').onclick=openInlineTerminal;
   $('live-tail-toggle').onclick=()=>{
     const open=$('live-tail-toggle').getAttribute('aria-expanded')==='true';
     collapsedTailPane=open?state.selected:null;
@@ -3068,7 +3069,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
   })();
   paintCachedHosts();state.serverVersion=serverVersionBaseline();loadPanes();setInterval(()=>{if(!document.hidden){loadPanes();state.versionPollRound++;if(shouldCheckVersion(state.versionPollRound,VERSION_CHECK_EVERY_ROUNDS))checkServerVersion();}},20000);
   if(window.TmuxPrompt)TmuxPrompt.start(()=>state.mode==='chat'?state.selected:null,
-    currentInteraction, toast);
+    currentInteraction, toast, undefined, openInlineTerminal);
   $('inspect-interaction').onclick=()=>{
     if($('inspect-interaction').hidden)return;
     closeChatReply();

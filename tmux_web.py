@@ -415,7 +415,9 @@ def codex_screen_notice(text, menu):
         return None
     return {"kind": "notice", "source": "codex_screen_notice", "read_only": True,
             "title": "Codex 等待命令审批", "hint": menu["options"][0]["description"],
-            "revision": "screen-" + menu["revision"], "options": []}
+            "revision": "screen-" + menu["revision"], "options": [], "selected": menu["selected"],
+            "choices": [item["label"] + (" · " + item["description"] if i and item.get("description") else "")
+                        for i, item in enumerate(menu["options"])]}
 
 
 def native_interaction(pane: dict, text: str, notices: list, *, inspect_screen: bool = False) -> dict | None:

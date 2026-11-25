@@ -72,6 +72,19 @@ def main():
                 card = page.locator("#interaction-inline #prompt-card")
                 expect(card.get_by_text("Codex 等待命令审批")).to_be_visible(timeout=16000)
                 expect(card).to_contain_text(cmd)
+                choices = card.get_by_role("list", name="终端选项（只读）")
+                expect(choices.get_by_role("listitem")).to_have_count(3)
+                expect(choices.locator("[aria-current=true]")).to_contain_text("仅批准这一次")
+                expect(choices).to_contain_text("批准并记住命令前缀 · " + cmd)
+                assert choices.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
+                expand = card.get_by_role("button", name="展开终端作答")
+                expand.tap() if width == 390 else expand.click()
+                expect(page.locator("#live-keys-nav")).to_be_visible()
+                expect(page.locator("#chat-reply-panel")).to_be_hidden()
+                framed = fixture.tmux.output
+                fixture.tmux.output = framed.replace("› 1.", "  1.").replace("  2.", "› 2.")
+                expect(choices.locator("[aria-current=true]")).to_contain_text("批准并记住命令前缀")
+                fixture.tmux.output = framed
                 expect(card.get_by_role("button",name="确认当前选项")).to_be_hidden()
                 expect(inspect).to_be_hidden()
                 assert not submissions and not fixture.tmux.keys

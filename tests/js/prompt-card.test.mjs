@@ -12,7 +12,7 @@ const source = fs.readFileSync(
 
 const CARD_IDS = ['prompt-card', 'prompt-card-title', 'prompt-card-hint',
   'prompt-card-nav', 'prompt-card-options', 'prompt-card-toggles', 'prompt-card-state',
-  'prompt-card-confirm', 'prompt-card-close', 'prompt-card-terminal', 'prompt-card-timeout',
+  'prompt-card-screen-choices', 'prompt-card-confirm', 'prompt-card-close', 'prompt-card-terminal', 'prompt-card-timeout',
   'prompt-card-raw', 'prompt-card-raw-wrap'];
 
 function makeElement(tag = 'div') {
