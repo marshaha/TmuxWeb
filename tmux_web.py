@@ -2318,11 +2318,17 @@ def create_app(
 
     def cursor_notice(transport, actual, pane, text):
         capture = getattr(transport, "cursor_frame", None)
-        if not capture or not pane.get("pane_pid") or not agent_prompts.possible_cursor_menu(text):
+        if not agent_prompts.possible_cursor_menu(text):
             return None
         try:
+            if isinstance(transport, federation.FedTransport):
+                if not (pane.get("capabilities") or {}).get("cursor_menu"):
+                    return None
+                return agent_prompts.cursor_notice_from_evidence(transport.client.cursor_menu(actual))
+            if not capture or not pane.get("pane_pid"):
+                return None
             return agent_prompts.cursor_menu_notice(capture(actual), actual, pane["pane_pid"])
-        except (TmuxError, RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+        except (TmuxError, RuntimeError, OSError, ValueError, subprocess.SubprocessError, federation.FederationError):
             LOGGER.debug("cursor snapshot unavailable for %s", actual, exc_info=True)
             return None
 
@@ -3275,6 +3281,7 @@ def create_app(
                     "index": pane.get("index"), "title": pane.get("title"),
                     "command": pane.get("command"), "path": pane.get("path"),
                     "active": pane.get("active"), "provider": pane_provider(pane),
+                    "capabilities": {"cursor_menu": bool(pane.get("pane_pid"))},
                 })
         numbers = await asyncio.to_thread(home.ensure_numbers, [item["id"] for item in found])
         for item in found:
@@ -3342,6 +3349,29 @@ def create_app(
         if not federation.pane_allowed(grants, actual):
             raise HTTPException(status_code=403, detail="这个窗格没有共享出去")
         return actual
+
+    fed_cursor_slots = asyncio.Semaphore(8)
+
+    @app.get("/api/fed/panes/{pane_id}/cursor-menu")
+    async def fed_cursor_menu(request: Request, pane_id: str):
+        actual = fed_pane_or_403(require_fed(request, "view"), pane_id)
+        def read():
+            transport, target = pane_transport(actual, prefer_agent=True)
+            if isinstance(transport, federation.FedTransport):
+                raise HTTPException(403, "这个窗格不属于此节点")
+            pane = pane_or_404(actual, prefer_agent=True)
+            capture = getattr(transport, "cursor_frame", None)
+            if capture and pane.get("pane_pid") and pane_provider(pane):
+                notice = agent_prompts.cursor_menu_notice(capture(target), target, pane["pane_pid"])
+                if notice:
+                    return {"question": notice["hint"], "choices": notice["choices"], "selected": notice["selected"]}
+            return None
+        try:
+            async with fed_cursor_slots:
+                menu = await asyncio.to_thread(read)
+        except (TmuxError, RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise HTTPException(503, "暂时无法读取选项") from exc
+        return {"pane": actual, "menu": menu}
 
     @app.post("/api/fed/panes/{pane_id}/input")
     async def fed_input(request: Request, pane_id: str, payload: InputRequest):

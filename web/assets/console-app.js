@@ -2038,6 +2038,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
       }catch(error){
         if(tailLoop!==loop)return;
         showApprovalHint(false);
+        window.TmuxPrompt?.observeCodexScreen(id, '');
         tailNav.disabled=true;
         loop.keys.length=0;
         pre.textContent='暂时无法读取终端，稍后重试';

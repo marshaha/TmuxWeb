@@ -5,6 +5,7 @@
   let current = null;
   let cursor = 0;
   let retiredCodex = null;
+  const cursorMessage = document.getElementById('cursor-chat');
   let screenNotice = null, observedScreen = null;
   let epoch = 0;
   let reading = null;
@@ -36,7 +37,7 @@
 
   function observeCodexScreen(pane, screen, notice = null) {
     if (pane !== paneNow()) return;
-    const changed = observedScreen === null || screenNotice?.revision !== notice?.revision;
+    const changed = observedScreen === null || screenNotice?.revision !== notice?.revision || screenNotice?.selected !== notice?.selected;
     screenNotice = notice;
     observedScreen = screen ?? null;
     if (screen && retiredCodex?.screen === screen) retiredCodex = null;
@@ -57,6 +58,7 @@
   function hide() {
     cancelTimeout();
     $().hidden = true;
+    if (cursorMessage) cursorMessage.hidden = true;
     current = null;
     onNavigation?.();
   }
@@ -77,6 +79,25 @@
     if (!data.revision || data.revision !== current?.revision) cursor = data.selected || 0;
     current = data;
     currentScreen = screen;
+    if (cursorMessage) {
+      cursorMessage.hidden = data.source !== 'cursor_menu_notice' || !Array.isArray(data.choices);
+      if (!cursorMessage.hidden) {
+        $().hidden = true;
+        cursorMessage.querySelector('h3').textContent = data.hint;
+        const items = data.choices.map((text, i) => {
+          const row = document.createElement('li');
+          row.textContent = text;
+          if (i === data.selected) {
+            row.setAttribute('aria-current', 'true');
+            row.append(document.createTextNode('（当前）'));
+          }
+          return row;
+        });
+        cursorMessage.querySelector('ol').replaceChildren(...items);
+        onNavigation?.();
+        return;
+      }
+    }
     $('title').textContent = data.title || (data.kind === 'confirm' ? '需要确认' : '等待选择');
     const hint = $('hint');
     hint.textContent = data.hint || '';
@@ -142,7 +163,7 @@
   function showStatus(found) {
     if (!automatic || !paneNow() || sending || reading || followTimer || document.hidden) return;
     if (found?.source === 'codex_screen_notice' && observedScreen !== null && found.revision !== 'screen-' + observedScreen) found = null;
-    if (found?.source === 'cursor_menu_notice' && observedScreen !== null && found.revision !== screenNotice?.revision) found = null;
+    if (found?.source === 'cursor_menu_notice' && observedScreen !== null) found = screenNotice;
     found ||= screenNotice;
     const previous = lastStatus;
     lastStatus = found?.revision || '';
@@ -156,10 +177,14 @@
     }
     if (manual && current && (lastStatus === previous || current.revision === lastStatus)) return;
     if (codexCard(found) && found.revision === retiredCodex?.revision) return;
-    if (current?.revision === lastStatus) return;
+    if (current?.revision === lastStatus) {
+      if (found.source === 'cursor_menu_notice' && found.selected !== current.selected) render(found);
+      return;
+    }
     if (suppressed === lastStatus && Date.now() < reshowAt) return;
     manual = false;
     render(found);
+    if (found.source === 'cursor_menu_notice') return;
     const expires = Date.now() + timeoutMs;
     const tick = () => {
       const seconds = Math.max(0, Math.ceil((expires - Date.now()) / 1000));

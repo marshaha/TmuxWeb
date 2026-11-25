@@ -511,6 +511,24 @@ def _cursor_menu_labels(options, physical, y):
     return labels if selected == [y] else None
 
 
+def cursor_notice_from_evidence(menu) -> dict | None:
+    """Rebuild a display-only notice, including when the evidence came from a child."""
+    if not isinstance(menu, dict):
+        return None
+    title, choices, selected = menu.get("question"), menu.get("choices"), menu.get("selected")
+    if not isinstance(choices, list) or not 2 <= len(choices) <= 20:
+        return None
+    if type(selected) is not int or not 0 <= selected < len(choices):
+        return None
+    if any(not isinstance(text, str) or not text.strip() or len(text) > OPTION_MAX
+           or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in text) for text in (title, *choices)):
+        return None
+    signature = hashlib.sha256(json.dumps([title, choices]).encode()).hexdigest()[:32]
+    return {"kind": "notice", "source": "cursor_menu_notice", "read_only": True,
+            "title": "终端可能正在等你选择", "hint": title, "options": [],
+            "choices": choices, "selected": selected, "revision": "cursor-" + signature}
+
+
 def cursor_menu_notice(frame: str, pane_id: str, pid: str) -> dict | None:
     rows = frame.split("\n")
     if rows and not rows[-1]:
@@ -572,10 +590,8 @@ def cursor_menu_notice(frame: str, pane_id: str, pid: str) -> dict | None:
             labels = _cursor_menu_labels(options, physical, y)
             if not labels:
                 continue
-            signature = hashlib.sha256(json.dumps([title, labels]).encode()).hexdigest()[:32]
-            return {"kind": "notice", "source": "cursor_menu_notice", "read_only": True,
-                    "title": "终端可能正在等你选择", "hint": title, "options": [],
-                    "revision": "cursor-" + signature}
+            selected = next(index for index, (row, _) in enumerate(options) if row == y)
+            return cursor_notice_from_evidence({"question": title, "choices": labels, "selected": selected})
     return None
 
 

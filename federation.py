@@ -603,6 +603,11 @@ class FedClient:
         # 对端列 pane 时可能还在等它自己的 SSH 主机，给宽一点；调用方另有缓存
         return self._get("/api/fed/panes", timeout=timeout).get("panes") or []
 
+    def cursor_menu(self, pane_id: str) -> dict | None:
+        quoted = urllib.parse.quote(pane_id, safe="")
+        data = self._get(f"/api/fed/panes/{quoted}/cursor-menu")
+        return data.get("menu") if isinstance(data, dict) and data.get("pane") == pane_id else None
+
     def capture(self, pane_id: str, history: int = 80, *, prefer_agent: bool = False, color: bool = False) -> str:
         quoted = urllib.parse.quote(pane_id, safe="")
         suffix = "&prefer_agent=1" if prefer_agent else ""

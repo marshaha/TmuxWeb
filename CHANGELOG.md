@@ -4,6 +4,10 @@
 
 - The remote agent raises its own descriptor limit at startup (`ulimit -n 4096` in the keep-alive script, `LimitNOFILE=8192` in the systemd unit). A macOS agent left on the 256-descriptor default eventually failed every command with `cannot start command: [Errno 24] Too many open files`, which made the host look offline with no panes.
 
+## 0.12.0
+
+- Relay cursor-confirmed option lists from shared panes on compatible federation children. Show the question, choices and current selection as a read-only message in Chat.
+
 ## 0.11.0
 
 - Surface a read-only Chat and inbox notice for a terminal option list when a visible cursor is on its selected row outside a recognizable editor. The check reads the physical viewport without sending a probe key.
