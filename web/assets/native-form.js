@@ -6,6 +6,7 @@
   const title = box.querySelector('h3'), note = box.querySelector('[role=status]');
   const send = form.querySelector('button');
   let pane = '', current = null, notice = '', epoch = 0, reading = false, busy = false;
+  let provider = 'Hermes';
   let completed = '', draft = {}, lastRead = 0;
   function draftKey() { return 'tw.form.' + pane; }
   function remember() {
@@ -19,7 +20,7 @@
   }
   function status(message) {
     form.hidden = true;
-    title.textContent = 'Hermes 交互';
+    title.textContent = provider + ' 交互';
     note.textContent = message;
     box.hidden = false;
     markOpen('');
@@ -27,12 +28,13 @@
   function render(next) {
     completed = '';
     current = next;
+    provider = next.provider || 'Hermes';
     try {
       const saved = JSON.parse(sessionStorage.getItem(draftKey()));
       draft = saved?.revision === next.revision ? saved.draft || {} : {};
     } catch { draft = {}; }
     fields.replaceChildren();
-    title.textContent = next.kind === 'approval' ? 'Hermes 请求审批' : 'Hermes 等你回答';
+    title.textContent = next.kind === 'approval' ? 'Hermes 请求审批' : provider + ' 等你回答';
     for (const [position, question] of next.questions.entries()) {
       const group = document.createElement('fieldset'), legend = document.createElement('legend');
       legend.textContent = question.title;
@@ -83,7 +85,7 @@
     send.disabled = false;
     form.hidden = false;
     box.hidden = false;
-    note.textContent = '可修改选项，确认后提交';
+    note.textContent = provider === 'Codex' ? '可先改选。提交后，答案会作为聊天消息发回本轮对话。' : '可修改选项，确认后提交';
     markOpen(next.revision);
   }
   async function call(method, body) {
@@ -115,7 +117,7 @@
         completed = revision;
         current = null;
         try { sessionStorage.removeItem(draftKey()); } catch {}
-        status(result.status === 'resolved' ? '已回答' : '本题已结束或已由其他设备处理');
+        status(result.status === 'resolved' ? (provider === 'Codex' ? '回答已发送到本轮 Codex 对话' : '已回答') : '本题已结束或已由其他设备处理');
       } else {
         note.textContent = result.status === 'invalid' ? '请检查各题的选择' : '还未确认结果，请查看实时终端';
       }
@@ -127,6 +129,7 @@
     const key = signal?.revision || '';
     if (first) {
       ++epoch;
+      provider = signal?.source === 'codex_followup' ? 'Codex' : 'Hermes';
       pane = id; notice = key; current = null; completed = ''; reading = false; busy = false;
       box.hidden = true;
       markOpen('');

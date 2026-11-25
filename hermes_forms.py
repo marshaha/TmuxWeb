@@ -161,7 +161,7 @@ class Receipts:
         self.identity = (pane, pid, submission["revision"])
         self.digest = hashlib.sha256(json.dumps(submission["answers"], sort_keys=True).encode()).hexdigest()
 
-    def access(self, operation, outcome=None):
+    def access(self, operation, outcome=None, *, retry_pending=True):
         self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.folder/"form-receipts.sqlite3", timeout=2)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS receipts(pane,pid,revision,digest,status,at REAL,"
@@ -179,7 +179,7 @@ class Receipts:
                     return {"status": "closed" if row[1] in ("resolved","closed") else "unconfirmed"}
                 if row[1] in ("resolved","closed"):
                     return {"status": row[1]}
-                if now - row[2] < 12:
+                if not retry_pending or now - row[2] < 12:
                     return {"status": "unconfirmed"}
             if operation == "claim":
                 db.execute("DELETE FROM receipts WHERE at<?", (now-7*86400,))

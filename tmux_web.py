@@ -33,6 +33,7 @@ import git_tools
 import agent_calls
 import event_log
 import approvals
+import codex_forms
 import hermes_forms
 import message_queue
 from plugin_api import PluginError, PluginManager, PluginServices, install_routes
@@ -6088,6 +6089,13 @@ def create_app(
                                           {"Content-Type": "application/json"})
         pane = pane_or_404(pane_id, prefer_agent=True)
         pid = str(pane.get("pane_pid") or "")
+        if pane_provider(pane) == "codex" and transport is tmux and pid.isdigit():
+            def snapshot():
+                live = transport.validate_pane(actual)
+                if str(live.get("pane_pid")) != pid or pane_provider(live) != "codex":
+                    return "", "", ""
+                return transport.capture(actual, 80, pane=live), live.get("title", ""), live.get("path", "")
+            return asyncio.run(codex_forms.on_host(Path.home(), actual, pid, snapshot, submission))
         if pane_provider(pane) != "hermes" or not pid.isdigit():
             return {"status": "closed"}
         return hermes_forms.on_host(actual, pid, submission, None if transport is tmux else transport)

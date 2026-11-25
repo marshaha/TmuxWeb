@@ -378,7 +378,11 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const native=nativeHermesNotice(signal);
     const isHermes=pane && (pane.provider==='hermes' || pane.command==='hermes' || native || state.transcriptProvider==='hermes');
     const probe=isHermes && state.nativeProbe?.has(pane.id);
-    window.TmuxNativeForm?.sync(isHermes ? pane.id : '', native ? signal : null, poll, probe);
+    const followup=tailLoop?.pane===state.selected && tailLoop.followup || (signal?.source==='codex_followup' && signal);
+    if(followup)state.codexFormPane=state.selected;
+    const openCodex=state.codexFormPane===state.selected && !!$('native-form').dataset.open;
+    window.TmuxNativeForm?.sync(isHermes || followup || openCodex ? (pane?.id || state.selected) : '',
+      native ? signal : followup || null, poll, probe);
   }
   function currentInteraction(){
     const status=state.needsInput?.get(state.selected);
@@ -2034,6 +2038,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
         loop.followup=followup;
         if(followupChanged){
           $('codex-followup-key').hidden=!followup;
+          syncNativeForm(true);
           window.TmuxPrompt?.showStatus(currentInteraction());
         }
         showApprovalHint(data.codex_command_approval===true);
