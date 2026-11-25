@@ -62,6 +62,14 @@ def prompt_region_lines(screen: str, lines: int = 3) -> list[str]:
             if re.match(r"^[>›❯](?:\s|$)", content[0]):
                 content[0] = content[0][1:]
                 return content
+    # Hermes keeps the previous ❯ message in history when its composer is
+    # replaced by a question. Only the region between its input rules is editable.
+    if rows and rows[-1].lstrip().startswith("☤") and len(rows) >= 3 and re.fullmatch(r"─{4,}", rows[-2].strip()):
+        for i in range(len(rows) - 3, -1, -1):
+            rule = rows[i].strip()
+            if rule.startswith("────") and rule.endswith("────"):
+                editor = rows[i + 1:-2]
+                return editor if editor and editor[0].lstrip().startswith("❯") else []
     start = max(0, len(rows) - max(2, lines))
     for i in range(len(rows) - 1, -1, -1):
         if rows[i].lstrip().startswith(("❯", "›")):

@@ -511,7 +511,7 @@ def codex_command_approval(text: str) -> dict | None:
         return None
     labels[0]["description"] = "$ " + cmd
     return {"kind": "notice", "source": "codex_command_approval", "title": "Codex 命令审批",
-            "hint": "点选项打开实时审批，在 Codex 中确认。", "options": labels,
+            "hint": "选好后点「确认选择」打开实时审批，在 Codex 中确认。", "options": labels,
             "selected": cursors[0], "read_only": True,
             "revision": hashlib.sha256(json.dumps([command, options]).encode()).hexdigest()}
 
@@ -571,11 +571,11 @@ def hermes_question(text: str, pane: dict, *, expected_questions: str | None = N
             ("Other (type your answer)", "其他（输入你的回答）", "其他（輸入你的答案）")):
         return None
     # Hermes switches to its text composer when the last shortcut is pressed.
-    prompt = _finish("menu", group[0][2:], "点选即可回答，自定义内容可在下方实时作答。",
+    prompt = _finish("menu", group[0][2:], "选好后点「确认选择」。自定义内容可在实时终端填写。",
                      options, [], numbers=True, source="hermes_clarify")
     if len(groups) > 1:
         prompt["question_count"] = len(groups)
-        prompt["hint"] = f"第 {active + 1}/{len(groups)} 题 · ↑↓ 选项 · Enter 作答 · ←→ 或 Tab 切题"
+        prompt["hint"] = f"第 {active + 1}/{len(groups)} 题 · ↑↓ 选项 · 确认选择后作答 · ←→ 切题"
     prompt["options"][-1]["opens_input"] = True
     for option in prompt["options"]:
         option.pop("recommended", None)

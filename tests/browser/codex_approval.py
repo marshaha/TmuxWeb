@@ -100,6 +100,9 @@ def main():
                 else:
                     options.nth(1).click()
                 panel = page.locator("#interaction-inline #chat-reply-panel")
+                expect(panel).to_be_hidden()
+                assert not submissions and not fixture.tmux.keys
+                card.get_by_role("button",name="确认当前选项").click()
                 expect(panel.locator("iframe")).to_be_visible()
                 expect(panel).to_contain_text("批准并记住命令前缀")
                 assert not submissions and not fixture.tmux.keys
@@ -111,16 +114,21 @@ def main():
                 # A new native request may arrive inside the manual preview cache window.
                 page.wait_for_timeout(1300)
                 inspect.click()
-                expect(page.locator("#prompt-card-hint")).to_contain_text("点选项批准一次")
+                expect(page.locator("#prompt-card-hint")).to_contain_text("选好后点「确认选择」")
                 if width == 390:
                     nav = card.locator("#prompt-card-nav")
                     expect(nav.get_by_role("button", name="下一题")).to_be_hidden()
                     nav.get_by_role("button", name="下一项").tap()
                     expect(options.nth(1)).to_have_attribute("aria-selected", "true")
                     nav.get_by_role("button", name="上一项").tap()
-                    nav.get_by_role("button", name="确认当前选项").tap()
+                    assert not submissions and not fixture.tmux.keys
+                    card.get_by_role("button", name="确认当前选项").tap()
                 else:
+                    options.last.click()
+                    first.click()
                     first.press("Enter")
+                    assert not submissions and not fixture.tmux.keys
+                    card.get_by_role("button",name="确认当前选项").press("Enter")
                 expect(card).to_be_hidden()
                 expect(page.locator("#toast")).to_have_text("已发送「仅批准这一次」")
                 assert len(submissions) == 1 and submissions[0]["index"] == 0

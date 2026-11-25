@@ -1562,14 +1562,14 @@ class TmuxWebTests(unittest.TestCase):
             # 显式关闭：TestClient 的 __exit__ 在某些 starlette 版本上不会把 disconnect
             # 交给服务端，处理器会一直等 receive_text，session 也就永远不 close
             websocket.close()
-        session = self.terminals.sessions[0]
+            session = self.terminals.sessions[0]
+            # Keep the TestClient portal alive while the server handles the disconnect.
+            deadline = time.monotonic() + 2
+            while not session.closed and time.monotonic() < deadline:
+                time.sleep(0.02)
         self.assertEqual(session.pane_id, "%4")
         self.assertEqual(session.inputs, [b"hello\r"])
         self.assertEqual(session.resizes, [(120, 40)])
-        # 关闭发生在服务端任务里，客户端断开后要给事件循环一点时间（CI 上更慢）
-        deadline = time.time() + 2.0
-        while time.time() < deadline and not session.closed:
-            time.sleep(0.02)
         self.assertTrue(session.closed)
 
     def test_index_is_served(self):
@@ -5620,6 +5620,15 @@ class FingerprintWindowTests(unittest.TestCase):
         self.assertTrue(self.Backend([frame]).still_in_prompt("%1", body))
         cleared = "❯ " + body + "\n╭──────╮\n│ >  │\n╰──────╯\nNORMAL\nctrl-x help"
         self.assertFalse(self.Backend([cleared]).still_in_prompt("%1", body))
+
+    def test_hermes_history_cannot_confirm_the_next_question_with_a_retry(self):
+        prompt = "❯ hello world"
+        frame = "──────── workspace ──────\n{}\n────────────\n ☤ Hermes · idle"
+        waiting = prompt + "\n" + frame.format("选择 provider？\n  1. openai")
+        backend = self.Backend([frame.format(prompt), waiting, waiting])
+        self.assertTrue(self.run_send(backend, "hello world"))
+        self.assertEqual(len(self.presses(backend)), 1)
+        self.assertFalse(self.Backend([waiting]).fingerprint_in_prompt("%1", "hello world"))
 
     def test_multiline_prompt_tail_is_still_in_the_prompt(self):
         backend = self.Backend([self.SCREEN])

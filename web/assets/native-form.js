@@ -85,7 +85,7 @@
     send.disabled = false;
     form.hidden = false;
     box.hidden = false;
-    note.textContent = '';
+    note.textContent = '可修改选项，确认后提交';
     markOpen(next.revision);
   }
   async function call(method, body) {
@@ -96,9 +96,12 @@
     if (!res.ok) throw new Error('无法读取原生请求');
     return res.json();
   }
+  form.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && event.target.matches('input')) event.preventDefault();
+  });
   form.onsubmit = async event => {
     event.preventDefault();
-    if (busy || !current) return;
+    if (event.submitter !== send || busy || !current) return;
     if (current.questions.some(q => !draft[q.id]?.indices.length && !draft[q.id]?.other?.trim())) {
       note.textContent = '请完成每道题再提交';
       return;

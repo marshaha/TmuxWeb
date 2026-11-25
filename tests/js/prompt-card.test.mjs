@@ -12,7 +12,7 @@ const source = fs.readFileSync(
 
 const CARD_IDS = ['prompt-card', 'prompt-card-title', 'prompt-card-hint',
   'prompt-card-nav', 'prompt-card-options', 'prompt-card-toggles', 'prompt-card-state',
-  'prompt-card-close', 'prompt-card-terminal', 'prompt-card-timeout',
+  'prompt-card-confirm', 'prompt-card-close', 'prompt-card-terminal', 'prompt-card-timeout',
   'prompt-card-raw', 'prompt-card-raw-wrap'];
 
 function makeElement(tag = 'div') {
@@ -146,11 +146,16 @@ function chooseCalls(calls) {
 
 test('a verified choice is sent once with its revision, including while the first request is pending', async () => {
   let finish;
-  const {api, card, calls, optionsEl} = loadCard({chooseHandler: () => new Promise(r => { finish = r; })});
+  const {api, card, calls, optionsEl, doc} = loadCard({chooseHandler: () => new Promise(r => { finish = r; })});
   api.start(() => '%1', () => MENU);
   const option = optionsEl().children[1];
   click(option);
+  click(optionsEl().children[0]);
   click(option);
+  assert.equal(card().hidden, false);
+  assert.equal(chooseCalls(calls).length, 0);
+  doc._byId['prompt-card-confirm'].onclick();
+  doc._byId['prompt-card-confirm'].onclick();
   assert.equal(card().hidden, true);
   assert.deepEqual(chooseCalls(calls).map(c => JSON.parse(c.options.body)), [{index: 1, revision: 'r1'}]);
   finish({ok: true, json: async () => ({ok: true})});
@@ -165,6 +170,8 @@ test('a failed submission explains the failure and requires a fresh inspection',
   })});
   api.start(() => '%1', () => MENU);
   click(optionsEl().children[0]);
+  assert.equal(calls.length, 0);
+  doc._byId['prompt-card-confirm'].onclick();
   await flush();
   assert.equal(optionsEl().children.length, 0);
   assert.equal(doc._byId['prompt-card-hint'].textContent, 'request resolved');
@@ -206,6 +213,18 @@ test('timeout, cooldown, and manual close never answer or schedule another scree
   assert.equal(card().hidden, false);
 });
 
+test('a pending read of the same request preserves the staged choice', async () => {
+  let finish;
+  const {api, optionsEl, calls} = loadCard({inspectHandler: () => new Promise(r => { finish = r; })});
+  api.start(() => '%1', () => MENU);
+  const read = api.inspect();
+  click(optionsEl().children[1]);
+  finish({ok: true, json: async () => ({prompt: MENU})});
+  await read;
+  assert.equal(optionsEl().children[1]['aria-selected'], 'true');
+  assert.equal(chooseCalls(calls).length, 0);
+});
+
 test('an inspection arriving after a pane change cannot replace or answer the new card', async () => {
   let release, selected = '%1';
   const {api, card, calls} = loadCard({inspectHandler: () => new Promise(r => { release = r; })});
@@ -223,9 +242,9 @@ test('switching questions keeps one inline card visible and waits for a fresh re
   const first = {...MENU, question_count: 2};
   const {api, card, clock, doc, optionsEl, calls, setPrompt} = loadCard({prompt: first});
   api.start(() => '%1', () => first);
-  const pressTab = () => card()._listeners.keydown[0]({key: 'Tab', preventDefault() {}});
-  pressTab();
-  pressTab();
+  const pressNext = () => card()._listeners.keydown[0]({key: 'ArrowRight', preventDefault() {}});
+  pressNext();
+  pressNext();
   assert.equal(card().hidden, false);
   assert.equal(optionsEl().children.length, 0);
   assert.equal(chooseCalls(calls).length, 1);
@@ -245,6 +264,8 @@ test('a screen-only Codex option rechecks the live frame before opening the term
   api.start(() => '%1', () => preview);
   assert.equal(optionsEl().children[0].disabled, false);
   click(optionsEl().children[0]);
+  assert.equal(calls.length, 0);
+  doc._byId['prompt-card-confirm'].onclick();
   await flush();
   assert.equal(calls.length, 1);
   assert.ok(calls[0].url.endsWith('/prompt?inspect=true&fresh=true'));

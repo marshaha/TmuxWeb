@@ -58,6 +58,7 @@
   function paintCursor() {
     [...$('options').children].forEach((button, index) => {
       const selected = (actionable(current) || codexCard(current)) && index === cursor;
+      button.tabIndex = selected ? 0 : -1;
       button.classList.toggle('on', selected);
       button.setAttribute('aria-selected', String(selected));
     });
@@ -66,9 +67,10 @@
 
   function render(data, screen = []) {
     cancelTimeout();
+    // A manual refresh can finish just after the user selects an option.
+    if (!data.revision || data.revision !== current?.revision) cursor = data.selected || 0;
     current = data;
     currentScreen = screen;
-    cursor = data.selected || 0;
     $('title').textContent = data.title || (data.kind === 'confirm' ? '需要确认' : '等待选择');
     const hint = $('hint');
     hint.textContent = data.hint || '';
@@ -109,8 +111,11 @@
         meta.textContent = option.meta;
         button.appendChild(meta);
       }
-      button.addEventListener('focus', () => { cursor = index; paintCursor(); });
-      button.addEventListener('click', () => { if (data === current) submit({index}); });
+      button.addEventListener('click', () => {
+        if (data !== current || button.disabled) return;
+        cursor = index;
+        paintCursor();
+      });
       list.appendChild(button);
     });
 
@@ -119,6 +124,7 @@
     for (const button of nav.children) {
       button.hidden = ['Tab', 'BTab'].includes(button.dataset.nav) && !(data.question_count > 1);
     }
+    $('confirm').hidden = !data.options.length || (!actionable(data) && !codexCard(data));
     $('state').textContent = '';
     $('raw').textContent = screen.join('\n');
     $('raw-wrap').hidden = !screen.length;
@@ -261,8 +267,6 @@
         $('options').children[cursor]?.focus({preventScroll: true});
         $('options').children[cursor]?.scrollIntoView?.({block: 'nearest'});
       }
-    } else if (key === 'Enter') {
-      submit({index: cursor});
     }
   }
 
@@ -277,6 +281,7 @@
   function bind() {
     if (bound) return;
     bound = true;
+    $('confirm').onclick = () => submit({index: cursor});
     $('close').onclick = () => {
       suppressed = current?.revision || lastStatus;
       reshowAt = Infinity;
@@ -290,9 +295,9 @@
     $().addEventListener('keydown', event => {
       if ((!actionable(current) && !codexCard(current)) || event.target?.closest?.('.prompt-foot,.prompt-head,.prompt-nav,summary')) return;
       let key = event.key;
-      if (current.question_count > 1 && ['Tab', 'ArrowLeft', 'ArrowRight'].includes(key)) {
+      if (current.question_count > 1 && ['ArrowLeft', 'ArrowRight'].includes(key)) {
         key = key === 'ArrowLeft' || event.shiftKey ? 'BTab' : 'Tab';
-      } else if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(key)) return;
+      } else if (!['ArrowDown', 'ArrowUp', 'Escape'].includes(key)) return;
       event.preventDefault();
       if (key === 'Escape') $('close').focus();
       else if (!event.repeat || key.startsWith('Arrow')) navigate(key);

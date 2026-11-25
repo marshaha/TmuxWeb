@@ -318,6 +318,8 @@
   #live-tail-head button{min-height:32px}
   #chat-activity:has(#live-tail:not([hidden])):has(#interaction-inline .prompt-card:not([hidden])){border:1px solid var(--line);border-radius:12px;background:var(--card);padding:8px;box-sizing:border-box}
   #live-tail:not([hidden]) + #interaction-inline .prompt-card{border:0;border-top:1px solid var(--line);border-radius:0;margin:0;padding:8px 2px 2px}
+  #prompt-card-confirm{min-height:32px;height:auto;max-width:100%;white-space:normal;overflow-wrap:anywhere;background:var(--accent);color:white}
+  @media(max-width:600px){#prompt-card-confirm{min-height:44px}}
   .prompt-nav{display:flex;flex:none;gap:4px;flex-wrap:wrap;margin:6px 0}
   .prompt-nav button{min-width:36px;min-height:32px;padding:3px 8px;white-space:nowrap}
   #interaction-inline{display:flow-root;min-width:0}
@@ -424,9 +426,8 @@
     <button class="prompt-btn" type="button" data-nav="ArrowDown" aria-label="下一项">↓</button>
     <button class="prompt-btn" type="button" data-nav="BTab" aria-label="上一题">⇤</button>
     <button class="prompt-btn" type="button" data-nav="Tab" aria-label="下一题">Tab ⇥</button>
-    <button class="prompt-btn" type="button" data-nav="Enter" aria-label="确认当前选项">Enter ↵</button>
   </div>
-  <div class="prompt-foot"><span class="prompt-state" id="prompt-card-state"></span><span class="prompt-timeout" id="prompt-card-timeout"></span><button class="prompt-btn" id="prompt-card-terminal" type="button">实时作答</button></div>
+  <div class="prompt-foot"><button class="prompt-btn" id="prompt-card-confirm" type="button" aria-label="确认当前选项" hidden>确认选择</button><span class="prompt-state" id="prompt-card-state"></span><span class="prompt-timeout" id="prompt-card-timeout"></span><button class="prompt-btn" id="prompt-card-terminal" type="button">实时作答</button></div>
   <details class="prompt-raw" id="prompt-card-raw-wrap" hidden><summary>屏幕原文</summary><pre id="prompt-card-raw"></pre></details>
 </div>
 <section id="chat-reply-panel" class="prompt-card" hidden aria-label="实时作答">

@@ -70,6 +70,8 @@ def main():
                     page.locator("#live-tail-toggle").click()
                     expect(card).to_be_visible()
                     option=card.get_by_label("claude",exact=True)
+                    initial=card.get_by_label("openai",exact=True)
+                    initial.tap() if width==390 else initial.click()
                     option.tap() if width==390 else option.click()
                     page.reload(wait_until="domcontentloaded")
                     expect(option).to_be_checked()
@@ -77,6 +79,10 @@ def main():
                     model.focus()
                     model.press("Space")
                     expect(model).to_be_checked()
+                    model.press("Enter")
+                    expect(option).to_be_checked()
+                    assert owner.answers == [] and not fixture.tmux.keys
+                    expect(card.get_by_role("button",name="提交全部答案")).to_be_in_viewport()
                     for p in pages:
                         assert p.locator("#native-form").evaluate("""el => el.scrollWidth<=el.clientWidth+1 &&
                             [...el.querySelectorAll('button,label,legend')].every(x=>x.scrollWidth<=x.clientWidth+1)""")

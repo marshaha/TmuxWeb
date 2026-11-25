@@ -422,7 +422,7 @@ def native_interaction(pane: dict, text: str, notices: list, *, inspect_screen: 
                 command = prompt["options"][0]["description"][2:]
                 fingerprint = "command-sha256:" + hashlib.sha256(command.encode()).hexdigest()
                 if session and request != "permission" and valid[0].get("detail") == fingerprint:
-                    prompt.update(verified=True, read_only=False, hint="点选项批准一次或拒绝。记住前缀需在 Codex 中确认。")
+                    prompt.update(verified=True, read_only=False, hint="选好后点「确认选择」批准一次或拒绝。记住前缀需在 Codex 中确认。")
                     if len(prompt["options"]) == 3:
                         prompt["options"][1]["native_only"] = True
             identity = [pane.get("id"), pane.get("pane_pid"), valid, prompt["revision"]]

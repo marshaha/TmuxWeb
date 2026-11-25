@@ -72,7 +72,7 @@ def exercise(page, base_url, pane, result):
         time.sleep(.05)
     assert result.with_suffix(".ready").exists()
     page.locator("#load-earlier").click()
-    expect(page.locator("#transcript .chat-message")).to_have_count(500)
+    expect(page.locator("#transcript-messages .chat-message")).to_have_count(500)
     placement.select_option("inline")
     # Manual display reads are briefly shared; an action always re-reads the hook.
     for _ in range(10):
@@ -104,7 +104,7 @@ def exercise(page, base_url, pane, result):
             && text.top >= rect.top - 1 && text.bottom <= rect.bottom + 1);
     })""")
     for key, expected in [("Tab", "选择模型？"), ("ArrowLeft", "选择 provider？"),
-                          ("ArrowRight", "选择模型？"), ("Shift+Tab", "选择 provider？")]:
+                          ("ArrowRight", "选择模型？"), ("ArrowLeft", "选择 provider？")]:
         if key in ("Tab", "ArrowLeft"):
             button = card.get_by_role("button", name="下一题" if key == "Tab" else "上一题")
             if page.viewport_size["width"] == 390:
@@ -127,6 +127,9 @@ def exercise(page, base_url, pane, result):
     inspect.click()
     expect(page.locator("#chat-reply-panel")).to_be_hidden()
     option.click()
+    expect(option).to_have_attribute("aria-selected", "true")
+    assert len(choices) == 4
+    card.get_by_role("button", name="确认当前选项").click()
     default_model = card.get_by_role("option").filter(has_text="默认模型")
     expect(default_model).to_be_focused(timeout=45000)
     card.get_by_role("button", name="确认当前选项").click()
