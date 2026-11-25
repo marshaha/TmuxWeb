@@ -2057,6 +2057,17 @@ import {marked} from '/assets/marked.esm.js?v=1';
     syncLiveTail();
     if(card.dataset.open && follow)card.scrollIntoView({block:'start'});
   });
+  $('native-open-terminal').onclick=()=>{
+    if(!state.selected || state.mode!=='chat')return;
+    collapsedTailPane=null;
+    expandedForm=$('native-form').dataset.open || '';
+    if(state.livePaused)resumeLive();
+    syncLiveTail();
+    if(tailLoop?.pane!==state.selected)return;
+    expandTailKeys(true);
+    keyboardToggle.focus({preventScroll:true});
+    keyboardToggle.scrollIntoView({block:'nearest',inline:'nearest'});
+  };
   $('live-tail-toggle').onclick=()=>{
     const open=$('live-tail-toggle').getAttribute('aria-expanded')==='true';
     collapsedTailPane=open?state.selected:null;

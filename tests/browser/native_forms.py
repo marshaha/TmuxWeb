@@ -21,8 +21,11 @@ def main():
             browser = pw.chromium.launch()
             pane = dict(fixture.tmux.panes[0], provider="hermes", command="python3", pane_pid="1201")
             fixture.tmux.panes = [pane]
+            key_requests = []
             def route(r):
                 path = urlsplit(r.request.url).path
+                if r.request.method == "POST" and path.endswith(("/key", "/input")):
+                    key_requests.append(path)
                 if path == "/" or path.startswith("/assets/") or path == slug:
                     response = (client.post(path, json=r.request.post_data_json) if r.request.method=="POST"
                                 else client.get(path))
@@ -65,8 +68,14 @@ def main():
                         owner.open = pending
                     expect(card.get_by_role("heading",name="Hermes 等你回答")).to_be_in_viewport(timeout=22000)
                     expect(page.locator("#live-tail-surface")).to_be_hidden()
-                    page.locator("#live-tail-toggle").click()
+                    open_terminal = card.get_by_role("button", name="展开实时终端")
+                    keys = page.locator("#live-keys-nav")
+                    open_terminal.tap() if width == 390 else open_terminal.click()
                     expect(page.locator("#live-tail-surface")).to_be_visible()
+                    expect(keys.get_by_role("button", name="向上")).to_be_in_viewport()
+                    expect(page.locator("#live-keyboard-toggle")).to_have_attribute("aria-expanded", "true")
+                    expect(page.locator("#chat-reply-panel")).to_be_hidden()
+                    assert owner.answers == [] and not key_requests
                     page.locator("#live-tail-toggle").click()
                     expect(card).to_be_visible()
                     option=card.get_by_label("claude",exact=True)
@@ -92,6 +101,15 @@ def main():
                     cmd=card.get_by_role("button",name="提交全部答案")
                     cmd.tap() if width==390 else cmd.click()
                     expect(card.get_by_role("status")).to_have_text("已回答")
+                    expect(page.locator("#live-tail-surface")).to_be_visible()
+                    expect(keys).to_be_hidden()
+                    open_terminal.focus()
+                    open_terminal.press("Enter")
+                    expect(keys.get_by_role("button", name="向上")).to_be_in_viewport()
+                    open_terminal.tap() if width == 390 else open_terminal.click()
+                    expect(keys).to_be_visible()
+                    expect(page.locator("#chat-reply-panel iframe")).to_have_count(0)
+                    assert not key_requests
                     other.get_by_role("button",name="提交全部答案").click()
                     expect(other.get_by_role("status")).to_contain_text("已结束")
                     assert owner.answers == [{"outcome":"submitted","answers":{"provider":"claude","model":"默认模型"}}]

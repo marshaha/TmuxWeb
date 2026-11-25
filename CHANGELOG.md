@@ -4,6 +4,10 @@
 
 - The remote agent raises its own descriptor limit at startup (`ulimit -n 4096` in the keep-alive script, `LimitNOFILE=8192` in the systemd unit). A macOS agent left on the 256-descriptor default eventually failed every command with `cannot start command: [Errno 24] Too many open files`, which made the host look offline with no panes.
 
+## 0.12.1
+
+- The Hermes Chat card now opens the live terminal and its inline keyboard together, including after an answer has been submitted.
+
 ## 0.12.0
 
 - Relay cursor-confirmed option lists from shared panes on compatible federation children. Show the question, choices and current selection as a read-only message in Chat.

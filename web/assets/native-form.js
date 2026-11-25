@@ -4,7 +4,7 @@
   if (!box) return;
   const form = box.querySelector('form'), fields = box.querySelector('.native-fields');
   const title = box.querySelector('h3'), note = box.querySelector('[role=status]');
-  const send = form.querySelector('button'), terminal = box.querySelector('.native-terminal');
+  const send = form.querySelector('button');
   let pane = '', current = null, notice = '', epoch = 0, reading = false, busy = false;
   let completed = '', draft = {}, lastRead = 0;
   function draftKey() { return 'tw.form.' + pane; }
@@ -24,8 +24,6 @@
     box.hidden = false;
     markOpen('');
   }
-  terminal.onclick = () => document.getElementById('chat-reply-panel')
-    ?.dispatchEvent(new Event('open-reply'));
   function render(next) {
     completed = '';
     current = next;
