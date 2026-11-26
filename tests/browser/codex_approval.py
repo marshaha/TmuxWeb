@@ -16,7 +16,7 @@ def main():
     try:
         with fixture.client as client, sync_playwright() as pw:
             fixture.login()
-            cmd = "bash /tmp/release/rollout.sh"
+            cmd = "python3 scripts/release_fleet.py deploy /tmp/tmuxweb-0.15.0-0e94a25be295ced3-0eatbe35/release.tar.gz"
             fixture.tmux.panes[0].update(provider="codex", command="codex", pane_pid="1234")
             approval = (
                 f"$ {cmd}\n› 1. Yes, proceed (y)\n"
@@ -96,20 +96,23 @@ def main():
                 fixture.tmux.output = ("Would you like to run the following command?\n"
                                        "Environment: local\nReason: 发布已测试的版本\n" + approval)
                 card = page.locator("#interaction-inline #prompt-card")
-                expect(card.get_by_text("Codex 等待命令审批")).to_be_visible(timeout=16000)
+                expect(card.get_by_text("命令等待终端审批")).to_be_visible(timeout=16000)
                 expect(card).to_contain_text(cmd)
-                choices = card.get_by_role("list", name="终端选项（只读）")
-                expect(choices.get_by_role("listitem")).to_have_count(3)
-                expect(choices.locator("[aria-current=true]")).to_contain_text("仅批准这一次")
-                expect(choices).to_contain_text("批准并记住命令前缀 · " + cmd)
-                assert choices.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
-                expand = card.get_by_role("button", name="展开终端作答")
+                expect(card.get_by_role("radio")).to_have_count(0)
+                expect(card.get_by_role("option")).to_have_count(0)
+                expect(card.get_by_text("仅批准这一次", exact=False)).to_have_count(0)
+                expect(card.locator("#prompt-card-timeout")).to_be_empty()
+                expect(page.locator("#agent-progress-label")).to_have_text("等待命令审批")
+                expand = card.get_by_role("button", name="在终端审批")
+                for item in (expand, card.locator("#prompt-card-title"), card.locator("#prompt-card-hint")):
+                    assert item.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
                 expand.tap() if width == 390 else expand.click()
                 expect(page.locator("#live-keys-nav")).to_be_visible()
                 expect(page.locator("#chat-reply-panel")).to_be_hidden()
                 framed = fixture.tmux.output
                 fixture.tmux.output = framed.replace("› 1.", "  1.").replace("  2.", "› 2.")
-                expect(choices.locator("[aria-current=true]")).to_contain_text("批准并记住命令前缀")
+                expect(page.locator("#live-tail-text")).to_contain_text("› 2.")
+                expect(card.get_by_role("radio")).to_have_count(0)
                 fixture.tmux.output = framed
                 expect(card.get_by_role("button",name="确认当前选项")).to_be_hidden()
                 expect(inspect).to_be_hidden()
@@ -174,10 +177,12 @@ def main():
                 session, request, _, title, detail = observation("codex", "PermissionRequest", {
                     "session_id": "session", "turn_id": f"test-{width}", "tool_name": "Bash",
                     "tool_input": {"command": cmd}})
-                notices.append({"id": [session, request], "title": title, "detail": detail})
-                # Re-enter the live Chat with a matching hook, without using manual inspection.
+                # Start with only the live dialog, then deliver its matching hook on the same page.
+                fixture.tmux.output = framed
                 manual_enabled = False
                 page.reload(wait_until="domcontentloaded")
+                expect(card.get_by_role("button", name="在终端审批")).to_be_visible(timeout=15000)
+                notices.append({"id": [session, request], "title": title, "detail": detail})
                 radios = card.get_by_role("radio")
                 expect(radios).to_have_count(3, timeout=15000)
                 expect(card.get_by_role("radiogroup")).to_be_visible()

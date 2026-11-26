@@ -6,7 +6,7 @@
   let cursor = 0;
   let retiredCodex = null;
   const cursorMessage = document.getElementById('cursor-chat');
-  let screenNotice = null, observedScreen = null;
+  let screenNotice = null, observedScreen = null, hookChecked = false;
   let epoch = 0;
   let reading = null;
   let sending = false;
@@ -36,9 +36,10 @@
     return data?.source === 'codex_command_approval' && !!data.revision;
   }
 
-  function observeCodexScreen(pane, screen, notice = null) {
+  function observeCodexScreen(pane, screen, notice = null, checked = false) {
     if (pane !== paneNow()) return;
-    const changed = observedScreen === null || screenNotice?.revision !== notice?.revision || screenNotice?.selected !== notice?.selected;
+    const changed = checked !== hookChecked || observedScreen === null || screenNotice?.revision !== notice?.revision || screenNotice?.selected !== notice?.selected;
+    hookChecked = checked;
     screenNotice = notice;
     observedScreen = screen ?? null;
     if (screen && retiredCodex?.screen === screen) retiredCodex = null;
@@ -81,14 +82,6 @@
     onNavigation?.();
   }
 
-  function markScreenChoice(selected) {
-    Array.from($('screen-choices').children).forEach((row, index) => {
-      if (index === selected) row.setAttribute('aria-current', 'true');
-      else row.removeAttribute('aria-current');
-      row.lastChild.hidden = index !== selected;
-    });
-  }
-
   function render(data, screen = []) {
     cancelTimeout();
     // A manual refresh can finish just after the user selects an option.
@@ -121,21 +114,8 @@
 
     const followup = data.source === 'codex_followup';
     const screenOnly = data.source === 'codex_screen_notice';
-    const choices = $('screen-choices');
-    choices.hidden = !screenOnly || !data.choices?.length;
-    choices.innerHTML = '';
-    if (!choices.hidden) {
-      for (const label of data.choices) {
-        const row = document.createElement('li');
-        row.textContent = label;
-        const marker = document.createElement('span');
-        marker.textContent = '（当前）';
-        row.appendChild(marker);
-        choices.appendChild(row);
-      }
-      markScreenChoice(data.selected);
-    }
-    $('terminal').textContent = screenOnly || followup ? '展开终端作答' : '实时作答';
+    if (screenOnly) $('title').textContent = '命令等待终端审批';
+    $('terminal').textContent = screenOnly ? '在终端审批' : followup ? '展开终端作答' : '实时作答';
     const list = $('options');
     list.innerHTML = '';
     const approval = codexCard(data) && actionable(data);
@@ -195,7 +175,7 @@
       button.hidden = ['Tab', 'BTab'].includes(button.dataset.nav) && !(data.question_count > 1);
     }
     $('confirm').hidden = !data.options.length || (!actionable(data) && !codexCard(data));
-    $('state').textContent = screenOnly ? '尚未匹配到此窗格的审批事件，请在终端确认。' : '';
+    $('state').textContent = '';
     $('raw').textContent = screen.join('\n');
     $('raw-wrap').hidden = !screen.length;
     $('raw-wrap').open = data.kind === 'screen';
@@ -205,6 +185,7 @@
 
   function showStatus(found) {
     if (!automatic || !paneNow() || sending || reading || followTimer || document.hidden) return;
+    if (hookChecked && screenNotice?.source === 'codex_screen_notice' && codexCard(found)) found = screenNotice;
     if (actionable(screenNotice) && codexCard(screenNotice) && screenNotice.screen_revision === observedScreen) found = screenNotice;
     if (codexCard(found) && observedScreen !== null && found.screen_revision && found.screen_revision !== observedScreen) found = null;
     if (found?.source === 'codex_screen_notice' && observedScreen !== null && found.revision !== 'screen-' + observedScreen) found = null;
@@ -224,17 +205,13 @@
     if (manual && current && (lastStatus === previous || current.revision === lastStatus)) return;
     if (codexCard(found) && found.revision === retiredCodex?.revision) return;
     if (current?.revision === lastStatus) {
-      if (found.source === 'codex_screen_notice' && found.selected !== current.selected) {
-        markScreenChoice(found.selected);
-        current = found;
-      }
       if (found.source === 'cursor_menu_notice' && found.selected !== current.selected) render(found);
       return;
     }
     if (suppressed === lastStatus && Date.now() < reshowAt) return;
     manual = false;
     render(found);
-    if (found.source === 'cursor_menu_notice') return;
+    if (['cursor_menu_notice', 'codex_screen_notice'].includes(found.source)) return;
     const expires = Date.now() + timeoutMs;
     const tick = () => {
       const seconds = Math.max(0, Math.ceil((expires - Date.now()) / 1000));
@@ -404,6 +381,7 @@
       retiredCodex = null;
       screenNotice = null;
       observedScreen = null;
+      hookChecked = false;
       suppressed = '';
       lastStatus = '';
       showStatus(sharedStatus());

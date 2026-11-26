@@ -3827,6 +3827,8 @@ class TmuxWebTests(unittest.TestCase):
         self.assertFalse(self.tmux.keys)
         hook = [{"title": "等待工具审批", "id": ["session", "request"]}]
         self.assertEqual(tmux_web.native_interaction(pane, text, hook)["source"], "codex_command_approval")
+        for pending in (hook, hook * 2, [dict(hook[0], detail="command-sha256:other")]):
+            self.assertEqual(tmux_web.native_interaction(pane, framed, pending), notice)
         for screen in (text + "\n› Ask Codex to do anything", text.replace("(p)", ""),
                        text.replace("› 1.", "1."), text.replace("  3.", "› 3.")):
             self.assertIsNone(tmux_web.native_interaction(pane, screen, [], inspect_screen=True))
@@ -3837,6 +3839,51 @@ class TmuxWebTests(unittest.TestCase):
         history = self.client.get(inbox, params={"history": 1}).json()["items"]
         self.assertEqual([(item["id"], item["resolved_reason"]) for item in history],
                          [(rows[0]["id"], "cleared")])
+
+    def test_ssh_approval_reads_owning_hook_and_rechecks_before_submission(self):
+        import shlex
+        from plugins.agent.hooks.observe import record
+        from remote_hosts import SSHRunner
+
+        self.login()
+        host = self.remote_store.add_host(name="remote", hostname="test", username="user", credential="")
+        pane = dict(self.tmux.panes[0], pane_id="%4", pane_pid="135", host_id=host["id"],
+                    id=pane_ref(host["id"], "%4"), provider="codex")
+        screen = ("Would you like to run the following command?\n$ example task\n"
+                  "› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)"
+                  "\n  Press enter to confirm or esc to cancel")
+        url = "/api/panes/" + quote(pane["id"], safe="")
+        detail = "command-sha256:" + hashlib.sha256(b"example task").hexdigest()
+        with tempfile.TemporaryDirectory() as folder:
+            store = Path(folder) / ".config/tmuxweb-agent/interactions.sqlite3"
+            def observe(pid, request, action="open"):
+                record(store, "%4", pid, "codex", ("s", request, action,
+                       "等待工具审批" if action == "open" else "", detail), time.time())
+            def run(_runner, cmd, **kwargs):
+                return subprocess.run(shlex.split(cmd), env=dict(os.environ, HOME=folder),
+                                      capture_output=True, timeout=kwargs["timeout"])
+            with (patch.object(FakeSSHRunner, "list_panes", return_value=[pane]),
+                  patch.object(FakeSSHRunner, "screen", screen),
+                  patch.object(FakeSSHRunner, "command_approval_notices", SSHRunner.command_approval_notices, create=True),
+                  patch.object(FakeSSHRunner, "run", run),
+                  patch.object(FakeSSHRunner, "send_keys", create=True) as send):
+                tail = lambda: self.client.get(url + "/tail").json()
+                self.assertNotIn("codex_verified_approval", tail())
+                self.assertFalse(store.exists())
+                observe("134", "wrong-process")
+                self.assertNotIn("codex_verified_approval", tail())
+                observe("135", "request")
+                live = tail()["codex_verified_approval"]
+                action = {"index": 0, "revision": live["revision"]}
+                self.assertFalse(live["read_only"])
+                observe("135", "second")
+                self.assertNotIn("codex_verified_approval", tail())
+                self.assertEqual(self.client.post(url + "/prompt/choose", json=action).status_code, 409)
+                send.assert_not_called()
+                observe("135", "second", "close")
+                self.assertEqual(self.client.post(url + "/prompt/choose", json=action).status_code, 200)
+                self.assertEqual(send.call_args.args, ("%4", ["y"]))
+                self.assertEqual(self.tmux.keys, [])
 
     def test_codex_approval_requires_the_same_native_command_at_click_time(self):
         from plugins.agent.hooks.observe import observation

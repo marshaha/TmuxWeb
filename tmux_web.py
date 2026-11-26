@@ -408,6 +408,23 @@ def _pane_needs_input_descriptor(pane: dict) -> dict:
             "title": pane.get("title") or ""}
 
 
+def pane_hook_notices(transport, descriptor, timeout):
+    """Keep observer lookups on the same host as the screen and submission."""
+    try:
+        watcher = getattr(transport, "needs_input_many", None)
+        if watcher:
+            waiting = watcher([descriptor], timeout=timeout)
+            entry = waiting.get(descriptor["pane_id"]) if isinstance(waiting, dict) else None
+            notices = entry.get("notices") if isinstance(entry, dict) else None
+        elif descriptor["provider"] == "codex" and hasattr(transport, "command_approval_notices"):
+            notices = transport.command_approval_notices(descriptor, timeout)
+        else:
+            return []
+        return notices if isinstance(notices, list) else []
+    except (RuntimeError, OSError, ValueError):
+        return []
+
+
 def codex_screen_notice(text, menu):
     """A terminal-only notification for a complete live Codex permission dialog."""
     rows = (text or "").rstrip().splitlines()[-48:]
@@ -452,11 +469,13 @@ def native_interaction(pane: dict, text: str, notices: list, *, inspect_screen: 
             return tool_notice
     permission = len(valid) == 1 and valid[0]["title"] == "等待工具审批"
     if pane.get("provider") == "codex" and (permission or inspect_screen or
-            (not valid and (text or "").rstrip().lower().endswith("press enter to confirm or esc to cancel"))):
+            (text or "").rstrip().lower().endswith("press enter to confirm or esc to cancel")):
         prompt = agent_prompts.codex_command_approval(text)
         if prompt:
             if not permission and not inspect_screen:
-                return codex_screen_notice(text, prompt)
+                notice = codex_screen_notice(text, prompt)
+                if notice or not valid:
+                    return notice
             prompt["screen_revision"] = prompt["revision"]
             if permission and len(notices) == 1 and pane.get("pane_pid"):
                 session, request = valid[0]["id"]
@@ -466,6 +485,11 @@ def native_interaction(pane: dict, text: str, notices: list, *, inspect_screen: 
                     prompt.update(verified=True, read_only=False, hint="选好后点「确认选择」批准一次或拒绝。记住前缀需在 Codex 中确认。")
                     if len(prompt["options"]) == 3:
                         prompt["options"][1]["native_only"] = True
+            if not inspect_screen and not prompt.get("verified"):
+                # Old or unrelated callbacks do not turn a terminal preview into a Chat form.
+                notice = codex_screen_notice(text, prompt)
+                if notice:
+                    return notice
             identity = [pane.get("id"), pane.get("pane_pid"), valid, prompt["revision"]]
             prompt["revision"] = hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
             return prompt
@@ -6093,13 +6117,7 @@ def create_app(
             pane = pane_or_404(pane_id)
             transport, actual = pane_transport(pane_id)
             descriptor = _pane_needs_input_descriptor(dict(pane, provider=pane_provider(pane)))
-            ask = getattr(transport, "needs_input_many", None)
-            try:
-                waiting = ask([descriptor], timeout=5) if ask else {}
-            except (RuntimeError, OSError, ValueError):
-                waiting = {}
-            entry = waiting.get(actual) if isinstance(waiting, dict) else None
-            notices = entry.get("notices") if isinstance(entry, dict) else None
+            notices = pane_hook_notices(transport, descriptor, timeout=5)
             text = transport.capture(actual, 80, pane=pane, visible_only=True)
             found = native_interaction(dict(pane, id=pane_id, provider=descriptor["provider"]),
                                        text, notices or [], inspect_screen=True)
@@ -6611,14 +6629,10 @@ def create_app(
                 notice = codex_screen_notice(plain, menu)
                 if notice:
                     result["codex_screen_notice"] = notice
-                if inspect_cursor and transport is tmux and pane.get("pane_pid"):
-                    # Only look up this pane's native event while a command approval is on screen.
+                if inspect_cursor and pane.get("pane_pid"):
                     descriptor = _pane_needs_input_descriptor(dict(pane, provider="codex"))
-                    try:
-                        waiting = tmux.needs_input_many([descriptor], timeout=2)
-                    except (OSError, RuntimeError, ValueError):
-                        waiting = {}
-                    notices = (waiting.get(actual) or {}).get("notices") or []
+                    notices = pane_hook_notices(transport, descriptor, timeout=2)
+                    result["codex_hook_checked"] = True
                     if notices:
                         verified = native_interaction(dict(pane, id=pane_id, provider="codex"), plain, notices)
                         if verified and verified.get("verified"):

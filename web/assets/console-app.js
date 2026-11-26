@@ -1425,8 +1425,13 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function humanElapsed(seconds){if(seconds<3)return '';if(seconds<60)return `${seconds}s`;
     if(seconds<3600)return `${Math.floor(seconds/60)}m${String(seconds%60).padStart(2,'0')}s`;
     return `${Math.floor(seconds/3600)}h${String(Math.floor((seconds%3600)/60)).padStart(2,'0')}m`;}
-  function agentWorking(){
+  function waitingForCommandApproval(){
     if(!state.selected)return false;
+    if(tailLoop?.pane===state.selected && typeof tailLoop.commandApproval==='boolean')return tailLoop.commandApproval;
+    return ['codex_screen_notice','codex_command_approval'].includes(state.needsInput?.get(state.selected)?.source);
+  }
+  function agentWorking(){
+    if(!state.selected || waitingForCommandApproval())return false;
     // plain shells have no turn to wait for; only agents get the progress line
     if(!state.transcriptProvider&&!state.waiting)return false;
     if(state.waiting)return true;
@@ -1461,7 +1466,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
       const loading=state.mode==='chat'&&!!state.selected&&loadingActive();
       box.hidden=!(state.mode==='chat'&&!!state.selected);
       box.classList.toggle('working',working||loading);
-      $('agent-progress-label').textContent=loading?loadingLabel():(working?'thinking':'idle');
+      const label=loading?loadingLabel():waitingForCommandApproval()?'等待命令审批':working?'thinking':'idle';
+      if($('agent-progress-label').textContent!==label)$('agent-progress-label').textContent=label;
       $('agent-progress-elapsed').textContent=loading?loadingDetail():(working?humanElapsed(sinceSeconds(state.waitingSince)):'');
       box.title=loading?loadCard.label:'';
     }
@@ -2149,9 +2155,14 @@ import {marked} from '/assets/marked.esm.js?v=1';
           $('codex-followup-key').hidden=followup?.source!=='codex_followup';
           syncNativeForm(true);
         }
-        showApprovalHint(data.codex_command_approval===true);
+        const approval=data.codex_command_approval===true;
+        if(loop.commandApproval!==approval){
+          loop.commandApproval=approval;
+          syncProgress();
+        }
+        showApprovalHint(approval);
         const notice=data.codex_verified_approval || data.codex_screen_notice || data.cursor_menu_notice;
-        window.TmuxPrompt?.observeCodexScreen(id, data.codex_screen_revision || '', notice);
+        window.TmuxPrompt?.observeCodexScreen(id, data.codex_screen_revision || '', notice, data.codex_hook_checked===true);
         const noticeRevision=notice?.revision || '';
         if((loop.noticeRevision || '')!==noticeRevision)window.TmuxNeedsYouInbox?.noticeChanged();
         loop.noticeRevision=noticeRevision;
@@ -2169,6 +2180,10 @@ import {marked} from '/assets/marked.esm.js?v=1';
         }
       }catch(error){
         if(tailLoop!==loop)return;
+        if(loop.commandApproval!==undefined){
+          delete loop.commandApproval;
+          syncProgress();
+        }
         loop.followup=null;
         $('codex-followup-key').hidden=true;
         window.TmuxPrompt?.showStatus(currentInteraction());

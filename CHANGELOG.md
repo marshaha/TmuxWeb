@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.1
+
+- Give screen-detected Codex command approvals one terminal action and show the waiting state in Chat. Read the pane owner’s hook over SSH or its connected agent. A matching live request upgrades the same card to an approval form.
+
 ## 0.15.0
 
 - Show outgoing relay receipts in the sender’s Chat, including unconfirmed Enter, target activity, pending input and reply timeout. Link each receipt to its target. Relay observers share recorded progress and ask workers use short captures between full-history checks.

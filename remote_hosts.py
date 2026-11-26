@@ -1911,6 +1911,23 @@ class SSHRunner:
         except OSError as exc:
             raise RuntimeError("%s:%d 连不上: %s" % (host, port, exc)) from exc
 
+    def command_approval_notices(self, pane, timeout):
+        """Read the selected SSH pane's observer on its owner, only for command approvals."""
+        pane_id, pid = pane["pane_id"], str(pane.get("pane_pid") or "")
+        if not PANE_ID_RE.fullmatch(pane_id) or not pid.isdecimal():
+            return []
+        probe = """import json, pathlib, sqlite3, sys, time
+path = pathlib.Path.home() / ".config/tmuxweb-agent/interactions.sqlite3"
+with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=.2) as db:
+    rows = db.execute("SELECT session,request,title,detail FROM waits "
+                      "WHERE pane=? AND pid=? AND provider='codex' AND title!='' AND at>? LIMIT 2",
+                      (*sys.argv[1:], time.time() - 3600)).fetchall()
+print(json.dumps([{"id":[s,r],"title":t,"detail":d} for s,r,t,d in rows]))
+"""
+        result = self.run(shlex.join(["python3", "-I", "-c", probe, pane_id, pid]),
+                          resolve_tmux=False, timeout=timeout)
+        return json.loads(result.stdout) if result.returncode == 0 else []
+
     def cursor_frame(self, pane_id: str) -> str:
         command = "${TMUX_BIN:-tmux} " + shlex.join(cursor_frame_args(pane_id))
         result = self.run(command, timeout=self.capture_timeout or 15)
