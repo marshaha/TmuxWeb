@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.18.1
+
+- Remove a pane directly from the current project with the member-row trash button. Ungrouped panes show an add button.
+
 ## 0.18.0
 
 - Group host and project navigation under labeled icons and keep project creation inside the project view.

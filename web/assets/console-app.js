@@ -976,6 +976,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     return {hosts:filtered,matched};}
   function treeDetails(key,label,children,kind,count,extra='',tail='',forceOpen=false,cls=''){const open=(forceOpen||state.treeOpen.has(key))?' open':'';return `<details class="tree-group tree-${kind}${cls?' '+cls:''}" data-tree="${esc(key)}"${open}><summary>${extra}<span class="tree-label">${esc(label)}</span><span class="tree-count">${count}</span>${tail}</summary><div class="tree-children">${children}</div></details>`;}
   let projectView=localStorage.getItem('tw-project-view')==='1', projectMap=new Map(), projectNames=[], projectRead=0;
+  const removingProjectMembers=new Set();
   async function loadProjects(){
     const version=++projectRead;
     try{
@@ -1012,7 +1013,11 @@ import {marked} from '/assets/marked.esm.js?v=1';
       const jump=(items,label)=>items.length?`<button type="button" class="project-jump" data-pane="${esc(items[0].pane.id)}">${items.length} ${label}</button>`:'';
       const members=rows.map(({pane,host})=>{
         const title=window.TmuxRecents?.nameFor(pane.id)||pane.title||pane.target;
-        return `<div class="project-pane"><button type="button" class="pane${pane.id===state.selected?' selected':''}" data-pane="${esc(pane.id)}"><span class="pane-target">${esc(host.name||host.id)} · ${esc(paneLabel(pane))}</span><span class="pane-state ${esc(state.paneState?.get(pane.id)||'unknown')}"></span><div class="pane-title">${esc(title)}</div>${contentSnippet(pane.id)}</button><button type="button" class="project-manage" data-edit-pane="${esc(pane.id)}" title="管理所属分组" aria-label="管理 ${esc(paneLabel(pane))} 的分组"><svg class="ico" aria-hidden="true"><use href="#i-gear"/></svg></button></div>`;
+        const label=esc(paneLabel(pane));
+        const action=name
+          ? `<button type="button" class="project-manage" data-remove-member="${esc(pane.id)}" data-project="${esc(name)}" title="移出本组" aria-label="从 ${esc(name)} 移出 ${label}" ${removingProjectMembers.has(pane.id)?'disabled':''}><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg></button>`
+          : `<button type="button" class="project-manage" data-edit-pane="${esc(pane.id)}" title="加入项目" aria-label="为 ${label} 选择项目"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button>`;
+        return `<div class="project-pane"><button type="button" class="pane${pane.id===state.selected?' selected':''}" data-pane="${esc(pane.id)}"><span class="pane-target">${esc(host.name||host.id)} · ${esc(paneLabel(pane))}</span><span class="pane-state ${esc(state.paneState?.get(pane.id)||'unknown')}"></span><div class="pane-title">${esc(title)}</div>${contentSnippet(pane.id)}</button>${action}</div>`;
       }).join('');
       const key='project:'+name;
       const manage=name?`<button type="button" class="project-manage" data-edit-group="${esc(name)}" title="管理成员" aria-label="管理 ${esc(name)} 的成员"><svg class="ico" aria-hidden="true"><use href="#i-members"/></svg></button>`:'';
@@ -1133,6 +1138,33 @@ import {marked} from '/assets/marked.esm.js?v=1';
   $('project-editor').addEventListener('keydown',event=>{
     if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeProjectEditor();}
   });
+  function patchPaneProjects(id,changes){
+    return api('/api/panes/'+encodeURIComponent(id)+'/projects',{method:'PATCH',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(changes)});
+  }
+  async function removeProjectMember(button){
+    const {removeMember:id,project}=button.dataset;
+    if(removingProjectMembers.has(id))return;
+    removingProjectMembers.add(id);
+    const restoreFocus=document.activeElement===button;
+    button.disabled=true;
+    try{
+      await patchPaneProjects(id,{remove:[project]});
+      ++projectRead;
+      projectMap.set(id,(projectMap.get(id)||[]).filter(name=>name!==project));
+      toast('已从「'+project+'」移出');
+      if(projectView)loadProjects();
+    }catch(error){toast(error.message||'移出失败，请重试',4000);}
+    finally{
+      removingProjectMembers.delete(id);
+      button.disabled=false;
+      renderList();
+      if(restoreFocus&&projectView&&!projectEdit&&document.activeElement===document.body){
+        const group=list.querySelector('[data-tree='+CSS.escape('project:'+project)+']');
+        (group?.querySelector('[data-remove-member='+CSS.escape(id)+']')||group?.querySelector('summary'))?.focus({preventScroll:true});
+      }
+    }
+  }
   $('project-results').onclick=async event=>{
     const edit=projectEdit,button=event.target.closest('button');
     if(!edit?.group||!button||edit.busy)return;
@@ -1147,8 +1179,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     edit.busy=true;
     for(const control of $('project-results').querySelectorAll('button'))control.disabled=true;
     try{
-      const result=await api('/api/panes/'+encodeURIComponent(id)+'/projects',{method:'PATCH',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify(remove?{remove:[edit.group]}:{add:[edit.group]})});
+      const result=await patchPaneProjects(id,remove?{remove:[edit.group]}:{add:[edit.group]});
       ++projectRead;
       projectMap.set(id,result.projects);
       if(result.projects.includes(edit.group))edit.members.add(id);else edit.members.delete(id);
@@ -1178,8 +1209,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
       if(edit.pane){
         const selected=new Set([...$('project-options').querySelectorAll('input:checked')].map(box=>box.value));
         const add=[...selected].filter(n=>!edit.initial.has(n)),remove=[...edit.initial].filter(n=>!selected.has(n));
-        if(add.length||remove.length)await api('/api/panes/'+encodeURIComponent(edit.pane)+'/projects',
-          {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({add,remove})});
+        if(add.length||remove.length)await patchPaneProjects(edit.pane,{add,remove});
         message='已保存会话项目';
       }else{
         const result=await api('/api/pane-projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:name})});
@@ -3144,6 +3174,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
   // 「最近」块里的星和树上的星是同一份收藏：谁改了都要通知另一边
   window.addEventListener('tmuxweb:favorites',()=>{loadFavorites();});
   list.addEventListener('toggle',e=>{const d=e.target.closest('details[data-tree]');if(!d)return;d.open?state.treeOpen.add(d.dataset.tree):state.treeOpen.delete(d.dataset.tree);saveTree();},true);list.onclick=e=>{
+    const remove=e.target.closest('[data-remove-member]');
+    if(remove){e.preventDefault();e.stopPropagation();removeProjectMember(remove);return;}
     const manage=e.target.closest('[data-edit-pane],[data-edit-group]');
     if(manage){
       e.preventDefault();e.stopPropagation();

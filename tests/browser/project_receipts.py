@@ -22,6 +22,8 @@ def main():
             for width in (1440,1180,1024,900,834,768,390):
                 shared = '多主机测试'
                 extra = '移动端回归-' + 'abcdefghijkl' * 3
+                failed_removals=[]
+                changes_sent=[]
                 names = [shared]
                 groups = {remote['id']: [shared]}
                 page=browser.new_page(viewport={'width':width,'height':844},has_touch=width==390)
@@ -47,6 +49,10 @@ def main():
                     elif path.endswith('/projects'):
                         pane = path.split('/')[3]
                         changes = r.request.post_data_json
+                        changes_sent.append((pane,changes))
+                        if failed_removals and changes.get('remove')==[shared]:
+                            failed_removals.pop()
+                            return r.fulfill(status=503,json={'detail':'测试移出失败'})
                         groups[pane] = sorted((set(groups.get(pane, [])) | set(changes.get('add', []))) - set(changes.get('remove', [])))
                         data={'pane':pane,'projects':groups[pane]}
                     elif path.endswith('/transcript'):
@@ -107,29 +113,37 @@ def main():
                 click(editor.get_by_role('button',name='返回分组'))
                 expect(empty_group.locator('summary')).to_contain_text('· 0')
                 click(group.locator('summary > span'))
-                remote_edit=group.get_by_role('button',name='管理 #125 的分组')
-                click(remote_edit)
-                expect(editor.get_by_label(shared,exact=True)).to_be_checked()
-                editor.get_by_label(shared,exact=True).uncheck()
-                if width==390:
-                    click(editor.get_by_role('button',name='取消'))
-                else:
-                    page.keyboard.press('Escape')
+                remove=group.get_by_role('button',name=f'从 {shared} 移出 #125')
+                expect(remove.locator('use')).to_have_attribute('href','#i-trash')
+                failed_removals.append(True)
+                click(remove)
+                expect(page.locator('#toast')).to_contain_text('测试移出失败')
+                expect(remove).to_be_enabled()
+                assert groups[remote['id']]==[shared]
+                click(remove)
+                expect(group.locator('summary')).to_contain_text('· 0')
+                assert changes_sent[-1]==(remote['id'],{'remove':[shared]})
                 expect(editor).to_be_hidden()
-                assert groups[remote['id']]==[shared]
-                click(remote_edit)
+                ungrouped=page.locator('details[data-tree="project:"]')
+                click(ungrouped.locator('summary > span'))
+                expect(ungrouped.locator('[data-remove-member]')).to_have_count(0)
+                assign=ungrouped.get_by_role('button',name='为 #125 选择项目')
+                click(assign)
+                editor.get_by_label(shared,exact=True).check()
+                click(editor.get_by_role('button',name='取消'))
+                assert not groups[remote['id']]
+                click(assign)
+                editor.get_by_label(shared,exact=True).check()
                 editor.get_by_label(extra,exact=True).check()
-                assert groups[remote['id']]==[shared]
                 names.append('另一用户的组')
                 groups[remote['id']].append(names[-1])
                 editor.get_by_role('button',name='保存').click()
-                expect(empty_group.locator('summary')).to_contain_text('· 1')
-                assert set(groups[remote['id']])=={shared,extra,'另一用户的组'}
-                click(remote_edit)
-                editor.get_by_label(shared,exact=True).uncheck()
-                editor.get_by_role('button',name='保存').click()
+                expect(group.locator('summary')).to_contain_text('· 1')
+                remove.press('Enter') if width!=390 else remove.tap()
                 expect(group.locator('summary')).to_contain_text('· 0')
                 expect(empty_group.locator('summary')).to_contain_text('· 1')
+                assert set(groups[remote['id']])=={extra,'另一用户的组'}
+                expect(page.locator('#selected-number')).to_have_text('#4')
                 click(empty_group.get_by_role('button',name=f'管理 {extra} 的成员'))
                 search.fill('Ubuntu #4')
                 click(result.get_by_role('button',name='加入'))
