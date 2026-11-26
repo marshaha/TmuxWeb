@@ -165,18 +165,44 @@
   #project-create{margin-inline-start:auto}
   .sidebar-collapsed #sidebar:not(.open) .project-tools{display:none}
   .project-group{margin:3px 0}.project-group summary{cursor:pointer;overflow-wrap:anywhere;padding:5px}.project-group summary button{margin:2px}
-  #project-dialog{max-height:85dvh;overflow:auto}
-  #project-dialog [hidden]{display:none}
-  #project-options{max-height:48dvh;overflow:auto;padding:0;border:0;margin:0;min-width:0}
-  #project-options label{display:flex;align-items:center;gap:8px;min-height:32px;overflow-wrap:anywhere}
-  #project-options input{flex:none}
-  #project-dialog button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
-  @media(max-width:600px){.project-tools button,#project-options label,#project-dialog button{min-height:44px}}
+  .project-group summary{display:flex;align-items:center;gap:3px;flex-wrap:wrap}
+  .project-group summary>span{flex:1 1 7em;min-width:0;overflow-wrap:anywhere}
+  .project-group summary>span::before{content:'▸ ';color:var(--muted)}
+  .project-group[open]>summary>span::before{content:'▾ '}
+  .project-pane,.project-candidate{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px}
+  .project-pane .pane{min-width:0;width:100%}
+  .project-manage,#project-editor button{font:inherit;font-size:12px;background:var(--card);border:1px solid var(--line);color:var(--ink);border-radius:8px;max-width:100%;height:auto;padding:5px 8px;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
+  .project-manage{color:var(--muted)}
+  #sidebar.editing-project>:is(.project-tools,.tree-tools,.tree-search-count,#pane-list,#recent-block,#file-panel){display:none}
+  #project-editor{display:flex;flex:1;min-height:0;min-width:0;padding:8px;overflow:auto;overscroll-behavior:contain}
+  #project-editor[hidden],#project-editor [hidden]{display:none}
+  #project-form{display:flex;flex:1;min-height:0;min-width:0;flex-direction:column;gap:8px}
+  #project-dialog-title{font-size:14px;margin:0;overflow-wrap:anywhere}
+  #project-form label{font-size:13px;overflow-wrap:anywhere}
+  #project-form input:not([type=checkbox]){box-sizing:border-box;width:100%;min-width:0;font:inherit;padding:7px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+  #project-options,#project-results{min-width:0;min-height:0;margin:0;padding:0;border:0;overflow:auto;overscroll-behavior:contain}
+  #project-options label{display:flex;align-items:center;gap:8px;min-height:32px}
+  .project-candidate{padding:4px 0;border-bottom:1px solid var(--line)}
+  .project-candidate span,.project-candidate small{display:block;min-width:0;overflow-wrap:anywhere}
+  .project-candidate small,#project-status{font-size:12px;color:var(--muted)}
+  #project-status{margin:0;overflow-wrap:anywhere}#project-status:empty{display:none}
+  .project-actions{display:flex;flex-wrap:wrap;gap:6px}
+  @media(max-width:760px){.project-tools button,.project-manage,#project-options label,#project-editor button{min-height:44px}#project-editor input:not([type=checkbox]){font-size:16px}}
 </style>
 <div class="app">
   <aside class="sidebar" id="sidebar">
     <header class="brand"><div><div class="brand-name">Tmux Chat</div><div class="brand-sub">本机实时会话</div></div><div class="sidebar-toolbar"><div class="sidebar-tool-frame"><div class="brand-actions"><a class="icon-btn" href="/home" title="主页（收藏与看板）" aria-label="主页" style="text-decoration:none"><svg class="ico"><use href="#i-home"/></svg></a><a class="icon-btn" href="/grid" title="多窗口（几个会话并排）" aria-label="多窗口" style="text-decoration:none"><svg class="ico"><use href="#i-grid"/></svg></a><button class="icon-btn" id="files-toggle" title="文件（当前 pane 目录）" aria-label="文件"><svg class="ico"><use href="#i-folder"/></svg></button><a class="icon-btn" href="/hosts" title="远程主机" aria-label="远程主机" style="text-decoration:none"><svg class="ico"><use href="#i-server"/></svg></a><a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享" style="text-decoration:none"><svg class="ico"><use href="#i-share"/></svg></a><button class="icon-btn inbox-btn" id="inbox-button" title="等你回答（收件箱）" aria-label="等你回答收件箱"><svg class="ico"><use href="#i-bell"/></svg><span class="inbox-badge" id="inbox-badge" hidden></span></button><button class="icon-btn" id="refresh" title="刷新窗口" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button></div></div><button class="icon-btn" id="sidebar-close" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-chevron-left"/></svg></button></div></header>
-    <div class="project-tools" role="group" aria-label="会话视图"><button type="button" id="host-view" aria-pressed="true">主机</button><button type="button" id="project-view" aria-pressed="false">项目</button><button type="button" id="project-create">新建项目</button></div><div class="tree-tools"><input id="pane-search" type="search" placeholder="搜索…" maxlength="256" title="搜索会话信息、最近 500 条聊天；无聊天记录时查最近 200 行终端" autocomplete="off" spellcheck="false" aria-label="搜索会话" aria-describedby="pane-search-progress"><button class="tree-tool" id="tree-expand" type="button" title="展开全部" aria-label="展开全部"><svg class="ico"><use href="#i-tree-open"/></svg></button><button class="tree-tool" id="tree-collapse" type="button" title="折叠全部" aria-label="折叠全部"><svg class="ico"><use href="#i-tree-close"/></svg></button></div><div class="tree-search-count" id="pane-search-count" hidden></div><div class="tree-search-count" id="pane-search-progress" hidden></div><div class="project-tools" id="project-member-tools" hidden><button type="button" id="project-members">管理当前会话的项目</button></div><nav class="pane-list" id="pane-list" aria-label="Tmux panes"></nav>
+    <div class="project-tools" role="group" aria-label="会话视图"><button type="button" id="host-view" aria-pressed="true">主机</button><button type="button" id="project-view" aria-pressed="false">项目</button><button type="button" id="project-create">新建项目</button></div><div class="tree-tools"><input id="pane-search" type="search" placeholder="搜索…" maxlength="256" title="搜索会话信息、最近 500 条聊天；无聊天记录时查最近 200 行终端" autocomplete="off" spellcheck="false" aria-label="搜索会话" aria-describedby="pane-search-progress"><button class="tree-tool" id="tree-expand" type="button" title="展开全部" aria-label="展开全部"><svg class="ico"><use href="#i-tree-open"/></svg></button><button class="tree-tool" id="tree-collapse" type="button" title="折叠全部" aria-label="折叠全部"><svg class="ico"><use href="#i-tree-close"/></svg></button></div><div class="tree-search-count" id="pane-search-count" hidden></div><div class="tree-search-count" id="pane-search-progress" hidden></div><section id="project-editor" aria-labelledby="project-dialog-title" hidden>
+      <form id="project-form">
+        <h2 id="project-dialog-title" tabindex="-1"></h2>
+        <label id="project-name-field">项目名称<input id="project-name" maxlength="64" autocomplete="off"></label>
+        <label id="project-filter-field" hidden>搜索成员<input id="project-filter" type="search" placeholder="服务器、会话、编号或最近别名" autocomplete="off"></label>
+        <fieldset id="project-options" aria-label="所属项目" hidden></fieldset>
+        <div id="project-results" hidden></div>
+        <p id="project-status" role="status"></p>
+        <div class="project-actions"><button type="button" id="project-cancel">返回</button><button type="submit" id="project-save">创建</button></div>
+      </form>
+    </section><nav class="pane-list" id="pane-list" aria-label="Tmux panes"></nav>
 <nav class="file-panel" id="file-panel" hidden aria-label="Pane files"><div class="file-bar"><input class="file-path" id="file-path" type="text" spellcheck="false" autocomplete="off" aria-label="当前路径，可直接修改" title=""><button class="icon-btn" id="file-download" title="打包下载当前目录" aria-label="打包下载"><svg class="ico"><use href="#i-download"/></svg></button><label class="icon-btn file-upload" id="file-choose" title="上传文件" aria-label="上传文件"><svg class="ico"><use href="#i-upload"/></svg><input type="file" id="file-input" multiple></label><button class="icon-btn" id="file-reload" title="刷新" aria-label="刷新目录"><svg class="ico"><use href="#i-refresh"/></svg></button><button class="icon-btn" id="git-open" title="Git：改动 / 检查点 / 回滚" aria-label="Git"><svg class="ico"><use href="#i-git"/></svg></button>
 <button class="icon-btn" id="file-close" title="隐藏文件面板" aria-label="隐藏文件面板"><svg class="ico"><use href="#i-close"/></svg></button></div><div class="file-list" id="file-list"></div><div class="file-foot"><span class="file-host" id="file-host" title="当前主机" hidden></span><span id="file-status">拖拽文件到此处上传</span><span class="file-actions" id="file-actions"><button class="chip-btn" id="file-pick-all" type="button" hidden>全选</button><button class="chip-btn" id="file-pick-none" type="button" hidden>清空</button><button class="chip-btn" id="file-rename" type="button" hidden>重命名</button><button class="chip-btn danger" id="file-delete" type="button" hidden>删除</button><button class="chip-btn primary" id="file-zip" type="button" hidden>下载 zip</button></span></div></nav>
     <footer class="side-foot"><span id="pane-count">0 panes</span><span style="display:flex;align-items:center;gap:6px"><button class="chip-btn" id="settings-open" type="button" title="设置：改密码、导入导出、退出登录"><svg class="ico"><use href="#i-gear"/></svg>设置</button></span></footer>
@@ -277,15 +303,7 @@
   <button class="terminal-key" data-text="&amp;">&amp;</button>
 </div>
 </div></div></div></section>
-    <dialog class="session-dialog" id="project-dialog" aria-labelledby="project-dialog-title">
-      <form id="project-form">
-        <h2 id="project-dialog-title">新建项目</h2>
-        <label class="field" id="project-name-field">项目名称<input id="project-name" maxlength="64" autocomplete="off"></label>
-        <fieldset id="project-options" hidden aria-label="所属项目"></fieldset>
-        <p class="dialog-status" id="project-status" role="status"></p>
-        <div class="dialog-actions"><button type="button" id="project-cancel">取消</button><button type="submit" class="primary" id="project-save">创建</button></div>
-      </form>
-    </dialog>
+
     <dialog class="session-dialog" id="session-dialog" aria-labelledby="session-dialog-title">
     <form id="session-form">
       <h2 id="session-dialog-title">新建 tmux 会话</h2>

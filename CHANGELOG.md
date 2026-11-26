@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.0
+
+- Manage members from each project heading and move a pane or share it across projects from its row. The sidebar editor supports touch and keyboard, and searches local host, session, pane and recent-name metadata together.
+
 ## 0.16.0
 
 - Create named projects from the sidebar, including empty projects. One pane can belong to several projects; existing assignments are preserved.

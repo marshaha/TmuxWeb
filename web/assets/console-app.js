@@ -38,6 +38,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function canAutoFocusComposer(){return !isMobile()&&!isTouch();}
   function openSidebar(){if(isMobile()){$('sidebar').classList.add('open');$('drawer-backdrop').classList.add('show');}else{document.querySelector('.app').classList.remove('sidebar-collapsed');localStorage.setItem('tmux-sidebar-collapsed','0');}}
   function closeSidebar(){
+    if(!$('project-editor').hidden)closeProjectEditor(false);
     window.TmuxPanePreview?.hide();
     if(isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');}else{document.querySelector('.app').classList.add('sidebar-collapsed');localStorage.setItem('tmux-sidebar-collapsed','1');}}
   // Terminal sizing. A soft keyboard firing visualViewport/resize/ResizeObserver for ~250ms used to refit and
@@ -982,6 +983,15 @@ import {marked} from '/assets/marked.esm.js?v=1';
       if(version!==projectRead)return;
       projectMap=new Map(Object.entries(result.memberships||{}));
       projectNames=result.names||[];
+      const edit=projectEdit;
+      if(edit?.group&&edit.ready&&!edit.busy){
+        const members=new Set([...projectMap].filter(([,names])=>names.includes(edit.group)).map(([id])=>id));
+        if(members.size!==edit.members.size||[...members].some(id=>!edit.members.has(id))){
+          edit.members=members;
+          edit.index=null;
+          renderGroupEditor(edit);
+        }
+      }
       renderList();
     }catch(error){if(projectView)showError(error.message);}
   }
@@ -1000,9 +1010,13 @@ import {marked} from '/assets/marked.esm.js?v=1';
       const pending=rows.filter(({pane})=>state.needsInput?.has(pane.id));
       const working=rows.filter(({pane})=>!state.needsInput?.has(pane.id)&&state.paneState?.get(pane.id)==='busy');
       const jump=(items,label)=>items.length?`<button type="button" class="project-jump" data-pane="${esc(items[0].pane.id)}">${items.length} ${label}</button>`:'';
-      const members=rows.map(({pane,host})=>`<button type="button" class="pane${pane.id===state.selected?' selected':''}" data-pane="${esc(pane.id)}"><span class="pane-target">${esc(host.name||host.id)} · ${esc(paneLabel(pane))}</span><span class="pane-state ${esc(state.paneState?.get(pane.id)||'unknown')}"></span><div class="pane-title">${esc(pane.title||pane.target)}</div>${contentSnippet(pane.id)}</button>`).join('');
+      const members=rows.map(({pane,host})=>{
+        const title=window.TmuxRecents?.nameFor(pane.id)||pane.title||pane.target;
+        return `<div class="project-pane"><button type="button" class="pane${pane.id===state.selected?' selected':''}" data-pane="${esc(pane.id)}"><span class="pane-target">${esc(host.name||host.id)} · ${esc(paneLabel(pane))}</span><span class="pane-state ${esc(state.paneState?.get(pane.id)||'unknown')}"></span><div class="pane-title">${esc(title)}</div>${contentSnippet(pane.id)}</button><button type="button" class="project-manage" data-edit-pane="${esc(pane.id)}" aria-label="管理 ${esc(paneLabel(pane))} 的分组">管理</button></div>`;
+      }).join('');
       const key='project:'+name;
-      return `<details class="project-group" data-tree="${esc(key)}"${searching||state.treeOpen.has(key)?' open':''}><summary><span>${esc(name||'未归入项目')} · ${rows.length}</span> ${jump(pending,'等你')}${jump(working,'运行中')}</summary>${members}</details>`;
+      const manage=name?`<button type="button" class="project-manage" data-edit-group="${esc(name)}" aria-label="管理 ${esc(name)} 的成员">成员</button>`:'';
+      return `<details class="project-group" data-tree="${esc(key)}"${searching||state.treeOpen.has(key)?' open':''}><summary><span>${esc(name||'未归入项目')} · ${rows.length}</span>${jump(pending,'等你')}${jump(working,'运行中')}${manage}</summary>${members}</details>`;
     }).join('');
   }
   function setProjectView(on){
@@ -1016,27 +1030,87 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function syncProjectTools(){
     $('host-view').setAttribute('aria-pressed',String(!projectView));
     $('project-view').setAttribute('aria-pressed',String(projectView));
-    $('project-member-tools').hidden=!projectView||!state.selected;
   }
-  const projectDialog=$('project-dialog');
   let projectEdit=null;
-  async function openProjectDialog(pane){
-    const edit={pane,initial:new Set()};
+  function closeProjectEditor(restoreFocus=true){
+    const edit=projectEdit;
+    if(!edit)return;
+    projectEdit=null;
+    $('project-editor').hidden=true;
+    $('sidebar').classList.remove('editing-project');
+    if(!restoreFocus)return;
+    const selector=edit.group?'[data-edit-group='+CSS.escape(edit.group)+']':edit.pane?'[data-edit-pane='+CSS.escape(edit.pane)+']':'#project-create';
+    const origin=edit.origin&&list.querySelector('details[data-tree='+CSS.escape(edit.origin)+']');
+    const trigger=edit.trigger?.isConnected?edit.trigger:origin?.querySelector(selector)||origin?.querySelector('summary')||list.querySelector(selector)||$('project-create');
+    trigger?.focus({preventScroll:true});
+  }
+  function indexGroupCandidates(edit){
+    const rows=[],seen=new Set();
+    function append(pane,host,live){
+      if(seen.has(pane.id))return;
+      seen.add(pane.id);
+      const alias=window.TmuxRecents?.nameFor(pane.id)||'';
+      const hay=paneSearchHaystack(pane,host)+' '+[alias,host.hostname,pane.index,pane.pane_id].filter(v=>v!=null).join(' ').toLowerCase();
+      const title=alias||pane.title||pane.target||pane.id;
+      const location=[host.name||host.id,pane.number?paneLabel(pane):pane.id,pane.target,live?'':'不在当前列表'].filter(Boolean).join(' · ');
+      rows.push({id:pane.id,title,location,number:pane.number,hay,live});
+    }
+    for(const host of state.hosts)for(const pane of host.panes||[])append(pane,host,true);
+    for(const id of edit.members)if(!seen.has(id))append({id},{id:id.includes('~')?id.split('~')[0]:'localhost'},false);
+    edit.hosts=state.hosts;
+    return rows;
+  }
+  function renderGroupEditor(edit){
+    if(!edit.index||edit.hosts!==state.hosts)edit.index=indexGroupCandidates(edit);
+    const terms=parsePaneSearchTerms($('project-filter').value);
+    const members=[],candidates=[];
+    for(const row of edit.index){
+      const member=edit.members.has(row.id);
+      if(!member&&!row.live)continue;
+      if(terms.every(term=>/^#\d+$/.test(term)?term==='#'+row.number:row.hay.includes(term))){
+        (member?members:candidates).push(row);
+      }
+    }
+    const rows=members.concat(candidates);
+    const html=rows.slice(0,edit.limit).map(row=>
+      `<div class="project-candidate"><span>${esc(row.title)}<small>${esc(row.location)}</small></span><button type="button" data-member-id="${esc(row.id)}" ${edit.busy?'disabled':''}>${edit.members.has(row.id)?'移出':'加入'}</button></div>`).join('');
+    const results=$('project-results');
+    const content=html+(rows.length>edit.limit?'<button type="button" data-more-members>显示更多</button>':'');
+    if(edit.content!==content){results.innerHTML=content;edit.content=content;}
+    $('project-status').textContent=edit.note||(!rows.length?'没有匹配的会话':'');
+  }
+  async function openProjectEditor(pane=null,group=null,trigger=null){
+    const edit={pane,group,trigger,origin:trigger?.closest('details')?.dataset.tree,initial:new Set(),members:new Set(),limit:40};
     projectEdit=edit;
-    $('project-dialog-title').textContent=pane?'管理会话 '+paneLabel(state.panes.find(p=>p.id===pane))+' 的项目':'新建项目';
-    $('project-name-field').hidden=!!pane;
+    window.TmuxPanePreview?.hide();
+    $('sidebar').classList.add('editing-project');
+    $('project-editor').hidden=false;
+    $('project-dialog-title').textContent=group?group+' · 成员':pane?'管理 '+paneLabel(state.panes.find(p=>p.id===pane))+' 的分组':'新建项目';
+    $('project-name-field').hidden=!!(pane||group);
     $('project-name').value='';
-    $('project-name').required=!pane;
+    $('project-name').required=!pane&&!group;
+    $('project-filter-field').hidden=!group;
+    $('project-filter').value='';
     $('project-options').replaceChildren();
     $('project-options').hidden=!pane;
+    $('project-results').replaceChildren();
+    $('project-results').hidden=!group;
+    $('project-save').hidden=!!group;
     $('project-save').textContent=pane?'保存':'创建';
-    $('project-save').disabled=!!pane;
-    $('project-status').textContent=pane?'正在读取项目…':'';
-    projectDialog.showModal();
-    if(!pane){$('project-name').focus();return;}
+    $('project-save').disabled=!!(pane||group);
+    $('project-cancel').textContent=group?'返回分组':'取消';
+    $('project-status').textContent=pane||group?'正在读取项目…':'';
+    if(!pane&&!group){$('project-name').focus();return;}
+    $('project-dialog-title').focus({preventScroll:true});
     try{
       const data=await api('/api/pane-projects');
       if(projectEdit!==edit)return;
+      if(group){
+        edit.members=new Set(Object.keys(data.memberships||{}).filter(id=>data.memberships[id].includes(group)));
+        edit.ready=true;
+        renderGroupEditor(edit);
+        return;
+      }
       edit.initial=new Set(data.memberships?.[pane]||[]);
       const labels=data.names.map(name=>{
         const label=document.createElement('label'),box=document.createElement('input');
@@ -1049,14 +1123,52 @@ import {marked} from '/assets/marked.esm.js?v=1';
       $('project-save').disabled=!labels.length;
     }catch(error){if(projectEdit===edit)$('project-status').textContent=error.message;}
   }
-  $('project-create').onclick=()=>openProjectDialog(null);
-  $('project-members').onclick=()=>openProjectDialog(state.selected);
-  $('project-cancel').onclick=()=>projectDialog.close();
-  projectDialog.addEventListener('close',()=>{projectEdit=null;});
+  $('project-create').onclick=event=>openProjectEditor(null,null,event.currentTarget);
+  $('project-cancel').onclick=()=>closeProjectEditor();
+  $('project-filter').oninput=()=>{
+    const edit=projectEdit;
+    if(edit?.group&&edit.ready){edit.limit=40;edit.note='';renderGroupEditor(edit);$('project-results').scrollTop=0;}
+  };
+  $('project-editor').addEventListener('keydown',event=>{
+    if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeProjectEditor();}
+  });
+  $('project-results').onclick=async event=>{
+    const edit=projectEdit,button=event.target.closest('button');
+    if(!edit?.group||!button||edit.busy)return;
+    if(button.hasAttribute('data-more-members')){
+      const shown=edit.limit;
+      edit.limit+=40;
+      renderGroupEditor(edit);
+      $('project-results').querySelectorAll('[data-member-id]')[shown]?.focus();
+      return;
+    }
+    const id=button.dataset.memberId,remove=edit.members.has(id);
+    edit.busy=true;
+    for(const control of $('project-results').querySelectorAll('button'))control.disabled=true;
+    try{
+      const result=await api('/api/panes/'+encodeURIComponent(id)+'/projects',{method:'PATCH',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(remove?{remove:[edit.group]}:{add:[edit.group]})});
+      ++projectRead;
+      projectMap.set(id,result.projects);
+      if(result.projects.includes(edit.group))edit.members.add(id);else edit.members.delete(id);
+      edit.note=remove?'已移出分组':'已加入分组';
+      renderList();
+      if(projectEdit!==edit&&projectEdit?.group)loadProjects();
+    }catch(error){edit.note=error.message;}
+    finally{
+      edit.busy=false;
+      if(projectEdit===edit){
+        edit.content=null;
+        const restore=document.activeElement===button||document.activeElement===document.body;
+        renderGroupEditor(edit);
+        if(restore)$('project-results').querySelector('[data-member-id='+CSS.escape(id)+']')?.focus({preventScroll:true});
+      }
+    }
+  };
   $('project-form').onsubmit=async event=>{
     event.preventDefault();
     const edit=projectEdit;
-    if(!edit||$('project-save').disabled)return;
+    if(!edit||edit.group||$('project-save').disabled)return;
     const name=$('project-name').value.trim();
     if(!edit.pane&&!name){$('project-status').textContent='请输入项目名称';return;}
     $('project-save').disabled=true;
@@ -1072,7 +1184,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
         const result=await api('/api/pane-projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:name})});
         message=result.created?'项目已创建':'项目已存在';
       }
-      if(projectEdit===edit){projectDialog.close();setProjectView(true);toast(message);}
+      if(projectEdit===edit){closeProjectEditor();setProjectView(true);toast(message);}
       else if(projectView)loadProjects();
     }catch(error){
       if(projectEdit===edit){$('project-status').textContent=error.message;$('project-save').disabled=false;}
@@ -1081,6 +1193,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function renderList(){const terms=parsePaneSearchTerms(paneSearchQuery);const searching=terms.length>0;
     const view=searching?filterHostsForSearch(state.hosts,terms,state.needsInput,contentHits):{hosts:state.hosts,matched:0};
     syncProjectTools();
+    if(projectEdit?.group&&projectEdit.ready&&!projectEdit.busy&&projectEdit.hosts!==state.hosts)renderGroupEditor(projectEdit);
     const html=projectView?projectTree(view.hosts,searching):view.hosts.map(host=>{const sessions=new Map();for(const p of host.panes||[]){if(!sessions.has(p.session))sessions.set(p.session,new Map());const windows=sessions.get(p.session),windowKey=`${p.window}:${p.window_name||''}`;if(!windows.has(windowKey))windows.set(windowKey,[]);windows.get(windowKey).push(p);}const sessionHtml=[...sessions].map(([session,windows])=>{const windowHtml=[...windows].map(([windowKey,panes])=>{const first=panes[0],label=`${first.window}${first.window_name?': '+first.window_name:''}`,leaves=[...panes].sort((a,b)=>((state.needsInput&&state.needsInput.has(b.id)?1:0)-(state.needsInput&&state.needsInput.has(a.id)?1:0))).map(p=>`<button class="pane ${p.id===state.selected?'selected':''}${state.needsInput&&state.needsInput.has(p.id)?' needs-you':''}" data-pane="${esc(p.id)}"><div class="pane-row"><span class="dot ${p.active?'active':''}"></span><span class="pane-num">${paneLabel(p)}</span>${state.needsInput&&state.needsInput.has(p.id)?'<span class="pane-need">等你</span>':''}<span class="pane-target">pane ${esc(p.index)} · ${esc(p.command)}</span><span class="pane-star ${state.favorites.has(p.id)?'on':''}" data-star="${esc(p.id)}" role="button" tabindex="-1" title="${state.favorites.has(p.id)?'取消收藏':'收藏到主页'}"><svg class="ico"><use href="#i-${state.favorites.has(p.id)?'star-fill':'star'}"/></svg></span><span class="pane-state ${state.paneState.get(p.id)||'unknown'}"></span></div><div class="pane-title">${esc(p.title||'(无标题)')}</div><div class="pane-meta">${esc(p.path)}</div>${contentSnippet(p.id)}</button>`).join('');return treeDetails(`${host.id}/${session}/${windowKey}`,label,leaves,'window',`${panes.length}`,'',
       `<button class="tree-tool tree-rename" type="button" data-rename-window="${esc(first.id)}" data-rename-value="${esc(first.window_name||'')}" title="改窗口名" aria-label="改窗口名"><svg class="ico"><use href="#i-pencil"/></svg></button>`,searching);}).join('');
       return treeDetails(`${host.id}/${session}`,session,windowHtml,'session',`${windows.size} windows`,'',
@@ -3028,7 +3141,14 @@ import {marked} from '/assets/marked.esm.js?v=1';
     openSessionDialog(add.dataset.newSession,add.dataset.sessionPath||'');},true);
   // 「最近」块里的星和树上的星是同一份收藏：谁改了都要通知另一边
   window.addEventListener('tmuxweb:favorites',()=>{loadFavorites();});
-  list.addEventListener('toggle',e=>{const d=e.target.closest('details[data-tree]');if(!d)return;d.open?state.treeOpen.add(d.dataset.tree):state.treeOpen.delete(d.dataset.tree);saveTree();},true);list.onclick=e=>{const renameSession=e.target.closest('[data-rename-session]');
+  list.addEventListener('toggle',e=>{const d=e.target.closest('details[data-tree]');if(!d)return;d.open?state.treeOpen.add(d.dataset.tree):state.treeOpen.delete(d.dataset.tree);saveTree();},true);list.onclick=e=>{
+    const manage=e.target.closest('[data-edit-pane],[data-edit-group]');
+    if(manage){
+      e.preventDefault();e.stopPropagation();
+      openProjectEditor(manage.dataset.editPane||null,manage.dataset.editGroup||null,manage);
+      return;
+    }
+    const renameSession=e.target.closest('[data-rename-session]');
     if(renameSession){e.preventDefault();e.stopPropagation();
       renameTmuxSession(renameSession.dataset.renameHost,renameSession.dataset.renameSession);return;}
     const renameWindow=e.target.closest('[data-rename-window]');
@@ -3232,7 +3352,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
       if(initialParams.get('projects')==='new'){
         initialParams.set('projects','1');
         history.replaceState(history.state,'','/?'+initialParams.toString());
-        openProjectDialog(null);
+        openProjectEditor();
       }
       return;
     }
@@ -3250,6 +3370,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
       hideWhenFiles: true,
       // 名字先到的是「最近/收藏」，pane 标题后到：任一边更新都重画一次顶栏
       onNames: () => {
+        if(projectEdit?.group&&projectEdit.ready){projectEdit.index=null;renderGroupEditor(projectEdit);}
         const id = state.selected;
         if (!id) return;
         const p = state.panes.find(x => x.id === id);

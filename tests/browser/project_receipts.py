@@ -17,7 +17,8 @@ def main():
             fixture.login()
             browser=pw.chromium.launch()
             base=dict(fixture.tmux.panes[0], number=4, host_id='localhost')
-            remote=dict(base,id='robo~%4',host_id='robo',number=125)
+            remote=dict(base,id='robo~%4',host_id='robo',number=125,session='build',window_name='review',pane_id='%4')
+            workers=[dict(base,id=f'%{n}',number=n,title=f'分页测试会话 {n}') for n in range(300,345)]
             for width in (1440,1180,1024,900,834,768,390):
                 shared = '多主机测试'
                 extra = '移动端回归-' + 'abcdefghijkl' * 3
@@ -28,8 +29,10 @@ def main():
                     u=urlsplit(r.request.url)
                     path=unquote(u.path)
                     if path=='/api/hosts':
-                        data={'hosts':[{'id':'localhost','name':'Ubuntu','panes':[base]},
+                        data={'hosts':[{'id':'localhost','name':'Ubuntu','panes':[base,*workers]},
                                        {'id':'robo','name':'robo','panes':[remote]}]}
+                    elif path=='/api/home/recent':
+                        data={'recent':[{'pane':remote['id'],'number':125,'label':'夜间回归','pinned':True}]}
                     elif path=='/api/panes/status':
                         data={'observed_at':time.time(),'panes':[{'id':remote['id'],'status':'idle','needs_input':True,
                               'prompt':{'source':'script_status','kind':'notice','title':'脚本请求人工处理','read_only':True,
@@ -44,8 +47,8 @@ def main():
                     elif path.endswith('/projects'):
                         pane = path.split('/')[3]
                         changes = r.request.post_data_json
-                        groups[pane] = sorted((set(groups.get(pane, [])) | set(changes['add'])) - set(changes['remove']))
-                        data={'ok':True}
+                        groups[pane] = sorted((set(groups.get(pane, [])) | set(changes.get('add', []))) - set(changes.get('remove', [])))
+                        data={'pane':pane,'projects':groups[pane]}
                     elif path.endswith('/transcript'):
                         data={'provider':'codex','messages':[{'id':'q','role':'user','text':'测试'}]}
                     elif path in ('/', '/home') or path.startswith('/assets/'):
@@ -72,28 +75,72 @@ def main():
                 page.locator('#menu').click()
                 expect(page.get_by_role('button',name='新建项目')).to_be_visible()
                 page.get_by_role('button',name='项目',exact=True).click()
-                page.get_by_role('button',name='管理当前会话的项目').click()
-                form=page.locator('#project-dialog')
-                for name in (shared, extra):
-                    box=form.get_by_label(name,exact=True)
-                    box.check()
-                    assert box.locator('..').evaluate('e=>e.scrollWidth<=e.clientWidth+1')
-                assert base['id'] not in groups
-                form.get_by_role('button',name='保存').click()
-                expect(empty_group.locator('summary')).to_contain_text('· 1')
-                page.get_by_role('button',name='管理当前会话的项目').click()
-                expect(form.get_by_label(shared,exact=True)).to_be_checked()
-                form.get_by_label(extra,exact=True).uncheck()
-                form.get_by_role('button',name='保存').click()
-                expect(empty_group.locator('summary')).to_contain_text('· 0')
                 group=page.locator('details[data-tree="project:多主机测试"]')
-                expect(group.locator('summary')).to_contain_text('· 2')
-                group.locator('summary > span').click()
-                expect(group.locator('.pane')).to_have_count(2)
-                sizes=page.locator('.project-tools button,.project-jump').evaluate_all(
+                editor=page.locator('#project-editor')
+                def click(button):
+                    button.tap() if width==390 else button.click()
+                click(empty_group.get_by_role('button', name=f'管理 {extra} 的成员'))
+                expect(editor).to_be_visible()
+                assert not page.locator('dialog[open]').count()
+                search=editor.get_by_role('searchbox')
+                result=editor.locator('.project-candidate')
+                search.fill('分页测试')
+                expect(result).to_have_count(40)
+                more=editor.get_by_role('button',name='显示更多')
+                click(more)
+                expect(result).to_have_count(45)
+                expect(result.nth(40).get_by_role('button')).to_be_focused()
+                assert editor.locator('#project-results').evaluate('el=>el.scrollTop>0 && el.scrollWidth<=el.clientWidth+1')
+                search.fill('robo build review %4 #125 夜间')
+                expect(result).to_have_count(1)
+                expect(result).to_contain_text('夜间回归')
+                click(result.get_by_role('button',name='加入'))
+                expect(result.get_by_role('button',name='移出')).to_be_enabled()
+                assert set(groups[remote['id']])=={shared,extra}
+                search.fill('robo #12')
+                expect(result).to_have_count(0)
+                search.fill('夜间')
+                click(result.get_by_role('button',name='移出'))
+                expect(result.get_by_role('button',name='加入')).to_be_enabled()
+                click(editor.get_by_role('button',name='返回分组'))
+                expect(empty_group.locator('summary')).to_contain_text('· 0')
+                click(group.locator('summary > span'))
+                remote_edit=group.get_by_role('button',name='管理 #125 的分组')
+                click(remote_edit)
+                expect(editor.get_by_label(shared,exact=True)).to_be_checked()
+                editor.get_by_label(shared,exact=True).uncheck()
+                if width==390:
+                    click(editor.get_by_role('button',name='取消'))
+                else:
+                    page.keyboard.press('Escape')
+                expect(editor).to_be_hidden()
+                assert groups[remote['id']]==[shared]
+                click(remote_edit)
+                editor.get_by_label(extra,exact=True).check()
+                assert groups[remote['id']]==[shared]
+                names.append('另一用户的组')
+                groups[remote['id']].append(names[-1])
+                editor.get_by_role('button',name='保存').click()
+                expect(empty_group.locator('summary')).to_contain_text('· 1')
+                assert set(groups[remote['id']])=={shared,extra,'另一用户的组'}
+                click(remote_edit)
+                editor.get_by_label(shared,exact=True).uncheck()
+                editor.get_by_role('button',name='保存').click()
+                expect(group.locator('summary')).to_contain_text('· 0')
+                expect(empty_group.locator('summary')).to_contain_text('· 1')
+                click(empty_group.get_by_role('button',name=f'管理 {extra} 的成员'))
+                search.fill('Ubuntu #4')
+                click(result.get_by_role('button',name='加入'))
+                expect(result.get_by_role('button',name='移出')).to_be_enabled()
+                click(editor.get_by_role('button',name='返回分组'))
+                expect(empty_group.locator('summary')).to_contain_text('· 2')
+                expect(page.locator('#selected-number')).to_contain_text('4')
+                click(empty_group.locator('summary > span'))
+                expect(empty_group.locator('.pane')).to_have_count(2)
+                sizes=page.locator('.project-tools button,.project-jump,.project-manage').evaluate_all(
                     'buttons=>buttons.map(b=>[b.textContent,b.scrollWidth,b.clientWidth,getComputedStyle(b).display])')
                 assert all(sw<=cw+1 for _,sw,cw,_ in sizes), (width,sizes)
-                group.get_by_role('button',name='1 等你').click()
+                empty_group.get_by_role('button',name='1 等你').click()
                 expect(page.locator('#selected-number')).to_contain_text('125')
                 page.close()
                 print(f'{width}px pass',flush=True)
