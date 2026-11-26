@@ -848,6 +848,8 @@ agent 打一行 `[file] <绝对路径> (N bytes)`。两台机器**不需要**共
 
 上限默认 64MB（`TMUXWEB_SEND_FILE_MAX`），文件名不允许带路径分隔符，`notify=false` 就只落盘不打扰对方。
 
+仅授权传文件时，可给客户端单独注册原生 HTTP `/mcp`。管理员在服务器上调用 `mcp_file_grants.issue(target, handle, pane_pid, cwd)`，将返回值作为此客户端的 Bearer 凭证私下配置。它只提供 `send_file`，限指定 pane 及签发时的工作目录，静默落盘且拒绝覆盖同名文件。服务器仅在 `~/.config/tmuxweb/file-grants/` 保存以凭证 SHA-256 命名的授权记录，删除对应记录即可撤销。该模式支持本机和可运行 Python 3 的托管主机。
+
 安装：
 
 ```bash

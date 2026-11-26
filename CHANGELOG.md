@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.19.0
+
+- Issue revocable native MCP credentials limited to silent file delivery to a pinned pane and working directory. Existing filenames are preserved.
+
 ## 0.18.1
 
 - Remove a pane directly from the current project with the member-row trash button. Ungrouped panes show an add button.

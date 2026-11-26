@@ -4293,6 +4293,41 @@ class TmuxWebTests(unittest.TestCase):
             self.assertEqual(payload["size"], 0)
             self.assertEqual((Path(directory) / "upload_files" / "empty.txt").read_bytes(), b"")
 
+    def test_scoped_mcp_file_grant(self):
+        import hashlib
+        import mcp_file_grants as grants
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp, patch.object(grants, "directory", return_value=Path(tmp)/"grants"):
+            cwd = Path(tmp)/"target"
+            cwd.mkdir()
+            self.tmux.panes[0].update(path=str(cwd), pane_pid="105")
+            token = grants.issue("%4", "#3", "105", str(cwd))
+            self.client.headers.update({"Authorization": "Bearer " + token})
+            listed = self.client.post("/mcp", json={"id": 1, "method": "tools/list"}).json()
+            self.assertEqual([t["name"] for t in listed["result"]["tools"]], ["send_file"])
+            self.assertEqual(self.client.get("/api/panes").status_code, 401)
+            args = dict(target="#3", name="doc.bin", content="QUJD")
+            for tool, overrides in (("send_agent", {}), ("run_command", {}), ("send_file", {"target":"%5"}),
+                                    ("send_file", {"name":"../elsewhere"}), ("send_file", {"notify":True}),
+                                    ("send_file", {"path":"/tmp/example"}), ("send_file", {"dir":"/tmp"})):
+                self.assertTrue(self.mcp_call(tool, dict(args, **overrides))[1])
+            (cwd/"upload_files").symlink_to(Path(tmp), target_is_directory=True)
+            self.assertTrue(self.mcp_call("send_file",args)[1])
+            (cwd/"upload_files").unlink()
+            result, error = self.mcp_call("send_file",args)
+            self.assertFalse(error, result)
+            self.assertEqual(result["sha256"], hashlib.sha256(b"ABC").hexdigest())
+            self.assertFalse(result["notified"])
+            self.assertTrue(self.mcp_call("send_file",dict(args,content="REVG"))[1])
+            self.assertEqual((cwd/"upload_files/doc.bin").read_bytes(), b"ABC")
+            self.tmux.panes[0]["pane_pid"] = "106"
+            self.assertTrue(self.mcp_call("send_file",dict(args,name="next.bin"))[1])
+            record = next(grants.directory().iterdir())
+            record.write_text("null")
+            self.assertEqual(self.client.post("/mcp", json={"id":2,"method":"tools/list"}).status_code,401)
+            record.unlink()
+            self.assertEqual(self.client.post("/mcp", json={"id":2,"method":"tools/list"}).status_code,401)
+
     def test_mcp_send_file_rejects_a_caller_side_path(self):
         """服务端 /mcp 读不到调用方机器上的文件：必须传 base64 content。"""
         self.login()

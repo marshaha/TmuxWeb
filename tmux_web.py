@@ -53,6 +53,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Redirec
                                Response, StreamingResponse)
 from pydantic import BaseModel, Field, StrictInt, ValidationError, field_validator
 import file_browser
+import mcp_file_grants
 from home_store import HomeStore
 import mcp_relay
 import agent_status
@@ -5136,17 +5137,34 @@ def create_app(
                     "size": result.get("size", len(data)), "notified": sent}
         raise McpToolError("unknown tool: %s" % name)
 
-    def require_mcp_auth(request: Request) -> None:
+    def require_mcp_auth(request: Request) -> dict | None:
         # LAN-only deployments can skip the bearer header: TMUX_WEB_MCP_AUTH=off
+        header = request.headers.get("authorization", "").split(None, 1)
+        if len(header) == 2 and header[0].lower() == "bearer" and header[1].startswith(mcp_file_grants.PREFIX):
+            try:
+                return mcp_file_grants.lookup(header[1])
+            except ValueError as exc:
+                raise HTTPException(401, "invalid file credential") from exc
         if mcp_auth_required:
             require_auth(request)
+        return None
 
     @app.post("/mcp")
     async def mcp_endpoint(request: Request):
         """Streamable-HTTP MCP endpoint: agents point a URL here instead of spawning python3."""
-        require_mcp_auth(request)
+        grant = require_mcp_auth(request)
         try:
-            payload = await request.json()
+            if grant is None:
+                payload = await request.json()
+            else:
+                body = bytearray()
+                limit = min(upload_limit, int(os.environ.get("TMUXWEB_SEND_FILE_MAX") or 64 * 1024 * 1024))
+                body_limit = 4 * ((limit + 2) // 3) + 16384
+                async for chunk in request.stream():
+                    if len(body) + len(chunk) > body_limit:
+                        raise HTTPException(413, "file request exceeds size limit")
+                    body.extend(chunk)
+                payload = json.loads(body)
         except (ValueError, UnicodeDecodeError):
             return JSONResponse({"jsonrpc": "2.0", "id": None,
                                  "error": {"code": -32700, "message": "invalid JSON"}}, status_code=400)
@@ -5174,12 +5192,27 @@ def create_app(
         if method == "ping":
             return reply({})
         if method == "tools/list":
+            if grant is not None:
+                return reply({"tools": [mcp_file_grants.schema(grant)]})
             plugin_tools = plugin_manager["mgr"].tool_schemas() if plugin_manager.get("mgr") else []
             return reply({"tools": mcp_relay.tool_schemas(require_project_caller=True) + plugin_tools})
         if method == "tools/call":
             params = payload.get("params") or {}
             try:
-                result = await perform_mcp_tool(str(params.get("name") or ""), params.get("arguments") or {})
+                if grant is not None:
+                    if not isinstance(params, dict) or params.get("name") != "send_file":
+                        raise McpToolError("credential only permits send_file")
+                    try:
+                        name, data = mcp_file_grants.arguments(grant, params.get("arguments"), limit)
+                        transport, _, pane = await file_target(grant["target"])
+                        if transport is not tmux and not hasattr(transport, "run"):
+                            raise ValueError("unsupported file receiver")
+                        result = await asyncio.to_thread(mcp_file_grants.deliver, grant, pane,
+                                                         None if transport is tmux else transport, name, data)
+                    except (ValueError, RuntimeError, OSError, HTTPException) as exc:
+                        raise McpToolError(str(exc)) from exc
+                else:
+                    result = await perform_mcp_tool(str(params.get("name") or ""), params.get("arguments") or {})
             except McpToolError as exc:
                 detail: dict = {"error": str(exc)}
                 if exc.tail:
