@@ -192,6 +192,8 @@
     if (found?.source === 'cursor_menu_notice' && observedScreen !== null) found = screenNotice;
     if (found?.source === 'codex_screen_notice' && found.revision === screenNotice?.revision) found = screenNotice;
     found ||= screenNotice;
+    if (document.getElementById('native-form')?.matches('[data-open][data-command]') &&
+        (codexCard(found) || found?.source === 'codex_screen_notice')) found = null;
     const previous = lastStatus;
     lastStatus = found?.revision || '';
     if (!found || !lastStatus) {

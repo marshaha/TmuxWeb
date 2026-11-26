@@ -4,18 +4,19 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shlex
 import uuid
 
 from websockets import unix_connect
 from websockets.exceptions import WebSocketException
 
-from agent_prompts import codex_queued_questions, codex_tool_menu
+from agent_prompts import codex_command_approval, codex_queued_questions, codex_tool_menu
 from hermes_forms import Receipts, decode_answers
 
 
 def thread_for_title(home, title):
     # Codex adds the spinner or the Action Required segment to its window title.
-    parts = {re.sub(r"^[⠀-⣿]\\s*", "", part.strip()) for part in title.split(" | ")}
+    parts = {re.sub(r"^[⠀-⣿]\s*", "", part.strip()) for part in title.split(" | ")}
     names = {}
     with (home / ".codex/session_index.jsonl").open() as index:
         for line in index:
@@ -81,7 +82,8 @@ def fields_for(item):
 async def exchange(home, pane, pid, snapshot, submission, rpc, channel=None):
     screen, title, cwd = snapshot()
     tool_menu = codex_tool_menu(screen)
-    if not tool_menu and not codex_queued_questions(screen):
+    command_menu = codex_command_approval(screen)
+    if not (command_menu or tool_menu or codex_queued_questions(screen)):
         return {"status": "closed"}
     thread, name = thread_for_title(home, title)
     if not thread:
@@ -97,7 +99,7 @@ async def exchange(home, pane, pid, snapshot, submission, rpc, channel=None):
     if not turns or turns[0].get("status") != "inProgress":
         return {"status": "closed"}
     turn = turns[0]["id"]
-    if tool_menu:
+    if tool_menu or command_menu:
         if channel is None:
             return {"status": "unavailable"}
         resumed = (await rpc("thread/resume", {"threadId": thread, "excludeTurns": True}))["thread"]
@@ -112,6 +114,9 @@ async def exchange(home, pane, pid, snapshot, submission, rpc, channel=None):
         pending = list(channel.pending.values())
         if len(pending) != 1:
             return {"status": "closed"}
+        if command_menu:
+            return await command_approval(home, pane, pid, snapshot, submission, thread, name, cwd,
+                                          turn, command_menu, pending[0], channel)
         return await tool_approval(home, pane, pid, snapshot, submission, thread, name, cwd,
                                    turn, tool_menu, pending[0], channel)
     item = question_from_rollout(path, turn)
@@ -157,6 +162,56 @@ async def exchange(home, pane, pid, snapshot, submission, rpc, channel=None):
     return {"status":result}
 
 
+def command_matches_menu(command, menu):
+    display = menu["options"][0]["description"][2:]
+    if command == display:
+        return True
+    # The app-server serializes argv with shell quoting. The TUI displays the
+    # script argument of its login shell. Only unwrap a literal argument;
+    # substitutions and shell operators outside that argument must stay visible.
+    match = re.fullmatch(r"(/(?:usr/(?:local/)?)?bin/(?:zsh|bash|sh)) -lc (.+)", command, re.S)
+    if not match:
+        return False
+    quoted = "'" + display.replace("'", "'\\''") + "'"
+    return match[2] in (shlex.quote(display), quoted)
+
+
+async def command_approval(home, pane, pid, snapshot, submission, thread, name, cwd, turn, menu, request, channel):
+    params = request.get("params") or {}
+    if (request.get("method") != "item/commandExecution/requestApproval" or type(request.get("id")) not in (int, str)
+            or params.get("threadId") != thread or params.get("turnId") != turn or not params.get("itemId")
+            or params.get("kind", "command") != "command" or params.get("networkApprovalContext")
+            or params.get("additionalPermissions")):
+        return {"status": "closed"}
+    command = params.get("command")
+    if not isinstance(command, str) or not command or len(command) > 10000:
+        return {"status": "closed"}
+    # The native request is authoritative. Require the same command on the
+    # current screen. Do not normalize shell whitespace or guess truncated text.
+    if not command_matches_menu(command, menu):
+        return {"status": "closed"}
+    screen, now_title, now_cwd = snapshot()
+    live = codex_command_approval(screen)
+    if (now_cwd != cwd or thread_for_title(home, now_title) != (thread, name)
+            or not live or live["revision"] != menu["revision"]):
+        return {"status": "closed"}
+    decisions = params.get("availableDecisions")
+    if decisions is None:
+        decisions = ["accept", "decline"]
+    if not isinstance(decisions, list) or "accept" not in decisions or not ("decline" in decisions or "cancel" in decisions):
+        return {"status": "closed"}
+    choices = {"仅批准这一次": {"decision": "accept"},
+               "拒绝此次命令": {"decision": "decline" if "decline" in decisions else "cancel"}}
+    details = [command]
+    for field, label in (("cwd", "目录"), ("environmentId", "环境"), ("reason", "原因")):
+        if params.get(field):
+            details.append(label + "：" + str(params[field]))
+    if len("\n".join(details)) > 12000:
+        return {"status": "unavailable"}
+    return await approval_form(home, pane, pid, submission, thread, turn, request, channel,
+                               "允许执行这条命令？", "\n".join(details), choices)
+
+
 async def tool_approval(home, pane, pid, snapshot, submission, thread, name, cwd, turn, menu, request, channel):
     params = request.get("params") or {}
     meta = params.get("_meta")
@@ -190,17 +245,24 @@ async def tool_approval(home, pane, pid, snapshot, submission, thread, name, cwd
             detail += "\n" + json.dumps(meta[key], ensure_ascii=False)
     if len(title) + len(detail) > 12000:
         return {"status": "unavailable"}
-    fields = [{"id": "decision", "title": title, "description": detail, "multi": False, "other": False,
-               "choices": [label for label, _, _ in choices.values()]}]
-    identity = [pane, pid, thread, turn, request]
-    revision = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     screen, now_title, now_cwd = snapshot()
     if now_cwd != cwd or thread_for_title(home, now_title) != (thread, name) or codex_tool_menu(screen) != menu:
         return {"status": "closed"}
     if " ".join(title.split()) not in " ".join(screen.split()):
         return {"status": "closed"}
+    replies = {label: {"action": action, "content": None, "_meta": metadata}
+               for label, action, metadata in choices.values()}
+    return await approval_form(home, pane, pid, submission, thread, turn, request, channel, title, detail, replies)
+
+
+async def approval_form(home, pane, pid, submission, thread, turn, request, channel, title, detail, replies):
+    fields = [{"id": "decision", "title": title, "description": detail, "multi": False, "other": False,
+               "choices": list(replies)}]
+    identity = [pane, pid, thread, turn, request]
+    revision = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     if submission is None:
         return {"status": "open", "form": {"provider": "Codex", "kind": "approval",
+                                           "approval_type": "command" if request["method"] == "item/commandExecution/requestApproval" else "tool",
                                            "revision": revision, "questions": fields}}
     if submission.get("revision") != revision:
         return {"status": "closed"}
@@ -212,8 +274,7 @@ async def tool_approval(home, pane, pid, snapshot, submission, thread, name, cwd
     prior = receipts.access("claim", retry_pending=False)
     if prior:
         return prior
-    _, action, meta = next(item for item in choices.values() if item[0] == choice)
-    result = await channel.answer(thread, rid, {"action": action, "content": None, "_meta": meta})
+    result = await channel.answer(thread, request["id"], replies[choice])
     receipts.access("finish", result)
     return {"status": result}
 

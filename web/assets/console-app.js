@@ -379,7 +379,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const native=nativeHermesNotice(signal);
     const isHermes=pane && (pane.provider==='hermes' || pane.command==='hermes' || native || state.transcriptProvider==='hermes');
     const probe=isHermes && state.nativeProbe?.has(pane.id);
-    const followup=tailLoop?.pane===state.selected && tailLoop.followup || (['codex_followup','codex_tool_permission'].includes(signal?.source) && signal);
+    const followup=tailLoop?.pane===state.selected && tailLoop.followup || (['codex_followup','codex_tool_permission','codex_screen_notice'].includes(signal?.source) && signal);
     if(followup)state.codexFormPane=state.selected;
     const openCodex=state.codexFormPane===state.selected && !!$('native-form').dataset.open;
     window.TmuxNativeForm?.sync(isHermes || followup || openCodex ? (pane?.id || state.selected) : '',
@@ -1012,10 +1012,10 @@ import {marked} from '/assets/marked.esm.js?v=1';
       const jump=(items,label)=>items.length?`<button type="button" class="project-jump" data-pane="${esc(items[0].pane.id)}">${items.length} ${label}</button>`:'';
       const members=rows.map(({pane,host})=>{
         const title=window.TmuxRecents?.nameFor(pane.id)||pane.title||pane.target;
-        return `<div class="project-pane"><button type="button" class="pane${pane.id===state.selected?' selected':''}" data-pane="${esc(pane.id)}"><span class="pane-target">${esc(host.name||host.id)} · ${esc(paneLabel(pane))}</span><span class="pane-state ${esc(state.paneState?.get(pane.id)||'unknown')}"></span><div class="pane-title">${esc(title)}</div>${contentSnippet(pane.id)}</button><button type="button" class="project-manage" data-edit-pane="${esc(pane.id)}" aria-label="管理 ${esc(paneLabel(pane))} 的分组">管理</button></div>`;
+        return `<div class="project-pane"><button type="button" class="pane${pane.id===state.selected?' selected':''}" data-pane="${esc(pane.id)}"><span class="pane-target">${esc(host.name||host.id)} · ${esc(paneLabel(pane))}</span><span class="pane-state ${esc(state.paneState?.get(pane.id)||'unknown')}"></span><div class="pane-title">${esc(title)}</div>${contentSnippet(pane.id)}</button><button type="button" class="project-manage" data-edit-pane="${esc(pane.id)}" title="管理所属分组" aria-label="管理 ${esc(paneLabel(pane))} 的分组"><svg class="ico" aria-hidden="true"><use href="#i-gear"/></svg></button></div>`;
       }).join('');
       const key='project:'+name;
-      const manage=name?`<button type="button" class="project-manage" data-edit-group="${esc(name)}" aria-label="管理 ${esc(name)} 的成员">成员</button>`:'';
+      const manage=name?`<button type="button" class="project-manage" data-edit-group="${esc(name)}" title="管理成员" aria-label="管理 ${esc(name)} 的成员"><svg class="ico" aria-hidden="true"><use href="#i-members"/></svg></button>`:'';
       return `<details class="project-group" data-tree="${esc(key)}"${searching||state.treeOpen.has(key)?' open':''}><summary><span>${esc(name||'未归入项目')} · ${rows.length}</span>${jump(pending,'等你')}${jump(working,'运行中')}${manage}</summary>${members}</details>`;
     }).join('');
   }
@@ -1028,6 +1028,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   $('project-view').onclick=()=>setProjectView(true);
   $('host-view').onclick=()=>setProjectView(false);
   function syncProjectTools(){
+    $('project-actions').hidden=!projectView;
     $('host-view').setAttribute('aria-pressed',String(!projectView));
     $('project-view').setAttribute('aria-pressed',String(projectView));
   }
@@ -2308,7 +2309,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
         const data=await api('/api/panes/'+encodeURIComponent(id)+'/tail?lines=12&color=1',{signal:loop.controller.signal});
         if(tailLoop!==loop)return;
         tailNav.disabled=false;
-        const followup=data.codex_tool_permission || data.codex_followup || null;
+        const followup=data.codex_tool_permission || data.codex_followup || (!data.codex_verified_approval && data.codex_screen_notice) || null;
         const followupChanged=loop.followup?.revision!==followup?.revision || loop.followup===undefined;
         loop.followup=followup;
         if(followupChanged){
@@ -2365,6 +2366,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const card=$('native-form'), follow=state.stick;
     expandedForm='';
     syncLiveTail();
+    window.TmuxPrompt?.showStatus(currentInteraction());
     if(card.dataset.open && follow)card.scrollIntoView({block:'start'});
   });
   function openInlineTerminal(){

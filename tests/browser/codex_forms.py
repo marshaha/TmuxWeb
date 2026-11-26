@@ -14,7 +14,7 @@ from websockets.sync.server import unix_serve
 from playwright.sync_api import expect, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tests.test_codex_forms import MCP_SCREEN, Owner, permission_request
+from tests.test_codex_forms import COMMAND_SCREEN, MCP_SCREEN, Owner, command_request, permission_request
 from tests.test_tmux_web import TmuxWebTests
 
 
@@ -133,6 +133,21 @@ def main():
                         assert owner.decisions == [{"action": "cancel", "content": None,
                                                     "_meta": {"codex_approval_cancellation_reason": "user"}}]
                         assert len(owner.sent) == 1 and not fixture.tmux.keys
+                        fixture.tmux.output = COMMAND_SCREEN
+                        owner.pending = command_request(owner)
+                        expect(card.get_by_role("radio")).to_have_count(2, timeout=22000)
+                        expect(card).to_contain_text("python3 check.py")
+                        expect(card.get_by_role("radio", checked=True)).to_have_count(0)
+                        expect(footer.locator("#prompt-card")).to_be_hidden()
+                        once = card.get_by_label("仅批准这一次")
+                        once.tap() if width == 390 else once.click()
+                        refuse = card.get_by_label("拒绝此次命令")
+                        refuse.tap() if width == 390 else refuse.press("Space")
+                        expect(refuse).to_be_checked()
+                        assert len(owner.decisions) == 1 and not fixture.tmux.keys
+                        submit.tap() if width == 390 else submit.press("Enter")
+                        expect(card).to_contain_text("审批已结束")
+                        assert owner.decisions[-1] == {"decision": "cancel"} and not fixture.tmux.keys
                         page.close()
                     print(f"{width}px pass",flush=True)
             browser.close()

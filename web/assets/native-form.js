@@ -86,6 +86,7 @@
     form.hidden = false;
     box.hidden = false;
     note.textContent = provider === 'Codex' && next.kind !== 'approval' ? '可先改选。提交后，答案会作为聊天消息发回本轮对话。' : '可修改选项，确认后提交';
+    box.toggleAttribute('data-command',next.approval_type==='command');
     markOpen(next.revision);
   }
   async function call(method, body) {
@@ -129,7 +130,7 @@
     const key = signal?.revision || '';
     if (first) {
       ++epoch;
-      provider = ['codex_followup','codex_tool_permission'].includes(signal?.source) ? 'Codex' : 'Hermes';
+      provider = ['codex_followup','codex_tool_permission','codex_screen_notice'].includes(signal?.source) ? 'Codex' : 'Hermes';
       pane = id; notice = key; current = null; completed = ''; reading = false; busy = false;
       box.hidden = true;
       markOpen('');
@@ -152,11 +153,14 @@
       } else if (!completed) {
         const wasOpen = !!current;
         current = null;
-        if (wasOpen || signal) status(wasOpen && result.status === 'closed' ? '本题已结束或已由其他设备处理' : '请在实时终端作答');
+        if (signal?.source === 'codex_screen_notice') { box.hidden = true; markOpen(''); }
+        else if (wasOpen || signal) status(wasOpen && result.status === 'closed' ? '本题已结束或已由其他设备处理' : '请在实时终端作答');
         else box.hidden = true;
       }
     } catch {
-      if (version === epoch && !busy && !completed) { if (current || signal) status('暂时无法核对题目，请查看实时终端'); current = null; }
+      if (version === epoch && !busy && !completed) { if (signal?.source === 'codex_screen_notice') { box.hidden = true; markOpen(''); }
+        else if (current || signal) status('暂时无法核对题目，请查看实时终端');
+        current = null; }
     } finally { if (version === epoch) reading = false; }
   }
   window.TmuxNativeForm = {sync};

@@ -36,7 +36,7 @@
     <symbol id="i-star-fill" viewBox="0 0 24 24"><path d="m12 4.6 2.4 5 5.5.8-4 3.9.9 5.5-4.8-2.6-4.8 2.6.9-5.5-4-3.9 5.5-.8z" fill="currentColor"/></symbol>
     <symbol id="i-home" viewBox="0 0 24 24"><path d="M4.5 10.6 12 4.4l7.5 6.2V19a1.4 1.4 0 0 1-1.4 1.4H6a1.4 1.4 0 0 1-1.5-1.4z"/><path d="M9.7 20.4v-6h4.6v6"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2 2 0 0 1 5 5.5h3.6a2 2 0 0 1 1.6.8l1.2 1.7H19a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
-    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="6.2" rx="1.8"/><rect x="3.5" y="13.3" width="17" height="6.2" rx="1.8"/><path d="M7.2 7.6h.01M7.2 16.4h.01"/></symbol>
+    <symbol id="i-members" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="9" cy="8" r="3"/><path d="M3 19v-1a6 6 0 0 1 12 0v1M16 5a3 3 0 0 1 0 6m2 2a5 5 0 0 1 3 5v1"/></g></symbol><symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="6.2" rx="1.8"/><rect x="3.5" y="13.3" width="17" height="6.2" rx="1.8"/><path d="M7.2 7.6h.01M7.2 16.4h.01"/></symbol>
     <symbol id="i-external" viewBox="0 0 24 24"><path d="M8 16 16.2 7.8M10.4 7.8h5.8v5.8"/></symbol>
     <symbol id="i-share" viewBox="0 0 24 24"><g fill="currentColor" stroke="none"><path d="M5.5 9.75v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V9.75a.25.25 0 0 0-.25-.25h-2.5a.75.75 0 0 1 0-1.5h2.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 18.25 22H5.75A1.75 1.75 0 0 1 4 20.25V9.75C4 8.784 4.784 8 5.75 8h2.5a.75.75 0 0 1 0 1.5h-2.5a.25.25 0 0 0-.25.25Zm7.03-8.53 3.25 3.25a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215l-1.97-1.97v10.69a.75.75 0 0 1-1.5 0V3.56L9.28 5.53a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.25-3.25a.75.75 0 0 1 1.06 0Z"/></g></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.2v4.4h-4.4"/></symbol>
@@ -162,7 +162,13 @@
   .project-tools button,.project-jump{font:inherit;font-size:12px;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:5px 8px;max-width:100%;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
   .project-tools[hidden]{display:none}
   .project-tools button[aria-pressed=true]{background:var(--card-hover);border-color:var(--accent)}
-  #project-create{margin-inline-start:auto}
+  .project-tools button{display:grid;justify-items:center;gap:2px;min-width:52px;min-height:44px;padding:4px 8px;font-size:11px;line-height:1.2;background:transparent;border-color:transparent;color:var(--muted)}
+  .project-tools button[aria-pressed=true]{color:var(--ink)}
+  #project-actions{padding:0 10px 5px}
+  #project-create,.project-manage{display:inline-flex;align-items:center;justify-content:center;gap:4px}
+  #project-create{border:0;background:transparent;color:var(--accent);border-radius:8px;font:inherit;font-size:12px;min-height:32px;max-width:100%;overflow-wrap:anywhere;cursor:pointer}
+  #project-create .ico,.project-manage .ico{width:15px;height:15px;pointer-events:none}
+  .sidebar-collapsed #sidebar:not(.open) #project-actions{display:none}
   .sidebar-collapsed #sidebar:not(.open) .project-tools{display:none}
   .project-group{margin:3px 0}.project-group summary{cursor:pointer;overflow-wrap:anywhere;padding:5px}.project-group summary button{margin:2px}
   .project-group summary{display:flex;align-items:center;gap:3px;flex-wrap:wrap}
@@ -172,8 +178,10 @@
   .project-pane,.project-candidate{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px}
   .project-pane .pane{min-width:0;width:100%}
   .project-manage,#project-editor button{font:inherit;font-size:12px;background:var(--card);border:1px solid var(--line);color:var(--ink);border-radius:8px;max-width:100%;height:auto;padding:5px 8px;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
-  .project-manage{color:var(--muted)}
-  #sidebar.editing-project>:is(.project-tools,.tree-tools,.tree-search-count,#pane-list,#recent-block,#file-panel){display:none}
+  button.project-manage{color:var(--muted);background:transparent;border-color:transparent;width:32px;height:32px;padding:0}
+  button.project-manage:is(:hover,:focus-visible),#project-create:is(:hover,:focus-visible){background:var(--card-hover);color:var(--ink)}
+  @media(pointer:coarse){button.project-manage,#project-create{min-width:44px;min-height:44px}}
+  #sidebar.editing-project>:is(#project-actions,.project-tools,.tree-tools,.tree-search-count,#pane-list,#recent-block,#file-panel){display:none}
   #project-editor{display:flex;flex:1;min-height:0;min-width:0;padding:8px;overflow:auto;overscroll-behavior:contain}
   #project-editor[hidden],#project-editor [hidden]{display:none}
   #project-form{display:flex;flex:1;min-height:0;min-width:0;flex-direction:column;gap:8px}
@@ -192,7 +200,12 @@
 <div class="app">
   <aside class="sidebar" id="sidebar">
     <header class="brand"><div><div class="brand-name">Tmux Chat</div><div class="brand-sub">本机实时会话</div></div><div class="sidebar-toolbar"><div class="sidebar-tool-frame"><div class="brand-actions"><a class="icon-btn" href="/home" title="主页（收藏与看板）" aria-label="主页" style="text-decoration:none"><svg class="ico"><use href="#i-home"/></svg></a><a class="icon-btn" href="/grid" title="多窗口（几个会话并排）" aria-label="多窗口" style="text-decoration:none"><svg class="ico"><use href="#i-grid"/></svg></a><button class="icon-btn" id="files-toggle" title="文件（当前 pane 目录）" aria-label="文件"><svg class="ico"><use href="#i-folder"/></svg></button><a class="icon-btn" href="/hosts" title="远程主机" aria-label="远程主机" style="text-decoration:none"><svg class="ico"><use href="#i-server"/></svg></a><a class="icon-btn" href="/shares" title="管理分享" aria-label="管理分享" style="text-decoration:none"><svg class="ico"><use href="#i-share"/></svg></a><button class="icon-btn inbox-btn" id="inbox-button" title="等你回答（收件箱）" aria-label="等你回答收件箱"><svg class="ico"><use href="#i-bell"/></svg><span class="inbox-badge" id="inbox-badge" hidden></span></button><button class="icon-btn" id="refresh" title="刷新窗口" aria-label="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button></div></div><button class="icon-btn" id="sidebar-close" title="折叠侧边栏" aria-label="折叠侧边栏"><svg class="ico"><use href="#i-chevron-left"/></svg></button></div></header>
-    <div class="project-tools" role="group" aria-label="会话视图"><button type="button" id="host-view" aria-pressed="true">主机</button><button type="button" id="project-view" aria-pressed="false">项目</button><button type="button" id="project-create">新建项目</button></div><div class="tree-tools"><input id="pane-search" type="search" placeholder="搜索…" maxlength="256" title="搜索会话信息、最近 500 条聊天；无聊天记录时查最近 200 行终端" autocomplete="off" spellcheck="false" aria-label="搜索会话" aria-describedby="pane-search-progress"><button class="tree-tool" id="tree-expand" type="button" title="展开全部" aria-label="展开全部"><svg class="ico"><use href="#i-tree-open"/></svg></button><button class="tree-tool" id="tree-collapse" type="button" title="折叠全部" aria-label="折叠全部"><svg class="ico"><use href="#i-tree-close"/></svg></button></div><div class="tree-search-count" id="pane-search-count" hidden></div><div class="tree-search-count" id="pane-search-progress" hidden></div><section id="project-editor" aria-labelledby="project-dialog-title" hidden>
+    <div class="project-tools" role="group" aria-label="会话视图">
+      <button type="button" id="host-view" title="主机视图" aria-pressed="true"><svg class="ico" aria-hidden="true"><use href="#i-server"/></svg><span>主机</span></button>
+      <button type="button" id="project-view" title="项目视图" aria-pressed="false"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg><span>项目</span></button>
+    </div>
+    <div id="project-actions" hidden><button type="button" id="project-create"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>新建项目</button></div>
+    <div class="tree-tools"><input id="pane-search" type="search" placeholder="搜索…" maxlength="256" title="搜索会话信息、最近 500 条聊天；无聊天记录时查最近 200 行终端" autocomplete="off" spellcheck="false" aria-label="搜索会话" aria-describedby="pane-search-progress"><button class="tree-tool" id="tree-expand" type="button" title="展开全部" aria-label="展开全部"><svg class="ico"><use href="#i-tree-open"/></svg></button><button class="tree-tool" id="tree-collapse" type="button" title="折叠全部" aria-label="折叠全部"><svg class="ico"><use href="#i-tree-close"/></svg></button></div><div class="tree-search-count" id="pane-search-count" hidden></div><div class="tree-search-count" id="pane-search-progress" hidden></div><section id="project-editor" aria-labelledby="project-dialog-title" hidden>
       <form id="project-form">
         <h2 id="project-dialog-title" tabindex="-1"></h2>
         <label id="project-name-field">项目名称<input id="project-name" maxlength="64" autocomplete="off"></label>

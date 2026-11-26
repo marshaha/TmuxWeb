@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.18.0
+
+- Group host and project navigation under labeled icons and keep project creation inside the project view.
+- Render Codex command approvals in Chat when the pane and its unique pending app-server request match. Review the command and explicitly submit a one-time decision.
+
 ## 0.17.0
 
 - Manage members from each project heading and move a pane or share it across projects from its row. The sidebar editor supports touch and keyboard, and searches local host, session, pane and recent-name metadata together.

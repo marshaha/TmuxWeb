@@ -54,6 +54,17 @@ def permission_request(owner):
                   "persist": ["session", "always"]}}}
 
 
+COMMAND_SCREEN = ("Would you like to run the following command?\n$ python3 check.py\n"
+                  "› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n"
+                  "Press enter to confirm or esc to cancel")
+
+
+def command_request(owner):
+    return {"id": 5, "method": "item/commandExecution/requestApproval", "params": {
+        "kind": "command", "threadId": owner.thread, "turnId": owner.turn, "itemId": "item",
+        "command": "/usr/local/bin/zsh -lc 'python3 check.py'", "cwd": "/repo/subdir", "availableDecisions": ["accept", "cancel"]}}
+
+
 class CodexFormTests(unittest.TestCase):
     def test_draft_submit_once_and_fail_closed(self):
         with tempfile.TemporaryDirectory() as work:
@@ -112,6 +123,46 @@ class CodexFormTests(unittest.TestCase):
             self.assertEqual(form(post)["status"], "resolved")
             chan.answer.assert_awaited_once_with(owner.thread, 1, {"action":"accept","content":None,
                                                                   "_meta":{"persist":"always"}})
+
+    def test_command_permission_requires_exact_live_owner_and_decision(self):
+        from unittest.mock import AsyncMock
+        with tempfile.TemporaryDirectory() as work:
+            owner = Owner(Path(work))
+            req = command_request(owner)
+            chan = AsyncMock()
+            chan.answer.return_value = "resolved"
+            chan.pending = {5: req}
+            self.assertEqual(codex_forms.thread_for_title(owner.home, "⠏ " + owner.name + " | repo"), (owner.thread, owner.name))
+            async def rpc(method, args):
+                return await owner.rpc("thread/read" if method == "thread/resume" else method, args)
+            def form(post=None):
+                return asyncio.run(codex_forms.exchange(owner.home, "%4", "135",
+                    lambda: (COMMAND_SCREEN, owner.name, "/repo"), post, rpc, chan))
+            card = form()["form"]
+            self.assertEqual(card["questions"][0]["choices"], ["仅批准这一次", "拒绝此次命令"])
+            self.assertIn("/repo/subdir", card["questions"][0]["description"])
+            post = {"revision": card["revision"], "answers": {"decision": {"indices": [0]}}}
+            for field, bad in (("command", "python3  check.py"), ("command", "/usr/local/bin/zsh -lc 'python3 check.py' && echo unexpected"), ("turnId", "old"), ("threadId", "other"),
+                               ("kind", "writeStdin"), ("additionalPermissions", {"network": True}),
+                               ("availableDecisions", ["acceptForSession", "cancel"])):
+                with self.subTest(field=field):
+                    old = req["params"].get(field)
+                    req["params"][field] = bad
+                    self.assertEqual(form(post)["status"], "closed")
+                    if old is None:
+                        del req["params"][field]
+                    else:
+                        req["params"][field] = old
+            chan.pending[6] = dict(req, id=6)
+            self.assertEqual(form(post)["status"], "closed")
+            del chan.pending[6]
+            req["id"] = 7
+            self.assertEqual(form(post)["status"], "closed")
+            req["id"] = 5
+            chan.answer.assert_not_awaited()
+            for _ in range(2):
+                self.assertEqual(form(post)["status"], "resolved")
+            chan.answer.assert_awaited_once_with(owner.thread, 5, {"decision": "accept"})
 
     def test_new_user_message_clears_previous_question(self):
         with tempfile.TemporaryDirectory() as work:
