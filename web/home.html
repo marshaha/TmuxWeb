@@ -228,7 +228,8 @@
 
     /* iOS zooms the page when a field under 16px takes focus and never zooms back out */
     @media(max-width:760px){input,textarea,select{font-size:16px!important}}
-  </style>
+  .create-project-link{color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:12px;max-width:100%;overflow-wrap:anywhere;text-decoration:none}
+</style>
 <link rel="stylesheet" href="/assets/theme.css">
 <script src="/assets/theme.js"></script>
   <link rel="stylesheet" href="/assets/sidebar-toolbar.css?v=1">
@@ -275,6 +276,7 @@
     </div>
     <div class="tree-tools">
       <span class="tree-tools-label">会话</span>
+      <a class="create-project-link" href="/?projects=new">新建项目</a>
       <button class="tree-tool" id="tree-expand" type="button" title="展开全部" aria-label="展开全部"><svg class="ico"><use href="#i-tree-open"/></svg></button>
       <button class="tree-tool" id="tree-collapse" type="button" title="折叠全部" aria-label="折叠全部"><svg class="ico"><use href="#i-tree-close"/></svg></button>
     </div>

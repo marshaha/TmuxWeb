@@ -26,6 +26,29 @@ class ReportingTests(unittest.TestCase):
             store.assign_project('fed~%4', '')
             self.assertEqual(store.pane_projects(), {'%4':'本地'})
 
+    def test_upgrade_and_independent_memberships(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "home.db"
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TABLE pane_projects(pane TEXT PRIMARY KEY, project TEXT NOT NULL)")
+                conn.execute("INSERT INTO pane_projects VALUES ('%4', 'old')")
+            store = HomeStore(path)
+            other = HomeStore(path)
+            try:
+                for name in ("new", "extra"):
+                    store.create_project(name)
+                store.update_memberships("%4", ["new"])
+                other.update_memberships("%4", ["extra"])
+                self.assertEqual(store.project_snapshot()["memberships"]["%4"], ["extra","new","old"])
+                store.assign_project("%4", "legacy")
+                self.assertEqual(other.project_snapshot()["memberships"]["%4"], ["extra","legacy","new"])
+                other.update_memberships("%4", remove=["legacy","extra","new"])
+                self.assertFalse(store.project_snapshot()["memberships"])
+                self.assertEqual(store.project_snapshot()["names"], ["extra","legacy","new","old"])
+            finally:
+                store.close()
+                other.close()
+
     def test_osc_transport(self):
         for terminator in (b'\x07', b'\x1b\\'):
             self.assertEqual(osc_state(b'\x1b]7501;state=blocked:app=fixture'+terminator), 'blocked')

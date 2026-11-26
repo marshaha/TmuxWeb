@@ -3126,7 +3126,8 @@ class TmuxWebTests(unittest.TestCase):
 
         listing = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()
         self.assertEqual({tool["name"] for tool in listing["result"]["tools"]},
-                         {"list_agents", "ask_agent", "send_agent", "run_command",
+                         {"list_projects", "create_project", "join_project", "leave_project", "remove_project_member",
+                          "list_agents", "ask_agent", "send_agent", "run_command",
                           "create_session", "kill_session", "send_file", "read_agent",
                           "publish_home_card", "list_home", "remove_home_card",
                           "list_remote_hosts", "add_remote_host", "remove_remote_host"})
@@ -3160,7 +3161,7 @@ class TmuxWebTests(unittest.TestCase):
             # the rest of the API keeps its token/cookie check
             still_protected = client.get("/api/hosts")
         self.assertEqual(open_mcp.status_code, 200)
-        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 14)
+        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 19)
         self.assertEqual(still_protected.status_code, 401)
 
     def test_mcp_endpoint_requires_the_api_token(self):
@@ -4167,6 +4168,26 @@ class TmuxWebTests(unittest.TestCase):
             payload = text
         return payload, bool(response["result"].get("isError"))
 
+    def test_project_memberships_shared_between_rest_and_mcp(self):
+        self.assertEqual(self.client.post("/api/pane-projects", json={"project":"empty"}).status_code, 401)
+        self.login()
+        for name in ("QA", "Dev"):
+            result, error = self.mcp_call("create_project", {"project": name})
+            self.assertFalse(error)
+            self.assertIn(name, self.client.get("/api/pane-projects").json()["names"])
+        self.assertTrue(self.mcp_call("join_project", {"project":"QA"})[1])
+        self.assertTrue(self.mcp_call("join_project", {"caller":"%4", "project":"missing"})[1])
+        self.assertFalse(self.mcp_call("join_project", {"caller":"%4", "project":"QA"})[1])
+        response = self.client.patch("/api/panes/%254/projects", json={"add":["Dev"]})
+        self.assertEqual(response.json()["projects"], ["Dev","QA"])
+        listing = self.mcp_call("list_projects", {})[0]["projects"]
+        self.assertTrue(all({"name": n, "members": ["%4"]} in listing for n in ("Dev", "QA")))
+        self.assertEqual(self.mcp_call("leave_project", {"caller":"%4", "project":"QA"})[0]["projects"], ["Dev"])
+        self.assertTrue(self.mcp_call("remove_project_member", {"project":"Dev"})[1])
+        self.assertFalse(self.mcp_call("remove_project_member", {"target":"%4", "project":"Dev"})[1])
+        self.assertNotIn("%4", self.client.get("/api/pane-projects").json()["memberships"])
+        self.assertFalse(self.tmux.sent or self.tmux.keys)
+
     def test_mcp_create_session_matches_the_rest_endpoint(self):
         """走 /mcp 也要能建会话：和 POST /api/sessions 同一条后端。"""
         self.login()
@@ -4297,7 +4318,7 @@ class TmuxWebTests(unittest.TestCase):
         listing = self.client.post("/mcp", json={
             "jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()
         names = [tool["name"] for tool in listing["result"]["tools"]]
-        self.assertEqual(len(names), 14)
+        self.assertEqual(len(names), 19)
         for name in names:
             call = self.client.post("/mcp", json={
                 "jsonrpc": "2.0", "id": 2, "method": "tools/call",

@@ -782,12 +782,17 @@ Header:  Authorization: Bearer <TMUX_WEB_API_TOKEN>
 | 工具 | 作用 |
 | --- | --- |
 | `list_agents` | 列出所有主机上的 agent pane（target / 主机 / CLI / 空闲或忙碌 / 目录 / 标题） |
+| `list_projects` / `create_project` | 查询项目与成员，或用 `project` 名称创建空项目 |
+| `join_project` / `leave_project` | 将调用会话加入或退出指定的 `project`，保留其他项目。HTTP MCP 和连接远端 URL 的 stdio 需提供 `caller`，如 `#125` |
+| `remove_project_member` | 从 `project` 移出指定 `target`（会话编号或带主机的 pane ID） |
 | `ask_agent` | 向某个 pane 提问并等待回答（busy 快速失败、可 `force`、timeout 5–600s） |
 | `send_agent` | 只输入文字，不等回答（`submit=false` 就只打字不回车） |
 | `send_file` | 把本机文件送到对方 pane 目录的 `upload_files/`，并把绝对路径告诉它 |
 | `create_session` | 在任意主机开 tmux 会话：`name` + 可选 `host`/`path`/`agent`/`agent_args`，目录不存在会建，返回 `#N` 编号 |
 | `kill_session` | `pane=#125` 只关那个 pane（会话还有别的 pane 就活着）；`session=名字` 才关整个会话 |
 | `read_agent` | 读它的屏幕（默认）或结构化 transcript（`transcript=true`） |
+
+在 Web 侧边栏点「新建项目」即可创建空项目。打开一个会话，切到「项目」→「管理当前会话的项目」，勾选要加入的项目后点「保存」。取消某个勾选只退出该项目。所有项目视图中的同一个编号都打开同一段 Chat。
 
 **回车这件事**：`send_agent` / `ask_agent` 先用 `paste-buffer` 写入，再单独发 `C-m`。粘贴大的
 prompt 时 TUI 可能还在处理，第一个回车会被吃掉——表现就是「文字确实进了输入框，但没发出去」。

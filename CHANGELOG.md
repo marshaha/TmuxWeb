@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.16.0
+
+- Create named projects from the sidebar, including empty projects. One pane can belong to several projects; existing assignments are preserved.
+- Expose list_projects, create_project, join_project, leave_project and remove_project_member through the stdio relay and HTTP MCP. Membership changes affect only the named project.
+
 ## 0.15.1
 
 - Give screen-detected Codex command approvals one terminal action and show the waiting state in Chat. Read the pane owner’s hook over SSH or its connected agent. A matching live request upgrades the same card to an approval form.

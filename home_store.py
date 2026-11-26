@@ -59,6 +59,10 @@ class HomeStore:
         with self._lock:
             self._conn.execute("""CREATE TABLE IF NOT EXISTS pane_projects (
                 pane TEXT PRIMARY KEY, project TEXT NOT NULL)""")
+            self._conn.execute("CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY)")
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS pane_project_links (
+                pane TEXT NOT NULL, project TEXT NOT NULL, PRIMARY KEY(pane, project))""")
+            self._conn.execute("INSERT OR IGNORE INTO projects SELECT DISTINCT project FROM pane_projects")
             self._conn.execute(
                 """CREATE TABLE IF NOT EXISTS favorites (
                        pane_id TEXT PRIMARY KEY,
@@ -178,13 +182,63 @@ class HomeStore:
         with self._lock:
             return dict(self._conn.execute("SELECT pane, project FROM pane_projects"))
 
-    def assign_project(self, pane, project):
+    def project_snapshot(self):
+        # The original table retains the primary membership for older clients.
+        with self._lock:
+            rows = self._conn.execute("""
+                SELECT p.name, m.pane, m.is_primary FROM projects p LEFT JOIN (
+                    SELECT pane, project, 1 AS is_primary FROM pane_projects
+                    UNION ALL SELECT pane, project, 0 FROM pane_project_links
+                ) m ON m.project=p.name ORDER BY p.name
+            """).fetchall()
+        memberships, primary, names = {}, {}, {}
+        for name, pane, is_primary in rows:
+            names[name] = None
+            if pane is not None:
+                memberships.setdefault(pane, []).append(name)
+                if is_primary:
+                    primary[pane] = name
+        return {"names": list(names), "memberships": memberships, "projects": primary}
+
+    def create_project(self, name):
         with self._lock, self._conn:
-            if project:
+            cursor = self._conn.execute("INSERT OR IGNORE INTO projects VALUES (?)", (name,))
+            return {"project": name, "created": bool(cursor.rowcount)}
+
+    def update_memberships(self, pane, add=(), remove=(), *, legacy=None):
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute("SELECT project FROM pane_projects WHERE pane=?", (pane,)).fetchone()
+            primary = row[0] if row else None
+            members = {r[0] for r in self._conn.execute("SELECT project FROM pane_project_links WHERE pane=?", (pane,))}
+            if primary:
+                members.add(primary)
+            if legacy is not None:
+                members.discard(primary)
+                primary = legacy
+                if primary:
+                    self._conn.execute("INSERT OR IGNORE INTO projects VALUES (?)", (primary,))
+                    members.add(primary)
+            else:
+                for name in add:
+                    if not self._conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
+                        raise KeyError(name)
+                members.update(add)
+                members.difference_update(remove)
+            if primary not in members:
+                primary = min(members, default=None)
+            self._conn.execute("DELETE FROM pane_project_links WHERE pane=?", (pane,))
+            if primary:
                 self._conn.execute("INSERT INTO pane_projects VALUES (?, ?) ON CONFLICT(pane) "
-                                   "DO UPDATE SET project=excluded.project", (pane, project))
+                                   "DO UPDATE SET project=excluded.project", (pane, primary))
+                self._conn.executemany("INSERT INTO pane_project_links VALUES (?, ?)",
+                                       ((pane, name) for name in members if name != primary))
             else:
                 self._conn.execute("DELETE FROM pane_projects WHERE pane=?", (pane,))
+            return {"pane": pane, "projects": sorted(members)}
+
+    def assign_project(self, pane, project):
+        self.update_memberships(pane, legacy=project)
 
     def get_prefs(self) -> dict[str, str]:
         with self._lock:

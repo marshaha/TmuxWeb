@@ -43,6 +43,22 @@ class Recorder:
 
 
 class ToolTests(unittest.TestCase):
+    def test_project_tools_stdio_bind_the_intended_pane(self):
+        relay = mcp_relay.RelayTools()
+        with patch.object(mcp_relay, "base_url", return_value="http://localhost:8787"), patch.object(
+                relay, "caller_pane", return_value="%4"), patch.object(mcp_relay, "request") as api:
+            relay.dispatch("join_project", {"project": "A"})
+            api.assert_called_with("/api/panes/%254/projects", {"add":["A"]}, method="PATCH")
+            relay.dispatch("leave_project", {"project": "A"})
+            api.assert_called_with("/api/panes/%254/projects", {"remove":["A"]}, method="PATCH")
+            relay.dispatch("remove_project_member", {"project": "A", "target": "#125"})
+            api.assert_called_with("/api/panes/%23125/projects", {"remove":["A"]}, method="PATCH")
+            with self.assertRaises(ValueError):
+                relay.dispatch("remove_project_member", {"project": "A"})
+            with patch.object(mcp_relay, "base_url", return_value="https://remote.example"):
+                with self.assertRaises(ValueError):
+                    relay.dispatch("join_project", {"project": "A"})
+
     def test_list_agents_hides_non_agent_panes_by_default(self):
         recorder = Recorder({"/api/relay/peers": {"peers": PEERS}})
         with patch.object(mcp_relay, "request", recorder):
@@ -390,7 +406,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(init["result"]["serverInfo"]["name"], "tmuxweb-relay")
         listing = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
-        self.assertEqual(set(tools), {"list_agents", "ask_agent", "send_agent", "run_command",
+        self.assertEqual(set(tools), {"list_projects", "create_project", "join_project", "leave_project", "remove_project_member", "list_agents", "ask_agent", "send_agent", "run_command",
                                        "create_session", "kill_session", "send_file", "read_agent",
                                        "publish_home_card", "list_home", "remove_home_card",
                                        "list_remote_hosts", "add_remote_host", "remove_remote_host"})

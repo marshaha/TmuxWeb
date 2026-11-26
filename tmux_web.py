@@ -2887,7 +2887,43 @@ def create_app(
     @app.get("/api/pane-projects")
     async def pane_projects(request: Request):
         require_auth(request)
-        return {"projects": await asyncio.to_thread(home.pane_projects)}
+        return await asyncio.to_thread(home.project_snapshot)
+
+    def project_name(value):
+        if not isinstance(value, str) or not value.strip() or len(value) > 64 or any(ord(c) < 32 for c in value):
+            raise HTTPException(422, "项目名须为 1 到 64 个字符")
+        return value.strip()
+
+    @app.post("/api/pane-projects")
+    async def create_project(request: Request, payload: dict):
+        require_auth(request)
+        return await asyncio.to_thread(home.create_project, project_name(payload.get("project")))
+
+    async def edit_memberships(target, add, remove):
+        if not isinstance(add, list) or not isinstance(remove, list):
+            raise HTTPException(422, "add 和 remove 必须是项目名列表")
+        add, remove = {project_name(n) for n in add}, {project_name(n) for n in remove}
+        if add & remove:
+            raise HTTPException(422, "同一项目不能同时加入和移出")
+        pane_id = await asyncio.to_thread(resolve_pane_ref, target)
+        if add:
+            pane = await asyncio.to_thread(pane_or_404, pane_id)
+            pane_id = pane["id"]
+        else:
+            # Removal works even after the pane closes or a host goes offline.
+            try:
+                split_pane_ref(pane_id)
+            except ValueError:
+                raise HTTPException(422, "无效的窗格编号")
+        try:
+            return await asyncio.to_thread(home.update_memberships, pane_id, add, remove)
+        except KeyError as exc:
+            raise HTTPException(404, f"项目不存在：{exc.args[0]}") from exc
+
+    @app.patch("/api/panes/{pane_id}/projects")
+    async def change_pane_projects(request: Request, pane_id: str, payload: dict):
+        require_auth(request)
+        return await edit_memberships(pane_id, payload.get("add", []), payload.get("remove", []))
 
     @app.put("/api/panes/{pane_id}/project")
     async def assign_project(request: Request, pane_id: str, payload: dict):
@@ -4912,6 +4948,20 @@ def create_app(
             if not await asyncio.to_thread(home.delete_card, card_id):
                 raise McpToolError("no such card")
             return {"id": card_id, "removed": True}
+        if name in mcp_relay.PROJECT_TOOLS:
+            try:
+                if name == "list_projects":
+                    return mcp_relay.project_listing(await asyncio.to_thread(home.project_snapshot))
+                project = project_name(arguments.get("project"))
+                if name == "create_project":
+                    return await asyncio.to_thread(home.create_project, project)
+                target = mcp_relay.project_target(name, arguments)
+                return await edit_memberships(target, [project] if name == "join_project" else [],
+                                              [] if name == "join_project" else [project])
+            except HTTPException as exc:
+                raise McpToolError(str(exc.detail)) from exc
+            except ValueError as exc:
+                raise McpToolError(str(exc)) from exc
         if name == "list_agents":
             peers = await asyncio.to_thread(pane_states_cached, 3.0, 30.0, True)
             if not arguments.get("include_non_agents", False):
@@ -5125,7 +5175,7 @@ def create_app(
             return reply({})
         if method == "tools/list":
             plugin_tools = plugin_manager["mgr"].tool_schemas() if plugin_manager.get("mgr") else []
-            return reply({"tools": mcp_relay.tool_schemas() + plugin_tools})
+            return reply({"tools": mcp_relay.tool_schemas(require_project_caller=True) + plugin_tools})
         if method == "tools/call":
             params = payload.get("params") or {}
             try:

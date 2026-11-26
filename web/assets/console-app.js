@@ -974,23 +974,26 @@ import {marked} from '/assets/marked.esm.js?v=1';
       if(panes.length)filtered.push({...host,panes});}
     return {hosts:filtered,matched};}
   function treeDetails(key,label,children,kind,count,extra='',tail='',forceOpen=false,cls=''){const open=(forceOpen||state.treeOpen.has(key))?' open':'';return `<details class="tree-group tree-${kind}${cls?' '+cls:''}" data-tree="${esc(key)}"${open}><summary>${extra}<span class="tree-label">${esc(label)}</span><span class="tree-count">${count}</span>${tail}</summary><div class="tree-children">${children}</div></details>`;}
-  let projectView=localStorage.getItem('tw-project-view')==='1', projectMap=new Map(), projectRead=0;
+  let projectView=localStorage.getItem('tw-project-view')==='1', projectMap=new Map(), projectNames=[], projectRead=0;
   async function loadProjects(){
     const version=++projectRead;
     try{
       const result=await api('/api/pane-projects');
       if(version!==projectRead)return;
-      projectMap=new Map(Object.entries(result.projects||{}));
+      projectMap=new Map(Object.entries(result.memberships||{}));
+      projectNames=result.names||[];
       renderList();
     }catch(error){if(projectView)showError(error.message);}
   }
   function projectTree(hosts, searching){
-    const groups=new Map();
+    const groups=new Map((searching?[]:projectNames).map(name=>[name,[]]));
     for(const host of hosts){
       for(const pane of host.panes||[]){
-        const name=projectMap.get(pane.id)||'';
-        if(!groups.has(name))groups.set(name,[]);
-        groups.get(name).push({pane,host});
+        const names=projectMap.get(pane.id);
+        for(const name of names?.length?names:['']){
+          if(!groups.has(name))groups.set(name,[]);
+          groups.get(name).push({pane,host});
+        }
       }
     }
     return [...groups].sort(([a],[b])=>Number(!a)-Number(!b)||a.localeCompare(b)).map(([name,rows])=>{
@@ -1002,35 +1005,79 @@ import {marked} from '/assets/marked.esm.js?v=1';
       return `<details class="project-group" data-tree="${esc(key)}"${searching||state.treeOpen.has(key)?' open':''}><summary><span>${esc(name||'未归入项目')} · ${rows.length}</span> ${jump(pending,'等你')}${jump(working,'运行中')}</summary>${members}</details>`;
     }).join('');
   }
-  $('project-view').onclick=()=>{
-    projectView=!projectView;
-    localStorage.setItem('tw-project-view',projectView?'1':'0');
+  function setProjectView(on){
+    projectView=on;
+    localStorage.setItem('tw-project-view',on?'1':'0');
     renderList();
-    if(projectView)loadProjects();
-  };
-  $('pane-project-form').onsubmit=async event=>{
-    event.preventDefault();
-    const pane=state.selected, project=$('pane-project-name').value.trim();
-    if(!pane)return;
-    try{
-      await api('/api/panes/'+encodeURIComponent(pane)+'/project',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({project})});
-      await loadProjects();
-    }catch(error){showError(error.message);}
-  };
-  function syncProjectTools(){
-    const btn=$('project-view'), field=$('pane-project-name');
-    btn.textContent=projectView?'项目':'主机';
-    btn.setAttribute('aria-pressed',String(projectView));
-    $('pane-project-form').hidden=!projectView||!state.selected;
-    if(field.dataset.pane!==(state.selected||'')||document.activeElement!==field){
-      field.value=projectMap.get(state.selected)||'';
-      field.dataset.pane=state.selected||'';
-    }
-    const choices=[...new Set(projectMap.values())].sort();
-    const html=choices.map(name=>`<option value="${esc(name)}"></option>`).join('');
-    const names=$('pane-project-names');
-    if(names.dataset.sig!==html){names.innerHTML=html;names.dataset.sig=html;}
+    if(on)loadProjects();
   }
+  $('project-view').onclick=()=>setProjectView(true);
+  $('host-view').onclick=()=>setProjectView(false);
+  function syncProjectTools(){
+    $('host-view').setAttribute('aria-pressed',String(!projectView));
+    $('project-view').setAttribute('aria-pressed',String(projectView));
+    $('project-member-tools').hidden=!projectView||!state.selected;
+  }
+  const projectDialog=$('project-dialog');
+  let projectEdit=null;
+  async function openProjectDialog(pane){
+    const edit={pane,initial:new Set()};
+    projectEdit=edit;
+    $('project-dialog-title').textContent=pane?'管理会话 '+paneLabel(state.panes.find(p=>p.id===pane))+' 的项目':'新建项目';
+    $('project-name-field').hidden=!!pane;
+    $('project-name').value='';
+    $('project-name').required=!pane;
+    $('project-options').replaceChildren();
+    $('project-options').hidden=!pane;
+    $('project-save').textContent=pane?'保存':'创建';
+    $('project-save').disabled=!!pane;
+    $('project-status').textContent=pane?'正在读取项目…':'';
+    projectDialog.showModal();
+    if(!pane){$('project-name').focus();return;}
+    try{
+      const data=await api('/api/pane-projects');
+      if(projectEdit!==edit)return;
+      edit.initial=new Set(data.memberships?.[pane]||[]);
+      const labels=data.names.map(name=>{
+        const label=document.createElement('label'),box=document.createElement('input');
+        box.type='checkbox';box.value=name;box.checked=edit.initial.has(name);
+        label.append(box,document.createTextNode(name));
+        return label;
+      });
+      $('project-options').replaceChildren(...labels);
+      $('project-status').textContent=labels.length?'':'还没有项目，请先新建项目。';
+      $('project-save').disabled=!labels.length;
+    }catch(error){if(projectEdit===edit)$('project-status').textContent=error.message;}
+  }
+  $('project-create').onclick=()=>openProjectDialog(null);
+  $('project-members').onclick=()=>openProjectDialog(state.selected);
+  $('project-cancel').onclick=()=>projectDialog.close();
+  projectDialog.addEventListener('close',()=>{projectEdit=null;});
+  $('project-form').onsubmit=async event=>{
+    event.preventDefault();
+    const edit=projectEdit;
+    if(!edit||$('project-save').disabled)return;
+    const name=$('project-name').value.trim();
+    if(!edit.pane&&!name){$('project-status').textContent='请输入项目名称';return;}
+    $('project-save').disabled=true;
+    try{
+      let message;
+      if(edit.pane){
+        const selected=new Set([...$('project-options').querySelectorAll('input:checked')].map(box=>box.value));
+        const add=[...selected].filter(n=>!edit.initial.has(n)),remove=[...edit.initial].filter(n=>!selected.has(n));
+        if(add.length||remove.length)await api('/api/panes/'+encodeURIComponent(edit.pane)+'/projects',
+          {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({add,remove})});
+        message='已保存会话项目';
+      }else{
+        const result=await api('/api/pane-projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:name})});
+        message=result.created?'项目已创建':'项目已存在';
+      }
+      if(projectEdit===edit){projectDialog.close();setProjectView(true);toast(message);}
+      else if(projectView)loadProjects();
+    }catch(error){
+      if(projectEdit===edit){$('project-status').textContent=error.message;$('project-save').disabled=false;}
+    }
+  };
   function renderList(){const terms=parsePaneSearchTerms(paneSearchQuery);const searching=terms.length>0;
     const view=searching?filterHostsForSearch(state.hosts,terms,state.needsInput,contentHits):{hosts:state.hosts,matched:0};
     syncProjectTools();
@@ -2987,7 +3034,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const renameWindow=e.target.closest('[data-rename-window]');
     if(renameWindow){e.preventDefault();e.stopPropagation();
       renameTmuxWindow(renameWindow.dataset.renameWindow,renameWindow.dataset.renameValue);return;}
-    const star=e.target.closest('[data-star]');if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}const refresh=e.target.closest('[data-refresh-host]');if(refresh){e.preventDefault();e.stopPropagation();refreshHost(refresh.dataset.refreshHost,refresh);return;}const b=e.target.closest('[data-pane]');if(b){e.preventDefault();selectPane(b.dataset.pane);if(isMobile())closeSidebar();}};function saveTree(){try{localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));}catch{}}function treeKeys(){if(projectView)return [...new Set(state.panes.map(p=>'project:'+(projectMap.get(p.id)||'')))];const keys=[];for(const host of state.hosts||[]){keys.push(host.id);for(const p of host.panes||[]){keys.push(`${host.id}/${p.session}`);keys.push(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}return keys;}$('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();renderList();};$('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();renderList();};
+    const star=e.target.closest('[data-star]');if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}const refresh=e.target.closest('[data-refresh-host]');if(refresh){e.preventDefault();e.stopPropagation();refreshHost(refresh.dataset.refreshHost,refresh);return;}const b=e.target.closest('[data-pane]');if(b){e.preventDefault();selectPane(b.dataset.pane);if(isMobile())closeSidebar();}};function saveTree(){try{localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));}catch{}}function treeKeys(){if(projectView)return ['',...projectNames].map(name=>'project:'+name);const keys=[];for(const host of state.hosts||[]){keys.push(host.id);for(const p of host.panes||[]){keys.push(`${host.id}/${p.session}`);keys.push(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}return keys;}$('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();renderList();};$('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();renderList();};
   function contentSnippet(id){
     const hit=contentHits.get(id);
     return hit?'<div class="pane-search-snippet">'+(hit.cached?'浏览器缓存':hit.source==='screen'?'终端':'聊天')+' · '+esc(hit.snippet)+'</div>':'';
@@ -3179,6 +3226,16 @@ import {marked} from '/assets/marked.esm.js?v=1';
 try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(localStorage.getItem('tmux-sidebar-collapsed')==='1'&&!isMobile())document.querySelector('.app').classList.add('sidebar-collapsed');
   (function landOnBoard(){
     const initialParams=new URLSearchParams(location.search);
+    if(['new','1'].includes(initialParams.get('projects'))&&!initialParams.has('pane')){
+      setProjectView(true);
+      openSidebar();
+      if(initialParams.get('projects')==='new'){
+        initialParams.set('projects','1');
+        history.replaceState(history.state,'','/?'+initialParams.toString());
+        openProjectDialog(null);
+      }
+      return;
+    }
     const requestedMode=initialParams.get('mode');
     const initialMode=['chat','terminal'].includes(requestedMode)?requestedMode:localStorage.getItem('tmux-web-mode');
     if(initialMode==='terminal')setMode('terminal');

@@ -62,6 +62,35 @@ def pane_path(target: str, suffix: str = "") -> str:
     return f"/api/panes/{urllib.parse.quote(str(target), safe='')}{suffix}"
 
 
+PROJECT_TOOLS = {
+    "list_projects": "List project names (including empty projects) and their pane memberships.",
+    "create_project": "Create an empty project. Existing names are reused.",
+    "join_project": "Add the caller's pane to a project, keeping its other memberships.",
+    "leave_project": "Remove the caller's pane from one project.",
+    "remove_project_member": "Remove the specified target pane from one project.",
+}
+
+
+def project_listing(snapshot):
+    members = {name: [] for name in snapshot["names"]}
+    for pane, names in snapshot["memberships"].items():
+        for name in names:
+            members[name].append(pane)
+    return {"projects": [{"name": name, "members": sorted(panes)} for name, panes in members.items()]}
+
+
+def local_relay_url():
+    return urllib.parse.urlsplit(base_url()).hostname in ("localhost", "127.0.0.1", "::1")
+
+
+def project_target(name, arguments):
+    field = "target" if name == "remove_project_member" else "caller"
+    value = arguments.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} is required; use a host-scoped pane ID or numbered handle")
+    return value.strip()
+
+
 class RelayTools:
     """The tools themselves, kept free of protocol details so they stay testable."""
 
@@ -495,6 +524,18 @@ class RelayTools:
         return value
 
     def dispatch(self, name: str, arguments: dict) -> Any:
+        if name in PROJECT_TOOLS:
+            if name == "list_projects":
+                return project_listing(request("/api/pane-projects"))
+            project = arguments.get("project")
+            if name == "create_project":
+                return request("/api/pane-projects", {"project": project})
+            if (name in ("join_project", "leave_project") and not arguments.get("caller")
+                    and local_relay_url()):
+                arguments = dict(arguments, caller=self.caller_pane())
+            target = project_target(name, arguments)
+            change = "add" if name == "join_project" else "remove"
+            return request(pane_path(target, "/projects"), {change: [project]}, method="PATCH")
         handlers = {
             "list_agents": self.list_agents,
             "ask_agent": self.ask_agent,
@@ -517,10 +558,23 @@ class RelayTools:
         return handler(arguments or {})
 
 
-def tool_schemas() -> list[dict]:
+def tool_schemas(*, require_project_caller=False) -> list[dict]:
     """The tool catalogue, shared with the server-side /mcp endpoint."""
     target = {"type": "string", "description": "pane target from list_agents, e.g. \"%12\" or \"<host_id>~%3\""}
-    return [
+    projects = []
+    for name, description in PROJECT_TOOLS.items():
+        properties = {} if name == "list_projects" else {"project": {"type": "string", "minLength": 1, "maxLength": 64}}
+        required = list(properties)
+        if name in ("join_project", "leave_project"):
+            if require_project_caller:
+                required.append("caller")
+            properties["caller"] = dict(target, description="Your pane handle. Required via HTTP or a remote server URL; local stdio can infer it.")
+        if name == "remove_project_member":
+            properties["target"] = target
+            required.append("target")
+        projects.append({"name": name, "description": description, "inputSchema": {
+            "type": "object", "properties": properties, "required": required, "additionalProperties": False}})
+    return projects + [
         {
             "name": "list_agents",
             "description": ("List agent panes across every host this TmuxWeb server manages: each carries `handle` "
@@ -773,7 +827,7 @@ class MCPServer:
         self.tools = tools
 
     def _tools(self) -> list[dict]:
-        return tool_schemas()
+        return tool_schemas(require_project_caller=not local_relay_url())
 
     @staticmethod
     def _result(payload: object, *, is_error: bool = False) -> dict:
