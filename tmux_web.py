@@ -69,7 +69,7 @@ from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, cursor_frame_args, prompt
                            UploadOffsetMismatch,
                           host_key_fingerprint, normalize_session_name, normalize_window_name,
                           pane_ref, scan_host_key, split_pane_ref,
-                          validate_private_key_text)
+                          validate_private_key_text, script_report)
 
 LOGGER = logging.getLogger("tmux_web")
 
@@ -629,13 +629,13 @@ class TmuxBackend:
             "#{session_name}", "#{window_index}", "#{window_name}", "#{pane_index}",
             "#{pane_current_command}", "#{pane_title}", "#{pane_current_path}",
             "#{pane_active}", "#{pane_width}", "#{pane_height}", "#{window_activity}",
-            "#{pane_pid}",
+            "#{pane_pid}", "#{@tmuxweb_status}",
         ])
         raw = self._run("list-panes", "-a", "-F", format_string)
         panes = []
         for line in raw.splitlines():
             fields = line.split(FIELD_SEPARATOR)
-            if len(fields) not in (12, 13, 14):
+            if len(fields) not in (12, 13, 14, 15):
                 continue
             pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields[:12]
             activity = fields[12] if len(fields) > 12 else ""
@@ -656,6 +656,8 @@ class TmuxBackend:
                 "width": int(width),
                 "height": int(height),
             }
+            if len(fields) == 15 and script_report(fields[14], pane_pid):
+                pane["script_signal"] = fields[14]
             if pane_pid:
                 # lets transcript() skip its own display-message lookup;
                 # older output without the field keeps the old dict shape
@@ -1136,6 +1138,20 @@ class BackgroundResend:
         self._tasks[key] = loop.create_task(self._run(key, record))
         return self.status(key)
 
+    def on_settled(self, pane_id, callback):
+        record = self._records.get(self._key(pane_id))
+        if record and record["status"] == "retrying":
+            record["settled"] = callback
+
+    @staticmethod
+    def _notify(record):
+        callback = record.pop("settled", None)
+        if callback:
+            try:
+                callback(record["status"])
+            except sqlite3.Error:
+                LOGGER.exception("Unable to record relay submission outcome")
+
     def cancel(self, pane_id: str, reason: str = "superseded") -> dict | None:
         """Mark a pane's retry superseded and stop its task.  A no-op when idle."""
         key = self._key(pane_id)
@@ -1148,6 +1164,7 @@ class BackgroundResend:
         if record["status"] == "retrying":
             record["status"] = "superseded"
             record["reason"] = reason
+            self._notify(record)
         return self.status(key)
 
     async def _run(self, key: str, record: dict) -> None:
@@ -1222,6 +1239,7 @@ class BackgroundResend:
                 record["presses"] += 1
                 await asyncio.sleep(self.interval)
         finally:
+            self._notify(record)
             if self._tasks.get(key) is asyncio.current_task():
                 self._tasks.pop(key, None)
 
@@ -1611,6 +1629,7 @@ class ModelSwitchRequest(BaseModel):
 
 
 class RelayMessageRequest(BaseModel):
+    caller: str = Field(default="", max_length=80)
     target: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=100_000)
     submit: bool = True
@@ -2258,6 +2277,10 @@ def create_app(
                 return tmux, pane_id, tmux.validate_pane(pane_id), "localhost"
             except TmuxError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
+        federated = fed_transport(host_id)
+        if federated is not None:
+            pane = pane_or_404(target)
+            return federated, pane_id, pane, pane.get("prefix") or host_id
         try:
             host = remote_hosts.get_host(host_id, include_credential=True)
         except KeyError as exc:
@@ -2550,8 +2573,19 @@ def create_app(
                                               agent_entry.get("notices") or [])
             if not gated_prompt and provider:
                 gated_prompt = cursor_notice(transport, actual_pane_id, pane, text)
+            owner = pane.get("pane_pid") or pane.get("turn_owner")
+            report = script_report(pane.get("script_signal"), owner)
+            if report and not gated_prompt:
+                status = "busy" if report["state"] == "working" else "idle"
+                source = "script"
+                if report["state"] in ("blocked", "error"):
+                    gated_prompt = {"kind": "notice", "source": "script_status", "read_only": True,
+                                    "title": "脚本报告错误" if report["state"] == "error" else "脚本请求人工处理",
+                                    "hint": "打开当前会话查看详情",
+                                    "options": [], "revision": str(report["at"])}
             return {"id": pane["id"], "pane_id": actual_pane_id, "host_id": host_id,
                     "host_name": host_name, "target": target, "provider": provider, "pane_pid": pane.get("pane_pid") or pane.get("turn_owner"),
+                    "script_done_at": report["at"] if report and report["state"] == "done" and source == "script" else None,
                     "turn": turns.get(pane["id"]) or pane.get("turn_record"),
                     "status": status, "status_source": source, "activity_age": age,
                     "needs_input": gated_prompt is not None,
@@ -2825,6 +2859,22 @@ def create_app(
         require_auth(request)
         return JSONResponse({"version": SERVER_VERSION, "release": RELEASE_VERSION},
                             headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+    @app.get("/api/pane-projects")
+    async def pane_projects(request: Request):
+        require_auth(request)
+        return {"projects": await asyncio.to_thread(home.pane_projects)}
+
+    @app.put("/api/panes/{pane_id}/project")
+    async def assign_project(request: Request, pane_id: str, payload: dict):
+        require_auth(request)
+        name = payload.get("project")
+        if not isinstance(name, str) or len(name) > 64 or any(ord(c) < 32 for c in name):
+            raise HTTPException(422, "项目名最多 64 个字符")
+        pane_id = resolve_pane_ref(pane_id)
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        await asyncio.to_thread(home.assign_project, pane["id"], name.strip())
+        return {"pane": pane["id"], "project": name.strip()}
 
     @app.get("/api/prefs")
     async def read_prefs(request: Request):
@@ -3324,6 +3374,8 @@ def create_app(
                     "active": pane.get("active"), "provider": pane_provider(pane),
                     "capabilities": {"cursor_menu": bool(pane.get("pane_pid"))},
                 })
+                if script_report(pane.get("script_signal"), pane.get("pane_pid")):
+                    found[-1].update(script_signal=pane["script_signal"], turn_owner=str(pane["pane_pid"]))
                 turn = turns.get(pane_id)
                 if turn and pane.get("pane_pid") and turn.get("pane_pid") == pane["pane_pid"]:
                     found[-1].update(turn_status=turn["status"], turn_owner=str(pane["pane_pid"]), turn_record=turn.get("turn"))
@@ -4876,20 +4928,19 @@ def create_app(
                 raise McpToolError(str(exc), exc.tail) from exc
             except HTTPException as exc:
                 raise McpToolError(str(exc.detail)) from exc
-            return {"target": target, "reply": result.get("reply", ""), "pane": result.get("pane")}
+            return {"target": target, "reply": result.get("reply", ""), "pane": result.get("pane"), "call": result.get("call")}
         if name == "send_agent":
             target = str(arguments.get("target") or "").strip()
             text = str(arguments.get("text") or "").strip()
             if not target or not text:
                 raise McpToolError("target and text are required")
-            transport, pane_id = await asyncio.to_thread(pane_transport, target)
             try:
-                submitted = await asyncio.to_thread(transport.send, pane_id, text[:20000], bool(arguments.get("submit", True)))
-            except (TmuxError, RuntimeError, OSError, ValueError) as exc:
-                raise McpToolError(str(exc)) from exc
-            if submitted is False:
-                return {"target": target, "sent": False, "submitted": False, "status": "pasted_not_submitted"}
-            return {"target": target, "sent": True}
+                result = await perform_relay_message(RelayMessageRequest(
+                    target=target, text=text[:20000], submit=bool(arguments.get("submit", True)),
+                    caller=str(arguments.get("caller") or "")), retry=False)
+            except HTTPException as exc:
+                raise McpToolError(str(exc.detail)) from exc
+            return dict(result, sent=result["submitted"])
         if name == "read_agent":
             target = str(arguments.get("target") or "").strip()
             if not target:
@@ -8202,12 +8253,13 @@ def create_app(
         return {"id": card_id, "removed": True}
 
     @app.get("/api/panes/status")
-    async def pane_states(request: Request):
+    async def pane_states(request: Request, sender: str = ""):
         require_auth(request)
         # Never wait out a whole sweep here: answer from the cache at once when
         # it holds anything, and only a cold cache waits, briefly.
         states = await asyncio.to_thread(pane_states_cached, 0.5, 30.0, True)
-        return {"panes": [{key: item.get(key) for key in ("id", "provider", "status", "status_source",
+        receipts = await asyncio.to_thread(calls_store.outbound, resolve_pane_ref(sender)) if sender else []
+        return {"observed_at": pane_state_cache["at"], "outbound": receipts, "panes": [{key: item.get(key) for key in ("id", "provider", "status", "status_source",
                                                           "needs_input", "prompt", "native_probe", "title", "completion_id", "finished_at")}
                           for item in states]}
 
@@ -8270,11 +8322,43 @@ def create_app(
             raise HTTPException(status_code=404, detail="inbox item not found")
         return item
 
+    async def perform_relay_message(payload: RelayMessageRequest, *, retry=True):
+        transport, actual, pane, host = await asyncio.to_thread(relay_target, payload.target)
+        target = pane["id"]
+        parent = resolve_pane_ref(payload.caller) if payload.caller else ""
+        call = calls_store.start(parent, target, payload.text, "message", timeout=320)
+        resend_manager.cancel(target, "superseded")
+        try:
+            sent = await asyncio.to_thread(transport.send, actual, payload.text, payload.submit)
+        except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+            calls_store.finish(call.id, status="error", error=str(exc))
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        sent = sent is not False
+        status, retrying = "sent", False
+        stage = "submitted" if payload.submit else "pasted"
+        if payload.submit and not sent:
+            status, retrying = retry_or_fail(resend_manager if retry else None, target, payload.text)
+            stage = "retrying" if retrying else "unsubmitted"
+        calls_store.progress(call.id, stage)
+        if retrying:
+            def settled(result):
+                ok = result == "submitted"
+                calls_store.progress(call.id, "submitted" if ok else "unsubmitted")
+                calls_store.finish(call.id, status="ok" if ok else "error")
+            resend_manager.on_settled(target, settled)
+        else:
+            calls_store.finish(call.id, status="ok" if sent else "error")
+        relay_log.appendleft({"at": time.time(), "target": target, "source": "message",
+                              "status": status, "question": payload.text[:400], "elapsed": 0})
+        return {"status": status, "target": payload.target, "pane": target, "host": host, "call": call.id,
+                "submitted": sent, "retrying": retrying}
+
     async def perform_relay_ask(payload: RelayAskRequest) -> dict:
         """Ask a pane and wait for the answer: used by the HTTP route and the MCP endpoint."""
         target = resolve_pane_ref(payload.target)
         transport, pane_id, pane, host_name = await asyncio.to_thread(relay_target, target)
         provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
+        target = pane["id"]
         lock = relay_locks.setdefault(target, asyncio.Lock())
         if lock.locked():
             raise HTTPException(status_code=409, detail="another relay request is already waiting on this pane")
@@ -8286,15 +8370,22 @@ def create_app(
             except HTTPException:
                 pass  # Preserve a historical caller label even if its pane is gone.
         call = calls_store.start(parent, target,
-                                 payload.question, payload.source)
-        async with lock:
+                                 payload.question, payload.source, timeout=payload.timeout)
+        def waiting():
+            with pane_state_lock:
+                return (time.time() - pane_state_cache["at"] < 30 and any(
+                    item["id"] == target and item.get("needs_input") for item in pane_state_cache["states"]))
+
+        async def deliver():
             try:
                 result = await asyncio.to_thread(
                     relay.ask, transport, pane_id, payload.question,
                     source=payload.source, provider=provider,
                     timeout=payload.timeout, force=payload.force,
+                    progress=lambda stage: calls_store.progress(call.id, stage), waiting=waiting,
                 )
             except relay.RelayBusy as exc:
+                calls_store.finish(call.id, status="error", error=str(exc))
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             except relay.RelayTimeout as exc:
                 calls_store.finish(call.id, status="timeout", error=str(exc))
@@ -8305,13 +8396,25 @@ def create_app(
             except (relay.RelayError, TmuxError, RuntimeError, OSError, ValueError) as exc:
                 calls_store.finish(call.id, status="error", error=str(exc))
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
-        calls_store.finish(call.id, reply=str(result.get("reply") or ""), status="ok")
-        result.update({"target": payload.target, "host": host_name, "provider": provider,
-                       "call": call.id})
-        relay_log.appendleft({"at": time.time(), "target": payload.target, "source": payload.source,
-                              "status": "ok", "question": payload.question[:400],
-                              "reply": str(result["reply"])[:400], "elapsed": result["elapsed"]})
-        return result
+            calls_store.finish(call.id, reply=str(result.get("reply") or ""), status="ok")
+            result.update({"target": payload.target, "host": host_name, "provider": provider,
+                           "call": call.id})
+            relay_log.appendleft({"at": time.time(), "target": payload.target, "source": payload.source,
+                                  "status": "ok", "question": payload.question[:400],
+                                  "reply": str(result["reply"])[:400], "elapsed": result["elapsed"]})
+            return result
+
+        # A disconnected HTTP viewer must not release the pane to a second send
+        # while the relay worker is still awaiting the original token.
+        await lock.acquire()
+        task = asyncio.create_task(deliver())
+        def finished(done):
+            lock.release()
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
 
     @app.get("/api/events")
     async def events_list(request: Request, pane: str = "", kind: str = "", limit: int = 50,
@@ -8517,7 +8620,7 @@ def create_app(
         home_store=home,
         share_store=None,          # shares are still core-only; expose one when a plugin needs it
         relay_log=relay_log,
-        relay_ask=perform_relay_ask,
+        relay_ask=perform_relay_ask, relay_message=perform_relay_message,
         relay_target=relay_target,
         collect_pane_states=collect_pane_states,
         resend=resend_manager,

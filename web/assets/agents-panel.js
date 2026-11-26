@@ -31,7 +31,10 @@
   }
 
   function statusText(call) {
-    if (call.status === 'running') return '在等回复';
+    const stage=({submitted:'已提交',pasted:'仅粘贴',unsubmitted:'回车未确认',retrying:'正在重试回车',
+      working:'对方已开始',blocked:'等待人工确认'})[call.progress];
+    if (call.status === 'running') return stage || '在等回复';
+    if (call.source === 'message' && stage) return stage;
     if (call.status === 'timeout') return '超时';
     if (call.status === 'error') return '失败';
     return '已回复';

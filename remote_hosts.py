@@ -1005,11 +1005,22 @@ def split_pane_ref(value: str) -> tuple[str, str]:
 PROCESS_TABLE_MARK = "__TMUXWEB_PROCESS_TABLE__"
 
 
+def script_report(raw, pid):
+    """Accept only the current pane generation and a recent fixed-vocabulary signal."""
+    match = re.fullmatch(r"([0-9]+):([0-9]{13}):(working|blocked|done|idle|error)", str(raw))
+    if not match or match[1] != str(pid):
+        return None
+    stamp = int(match[2]) / 1000
+    if not -30 <= time.time() - stamp <= 3600:
+        return None
+    return {"state": match[3], "at": stamp}
+
+
 def parse_tmux_panes(raw: str, host_id: str, separator: str = FIELD_SEPARATOR) -> list[dict]:
     panes = []
     for line in raw.splitlines():
         fields = line.split(separator)
-        if len(fields) not in (12, 13, 14):
+        if len(fields) not in (12, 13, 14, 15):
             continue
         pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields[:12]
         activity = fields[12] if len(fields) > 12 else ""
@@ -1023,6 +1034,7 @@ def parse_tmux_panes(raw: str, host_id: str, separator: str = FIELD_SEPARATOR) -
             "active": active == "1", "width": int(width), "height": int(height),
             "activity": int(activity) if str(activity).isdigit() else 0,
             **({"pane_pid": pane_pid} if pane_pid else {}),
+            **({"script_signal": fields[14]} if len(fields) == 15 and script_report(fields[14], pane_pid) else {}),
         })
     return panes
 
@@ -1848,7 +1860,7 @@ class SSHRunner:
             "#{pane_id}", "#{session_name}:#{window_index}.#{pane_index}", "#{session_name}",
             "#{window_index}", "#{window_name}", "#{pane_index}", "#{pane_current_command}",
             "#{pane_title}", "#{pane_current_path}", "#{pane_active}", "#{pane_width}", "#{pane_height}",
-            "#{window_activity}", "#{pane_pid}",
+            "#{window_activity}", "#{pane_pid}", "#{@tmuxweb_status}",
         ])
         # 一次 SSH 同时取 pane 列表和进程表：进程表用来认出「被 shell 包着启动」的
         # agent（tmux 报的前台命令是 zsh，实际里面跑着 codex）。

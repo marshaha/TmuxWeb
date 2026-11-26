@@ -168,9 +168,9 @@
     if (!box || !opened) return;
     const done = [], working = [];
     for (const pane of states) {
-      if (!pane.provider || pane.needs_input || pendingPanes.has(pane.id)) continue;
+      if ((!pane.provider && pane.status_source !== 'script' && !pane.completion_id) || pane.needs_input || pendingPanes.has(pane.id)) continue;
       if (pane.completion_id && acknowledged.get(pane.id) !== pane.completion_id) done.push(pane);
-      else if (pane.status === 'busy' && pane.status_source === 'session') working.push(pane);
+      else if (pane.status === 'busy' && ['session', 'script'].includes(pane.status_source)) working.push(pane);
     }
     done.sort((a,b) => b.finished_at - a.finished_at);
     const sections = [['完成未读', done], ['工作中', working]];

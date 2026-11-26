@@ -2,7 +2,7 @@ import {AnsiUp} from '/assets/ansi_up.js?v=1';
 import {marked} from '/assets/marked.esm.js?v=1';
 (() => {
   const ansi=new AnsiUp();
-  const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptFailures:0,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},kbShift:false,kbSymbols:false,viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0,serverVersion:'',versionToast:{shownFor:'',dismissedFor:'',visible:false},versionPollRound:0};
+  const state={hosts:[],panes:[],treeOpen:new Set(),pendingMessages:new Map(),chatReceipts:new Map(),transcripts:new Map(),transcriptsEdit:new Map(),drafts:new Map(),transcriptMessages:[],transcriptLimit:300,hasMore:false,loadingEarlier:false,selected:null,ws:null,termWs:null,stick:true,mode:'chat',xterm:null,fit:null,resizeObserver:null,hiddenTimer:null,transcriptTimer:null,transcriptFailures:0,transcriptMtime:null,transcriptSig:null,filesPane:null,filesPicked:new Set(),filesAnchor:null,terminalMods:{ctrl:false,alt:false},kbShift:false,kbSymbols:false,viewportFitTimers:[],paneState:new Map(),stateAt:0,filesMode:false,filesPath:null,filesData:null,filesHidden:false,favorites:new Set(),livePaused:false,capturePending:null,captureTimer:null,capturePainted:0,captureFitWidth:0,captureFitSize:0,serverVersion:'',versionToast:{shownFor:'',dismissedFor:'',visible:false},versionPollRound:0};
   const $=id=>document.getElementById(id),list=$('pane-list'),term=$('terminal'),scroll=$('scroll'),input=$('input'),send=$('send');
   try{const saved=JSON.parse(localStorage.getItem('tmux-tree-open')||'[]');if(Array.isArray(saved))state.treeOpen=new Set(saved.filter(key=>typeof key==='string'));}catch{localStorage.removeItem('tmux-tree-open');}
   function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -298,8 +298,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const num=$('selected-number');
     if(num&&live.number){num.hidden=false;num.textContent=paneLabel(live);}
   }
-  async function loadPanes(force){try{const d=await api('/api/hosts'+(force?'?refresh=1':''));state.hosts=d.hosts||[];
-      if(window.TmuxPaneCache&&d.hosts)TmuxPaneCache.saveHosts(d.hosts);if(window.TmuxRecents)TmuxRecents.setHosts(state.hosts);state.panes=state.hosts.flatMap(host=>(host.panes||[]).map(p=>({...p,host_id:p.host_id||host.id})));const valid=new Set();for(const host of state.hosts){valid.add(host.id);for(const p of host.panes||[]){valid.add(`${host.id}/${p.session}`);valid.add(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}state.treeOpen=new Set([...state.treeOpen].filter(key=>valid.has(key)));localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));$('pane-count').textContent=`${state.hosts.length} hosts · ${state.panes.length} panes`;renderHostList();applyWantedPane();loadFavorites();refreshPaneStates();if(state.selected&&!state.panes.some(p=>p.id===state.selected)){
+  async function loadPanes(force){if(projectView)loadProjects();try{const d=await api('/api/hosts'+(force?'?refresh=1':''));state.hosts=d.hosts||[];
+      if(window.TmuxPaneCache&&d.hosts)TmuxPaneCache.saveHosts(d.hosts);if(window.TmuxRecents)TmuxRecents.setHosts(state.hosts);state.panes=state.hosts.flatMap(host=>(host.panes||[]).map(p=>({...p,host_id:p.host_id||host.id})));const valid=new Set();for(const host of state.hosts){valid.add(host.id);for(const p of host.panes||[]){valid.add(`${host.id}/${p.session}`);valid.add(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}state.treeOpen=new Set([...state.treeOpen].filter(key=>valid.has(key)||key.startsWith('project:')));localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));$('pane-count').textContent=`${state.hosts.length} hosts · ${state.panes.length} panes`;renderHostList();applyWantedPane();loadFavorites();refreshPaneStates();if(state.selected&&!state.panes.some(p=>p.id===state.selected)){
         // A partial hosts response can temporarily omit a remote pane.
         state.wantedPane=state.selected;
         selectPane(null, {remember:false});
@@ -406,12 +406,34 @@ import {marked} from '/assets/marked.esm.js?v=1';
     }:null;
     window.TmuxPrompt?.showStatus(currentInteraction());
   }
+  function showOutbound(calls, panes, observedAt){
+    const box=$('relay-receipts');
+    const html=calls.map(call=>{
+      const target=state.panes.find(p=>p.id===call.child);
+      const live=panes.find(p=>p.id===call.child);
+      const recent=observedAt>=call.created&&Date.now()/1000-observedAt<90;
+      const phase=({submitted:'已提交 · 尚未确认接收',pasted:'已粘贴',unsubmitted:'已粘贴 · 回车未确认',
+        retrying:'正在重试回车',working:'对方已开始',blocked:'等待人工确认'})[call.progress]||'尚未确认接收';
+      let label=phase;
+      if(call.status==='timeout')label='等待超时 · '+phase;
+      else if(call.status==='error'&&call.progress!=='unsubmitted')label='发送失败';
+      else if(call.status==='ok'&&call.source!=='message')label='已回复';
+      else if(recent&&live?.needs_input&&['submitted','working','blocked'].includes(call.progress))label='目标会话等待人工处理';
+      else if(call.source==='message'&&call.progress==='submitted'&&recent&&live?.status==='busy')label='已提交 · 目标会话运行中';
+      const who=target?paneLabel(target):call.child;
+      return `<div><span>${esc(call.question||'')}</span><small>${esc(label)} · <a href="/?pane=${encodeURIComponent(call.child)}">${esc(who)} 打开目标 Chat</a></small></div>`;
+    }).join('');
+    box.hidden=!html;
+    if(box.dataset.sig!==html){box.dataset.sig=html;box.innerHTML=html;}
+  }
   async function refreshPaneStates(){
     const now=Date.now();
     if(now-(state.stateAt||0)<9000)return;
     state.stateAt=now;
     try{
-      const {panes=[]}=await api('/api/panes/status');
+      const sender=state.selected;
+      const {panes=[],outbound=[],observed_at=0}=await api('/api/panes/status'+(sender?'?sender='+encodeURIComponent(sender):''));
+      if(sender===state.selected)showOutbound(outbound,panes,observed_at);
       state.paneState=new Map(panes.map(p=>[p.id,p.status]));
       const needs=new Map(panes.filter(p=>p.needs_input&&p.prompt).map(p=>[p.id,p.prompt]));
       const changed=needs.size!==(state.needsInput?.size||0) ||
@@ -422,7 +444,9 @@ import {marked} from '/assets/marked.esm.js?v=1';
       syncNativeForm(true);
       if(state.mode==='chat')window.TmuxPrompt?.showStatus(currentInteraction());
       applyPaneStates();
-      if(changed){renderList();window.TmuxNeedsYouInbox?.noticeChanged();}
+      if(changed && state.chatReceipts.size && state.transcriptMessages.length)renderTranscriptNow();
+      if(changed||projectView)renderList();
+      if(changed)window.TmuxNeedsYouInbox?.noticeChanged();
       syncProgress();
     }catch{}
   }
@@ -950,9 +974,67 @@ import {marked} from '/assets/marked.esm.js?v=1';
       if(panes.length)filtered.push({...host,panes});}
     return {hosts:filtered,matched};}
   function treeDetails(key,label,children,kind,count,extra='',tail='',forceOpen=false,cls=''){const open=(forceOpen||state.treeOpen.has(key))?' open':'';return `<details class="tree-group tree-${kind}${cls?' '+cls:''}" data-tree="${esc(key)}"${open}><summary>${extra}<span class="tree-label">${esc(label)}</span><span class="tree-count">${count}</span>${tail}</summary><div class="tree-children">${children}</div></details>`;}
+  let projectView=localStorage.getItem('tw-project-view')==='1', projectMap=new Map(), projectRead=0;
+  async function loadProjects(){
+    const version=++projectRead;
+    try{
+      const result=await api('/api/pane-projects');
+      if(version!==projectRead)return;
+      projectMap=new Map(Object.entries(result.projects||{}));
+      renderList();
+    }catch(error){if(projectView)showError(error.message);}
+  }
+  function projectTree(hosts, searching){
+    const groups=new Map();
+    for(const host of hosts){
+      for(const pane of host.panes||[]){
+        const name=projectMap.get(pane.id)||'';
+        if(!groups.has(name))groups.set(name,[]);
+        groups.get(name).push({pane,host});
+      }
+    }
+    return [...groups].sort(([a],[b])=>Number(!a)-Number(!b)||a.localeCompare(b)).map(([name,rows])=>{
+      const pending=rows.filter(({pane})=>state.needsInput?.has(pane.id));
+      const working=rows.filter(({pane})=>!state.needsInput?.has(pane.id)&&state.paneState?.get(pane.id)==='busy');
+      const jump=(items,label)=>items.length?`<button type="button" class="project-jump" data-pane="${esc(items[0].pane.id)}">${items.length} ${label}</button>`:'';
+      const members=rows.map(({pane,host})=>`<button type="button" class="pane${pane.id===state.selected?' selected':''}" data-pane="${esc(pane.id)}"><span class="pane-target">${esc(host.name||host.id)} · ${esc(paneLabel(pane))}</span><span class="pane-state ${esc(state.paneState?.get(pane.id)||'unknown')}"></span><div class="pane-title">${esc(pane.title||pane.target)}</div>${contentSnippet(pane.id)}</button>`).join('');
+      const key='project:'+name;
+      return `<details class="project-group" data-tree="${esc(key)}"${searching||state.treeOpen.has(key)?' open':''}><summary><span>${esc(name||'未归入项目')} · ${rows.length}</span> ${jump(pending,'等你')}${jump(working,'运行中')}</summary>${members}</details>`;
+    }).join('');
+  }
+  $('project-view').onclick=()=>{
+    projectView=!projectView;
+    localStorage.setItem('tw-project-view',projectView?'1':'0');
+    renderList();
+    if(projectView)loadProjects();
+  };
+  $('pane-project-form').onsubmit=async event=>{
+    event.preventDefault();
+    const pane=state.selected, project=$('pane-project-name').value.trim();
+    if(!pane)return;
+    try{
+      await api('/api/panes/'+encodeURIComponent(pane)+'/project',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({project})});
+      await loadProjects();
+    }catch(error){showError(error.message);}
+  };
+  function syncProjectTools(){
+    const btn=$('project-view'), field=$('pane-project-name');
+    btn.textContent=projectView?'项目':'主机';
+    btn.setAttribute('aria-pressed',String(projectView));
+    $('pane-project-form').hidden=!projectView||!state.selected;
+    if(field.dataset.pane!==(state.selected||'')||document.activeElement!==field){
+      field.value=projectMap.get(state.selected)||'';
+      field.dataset.pane=state.selected||'';
+    }
+    const choices=[...new Set(projectMap.values())].sort();
+    const html=choices.map(name=>`<option value="${esc(name)}"></option>`).join('');
+    const names=$('pane-project-names');
+    if(names.dataset.sig!==html){names.innerHTML=html;names.dataset.sig=html;}
+  }
   function renderList(){const terms=parsePaneSearchTerms(paneSearchQuery);const searching=terms.length>0;
     const view=searching?filterHostsForSearch(state.hosts,terms,state.needsInput,contentHits):{hosts:state.hosts,matched:0};
-    const html=view.hosts.map(host=>{const sessions=new Map();for(const p of host.panes||[]){if(!sessions.has(p.session))sessions.set(p.session,new Map());const windows=sessions.get(p.session),windowKey=`${p.window}:${p.window_name||''}`;if(!windows.has(windowKey))windows.set(windowKey,[]);windows.get(windowKey).push(p);}const sessionHtml=[...sessions].map(([session,windows])=>{const windowHtml=[...windows].map(([windowKey,panes])=>{const first=panes[0],label=`${first.window}${first.window_name?': '+first.window_name:''}`,leaves=[...panes].sort((a,b)=>((state.needsInput&&state.needsInput.has(b.id)?1:0)-(state.needsInput&&state.needsInput.has(a.id)?1:0))).map(p=>`<button class="pane ${p.id===state.selected?'selected':''}${state.needsInput&&state.needsInput.has(p.id)?' needs-you':''}" data-pane="${esc(p.id)}"><div class="pane-row"><span class="dot ${p.active?'active':''}"></span><span class="pane-num">${paneLabel(p)}</span>${state.needsInput&&state.needsInput.has(p.id)?'<span class="pane-need">等你</span>':''}<span class="pane-target">pane ${esc(p.index)} · ${esc(p.command)}</span><span class="pane-star ${state.favorites.has(p.id)?'on':''}" data-star="${esc(p.id)}" role="button" tabindex="-1" title="${state.favorites.has(p.id)?'取消收藏':'收藏到主页'}"><svg class="ico"><use href="#i-${state.favorites.has(p.id)?'star-fill':'star'}"/></svg></span><span class="pane-state ${state.paneState.get(p.id)||'unknown'}"></span></div><div class="pane-title">${esc(p.title||'(无标题)')}</div><div class="pane-meta">${esc(p.path)}</div>${contentSnippet(p.id)}</button>`).join('');return treeDetails(`${host.id}/${session}/${windowKey}`,label,leaves,'window',`${panes.length}`,'',
+    syncProjectTools();
+    const html=projectView?projectTree(view.hosts,searching):view.hosts.map(host=>{const sessions=new Map();for(const p of host.panes||[]){if(!sessions.has(p.session))sessions.set(p.session,new Map());const windows=sessions.get(p.session),windowKey=`${p.window}:${p.window_name||''}`;if(!windows.has(windowKey))windows.set(windowKey,[]);windows.get(windowKey).push(p);}const sessionHtml=[...sessions].map(([session,windows])=>{const windowHtml=[...windows].map(([windowKey,panes])=>{const first=panes[0],label=`${first.window}${first.window_name?': '+first.window_name:''}`,leaves=[...panes].sort((a,b)=>((state.needsInput&&state.needsInput.has(b.id)?1:0)-(state.needsInput&&state.needsInput.has(a.id)?1:0))).map(p=>`<button class="pane ${p.id===state.selected?'selected':''}${state.needsInput&&state.needsInput.has(p.id)?' needs-you':''}" data-pane="${esc(p.id)}"><div class="pane-row"><span class="dot ${p.active?'active':''}"></span><span class="pane-num">${paneLabel(p)}</span>${state.needsInput&&state.needsInput.has(p.id)?'<span class="pane-need">等你</span>':''}<span class="pane-target">pane ${esc(p.index)} · ${esc(p.command)}</span><span class="pane-star ${state.favorites.has(p.id)?'on':''}" data-star="${esc(p.id)}" role="button" tabindex="-1" title="${state.favorites.has(p.id)?'取消收藏':'收藏到主页'}"><svg class="ico"><use href="#i-${state.favorites.has(p.id)?'star-fill':'star'}"/></svg></span><span class="pane-state ${state.paneState.get(p.id)||'unknown'}"></span></div><div class="pane-title">${esc(p.title||'(无标题)')}</div><div class="pane-meta">${esc(p.path)}</div>${contentSnippet(p.id)}</button>`).join('');return treeDetails(`${host.id}/${session}/${windowKey}`,label,leaves,'window',`${panes.length}`,'',
       `<button class="tree-tool tree-rename" type="button" data-rename-window="${esc(first.id)}" data-rename-value="${esc(first.window_name||'')}" title="改窗口名" aria-label="改窗口名"><svg class="ico"><use href="#i-pencil"/></svg></button>`,searching);}).join('');
       return treeDetails(`${host.id}/${session}`,session,windowHtml,'session',`${windows.size} windows`,'',
       `<button class="tree-tool tree-rename" type="button" data-rename-session="${esc(session)}" data-rename-host="${esc(host.id)}" title="改会话名" aria-label="改会话名"><svg class="ico"><use href="#i-pencil"/></svg></button>`,searching);}).join('');const firstPath=(host.panes&&host.panes[0]&&host.panes[0].path)||'';
@@ -1538,7 +1620,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function selectPane(id,{remember=true}={}){
     if(remember){state.wantedPane=null;rememberPane(id);}
     if(state.selected!==id){closeInputComplete();window.TmuxChatSearch?.close();}closeChatReply();if(state.selected!==id)collapsedTailPane=null;if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
-    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;state.transcriptProvider='';syncNativeForm();if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;$('transcript').classList.remove('active');syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript-messages').innerHTML='';state.renderedMessages=new Map();$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
+    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;showOutbound([],[],0);state.stateAt=0;refreshPaneStates();state.transcriptProvider='';syncNativeForm();if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;$('transcript').classList.remove('active');syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript-messages').innerHTML='';state.renderedMessages=new Map();$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
       const sb=$('chat-search-button');if(sb)sb.disabled=true;if(window.TmuxChatSearch)TmuxChatSearch.close();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';paintPaneHeader(p);$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);$('agents-button').disabled=false;if(window.TmuxAgents)TmuxAgents.refresh();
     const searchBtn=$('chat-search-button');if(searchBtn)searchBtn.disabled=false;syncLiveButton();syncFavButton();
     queueState.items=[];renderQueueStrip();
@@ -1644,28 +1726,28 @@ import {marked} from '/assets/marked.esm.js?v=1';
   // Compare messages the way a human would: the agent may re-wrap, trim or add blank lines
   function messageTextKey(text){return String(text==null?'':text).replace(/\r\n/g,'\n').replace(/[ \t]+/g,' ').replace(/\s+/g,' ').trim();}
   function reconcilePending(messages){
-    const waiting=[...state.pendingMessages].filter(([,pending])=>pending.pane===state.selected&&pending.status!=='failed')
+    const waiting=[...state.pendingMessages].filter(([,pending])=>pending.pane===state.selected&&!['failed','unsubmitted'].includes(pending.status))
       .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0));
     if(!waiting.length)return;
     // only messages that were not part of the transcript when the user hit send
     const baseline=waiting[0][1].baselineIds;
     const fresh=messages.filter(message=>message.role==='user'&&!baseline.has(String(message.id)));
     if(!fresh.length)return;
-    const used=new Set();
-    const claimed=new Map();
-    // exact text first: the transcript usually echoes exactly what was typed
     for(const [localId,pending] of waiting){
       const key=messageTextKey(pending.text);
-      const match=fresh.find(message=>!used.has(String(message.id))&&
-        (messageTextKey(message.text)===key||messageTextKey(message.text).includes(key)));
-      if(match){used.add(String(match.id));claimed.set(localId,true);}}
-    // then by order: a rewritten/expanded echo still belongs to the same send
-    for(const [localId] of waiting){
-      if(claimed.has(localId))continue;
-      const next=fresh.find(message=>!used.has(String(message.id)));
-      if(!next)break;
-      used.add(String(next.id));claimed.set(localId,true);}
-    for(const localId of claimed.keys())state.pendingMessages.delete(localId);}
+      const match=fresh.find(message=>{
+        const id=String(message.id),receiptKey=state.selected+'|'+id;
+        if(pending.baselineIds.has(id)||state.chatReceipts.has(receiptKey))return false;
+        if(messageTextKey(message.text)===key)return true;
+        const wrapper=String(message.text).match(/^## 用户请求\r?\n([\s\S]*?)(?:\r?\n\s*<environment_context>|$)/);
+        return wrapper&&messageTextKey(wrapper[1])===key;
+      });
+      if(!match)continue;
+      state.chatReceipts.set(state.selected+'|'+match.id,true);
+      if(state.chatReceipts.size>500)state.chatReceipts.delete(state.chatReceipts.keys().next().value);
+      state.pendingMessages.delete(localId);
+    }
+  }
   // A sent bubble belongs right after the transcript as it looked when the user hit send,
   // not after whatever the agent wrote in the meantime.
   function pendingAnchorIndex(messages,pending){const baseline=pending.baselineIds||new Set();
@@ -1678,7 +1760,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const pane=message.pane||state.selected;
     return window.TmuxUploads?TmuxUploads.bubbleHtml(message.text,pane):htmlEscape(message.text);
   }
-  function deliveryHtml(pending,localId){if(pending.status==='sending')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>发送中</span>`;if(pending.status==='sent')return `<span class="message-delivery sent">已发送 ✓</span>`;if(pending.status==='retrying')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>正在重试提交…</span>`;return `<span class="message-delivery failed">发送失败<button class="retry-send" type="button" data-resend="${esc(localId||'')}" title="重新发送这条消息">重发</button></span>`;}
+  function deliveryHtml(pending,localId){if(pending.status==='sending')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>发送中</span>`;if(pending.status==='sent')return `<span class="message-delivery sent">已提交 · 尚未确认接收</span>`;if(pending.status==='retrying')return `<span class="message-delivery"><span class="pending-wave"><i></i><i></i><i></i></span>已粘贴 · 正在重试提交…</span>`;if(pending.status==='unsubmitted')return `<span class="message-delivery failed">已粘贴 · 回车未确认<button class="retry-send" type="button" data-resend="${esc(localId||'')}">重发</button></span>`;return `<span class="message-delivery failed">发送失败<button class="retry-send" type="button" data-resend="${esc(localId||'')}" title="重新发送这条消息">重发</button></span>`;}
   function msgResendButton(message){
     if(!message||message.role!=='user')return '';
     return `<button class="msg-copy" type="button" data-msg-resend="${esc(message.id)}" title="把这条消息填回输入框，可修改后再发送"><svg class="ico"><use href="#i-refresh"/></svg><span class="btn-label">再次发送</span></button>`;
@@ -1691,7 +1773,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const pad=value=>String(value).padStart(2,'0'),now=new Date();
     return `${d.toDateString()===now.toDateString()?'':`${pad(d.getMonth()+1)}-${pad(d.getDate())} `}${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
-  function transcriptBubble(message, plain=false){
+  function transcriptBubble(message, plain=false, receipt=''){
     if(message.role==='interaction'){
       return '<article class="chat-message assistant" data-id="'+esc(message.id)+'"><div class="assistant-body"><strong>提问记录</strong><pre class="interaction-text">'+htmlEscape(message.text)+'</pre></div></article>';
     }
@@ -1699,7 +1781,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const copy=`<div class="msg-actions">${clock?`<span class="msg-time">${esc(clock)}</span>`:''}${msgResendButton(message)}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`;
     const text=plain?`<pre class="plain-message">${htmlEscape(String(message.text||''))}</pre>`:null;
     return message.role==='user'
-      ? `<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${text??userBubbleHtml(message)}</div>${copy}</div></article>`
+      ? `<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${text??userBubbleHtml(message)}</div>${receipt?`<span class="message-delivery sent">${receipt}</span>`:''}${copy}</div></article>`
       : `<article class="chat-message assistant" data-id="${esc(message.id)}"><div class="assistant-body">${text??markdown(message.text)}${copy}</div></article>`;
   }
   // Borrowed from Open WebUI (src/lib/components/chat/Messages/Markdown.svelte:121):
@@ -1770,6 +1852,17 @@ import {marked} from '/assets/marked.esm.js?v=1';
       budget=Math.max(0,budget+14-item.cost);
       next.set(id,item);ordered.push(item.node);
     }
+    const receipts=new Map();
+    let nextRole='';
+    for(let i=formal.length-1;i>=0;i--){
+      const msg=formal[i];
+      if(msg.role==='user'&&state.chatReceipts.has(state.selected+'|'+msg.id)){
+        const label=!nextRole&&state.needsInput?.has(state.selected)?'等待人工处理':
+          nextRole==='assistant'?'对方已开始回复':'对方已收到';
+        receipts.set(String(msg.id),label);
+      }
+      if(msg.role==='user'||msg.role==='assistant')nextRole=msg.role;
+    }
     for(let index=0;index<=formal.length;index++){
       for(const {id,message} of pending.get(index)||[]){
         const bubble=plain=>`<article class="chat-message user pending" data-id="${esc(id)}"><div class="chat-user-wrap"><div class="chat-bubble">${plain?htmlEscape(message.text):userBubbleHtml(message)}</div>${deliveryHtml(message,id)}</div></article>`;
@@ -1777,8 +1870,9 @@ import {marked} from '/assets/marked.esm.js?v=1';
       }
       if(index===formal.length)break;
       const message=formal[index],id=String(message.id);
-      const revision=[message.role,message.timestamp,message.text];
-      append(id,revision,()=>transcriptBubble(message),()=>transcriptBubble(message,true));
+      const receipt=receipts.get(id)||'';
+      const revision=[message.role,message.timestamp,message.text,receipt];
+      append(id,revision,()=>transcriptBubble(message,false,receipt),()=>transcriptBubble(message,true,receipt));
     }
     for(const [id,item] of before){
       if(next.get(id)===item)continue;
@@ -2676,7 +2770,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     try{
       const d=await api(`/api/panes/${encodeURIComponent(pending.pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:pending.text,submit:pending.submit!==false})});
       const st=sendResultState(d);
-      setOptimisticStatus(localId,st.kind==='bad'?'failed':st.kind==='retrying'?'retrying':'sent');
+      setOptimisticStatus(localId,st.kind==='bad'?'unsubmitted':st.kind==='retrying'?'retrying':'sent');
       if(st.kind==='bad')setSendState(st.text,st.kind);else if(st.kind==='retrying')setSendState(st.text,st.kind);else setSendState('已发送 ✓','ok');
       showError('');
     }catch(e){
@@ -2705,7 +2799,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
       return;
     }
     const attachments=prompt?takeAttachments():[];
-    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:true})});const st=sendResultState(d);setOptimisticStatus(localId,st.kind==='bad'?'failed':st.kind==='retrying'?'retrying':'sent');setSendState(st.text,st.kind);showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;refreshTranscript(pane,{force:true});}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点消息上的重发','bad');
+    const localId=addOptimisticMessage(text);input.value='';input.style.height='auto';send.disabled=true;setSendState('发送中…');try{const d=await api(`/api/panes/${encodeURIComponent(pane)}/input`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,submit:true})});const st=sendResultState(d);setOptimisticStatus(localId,st.kind==='bad'?'unsubmitted':st.kind==='retrying'?'retrying':'sent');setSendState(st.text,st.kind);showError('');discardAttachments(attachments);if(!isMobile())input.focus();state.stick=true;refreshTranscript(pane,{force:true});}catch(e){setOptimisticStatus(localId,'failed');showError(e.message);setSendState('发送失败，点消息上的重发','bad');
     // 不把原文放回输入框：这条消息已经在聊天里显示出来了（带「重发」），
     // 再放一份到输入框，用户会以为要重打一遍，也容易连发两条相同的。
     if(!isMobile())input.focus();
@@ -2878,7 +2972,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const renameWindow=e.target.closest('[data-rename-window]');
     if(renameWindow){e.preventDefault();e.stopPropagation();
       renameTmuxWindow(renameWindow.dataset.renameWindow,renameWindow.dataset.renameValue);return;}
-    const star=e.target.closest('[data-star]');if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}const refresh=e.target.closest('[data-refresh-host]');if(refresh){e.preventDefault();e.stopPropagation();refreshHost(refresh.dataset.refreshHost,refresh);return;}const b=e.target.closest('[data-pane]');if(b){selectPane(b.dataset.pane);if(isMobile())closeSidebar();}};function saveTree(){try{localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));}catch{}}function treeKeys(){const keys=[];for(const host of state.hosts||[]){keys.push(host.id);for(const p of host.panes||[]){keys.push(`${host.id}/${p.session}`);keys.push(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}return keys;}$('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();renderList();};$('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();renderList();};
+    const star=e.target.closest('[data-star]');if(star){e.preventDefault();e.stopPropagation();toggleFavorite(star.dataset.star);return;}const refresh=e.target.closest('[data-refresh-host]');if(refresh){e.preventDefault();e.stopPropagation();refreshHost(refresh.dataset.refreshHost,refresh);return;}const b=e.target.closest('[data-pane]');if(b){e.preventDefault();selectPane(b.dataset.pane);if(isMobile())closeSidebar();}};function saveTree(){try{localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));}catch{}}function treeKeys(){if(projectView)return [...new Set(state.panes.map(p=>'project:'+(projectMap.get(p.id)||'')))];const keys=[];for(const host of state.hosts||[]){keys.push(host.id);for(const p of host.panes||[]){keys.push(`${host.id}/${p.session}`);keys.push(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}return keys;}$('tree-expand').onclick=()=>{state.treeOpen=new Set(treeKeys());saveTree();renderList();};$('tree-collapse').onclick=()=>{state.treeOpen=new Set();saveTree();renderList();};
   function contentSnippet(id){
     const hit=contentHits.get(id);
     return hit?'<div class="pane-search-snippet">'+(hit.cached?'浏览器缓存':hit.source==='screen'?'终端':'聊天')+' · '+esc(hit.snippet)+'</div>':'';

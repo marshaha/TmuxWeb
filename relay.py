@@ -16,6 +16,8 @@ import re
 import secrets
 import time
 
+import agent_prompts
+
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 PROMPT_LINE_RE = re.compile(r"^\s*[❯›>]\s*\S?")
 BARE_PROMPT_RE = re.compile(r"^\s*[$#%❯›>]\s*$")
@@ -142,7 +144,7 @@ def inspect(transport, pane_id: str, provider: str | None = None, lines: int = 6
 
 
 def ask(transport, pane_id: str, question: str, *, source: str = "", provider: str | None = None,
-        timeout: int = 180, poll_interval: float = 0.8, force: bool = False) -> dict:
+        timeout: int = 180, poll_interval: float = 0.8, force: bool = False, progress=None, waiting=None) -> dict:
     question = (question or "").strip()
     if not question:
         raise RelayError("question must not be empty")
@@ -155,12 +157,38 @@ def ask(transport, pane_id: str, question: str, *, source: str = "", provider: s
     prompt = build_prompt(question, token, source)
     # The instruction lines contain the marker; never mistake them for a reply.
     instruction_lines = {line.strip() for line in prompt.splitlines() if line.strip()}
+    def report(stage):
+        if progress:
+            progress(stage)
+
+    if agent_prompts.codex_tool_menu(state["tail"]) or (waiting and waiting()):
+        raise RelayBusy(f"{pane_id} is waiting for user input")
     if transport.send(pane_id, prompt, True) is False:
+        report("unsubmitted")
         raise RelayError(f"{pane_id}: pasted but Enter submission was not confirmed")
+    phase = "submitted"
+    report(phase)
+    next_deep = started
+    delay = poll_interval
+    began = False
     deadline = started + timeout
     while time.monotonic() < deadline:
-        time.sleep(poll_interval)
-        text = transport.capture(pane_id, 1200)
+        time.sleep(min(delay, max(0, deadline-time.monotonic())))
+        now = time.monotonic()
+        deep = now >= next_deep or now >= deadline
+        text = transport.capture(pane_id, 1200 if deep else 100)
+        if deep:
+            next_deep = now + 8
+        blocked = bool((waiting and waiting()) or
+                       (provider == "codex" and (agent_prompts.codex_tool_menu(text)
+                                                or agent_prompts.codex_command_approval(text))))
+        if not blocked and state["status"] == "idle" and classify(text) == "busy":
+            began = True
+        stage = "blocked" if blocked else "working" if began else "submitted"
+        if phase != stage:
+            report(stage)
+            phase = stage
+        delay = min(3, delay * 1.4)
         reply = extract_reply(text, token, instruction_lines)
         if reply is not None:
             return {"reply": reply, "pane": pane_id, "token": token, "source": source,

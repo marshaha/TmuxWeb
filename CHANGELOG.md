@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0
+
+- Show outgoing relay receipts in the sender’s Chat, including unconfirmed Enter, target activity, pending input and reply timeout. Link each receipt to its target. Relay observers share recorded progress and ask workers use short captures between full-history checks.
+- Group panes across hosts into named projects in the console sidebar. Choose 项目, open a pane, enter a project name and save. Clear the name to remove it. Project membership follows the console account.
+- Scripts can report working, blocked, done or idle with `python3 scripts/report_status.py STATE` from their own tmux pane. A report expires after one hour; long jobs may refresh it. Hooks may pipe a single OSC 7501 root record to `--osc`. Use `clear` to withdraw a report. Blocked, error and done appear in the inbox. Reports contain status only and never grant permission.
+
 ## 0.14.2
 
 - Render Codex MCP tool permissions in Chat from the app server’s pending request. Show tool arguments and the available permission scopes. Changing a choice keeps it local until the user submits. An unmatched screen opens the terminal for manual review.

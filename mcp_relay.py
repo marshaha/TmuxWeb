@@ -146,8 +146,11 @@ class RelayTools:
     def send_agent(self, arguments: dict) -> dict:
         target = self._target(arguments)
         text = self._text(arguments, "text", limit=20_000)
-        result = request("/api/relay/message", {"target": target, "text": text,
-                                                "submit": bool(arguments.get("submit", True))})
+        body = {"target": target, "text": text, "submit": bool(arguments.get("submit", True))}
+        caller = arguments.get("caller") or self.caller_pane()
+        if caller:
+            body["caller"] = caller
+        result = request("/api/relay/message", body)
         # The server reports whether the paste actually left the prompt box;
         # an old server without the field is treated as submitted, as before.
         submitted = bool(result.get("submitted", True))
@@ -556,6 +559,8 @@ def tool_schemas() -> list[dict]:
                 "properties": {
                     "target": target,
                     "text": {"type": "string", "minLength": 1, "maxLength": 20000},
+                    "caller": {"type": "string", "maxLength": 64,
+                               "description": "Your host-scoped pane or handle for the delivery receipt."},
                     "submit": {"type": "boolean", "default": True},
                 },
                 "required": ["target", "text"],

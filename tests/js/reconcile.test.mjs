@@ -23,7 +23,7 @@ function grab(name) {
 }
 
 const build = (pending) => {
-  const state = { selected: '%9', pendingMessages: new Map(Object.entries(pending)) };
+  const state = { selected: '%9', chatReceipts: new Map(), pendingMessages: new Map(Object.entries(pending)) };
   const source = grab('messageTextKey') + grab('reconcilePending') + 'return reconcilePending;';
   const reconcile = new Function('state', source)(state);
   return { state, reconcile };
@@ -45,10 +45,28 @@ test('whitespace and wrapping differences still reconcile', () => {
   assert.equal(state.pendingMessages.size, 0);
 });
 
-test('a rewritten echo is paired by order, so nothing lingers', () => {
+test('a recognized harness wrapper preserves the original request', () => {
   const { state, reconcile } = build({ p1: pending('看看 log') });
   reconcile([{ id: 'a', role: 'user', text: '## 用户请求\n看看 log\n\n<environment_context>…' }]);
   assert.equal(state.pendingMessages.size, 0);
+});
+
+test('an unrelated send from a second client cannot confirm delivery', () => {
+  const { state, reconcile } = build({ p1: pending('继续') });
+  reconcile([{ id: 'x', role: 'user', text: '继续分析另一份日志' }]);
+  assert.equal(state.pendingMessages.size, 1);
+  assert.equal(state.chatReceipts.size, 0);
+});
+
+test('one echo cannot confirm two identical sends across refreshes', () => {
+  const { state, reconcile } = build({ p1: pending('继续'), p2: pending('继续') });
+  const first = { id: 'a', role: 'user', text: '继续' };
+  reconcile([first]);
+  reconcile([first]);
+  assert.equal(state.pendingMessages.size, 1);
+  reconcile([first, { ...first, id: 'b' }]);
+  assert.equal(state.pendingMessages.size, 0);
+  assert.equal(state.chatReceipts.size, 2);
 });
 
 test('messages already in the transcript are not mistaken for the send', () => {

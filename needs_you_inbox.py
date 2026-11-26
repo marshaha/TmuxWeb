@@ -136,6 +136,8 @@ class NeedsYouInbox:
             self._conn.execute("""CREATE TABLE IF NOT EXISTS turn_completions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, pane_id TEXT NOT NULL UNIQUE,
                 pid TEXT NOT NULL, provider TEXT NOT NULL, finished REAL NOT NULL)""")
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS script_completions (
+                pane_id TEXT PRIMARY KEY, finished REAL NOT NULL)""")
             self._conn.commit()
 
     def close(self) -> None:
@@ -171,15 +173,24 @@ class NeedsYouInbox:
                     and not state.get("needs_input")):
                 ended.append((state["id"], str(state["pane_pid"]), state["provider"], now))
         with self._lock, self._conn:
+            for state in current:
+                finished = state.get("script_done_at")
+                if finished:
+                    saved = self._conn.execute("""INSERT INTO script_completions VALUES (?, ?)
+                        ON CONFLICT(pane_id) DO UPDATE SET finished=excluded.finished
+                        WHERE excluded.finished > finished""", (state["id"], finished))
+                    if saved.rowcount:
+                        ended.append((state["id"], str(state["pane_pid"]), state.get("provider") or "", finished))
             if ended:
                 self._conn.executemany("INSERT OR REPLACE INTO turn_completions "
                     "(pane_id, pid, provider, finished) VALUES (?, ?, ?, ?)", ended)
+                self._conn.execute("DELETE FROM script_completions WHERE finished < ?", (now - RETENTION_DAYS * 86400,))
                 self._conn.execute("DELETE FROM turn_completions WHERE finished < ?", (now - RETENTION_DAYS * 86400,))
             rows = self._conn.execute("SELECT * FROM turn_completions WHERE finished >= ?",
                                       (now - RETENTION_DAYS * 86400,)).fetchall()
         unread = {(r["pane_id"], r["pid"], r["provider"]): r for r in rows}
         for state in current:
-            row = unread.get((state["id"], str(state.get("pane_pid")), state.get("provider")))
+            row = unread.get((state["id"], str(state.get("pane_pid")), state.get("provider") or ""))
             if row:
                 state["completion_id"] = row["id"]
                 state["finished_at"] = row["finished"]

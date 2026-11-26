@@ -57,6 +57,8 @@ class HomeStore:
 
     def ensure_schema(self) -> None:
         with self._lock:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS pane_projects (
+                pane TEXT PRIMARY KEY, project TEXT NOT NULL)""")
             self._conn.execute(
                 """CREATE TABLE IF NOT EXISTS favorites (
                        pane_id TEXT PRIMARY KEY,
@@ -171,6 +173,18 @@ class HomeStore:
             for pane in missing:
                 existing[pane] = self.number_for(pane)
         return {pane: existing[pane] for pane in wanted}
+
+    def pane_projects(self):
+        with self._lock:
+            return dict(self._conn.execute("SELECT pane, project FROM pane_projects"))
+
+    def assign_project(self, pane, project):
+        with self._lock, self._conn:
+            if project:
+                self._conn.execute("INSERT INTO pane_projects VALUES (?, ?) ON CONFLICT(pane) "
+                                   "DO UPDATE SET project=excluded.project", (pane, project))
+            else:
+                self._conn.execute("DELETE FROM pane_projects WHERE pane=?", (pane,))
 
     def get_prefs(self) -> dict[str, str]:
         with self._lock:

@@ -1715,7 +1715,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("messageTextKey(message.text)===key", page)
         self.assertIn("function pendingAnchorIndex(messages,pending)", page)
         self.assertIn("pendingAnchorIndex(formal,message)", page)
-        self.assertIn("a rewritten/expanded echo still belongs to the same send", page)
+        self.assertIn('id="relay-receipts"', page)
         self.assertIn("发送中", page)
         self.assertIn("已发送 ✓", page)
         self.assertIn("发送失败", page)
@@ -2896,6 +2896,35 @@ class TmuxWebTests(unittest.TestCase):
         response = self.client.post("/api/relay/message", json={"target": "%4", "text": "请先跑测试"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.tmux.sent[-1], ("%4", "请先跑测试", True))
+
+    def test_script_notice_has_no_choice_authority(self):
+        self.login()
+        pane = self.tmux.panes[0]
+        pane.update(command="bash", session="custom", pane_pid="123",
+                    script_signal=f"123:{int(time.time() * 1000)}:blocked")
+        self.tmux.output = "Waiting for a human"
+        peer = next(item for item in self.client.get("/api/relay/peers").json()["peers"]
+                    if item["id"] == "%4")
+        prompt = peer["prompt"]
+        self.assertTrue(peer["needs_input"])
+        self.assertEqual((prompt["source"], prompt["read_only"], prompt["options"]),
+                         ("script_status", True, []))
+        result = self.client.post("/api/panes/%254/prompt/choose",
+                                  json={"revision": prompt["revision"], "index": 0})
+        self.assertEqual(result.status_code, 409)
+        self.assertEqual(self.tmux.keys, [])
+        self.assertEqual(self.tmux.sent, [])
+
+    def test_relay_receipt_visible_only_from_its_sender(self):
+        self.login()
+        self.tmux.panes.append(dict(self.tmux.panes[0], id="%5", pane_id="%5"))
+        response = self.client.post("/api/relay/message",
+                                    json={"target": "%4", "text": "read the report", "caller": "%5"})
+        self.assertEqual(response.status_code, 200)
+        receipt, = self.client.get("/api/panes/status", params={"sender": "%5"}).json()["outbound"]
+        self.assertEqual((receipt["id"], receipt["child"], receipt["progress"]),
+                         (response.json()["call"], "%4", "submitted"))
+        self.assertEqual(self.client.get("/api/panes/status", params={"sender": "%4"}).json()["outbound"], [])
 
     def test_lists_files_for_the_selected_pane(self):
         self.login()
