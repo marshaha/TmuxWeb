@@ -608,6 +608,32 @@ def codex_queued_questions(text: str) -> int:
     return 0
 
 
+# The footer and option descriptions are only a wake-up signal. The control
+# socket supplies the request, identity, arguments and permitted decisions.
+def codex_tool_menu(text: str) -> tuple[str, ...]:
+    rows = (text or "").rstrip().splitlines()[-32:]
+    if rows and RULE_RE.fullmatch(rows[-1].strip()):
+        rows.pop()
+    if not rows or not re.fullmatch(r"enter to submit\s*\|\s*esc to cancel", rows[-1].strip(), re.I):
+        return ()
+    labels = {"Allow": "Run the tool and continue",
+              "Allow for this session": "Run the tool and remember this choice for this session",
+              "Always allow": "Run the tool and remember this choice for future tool calls",
+              "Cancel": "Cancel this tool call"}
+    # tmux and narrow terminals can wrap both the label and the description.
+    lines = " ".join(" ".join(rows[:-1]).split())
+    for session in (False, True):
+        for always in (False, True):
+            choices = ["Allow", *(["Allow for this session"] if session else []),
+                       *(["Always allow"] if always else []), "Cancel"]
+            pattern = " ".join(r"(?:› )?" + re.escape(f"{i}. {label} {labels[label]}")
+                               for i, label in enumerate(choices, 1))
+            match = re.search(r"(?:^| )(" + pattern + r")$", lines)
+            if match and match[1].count("›") == 1:
+                return tuple(choices)
+    return ()
+
+
 def codex_command_approval(text: str) -> dict | None:
     """Describe a complete command approval at the bottom of the Codex TUI."""
     rows = (text or "").rstrip().splitlines()[-48:]

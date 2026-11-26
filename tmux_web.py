@@ -432,11 +432,24 @@ def codex_followup_notice(text):
     return None
 
 
+def codex_native_notice(text):
+    choices = agent_prompts.codex_tool_menu(text)
+    if choices:
+        return {"kind": "notice", "source": "codex_tool_permission", "read_only": True,
+                "title": "Codex 等待工具授权", "revision": "mcp:" + "|".join(choices),
+                "options": [], "hint": "正在核对当前工具请求"}
+    return codex_followup_notice(text)
+
+
 def native_interaction(pane: dict, text: str, notices: list, *, inspect_screen: bool = False) -> dict | None:
     """Require a native request for actions. A full Codex dialog can raise a read-only notice."""
     valid = [n for n in notices if isinstance(n, dict) and isinstance(n.get("title"), str)
              and n["title"] and isinstance(n.get("id"), list) and len(n["id"]) == 2
              and all(isinstance(part, str) for part in n["id"]) and n["id"][1]]
+    if pane.get("provider") == "codex" and "esc to cancel" in (text or "")[-160:].lower():
+        tool_notice = codex_native_notice(text)
+        if tool_notice:
+            return tool_notice
     permission = len(valid) == 1 and valid[0]["title"] == "等待工具审批"
     if pane.get("provider") == "codex" and (permission or inspect_screen or
             (not valid and (text or "").rstrip().lower().endswith("press enter to confirm or esc to cancel"))):
@@ -460,7 +473,7 @@ def native_interaction(pane: dict, text: str, notices: list, *, inspect_screen: 
             # A completed command can leave the native notice behind until its close hook runs.
             return None
     if not valid:
-        return codex_followup_notice(text) if pane.get("provider") == "codex" else None
+        return codex_native_notice(text) if pane.get("provider") == "codex" else None
     if len(notices) == 1 and pane.get("provider") == "hermes" and pane.get("pane_pid"):
         notice = valid[0]
         # The installed observer uses this fixed title only for kind=clarify.
@@ -2305,7 +2318,7 @@ def create_app(
             for state in states:
                 key = state["id"]
                 prompt = state.get("prompt")
-                screen = (prompt or {}).get("source") in ("codex_screen_notice", "codex_command_approval", "cursor_menu_notice", "codex_followup")
+                screen = (prompt or {}).get("source") in ("codex_screen_notice", "codex_command_approval", "cursor_menu_notice", "codex_followup", "codex_tool_permission")
                 if (tail or screen or not prompt) and started < inbox_observed.get(key, 0):
                     continue
                 if tail and key in inbox_lit and key not in inbox_screen:
@@ -6104,7 +6117,7 @@ def create_app(
                 live = transport.validate_pane(actual)
                 if str(live.get("pane_pid")) != pid or pane_provider(live) != "codex":
                     return "", "", ""
-                return transport.capture(actual, 80, pane=live), live.get("title", ""), live.get("path", "")
+                return transport.capture(actual, 80, pane=live, visible_only=True), live.get("title", ""), live.get("path", "")
             return asyncio.run(codex_forms.on_host(Path.home(), actual, pid, snapshot, submission))
         if pane_provider(pane) != "hermes" or not pid.isdigit():
             return {"status": "closed"}
@@ -6574,10 +6587,10 @@ def create_app(
             if pane.get("pane_pid") and not isinstance(transport, federation.FedTransport):
                 identity = [pane_id, pane["pane_pid"], result["digest"], menu["revision"], menu["selected"]]
                 result["screen_menu"]["snapshot"] = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
-        if "Queued follow-up inputs" in text and pane_provider(pane) == "codex":
-            notice = codex_followup_notice(text)
+        if ("Queued follow-up inputs" in text or "esc to cancel" in footer.lower()) and pane_provider(pane) == "codex":
+            notice = codex_native_notice(ANSI_RE.sub("", raw))
             if notice:
-                result["codex_followup"] = notice
+                result[notice["source"]] = notice
         if inspect_cursor and "codex_screen_notice" not in result:
             tail = raw[-32768:]
             if agent_prompts.possible_cursor_menu(tail) and pane_provider(pane):
@@ -6617,7 +6630,7 @@ def create_app(
     def read_chat_tail(pane_id, pane, transport, actual, lines, color):
         started = time.monotonic()
         fragment = capture_tail(pane_id, pane, transport, actual, lines, color, inspect_cursor=True)
-        notice = fragment.get("codex_screen_notice") or fragment.get("cursor_menu_notice") or fragment.get("codex_followup")
+        notice = fragment.get("codex_tool_permission") or fragment.get("codex_screen_notice") or fragment.get("cursor_menu_notice") or fragment.get("codex_followup")
         # A clipped frame can show the footer without its header.
         if notice or not fragment["text"].rstrip().lower().endswith(
                 "press enter to confirm or esc to cancel"):

@@ -14,7 +14,7 @@ from websockets.sync.server import unix_serve
 from playwright.sync_api import expect, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tests.test_codex_forms import Owner
+from tests.test_codex_forms import MCP_SCREEN, Owner, permission_request
 from tests.test_tmux_web import TmuxWebTests
 
 
@@ -25,7 +25,20 @@ def native_daemon(owner):
     def handle(ws):
         for raw in ws:
             request = json.loads(raw)
+            if "method" not in request:
+                assert owner.pending and request["id"] == owner.pending["id"]
+                owner.decisions.append(request["result"])
+                owner.pending = None
+                ws.send(json.dumps({"method": "serverRequest/resolved",
+                                    "params": {"threadId": owner.thread, "requestId": request["id"]}}))
+                continue
             method = request["method"]
+            if method == "thread/resume":
+                if owner.pending:
+                    ws.send(json.dumps(owner.pending))
+                result = asyncio.run(owner.rpc("thread/read", {}))
+                ws.send(json.dumps({"id": request["id"], "result": result}))
+                continue
             if method == "initialized":
                 continue
             result = {} if method == "initialize" else asyncio.run(owner.rpc(method, request["params"]))
@@ -98,6 +111,28 @@ def main():
                         fixture.tmux.output = "› Ask Codex to do anything"
                         expect(page.locator("#codex-followup-key")).to_be_hidden(timeout=10000)
                         expect(footer.locator("#prompt-card")).to_be_hidden()
+                        fixture.tmux.output = MCP_SCREEN
+                        owner.pending = permission_request(owner)
+                        owner.decisions = []
+                        expect(card.get_by_role("heading", name="Codex 请求审批")).to_be_visible(timeout=22000)
+                        expect(card.get_by_role("radio")).to_have_count(4)
+                        expect(card.get_by_role("radio", checked=True)).to_have_count(0)
+                        expect(card).to_contain_text("tmuxweb_ask_agent")
+                        expect(card).to_contain_text("%28")
+                        session = card.get_by_label("在此会话中允许")
+                        session.tap() if width == 390 else session.click()
+                        cancel = card.get_by_label("取消此次调用")
+                        cancel.tap() if width == 390 else cancel.press("Space")
+                        expect(cancel).to_be_checked()
+                        expect(session).not_to_be_checked()
+                        assert not owner.decisions and not fixture.tmux.keys
+                        assert card.locator("label, button").evaluate_all(
+                            "nodes => nodes.every(e => e.scrollWidth <= e.clientWidth + 1)")
+                        submit.tap() if width == 390 else submit.press("Enter")
+                        expect(card).to_contain_text("审批已结束")
+                        assert owner.decisions == [{"action": "cancel", "content": None,
+                                                    "_meta": {"codex_approval_cancellation_reason": "user"}}]
+                        assert len(owner.sent) == 1 and not fixture.tmux.keys
                         page.close()
                     print(f"{width}px pass",flush=True)
             browser.close()

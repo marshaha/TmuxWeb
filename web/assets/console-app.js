@@ -378,7 +378,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const native=nativeHermesNotice(signal);
     const isHermes=pane && (pane.provider==='hermes' || pane.command==='hermes' || native || state.transcriptProvider==='hermes');
     const probe=isHermes && state.nativeProbe?.has(pane.id);
-    const followup=tailLoop?.pane===state.selected && tailLoop.followup || (signal?.source==='codex_followup' && signal);
+    const followup=tailLoop?.pane===state.selected && tailLoop.followup || (['codex_followup','codex_tool_permission'].includes(signal?.source) && signal);
     if(followup)state.codexFormPane=state.selected;
     const openCodex=state.codexFormPane===state.selected && !!$('native-form').dataset.open;
     window.TmuxNativeForm?.sync(isHermes || followup || openCodex ? (pane?.id || state.selected) : '',
@@ -391,7 +391,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
       if(pane?.provider==='hermes' || pane?.command==='hermes')return null;
     }
     // The native form owns queued Codex questions, including its terminal fallback.
-    if(status?.source==='codex_followup')return null;
+    if(['codex_followup','codex_tool_permission'].includes(status?.source))return null;
     if(status?.kind==='notice')return status;
     return (state.questionPane===state.selected&&state.questionNotice)||status;
   }
@@ -2048,11 +2048,11 @@ import {marked} from '/assets/marked.esm.js?v=1';
         const data=await api('/api/panes/'+encodeURIComponent(id)+'/tail?lines=12&color=1',{signal:loop.controller.signal});
         if(tailLoop!==loop)return;
         tailNav.disabled=false;
-        const followup=data.codex_followup || null;
+        const followup=data.codex_tool_permission || data.codex_followup || null;
         const followupChanged=loop.followup?.revision!==followup?.revision || loop.followup===undefined;
         loop.followup=followup;
         if(followupChanged){
-          $('codex-followup-key').hidden=!followup;
+          $('codex-followup-key').hidden=followup?.source!=='codex_followup';
           syncNativeForm(true);
         }
         showApprovalHint(data.codex_command_approval===true);

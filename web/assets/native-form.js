@@ -34,7 +34,7 @@
       draft = saved?.revision === next.revision ? saved.draft || {} : {};
     } catch { draft = {}; }
     fields.replaceChildren();
-    title.textContent = next.kind === 'approval' ? 'Hermes 请求审批' : provider + ' 等你回答';
+    title.textContent = next.kind === 'approval' ? provider + ' 请求审批' : provider + ' 等你回答';
     for (const [position, question] of next.questions.entries()) {
       const group = document.createElement('fieldset'), legend = document.createElement('legend');
       legend.textContent = question.title;
@@ -85,7 +85,7 @@
     send.disabled = false;
     form.hidden = false;
     box.hidden = false;
-    note.textContent = provider === 'Codex' ? '可先改选。提交后，答案会作为聊天消息发回本轮对话。' : '可修改选项，确认后提交';
+    note.textContent = provider === 'Codex' && next.kind !== 'approval' ? '可先改选。提交后，答案会作为聊天消息发回本轮对话。' : '可修改选项，确认后提交';
     markOpen(next.revision);
   }
   async function call(method, body) {
@@ -106,7 +106,7 @@
       note.textContent = '请完成每道题再提交';
       return;
     }
-    const version = ++epoch, revision = current.revision;
+    const version = ++epoch, revision = current.revision, approval = current.kind === 'approval';
     reading = false;
     busy = true;
     send.disabled = true;
@@ -117,7 +117,7 @@
         completed = revision;
         current = null;
         try { sessionStorage.removeItem(draftKey()); } catch {}
-        status(result.status === 'resolved' ? (provider === 'Codex' ? '回答已发送到本轮 Codex 对话' : '已回答') : '本题已结束或已由其他设备处理');
+        status(result.status === 'resolved' ? (approval ? '审批已结束' : provider === 'Codex' ? '回答已发送到本轮 Codex 对话' : '已回答') : '本题已结束或已由其他设备处理');
       } else {
         note.textContent = result.status === 'invalid' ? '请检查各题的选择' : '还未确认结果，请查看实时终端';
       }
@@ -129,13 +129,14 @@
     const key = signal?.revision || '';
     if (first) {
       ++epoch;
-      provider = signal?.source === 'codex_followup' ? 'Codex' : 'Hermes';
+      provider = ['codex_followup','codex_tool_permission'].includes(signal?.source) ? 'Codex' : 'Hermes';
       pane = id; notice = key; current = null; completed = ''; reading = false; busy = false;
       box.hidden = true;
       markOpen('');
       poll = true;
     }
     const newNotice = key !== notice;
+    if (newNotice && key) completed = '';
     notice = key;
     if (!id || !poll || busy || document.hidden || reading) return;
     const interval = current || signal || probe ? 3000 : 8000;

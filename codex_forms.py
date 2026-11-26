@@ -9,7 +9,7 @@ import uuid
 from websockets import unix_connect
 from websockets.exceptions import WebSocketException
 
-from agent_prompts import codex_queued_questions
+from agent_prompts import codex_queued_questions, codex_tool_menu
 from hermes_forms import Receipts, decode_answers
 
 
@@ -78,9 +78,10 @@ def fields_for(item):
     return fields
 
 
-async def exchange(home, pane, pid, snapshot, submission, rpc):
+async def exchange(home, pane, pid, snapshot, submission, rpc, channel=None):
     screen, title, cwd = snapshot()
-    if not codex_queued_questions(screen):
+    tool_menu = codex_tool_menu(screen)
+    if not tool_menu and not codex_queued_questions(screen):
         return {"status": "closed"}
     thread, name = thread_for_title(home, title)
     if not thread:
@@ -96,6 +97,23 @@ async def exchange(home, pane, pid, snapshot, submission, rpc):
     if not turns or turns[0].get("status") != "inProgress":
         return {"status": "closed"}
     turn = turns[0]["id"]
+    if tool_menu:
+        if channel is None:
+            return {"status": "unavailable"}
+        resumed = (await rpc("thread/resume", {"threadId": thread, "excludeTurns": True}))["thread"]
+        if resumed.get("id") != thread or resumed.get("cwd") != cwd or resumed.get("name") != name:
+            return {"status": "closed"}
+        # Replay is sent on this connection after resume. A subsequent RPC
+        # gives in-flight replay/resolution messages a chance to arrive.
+        await channel.wait_replay()
+        live = (await rpc("thread/turns/list", {"threadId":thread, "limit":1, "itemsView":"notLoaded"}))["data"]
+        if not live or live[0].get("id") != turn or live[0].get("status") != "inProgress":
+            return {"status": "closed"}
+        pending = list(channel.pending.values())
+        if len(pending) != 1:
+            return {"status": "closed"}
+        return await tool_approval(home, pane, pid, snapshot, submission, thread, name, cwd,
+                                   turn, tool_menu, pending[0], channel)
     item = question_from_rollout(path, turn)
     fields = fields_for(item)
     # The TUI can scroll the question text away. Its own status line continues
@@ -139,25 +157,120 @@ async def exchange(home, pane, pid, snapshot, submission, rpc):
     return {"status":result}
 
 
+async def tool_approval(home, pane, pid, snapshot, submission, thread, name, cwd, turn, menu, request, channel):
+    params = request.get("params") or {}
+    meta = params.get("_meta")
+    schema = params.get("requestedSchema")
+    rid = request.get("id")
+    if (request.get("method") != "mcpServer/elicitation/request" or type(rid) not in (int, str)
+            or params.get("threadId") != thread or params.get("turnId") not in (None, turn)
+            or params.get("mode") != "form" or not isinstance(schema, dict)
+            or schema.get("type") != "object" or schema.get("properties") != {} or schema.get("required")
+            or not isinstance(meta, dict) or meta.get("codex_approval_kind") != "mcp_tool_call"):
+        return {"status": "closed"}
+    scopes = meta.get("persist", [])
+    if isinstance(scopes, str):
+        scopes = [scopes]
+    if not isinstance(scopes, list) or any(scope not in ("session", "always") for scope in scopes):
+        return {"status": "closed"}
+    choices = {"Allow": ("仅允许这一次", "accept", None)}
+    if "session" in scopes:
+        choices["Allow for this session"] = ("在此会话中允许", "accept", {"persist": "session"})
+    if "always" in scopes:
+        choices["Always allow"] = ("始终允许此工具", "accept", {"persist": "always"})
+    choices["Cancel"] = ("取消此次调用", "cancel", {"codex_approval_cancellation_reason": "user"})
+    title, server = params.get("message"), params.get("serverName")
+    if tuple(choices) != menu or not isinstance(title, str) or not title.strip() or not isinstance(server, str) or not server:
+        return {"status": "closed"}
+    detail = server
+    for key in ("tool_name", "tool_title", "tool_params", "tool_params_display"):
+        if key in meta and meta[key] is not None:
+            if key == "tool_params_display" and meta.get("tool_params") is not None:
+                continue
+            detail += "\n" + json.dumps(meta[key], ensure_ascii=False)
+    if len(title) + len(detail) > 12000:
+        return {"status": "unavailable"}
+    fields = [{"id": "decision", "title": title, "description": detail, "multi": False, "other": False,
+               "choices": [label for label, _, _ in choices.values()]}]
+    identity = [pane, pid, thread, turn, request]
+    revision = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    screen, now_title, now_cwd = snapshot()
+    if now_cwd != cwd or thread_for_title(home, now_title) != (thread, name) or codex_tool_menu(screen) != menu:
+        return {"status": "closed"}
+    if " ".join(title.split()) not in " ".join(screen.split()):
+        return {"status": "closed"}
+    if submission is None:
+        return {"status": "open", "form": {"provider": "Codex", "kind": "approval",
+                                           "revision": revision, "questions": fields}}
+    if submission.get("revision") != revision:
+        return {"status": "closed"}
+    try:
+        choice = decode_answers(fields, submission.get("answers"))["decision"]
+    except ValueError:
+        return {"status": "invalid"}
+    receipts = Receipts(home/".config/tmuxweb-agent", pane, pid, submission)
+    prior = receipts.access("claim", retry_pending=False)
+    if prior:
+        return prior
+    _, action, meta = next(item for item in choices.values() if item[0] == choice)
+    result = await channel.answer(thread, rid, {"action": action, "content": None, "_meta": meta})
+    receipts.access("finish", result)
+    return {"status": result}
+
+
+class RequestChannel:
+    def __init__(self, ws):
+        self.ws = ws
+        self.seq = 0
+        self.pending = {}
+        self.resolved = set()
+
+    async def receive(self):
+        msg = json.loads(await self.ws.recv())
+        if "method" in msg and "id" in msg:
+            self.pending[msg["id"]] = msg
+        elif msg.get("method") == "serverRequest/resolved":
+            event = msg["params"]
+            self.pending.pop(event["requestId"], None)
+            self.resolved.add((event["threadId"], event["requestId"]))
+        return msg
+
+    async def rpc(self, method, params):
+        self.seq += 1
+        # Server requests use their own ID space; they can arrive before a reply.
+        rid = "tw-" + str(self.seq)
+        await self.ws.send(json.dumps({"id": rid, "method": method, "params": params}))
+        while True:
+            msg = await self.receive()
+            if "method" not in msg and msg.get("id") == rid:
+                if "error" in msg:
+                    raise ValueError("Codex declined the request")
+                return msg["result"]
+
+    async def wait_replay(self):
+        try:
+            async with asyncio.timeout(1):
+                while not self.pending and not self.resolved:
+                    await self.receive()
+        except TimeoutError:
+            pass
+
+    async def answer(self, thread, rid, result):
+        await self.ws.send(json.dumps({"id": rid, "result": result}))
+        while (thread, rid) not in self.resolved:
+            await self.receive()
+        return "resolved"
+
+
 async def on_host(home, pane, pid, snapshot, submission=None):
     sock = home/".codex/app-server-control/app-server-control.sock"
     try:
         async with asyncio.timeout(8), unix_connect(str(sock), "ws://localhost", open_timeout=2,
                                                     close_timeout=.3, max_size=2_000_000) as ws:
-            seq = 0
-            async def rpc(method, params):
-                nonlocal seq
-                seq += 1
-                await ws.send(json.dumps({"id":seq, "method":method, "params":params}))
-                while True:
-                    msg = json.loads(await ws.recv())
-                    if msg.get("id") == seq:
-                        if "error" in msg:
-                            raise ValueError("Codex declined the request")
-                        return msg["result"]
-            await rpc("initialize", {"clientInfo":{"name":"tmuxweb","version":"1"},
-                                     "capabilities":{"experimentalApi":True}})
+            channel = RequestChannel(ws)
+            await channel.rpc("initialize", {"clientInfo":{"name":"tmuxweb","version":"1"},
+                                            "capabilities":{"experimentalApi":True}})
             await ws.send(json.dumps({"method":"initialized"}))
-            return await exchange(home, pane, pid, snapshot, submission, rpc)
+            return await exchange(home, pane, pid, snapshot, submission, channel.rpc, channel)
     except (WebSocketException, OSError, ValueError, TimeoutError, KeyError):
         return {"status":"unconfirmed" if submission else "unavailable"}

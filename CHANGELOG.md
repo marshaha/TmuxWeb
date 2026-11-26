@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.2
+
+- Render Codex MCP tool permissions in Chat from the app server’s pending request. Show tool arguments and the available permission scopes. Changing a choice keeps it local until the user submits. An unmatched screen opens the terminal for manual review.
+
 ## 0.14.1
 
 - Host reachability and pane inventory refresh independently. A connected agent, an SSH port (SSH command via a jump host), or a federation handshake can keep a host online while its pane list is slow. A failed refresh shows the previous list as cached, or an unverified count if no list has arrived.
