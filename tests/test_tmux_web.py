@@ -1348,7 +1348,7 @@ class TmuxWebTests(unittest.TestCase):
         page = self.console_surface()
         self.assertIn("function isTouch(){return matchMedia('(pointer:coarse)').matches", page)
         self.assertIn("function canAutoFocusComposer(){return !isMobile()&&!isTouch();}", page)
-        self.assertIn("if(state.mode==='chat'&&canAutoFocusComposer())input.focus();", page)
+        self.assertIn("if(state.mode==='chat'&&!relayView&&canAutoFocusComposer())input.focus();", page)
         self.assertIn("if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();", page)
         self.assertNotIn("if(state.mode==='chat'&&!isMobile())input.focus();", page)
 
@@ -1698,7 +1698,7 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn("visualViewport", page)
         self.assertIn("mobile-composing", page)
         self.assertIn("setComposing", page)
-        self.assertIn("state.mode==='chat'&&canAutoFocusComposer()", page)
+        self.assertIn("state.mode==='chat'&&!relayView&&canAutoFocusComposer()", page)
         self.assertIn("mode==='chat'&&state.selected&&canAutoFocusComposer()", page)
         self.assertIn("viewport-fit=cover", page)
         self.assertIn('rel="manifest"', page)
@@ -2992,6 +2992,43 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual((receipt["id"], receipt["child"], receipt["progress"]),
                          (response.json()["call"], "%4", "submitted"))
         self.assertEqual(self.client.get("/api/panes/status", params={"sender": "%4"}).json()["outbound"], [])
+
+    def test_relay_context_paginates_from_confirmed_identity_and_scopes_direction(self):
+        self.login()
+        self.tmux.panes.append(dict(self.tmux.panes[0], id="%5", pane_id="%5"))
+        call_id = self.client.post("/api/relay/message", json={
+            "target": "%4", "text": "same question", "caller": "%5"}).json()["call"]
+        created = self.client.get("/api/agents/calls/" + call_id).json()["created"]
+        session = "same-session"
+        turns = [{"id": "old", "role": "user", "timestamp": created-1, "text": "same question"},
+                 {"id": "exact", "role": "user", "timestamp": created+1, "text": "same question"}]
+        def transcript(pid, limit, pane):
+            return {"messages": turns[-limit:], "session_id": session, "mtime": 1, "has_more": len(turns)>limit}
+        self.tmux.transcript = transcript
+        path = "/api/panes/%254/relay-context/" + call_id
+        self.assertEqual(self.client.get(path, params={"side":"sent"}).status_code, 404)
+        first = self.client.get(path, params={"side":"received"}).json()
+        self.assertEqual(first["anchor"]["id"], "exact")
+        turns.extend({"id": str(i), "role": "assistant", "timestamp": created+2+i, "text": "answer"}
+                     for i in range(580))
+        first = self.client.get(path, params={"side":"received"}).json()
+        self.assertEqual(first["anchor"]["relay_receipt"]["id"], call_id)
+        self.assertTrue(first["more"])
+        self.assertEqual([m["id"] for m in first["messages"]], list(map(str, range(499))))
+        second = self.client.get(path, params={"side":"received","offset":499}).json()
+        self.assertFalse(second["more"])
+        self.assertEqual(second["messages"][0]["id"], "499")
+        sent = self.client.get(path.replace("254","255",1), params={"side":"sent"}).json()
+        self.assertEqual((sent["call"]["id"], sent["messages"][0]["id"]), (call_id, "exact"))
+        # A repeated body and timestamp cannot stand in for the saved harness ID.
+        turns[1]["id"] = "lookalike"
+        self.assertNotIn("anchor", self.client.get(path, params={"side":"received"}).json())
+        turns[1]["id"] = "exact"
+        session = "another-session"
+        missing = self.client.get(path, params={"side":"received"}).json()
+        self.assertNotIn("anchor", missing)
+        self.assertTrue(missing["notice"])
+        self.assertEqual(missing["messages"], [])
 
     def test_lists_files_for_the_selected_pane(self):
         self.login()

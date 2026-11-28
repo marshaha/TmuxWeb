@@ -8673,6 +8673,58 @@ def create_app(
             raise HTTPException(status_code=404, detail="没有这条调用记录")
         return call.as_dict(full=True)
 
+    @app.get("/api/panes/{pane_id}/relay-context/{call_id}")
+    async def relay_context(request: Request, pane_id: str, call_id: str, side: str, offset: int = 0):
+        require_auth(request)
+        call = await asyncio.to_thread(calls_store.get, call_id)
+        if side not in ("sent", "received") or offset < 0:
+            raise HTTPException(422, "无效的消息定位参数")
+        if not call or call.source != "message" or pane_id != (call.parent if side == "sent" else call.child):
+            raise HTTPException(404, "此会话没有这条中继消息")
+        pane = await asyncio.to_thread(pane_or_404, pane_id)
+        start = None
+        for limit in (500, 3000):
+            try:
+                data = await read_pane_transcript(pane_id, pane, limit, False)
+            except (TmuxError, RuntimeError, OSError, ValueError) as exc:
+                raise HTTPException(502, "暂时无法读取会话记录，请重试") from exc
+            messages = data.get("messages") or []
+            if side == "received" and not call.received_at:
+                question = call.question.strip().replace("\r\n", "\n")
+                candidates = [m for m in messages if m.get("role") == "user" and
+                              (m.get("text") or "").strip().replace("\r\n", "\n") == question]
+                if 0 < len(candidates) <= 500:
+                    await asyncio.to_thread(calls_store.match_receipts, pane_id, dict(data, messages=candidates))
+                    call = await asyncio.to_thread(calls_store.get, call_id)
+            start = agent_calls.context_start(call, side, data)
+            if (start is not None or (not data.get("has_more") and len(messages) < limit)
+                    or (side == "received" and call.received_at and call.receipt_session != data.get("session_id"))):
+                break
+        result = {"call": call.as_dict(full=True), "messages": [], "offset": offset, "more": False}
+        if start is None:
+            if not call.received_at and side == "received":
+                result["notice"] = "尚未确认接收，可稍后刷新。"
+            elif side == "received":
+                result["notice"] = "当前可读记录中未找到已确认的原消息。"
+            else:
+                result["notice"] = "已定位发送回执。当前可读记录未覆盖发送时间。"
+            return result
+        # Keep the anchor plus its following page within the Chat DOM budget.
+        begin = start + offset
+        page = messages[begin:begin + 499]
+        routes = await asyncio.to_thread(calls_store.match_receipts, pane_id, dict(data, messages=page), known_only=True)
+        for m in page:
+            clean = {k: v for k, v in m.items() if k != "relay_receipt"}
+            route = routes.get(str(m.get("id")))
+            if route and m.get("role") == "user":
+                clean["relay_receipt"] = route
+            result["messages"].append(clean)
+        if side == "received":
+            original = messages[start - 1]
+            result["anchor"] = dict(original, relay_receipt={"id": call.id, "parent": call.parent, "child": call.child})
+        result["more"] = begin + len(page) < len(messages)
+        return result
+
     @app.get("/api/agents/tree")
     async def agent_call_tree(request: Request, pane: str, depth: int = 3, limit: int = 50):
         """A→B→C 的调用树（环会被剪掉：两个 agent 互相问是真实情况）。"""

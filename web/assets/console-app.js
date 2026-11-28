@@ -475,13 +475,67 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const prefix=body.match(/^\s*\[\s*([^\]\s]+)\s*→\s*([^\]\s]+)\s*\]\s*/u);
     if(prefix && prefix[1]===from && prefix[2]===to)body=body.slice(prefix[0].length);
     const peer=incoming?call.parent:call.child;
+    const target='/?pane='+encodeURIComponent(peer);
+    const href=(call.id && (incoming || call.source==='message'))
+      ? target+'&amp;relay='+encodeURIComponent(call.id)+'&amp;side='+(incoming?'sent':'received') : target;
     const action=incoming?'返回发送方 Chat':'打开目标 Chat';
     const content=incoming
       ? `<div class="receipt-body">${plain?htmlEscape(body):userBubbleHtml({...message,text:body})}</div>`
       : `<p>${esc(body)}</p>`;
     return `<article class="relay-receipt"><div class="receipt-route"><span>${esc(from)}</span> → <span>${esc(to)}</span></div>
-      ${content}<footer><span>${esc(status)}</span><a data-relay-chat href="/?pane=${encodeURIComponent(peer)}" aria-label="${esc(incoming?from:to)} ${action}">${action}</a></footer></article>`;
+      ${content}<footer><span>${esc(status)}</span><a data-relay-chat href="${href}" aria-label="${esc(incoming?from:to)} ${action}">${action}</a></footer></article>`;
   }
+  let relayView=null;
+  function leaveRelayView(){
+    relayView=null;
+    document.body.classList.remove('relay-reading');
+    $('relay-context-bar').hidden=true;
+    replaceConsoleQuery(params=>{params.delete('relay');params.delete('side');});
+  }
+  async function readRelayPage(offset=0,keepPosition=false){
+    const view=relayView;
+    if(!view || state.selected!==view.pane)return;
+    const revision=++view.revision;
+    const status=$('relay-context-status');
+    status.textContent='正在定位中继消息…';
+    const buttons=[$('relay-prev'),$('relay-next'),$('relay-refresh')];
+    for(const button of buttons)button.disabled=true;
+    try{
+      const data=await api('/api/panes/'+encodeURIComponent(view.pane)+'/relay-context/'
+        +encodeURIComponent(view.id)+'?side='+view.side+'&offset='+offset);
+      if(view!==relayView || revision!==view.revision || state.selected!==view.pane)return;
+      const incoming=view.side==='received', call=data.call;
+      const sender={id:'relay:'+call.id,role:'relay',text:call.question,timestamp:call.created};
+      const anchor=incoming?data.anchor:sender;
+      view.sender=incoming?null:sender;
+      view.call=call;
+      const position=keepPosition?firstVisibleMessage():null;
+      const messages=offset===0&&anchor?[anchor,...data.messages]:data.messages;
+      $('transcript').classList.add('active');
+      renderTranscriptNow(messages);
+      view.offset=offset;
+      $('relay-prev').hidden=!offset;
+      $('relay-next').hidden=!data.more;
+      status.textContent=data.notice||(offset?'后续对话 · 第 '+(1+offset/499)+' 页':incoming?'已定位接收原文':'已定位发送回执');
+      const target=$('transcript-messages').firstElementChild;
+      if(target){
+        target.classList.add('relay-location');
+        if(position && state.renderedMessages.has(position.id))restoreAnchor(position);
+        else{
+          target.tabIndex=-1;
+          target.focus({preventScroll:true});
+          target.scrollIntoView({block:'start',behavior:'instant'});
+        }
+      }
+    }catch(error){
+      if(view===relayView && revision===view.revision)status.textContent='定位失败 · '+error.message;
+    }finally{
+      if(view===relayView && revision===view.revision)for(const button of buttons)button.disabled=false;
+    }
+  }
+  $('relay-prev').onclick=()=>readRelayPage(Math.max(0,relayView.offset-499));
+  $('relay-next').onclick=()=>readRelayPage(relayView.offset+499);
+  $('relay-refresh').onclick=()=>readRelayPage(relayView.offset,true);
   function showOutbound(calls, panes, observedAt){
     const box=$('relay-receipts');
     const html=calls.map(call=>{
@@ -1889,6 +1943,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     (inspect.hidden ? ($('live-tail').hidden ? $('chat-mode') : $('live-tail-toggle')) : inspect).focus();
   };
   function selectPane(id,{remember=true}={}){
+    if(relayView && id!==relayView.pane && (remember || id))leaveRelayView();
     if(remember){state.wantedPane=null;rememberPane(id);}
     if(state.selected!==id){closeInputComplete();window.TmuxChatSearch?.close();}closeChatReply();if(state.selected!==id)collapsedTailPane=null;if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
     setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;showOutbound([],[],0);state.stateAt=0;refreshPaneStates();state.transcriptProvider='';syncNativeForm();if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;$('transcript').classList.remove('active');syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript-messages').innerHTML='';state.renderedMessages=new Map();$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
@@ -1897,13 +1952,20 @@ import {marked} from '/assets/marked.esm.js?v=1';
     queueState.items=[];renderQueueStrip();
     clientTrace(null,'sel:cleared',id);
     if(state.mode==='terminal'){connectTerminal(id);}
+    else if(relayView?.pane===id){
+      state.stick=false;
+      document.body.classList.add('relay-reading');
+      $('relay-context-bar').hidden=false;
+      $('relay-live').href='/?pane='+encodeURIComponent(id)+'&mode=chat';
+      readRelayPage();
+    }
     else if(paintCachedTranscript(id)){clientTrace(null,'sel:cached',id);refreshTranscript(id);}  // instant paint, then revalidate
     else {connectTranscript(id,true);}
     clientTrace(null,'sel:connected',id);
     resetPaneModels(id);
     clientTrace(null,'sel:models',id);
     loadQueue().then(()=>scheduleQueuePoll(4000));
-    if(state.mode==='chat'&&canAutoFocusComposer())input.focus();
+    if(state.mode==='chat'&&!relayView&&canAutoFocusComposer())input.focus();
     const memory=filesMemoryOn();
     const remembered=memory?readFilesView(id):null;
     if(memory){
@@ -2044,7 +2106,11 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const pad=value=>String(value).padStart(2,'0'),now=new Date();
     return `${d.toDateString()===now.toDateString()?'':`${pad(d.getMonth()+1)}-${pad(d.getDate())} `}${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
-  function transcriptBubble(message, plain=false, receipt=''){
+  function transcriptBubble(message, plain=false, receipt='', call=null){
+    if(call){
+      const label=call.received_at?'目标会话已接收':(call.status==='error'?'发送失败':'尚未确认接收');
+      return `<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap incoming-relay">${relayCard(call,message,label)}</div></article>`;
+    }
     if(message.role==='interaction'){
       return '<article class="chat-message assistant" data-id="'+esc(message.id)+'"><div class="assistant-body"><strong>提问记录</strong><pre class="interaction-text">'+htmlEscape(message.text)+'</pre></div></article>';
     }
@@ -2098,10 +2164,10 @@ import {marked} from '/assets/marked.esm.js?v=1';
     messages=messages.slice(-TRANSCRIPT_PAGE_MAX);
     state.transcriptMessages=messages;
     state.messageText=new Map(messages.map(message=>[String(message.id),String(message.text||'')]));
-    reconcilePending(messages);
+    if(!relayView)reconcilePending(messages);
     const host=$('transcript-messages'),before=state.renderedMessages||new Map(),next=new Map();
     const pending=new Map();
-    const local=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
+    const local=relayView?[]:[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
       .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0));
     const pendingTail=local.slice(-TRANSCRIPT_PAGE_MAX);
     const formal=messages.slice(Math.max(0,messages.length+pendingTail.length-TRANSCRIPT_PAGE_MAX));
@@ -2146,10 +2212,11 @@ import {marked} from '/assets/marked.esm.js?v=1';
       if(index===formal.length)break;
       const message=formal[index],id=String(message.id);
       const receipt=receipts.get(id)||'';
-      const revision=[message.role,message.timestamp,message.text,receipt,message.relay_receipt?.id,
+      const senderCall=message===relayView?.sender?relayView.call:null;
+      const revision=[message.role,message.timestamp,message.text,receipt,senderCall?.received_at,senderCall?.status,message.relay_receipt?.id,
         message.relay_receipt && relayPaneLabel(message.relay_receipt.parent),
         message.relay_receipt && relayPaneLabel(message.relay_receipt.child)];
-      append(id,revision,()=>transcriptBubble(message,false,receipt),()=>transcriptBubble(message,true,receipt));
+      append(id,revision,()=>transcriptBubble(message,false,receipt,senderCall),()=>transcriptBubble(message,true,receipt,senderCall));
     }
     for(const [id,item] of before){
       if(next.get(id)===item)continue;
@@ -2240,7 +2307,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const idleFor=state.lastTranscriptChange?Date.now()-state.lastTranscriptChange:1e9;
     return idleFor<30000?1500:idleFor<300000?3000:idleFor<600000?5000:10000;
   }
-  async function refreshTranscript(id,{force=false,refresh=false}={}){if(state.selected!==id||state.mode!=='chat')return;
+  async function refreshTranscript(id,{force=false,refresh=false}={}){if(relayView||state.selected!==id||state.mode!=='chat')return;
     const fullFirst=!!state.needsFullTranscript;state.needsFullTranscript=false;
     const limit=state.transcriptLimit;
     // 缓存只画了最后 40 条，全量补齐后内容会变长：读者原本就在最底部，补完也得还在底部
@@ -2385,7 +2452,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function syncLiveTail(){
     const id=state.selected;
     const box=$('live-tail'),pre=$('live-tail-text'),toggle=$('live-tail-toggle');
-    const available=id&&state.mode==='chat'&&!state.livePaused&&$('transcript').classList.contains('active');
+    const available=id&&!relayView&&state.mode==='chat'&&!state.livePaused&&$('transcript').classList.contains('active');
     if(!available){stopLiveTail();return;}
     const revision=$('native-form').dataset.open;
     const expanded=collapsedTailPane!==id && (!revision || expandedForm===revision);
@@ -3012,7 +3079,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     });
     setInterval(sync,700);
   }
-  function setMode(mode){if(state.mode===mode)return;closeChatReply();state.mode=mode;if(state.selected)replaceConsoleQuery(params=>params.set('mode',mode));syncNativeForm();window.TmuxPrompt?.refresh();document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
+  function setMode(mode){if(state.mode===mode)return;if(relayView)leaveRelayView();closeChatReply();state.mode=mode;if(state.selected)replaceConsoleQuery(params=>params.set('mode',mode));syncNativeForm();window.TmuxPrompt?.refresh();document.querySelector('.app').classList.toggle('terminal-view',mode==='terminal');$('chat-mode').classList.toggle('active',mode==='chat');$('terminal-mode-button').classList.toggle('active',mode==='terminal');$('chat-mode').setAttribute('aria-pressed',String(mode==='chat'));$('terminal-mode-button').setAttribute('aria-pressed',String(mode==='terminal'));$('chat-mode').title=mode==='chat'?'聊天视图（当前）':'聊天视图';$('terminal-mode-button').title=mode==='terminal'?'终端视图（当前）':'终端视图';closeConnections();if(state.selected)(mode==='terminal'?connectTerminal(state.selected):connectTranscript(state.selected,true));syncEarlierBar();syncProgress();if(mode==='chat'&&state.selected&&canAutoFocusComposer())input.focus();syncFullscreen();localStorage.setItem('tmux-web-mode',mode);if(mode!=='terminal'){$('terminal-input')?.blur();toggleTypePad(false);}}
   function isFullscreen(){return document.fullscreenElement===$('main')||$('main').classList.contains('fullscreen-fallback');}
   function syncFullscreen(){const active=isFullscreen();const label=$('fullscreen').querySelector('span');if(label)label.textContent=active?'退出全屏':(state.mode==='terminal'?'终端全屏':'对话全屏');setTimeout(()=>{if(state.fit&&state.termWs?.readyState===WebSocket.OPEN){state.fit.fit();state.termWs.send(JSON.stringify({type:'resize',cols:state.xterm.cols,rows:state.xterm.rows}));}},80);}
   async function toggleFullscreen(){const main=$('main'),app=document.querySelector('.app');if(isFullscreen()){if(document.fullscreenElement)await document.exitFullscreen();main.classList.remove('fullscreen-fallback');app.classList.remove('fullscreen-fallback');}else if(main.requestFullscreen){try{await main.requestFullscreen();}catch{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}}else{main.classList.add('fullscreen-fallback');app.classList.add('fullscreen-fallback');}syncFullscreen();}
@@ -3471,7 +3538,11 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
       }
       return;
     }
-    const requestedMode=initialParams.get('mode');
+    const relay=initialParams.get('relay'),side=initialParams.get('side'),pane=initialParams.get('pane');
+    if(pane && /^[a-f0-9]{12}$/.test(relay||'') && ['sent','received'].includes(side)){
+      relayView={id:relay,side,pane,offset:0,revision:0};
+    }
+    const requestedMode=relayView?'chat':initialParams.get('mode');
     const initialMode=['chat','terminal'].includes(requestedMode)?requestedMode:localStorage.getItem('tmux-web-mode');
     if(initialMode==='terminal')setMode('terminal');
     const wanted=(initialParams.get('pane')||localStorage.getItem('tmux-last-pane')||'').trim();

@@ -85,6 +85,8 @@ class Call:
     progress: str = ""
     deadline: float = 0
     received_at: float = 0
+    receipt_session: str = ""
+    receipt_message: str = ""
 
     @property
     def duration(self) -> float:
@@ -106,6 +108,27 @@ class Call:
         if self.received_at:
             data["received_at"] = self.received_at
         return data
+
+
+def context_start(call, side, transcript):
+    """Return the first following turn. Require the recorded receiver identity."""
+    messages = transcript.get("messages") or []
+    if side == "sent":
+        # The receipt is the sender's actual record. Its surrounding turns have
+        # timestamps, but harnesses do not expose a common sending tool-event ID.
+        times = [message_time(m.get("timestamp")) for m in messages]
+        if not any(ts is not None and ts <= call.created for ts in times):
+            return None
+        return next((i for i, ts in enumerate(times) if ts is not None and ts > call.created), len(messages))
+    if not call.received_at or transcript.get("session_id") != call.receipt_session:
+        return None
+    question = call.question.strip().replace("\r\n", "\n")
+    for i, m in enumerate(messages):
+        if (m.get("role") == "user" and str(m.get("id")) == call.receipt_message
+                and message_time(m.get("timestamp")) == call.received_at
+                and (m.get("text") or "").strip().replace("\r\n", "\n") == question):
+            return i + 1
+    return None
 
 
 class AgentCallStore:
@@ -182,7 +205,7 @@ class AgentCallStore:
                 "AND progress='submitted' AND received_at=0 AND created>=? GROUP BY child",
                 (time.time()-86400,)))
 
-    def match_receipts(self, child, transcript):
+    def match_receipts(self, child, transcript, known_only=False):
         """Correlate whole user turns, then return verified routes for this transcript page."""
         session = transcript.get("session_id")
         if not session:
@@ -218,6 +241,8 @@ class AgentCallStore:
 
         with self._lock, self._connection:
             existing = linked()
+            if known_only:
+                return existing
             fresh = {mid: turn for mid, turn in turns.items() if mid not in existing}
             if not fresh:
                 return existing
@@ -323,4 +348,5 @@ class AgentCallStore:
         return Call(id=row["id"], parent=row["parent"], child=row["child"],
                     question=row["question"], reply=row["reply"], status=("timeout" if row["status"] == "running" and 0 < row["deadline"] < time.time()-15 else row["status"]),
                     source=row["source"], created=row["created"], finished=row["finished"],
-                    error=row["error"], progress=row["progress"], deadline=row["deadline"], received_at=row["received_at"])
+                    error=row["error"], progress=row["progress"], deadline=row["deadline"], received_at=row["received_at"],
+                    receipt_session=row["receipt_session"] or "", receipt_message=row["receipt_message"] or "")

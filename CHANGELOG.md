@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.22.0
+
+- Open either side of a relay message at its verified incoming turn or exact outgoing receipt. Read subsequent Chat messages in bounded pages on local and federated panes.
+
 ## 0.21.0
 
 - Confirm relay messages against user turns in the recipient transcript and persist the receipt. The sender can see delivery even if nobody opens the recipient Chat.

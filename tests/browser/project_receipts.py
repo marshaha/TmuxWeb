@@ -2,7 +2,7 @@
 from pathlib import Path
 import sys
 import time
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
@@ -31,6 +31,9 @@ def main():
                 def route(r):
                     u=urlsplit(r.request.url)
                     path=unquote(u.path)
+                    call={'id':'abc123def456','parent':base['id'],'child':remote['id'],'source':'message',
+                          'status':'running','progress':'blocked','received_at':2 if delivered else 0,
+                          'question':'[#4 → #125] 检查超时原因 <RTL> '+('abcdefgh'*24),'created':1}
                     if path=='/api/hosts':
                         data={'hosts':[{'id':'localhost','name':'Ubuntu','panes':[base,*workers]},
                                        {'id':'robo','name':'robo','panes':[remote]}]}
@@ -40,9 +43,14 @@ def main():
                         data={'observed_at':time.time(),'panes':[{'id':remote['id'],'status':'idle','needs_input':True,
                               'prompt':{'source':'script_status','kind':'notice','title':'脚本请求人工处理','read_only':True,
                                         'options':[],'revision':'test'}}],
-                              'outbound':[{'parent':base['id'],'child':remote['id'],'status':'running','progress':'blocked',
-                                           'received_at': time.time() if delivered else 0,
-                                           'question':'[#4 → #125] 检查超时原因 <RTL> '+('abcdefgh'*24),'created':1}]}
+                              'outbound':[] if delivered else [call]}
+                    elif path.endswith('/relay-context/'+call['id']):
+                        params=parse_qs(u.query)
+                        offset=int(params['offset'][0])
+                        data={'call':call,'messages':[{'id':f'reply-{i}','role':'assistant','text':f'后续消息 {i}'}
+                              for i in range(offset,min(offset+499,530))],'more':offset==0}
+                        if params['side']==['received']:
+                            data['anchor']={'id':'exact-q','role':'user','text':call['question'],'relay_receipt':call}
                     elif path=='/api/pane-projects':
                         if r.request.method == 'POST':
                             names.append(r.request.post_data_json['project'])
@@ -84,7 +92,7 @@ def main():
                 expect(empty_group.locator('summary')).to_contain_text('· 0')
                 page.goto('http://tmuxweb.test/?pane=%254',wait_until='domcontentloaded')
                 expect(page.locator('#relay-receipts')).to_contain_text('等待人工处理')
-                expect(page.locator('#relay-receipts a')).to_have_attribute('href','/?pane=robo~%254')
+                expect(page.locator('#relay-receipts a')).to_have_attribute('href','/?pane=robo~%254&relay=abc123def456&side=received')
                 receipt=page.locator('#relay-receipts article')
                 expect(receipt.locator('.receipt-route')).to_have_text('#4 → #125')
                 expect(receipt.locator('p')).to_have_text('检查超时原因 <RTL> '+('abcdefgh'*24))
@@ -103,16 +111,38 @@ def main():
                 expect(inbound.locator('.receipt-route')).to_have_text('#4 → #125')
                 expect(inbound.locator('.receipt-body')).to_have_text('检查超时原因 <RTL> '+('abcdefgh'*24))
                 back=inbound.get_by_role('link',name='#4 返回发送方 Chat')
-                expect(back).to_have_attribute('href','/?pane=%254')
+                expect(back).to_have_attribute('href','/?pane=%254&relay=abc123def456&side=sent')
                 assert inbound.evaluate("""el=>{
                     const card=el.querySelector('article'),link=el.querySelector('footer a');
                     const r=link.getBoundingClientRect(),b=card.getBoundingClientRect();
                     return b.left>=0 && b.right<=innerWidth+1 && r.right<=b.right && b.right-r.right<18
                       && b.bottom-r.bottom<18 && card.scrollWidth<=card.clientWidth+1;
                 }"""), width
+                anchor=page.locator('[data-id="exact-q"]')
+                expect(anchor).to_be_in_viewport()
+                expect(anchor).to_be_focused()
+                expect(page.locator('#transcript-messages > article')).to_have_count(500)
+                assert page.evaluate("document.getElementsByTagName('*').length<=12000"), width
+                assert page.locator('#relay-context-bar').evaluate('''el=>[el,...el.querySelectorAll('button,a')].every(item=>item.scrollWidth<=item.clientWidth+1)''')
+                page.locator('#relay-next').click()
+                expect(page.locator('[data-id="reply-499"]')).to_be_in_viewport()
+                page.locator('#relay-prev').click()
+                expect(anchor).to_be_in_viewport()
                 delivered=True
                 back.click()
-                expect(receipt.locator('footer span')).to_have_text('目标会话已接收')
+                sent=page.locator('[data-id="relay:abc123def456"]')
+                expect(sent.locator('footer span')).to_have_text('目标会话已接收')
+                expect(sent).to_be_in_viewport()
+                expect(page.locator('[data-id="reply-0"]')).to_be_visible()
+                page.locator('[data-id="reply-40"]').scroll_into_view_if_needed()
+                page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+                expect(page.locator('[data-id="reply-40"]')).to_be_in_viewport()
+                page.locator('#relay-refresh').click()
+                expect(page.locator('#relay-context-status')).to_have_text('已定位发送回执')
+                expect(page.locator('[data-id="reply-40"]')).to_be_in_viewport()
+                page.locator('#relay-live').click()
+                expect(page.locator('#relay-context-bar')).to_be_hidden()
+                expect(page.locator('#transcript-messages [data-id="q"]')).to_be_visible()
                 page.locator('#menu').click()
                 page.get_by_role('button',name='主机',exact=True).click()
                 expect(page.get_by_role('button',name='新建项目')).to_be_hidden()

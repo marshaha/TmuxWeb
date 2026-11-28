@@ -159,7 +159,7 @@ class PerformanceBudgetTests(unittest.TestCase):
         page = self.client.get("/assets/console-app.js").text
         self.assertIn("TRANSCRIPT_PAGE_MAX=500", page)
         self.assertIn("let budget=9500-(formal.length+pendingTail.length)*14;", page)
-        self.assertIn("()=>transcriptBubble(message,true,receipt)", page)
+        self.assertIn("()=>transcriptBubble(message,true,receipt,senderCall)", page)
 
 
 if __name__ == "__main__":
