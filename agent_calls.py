@@ -88,6 +88,9 @@ class Call:
     receipt_session: str = ""
     receipt_message: str = ""
 
+    task_stage: str = ""
+    task_result: str = ""
+
     @property
     def duration(self) -> float:
         end = self.finished or time.time()
@@ -99,12 +102,15 @@ class Call:
             "status": self.status, "source": self.source,
             "created": self.created, "finished": self.finished,
             "duration": self.duration, "error": self.error, "progress": self.progress,
-            "question": self.question if full else self.question[:280],
+            "question": self.question if full or self.source in ("file_read", "file_write") else self.question[:280],
         }
         if full:
             data["reply"] = self.reply
         else:
             data["reply_preview"] = self.reply[:280]
+        if self.task_stage:
+            data["task_stage"] = self.task_stage
+            data["task_result"] = self.task_result if full else self.task_result[:280]
         if self.received_at:
             data["received_at"] = self.received_at
         return data
@@ -164,6 +170,20 @@ class AgentCallStore:
                 self._connection.execute("ALTER TABLE calls ADD COLUMN received_at REAL NOT NULL DEFAULT 0")
                 self._connection.execute("ALTER TABLE calls ADD COLUMN receipt_session TEXT")
                 self._connection.execute("ALTER TABLE calls ADD COLUMN receipt_message TEXT")
+            if "task_stage" not in columns:
+                self._connection.execute("ALTER TABLE calls ADD COLUMN task_stage TEXT NOT NULL DEFAULT ''")
+                self._connection.execute("ALTER TABLE calls ADD COLUMN task_result TEXT NOT NULL DEFAULT ''")
+            self._connection.execute("CREATE INDEX IF NOT EXISTS calls_tasks ON calls(created DESC) WHERE task_stage!=''")
+            self._connection.execute("CREATE INDEX IF NOT EXISTS calls_reviews ON calls(task_stage) WHERE task_stage='review'")
+            self._connection.execute("""CREATE INDEX IF NOT EXISTS calls_pending_tasks ON calls(created DESC)
+                WHERE task_stage IN ('assigned','working','review') AND status NOT IN ('error','timeout')""")
+            self._connection.execute("""CREATE TABLE IF NOT EXISTS relay_results (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT NOT NULL UNIQUE)""")
+            self._connection.execute("""CREATE TRIGGER IF NOT EXISTS record_relay_result
+                AFTER UPDATE OF status, task_stage ON calls
+                WHEN NEW.parent!='' AND (NEW.status IN ('error','timeout')
+                    OR NEW.task_stage IN ('delivered','failed') OR (NEW.source!='message' AND NEW.status='ok'))
+                BEGIN INSERT OR IGNORE INTO relay_results(call_id) VALUES(NEW.id); END""")
             self._connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS calls_receipt ON "
                                      "calls(child, receipt_session, receipt_message) WHERE received_at>0")
             self._connection.execute("CREATE INDEX IF NOT EXISTS calls_unreceived ON calls(created, child) "
@@ -172,17 +192,18 @@ class AgentCallStore:
             self._connection.execute("CREATE INDEX IF NOT EXISTS calls_child ON calls (child, created)")
             self._connection.commit()
 
-    def start(self, parent: str, child: str, question: str, source: str = "", timeout: float = 0) -> Call:
+    def start(self, parent: str, child: str, question: str, source: str = "", timeout: float = 0, *, delegate=False) -> Call:
         call = Call(id=uuid.uuid4().hex[:12], parent=parent or "", child=child or "",
                     question=(question or "")[:MAX_TEXT], reply="", status="running",
                     source=source or "", created=time.time(), finished=0.0, error="")
+        call.task_stage = "assigned" if delegate else ""
         call.deadline = call.created + timeout if timeout else 0
         with self._lock:
             self._connection.execute(
-                "INSERT INTO calls (id,parent,child,question,reply,status,source,created,finished,error,deadline)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO calls (id,parent,child,question,reply,status,source,created,finished,error,deadline,task_stage)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (call.id, call.parent, call.child, call.question, "", "running",
-                 call.source, call.created, 0.0, "", call.deadline))
+                 call.source, call.created, 0.0, "", call.deadline, call.task_stage))
             self._connection.commit()
         return call
 
@@ -226,7 +247,7 @@ class AgentCallStore:
         if not turns:
             return {}
         slots = ",".join("?" for _ in turns)
-        lookup = ("SELECT receipt_message, question, received_at, parent, child, id FROM calls "
+        lookup = ("SELECT receipt_message, question, received_at, parent, child, id, task_stage, substr(task_result,1,280) AS task_result FROM calls "
                   f"WHERE child=? AND receipt_session=? AND received_at>0 AND receipt_message IN ({slots})")
         keys = (child, session, *turns)
 
@@ -237,6 +258,8 @@ class AgentCallStore:
                 # Some legacy adapters generate IDs from a row's position in the page.
                 if turns[mid] == (row["question"].strip().replace("\r\n", "\n"), row["received_at"]):
                     result[mid] = {"parent": row["parent"], "child": row["child"], "id": row["id"]}
+                    if row["task_stage"]:
+                        result[mid].update(task_stage=row["task_stage"], task_result=row["task_result"])
             return result
 
         with self._lock, self._connection:
@@ -272,6 +295,73 @@ class AgentCallStore:
             self._connection.commit()
         return self.get(call_id)
 
+    def update_task(self, call_id, child, stage, result=""):
+        if stage == "working" and result:
+            raise ValueError("开始执行时无需提交结果")
+        if stage not in ("working", "delivered", "failed") or (stage != "working" and not result.strip()):
+            raise ValueError("交付或失败时请填写结果")
+        with self._lock, self._connection:
+            # A guarded update also serializes independent server processes.
+            self._connection.execute("""UPDATE calls SET task_stage=?, task_result=?
+                WHERE id=? AND child=? AND status='ok' AND progress='submitted' AND
+                (task_stage='assigned' AND ?='working' OR task_stage='working' AND ? IN ('delivered','failed'))""",
+                (stage, result, call_id, child, stage, stage))
+            call = self.get(call_id)
+            if not call or call.child != child or not call.task_stage:
+                raise KeyError(call_id)
+            if call.task_stage != stage or call.task_result != result:
+                raise ValueError("任务状态已变化，请刷新")
+            return call.as_dict(full=True)
+
+    def tasks(self, pane):
+        with self._lock:
+            rows = self._connection.execute("""SELECT * FROM calls WHERE task_stage!=''
+                AND (parent=? OR child=?) ORDER BY created DESC LIMIT 100""", (pane, pane)).fetchall()
+        return [self._call(row).as_dict() for row in rows]
+
+    def file_review(self, child, requester, operation, path):
+        ident = uuid.uuid4().hex[:12]
+        with self._lock, self._connection:
+            self._connection.execute("""INSERT INTO calls(id,parent,child,question,status,source,created,task_stage)
+                VALUES(?,?,?,?,?,?,?,'review')""",
+                (ident, requester, child, path, "ok", "file_" + operation, time.time()))
+        return self.get(ident).as_dict(full=True)
+
+    def decide_file_review(self, ident, stage):
+        if stage not in ("acknowledged", "declined"):
+            raise ValueError("无效的审阅结果")
+        with self._lock, self._connection:
+            self._connection.execute("""UPDATE calls SET task_stage=?, finished=? WHERE id=? AND
+                source IN ('file_read','file_write') AND task_stage='review'""", (stage,time.time(),ident))
+            call = self.get(ident)
+            if not call or call.source not in ("file_read","file_write"):
+                raise KeyError(ident)
+            if call.task_stage != stage:
+                raise ValueError("此申请已处理")
+            return call.as_dict(full=True)
+
+    def review_count(self):
+        with self._lock:
+            return self._connection.execute("SELECT count(*) FROM calls WHERE task_stage='review'").fetchone()[0]
+
+    def pending_tasks(self):
+        with self._lock:
+            rows = self._connection.execute("""SELECT * FROM calls WHERE task_stage!=''
+                AND task_stage IN ('assigned','working','review') AND status NOT IN ('error','timeout')
+                ORDER BY created DESC LIMIT 100""").fetchall()
+        return [self._call(row).as_dict() for row in rows]
+
+    def results(self, after=None):
+        with self._lock:
+            if after is None:
+                query = "SELECT seq,c.* FROM relay_results r JOIN calls c ON c.id=r.call_id ORDER BY seq DESC LIMIT 50"
+                rows = self._connection.execute(query).fetchall()[::-1]
+            else:
+                rows = self._connection.execute("""SELECT seq,c.* FROM relay_results r JOIN calls c ON c.id=r.call_id
+                    WHERE seq>? ORDER BY seq LIMIT 50""", (after,)).fetchall()
+        return {"items": [dict(self._call(row).as_dict(), seq=row["seq"]) for row in rows],
+                "cursor": rows[-1]["seq"] if rows else after or 0}
+
     def get(self, call_id: str) -> Call | None:
         with self._lock:
             row = self._connection.execute("SELECT * FROM calls WHERE id=?", (call_id,)).fetchone()
@@ -296,10 +386,10 @@ class AgentCallStore:
         slots = ",".join("?" for _ in refs)
         query = f"""WITH edges AS (
             SELECT id, child AS peer, 'child' AS relation, status, created
-            FROM calls WHERE parent IN ({slots}) AND child != ''
+            FROM calls WHERE parent IN ({slots}) AND child != '' AND source NOT IN ('file_read','file_write')
             UNION ALL
             SELECT id, parent AS peer, 'parent' AS relation, status, created
-            FROM calls WHERE child IN ({slots}) AND parent != ''
+            FROM calls WHERE child IN ({slots}) AND parent != '' AND source NOT IN ('file_read','file_write')
         ), ranked AS (
             SELECT *, row_number() OVER (PARTITION BY peer, relation
                 ORDER BY (status='running') DESC, created DESC, id DESC) AS rank FROM edges
@@ -349,4 +439,4 @@ class AgentCallStore:
                     question=row["question"], reply=row["reply"], status=("timeout" if row["status"] == "running" and 0 < row["deadline"] < time.time()-15 else row["status"]),
                     source=row["source"], created=row["created"], finished=row["finished"],
                     error=row["error"], progress=row["progress"], deadline=row["deadline"], received_at=row["received_at"],
-                    receipt_session=row["receipt_session"] or "", receipt_message=row["receipt_message"] or "")
+                    receipt_session=row["receipt_session"] or "", receipt_message=row["receipt_message"] or "", task_stage=row["task_stage"], task_result=row["task_result"])

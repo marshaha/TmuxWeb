@@ -22,6 +22,7 @@
   const API_TIMEOUT_MS = 15000;
 
   let onJump = null;
+  let activity;
   let timer = null;
   let cursor = null;
   let loading = false;
@@ -182,7 +183,7 @@
       })).join('')).join('');
     if (html !== activityMarkup) box.innerHTML = activityMarkup = html;
     document.getElementById('inbox-pending-title').hidden = !pendingPanes.size;
-    document.getElementById('inbox-empty').hidden = !!(pendingPanes.size || html);
+    document.getElementById('inbox-empty').hidden = !!pendingPanes.size;
   }
 
   function setStates(panes) {
@@ -283,6 +284,7 @@
     if (shade) shade.hidden = false;
     // 标已读和拉列表并行：以前先 await 标已读再拉列表，手机网络一抖、
     // 标已读请求挂住，列表就永远不拉，抽屉只有静态标题栏。
+    activity?.open();
     cursor = null;
     readMarked = false;
     markRead();
@@ -295,6 +297,7 @@
     const shade = backdrop();
     if (shade) shade.hidden = true;
     opened = false;
+    activity?.close();
   }
 
   function onListClick(event) {
@@ -317,6 +320,9 @@
 
   function start(options) {
     onJump = (options && options.onJump) || null;
+    if(options?.api && document.getElementById('inbox-result-section')){
+      activity=window.TmuxRelayActivity?.mount({...options,close});
+    }
     const button = document.getElementById('inbox-button');
     if (button) button.onclick = () => { if (opened) close(); else open(); };
     const closeButton = document.getElementById('inbox-close');

@@ -33,8 +33,7 @@ import git_tools
 import agent_calls
 import event_log
 import approvals
-import codex_forms
-import hermes_forms
+import providers
 import message_queue
 from plugin_api import PluginError, PluginManager, PluginServices, install_routes
 import time
@@ -210,7 +209,10 @@ CONSOLE_BUNDLE_SOURCES = (
     ("assets", "composer-files.js"),
     ("assets", "path-links.js"),
     ("assets", "prompt-card.js"),
+    ("assets", "harness-interactions.js"),
     ("assets", "native-form.js"),
+    ("assets", "diff-review.js"),
+    ("assets", "relay-activity.js"),
     ("assets", "agents-panel.js"),
     ("assets", "perf-budget.js"),
     ("assets", "chat-search.js"),
@@ -1683,7 +1685,21 @@ class ModelSwitchRequest(BaseModel):
     provider: str = Field(default="", max_length=60)
 
 
+class FileReviewRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=80)
+    requester: str = Field(min_length=1, max_length=80)
+    operation: str = Field(pattern=r"^(read|write)$")
+    path: str = Field(min_length=1, max_length=1024)
+
+
+class TaskUpdate(BaseModel):
+    pane: str = Field(min_length=1, max_length=80)
+    stage: str = Field(max_length=16)
+    result: str = Field(default="", max_length=16000)
+
+
 class RelayMessageRequest(BaseModel):
+    delegate: bool = False
     caller: str = Field(default="", max_length=80)
     target: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=100_000)
@@ -1733,6 +1749,11 @@ def remote_skill_names(transport, provider, cwd):
         return read(SSHRunner(transport.host), 8)
 
 
+def native_form_access(provider, local):
+    spec = providers.get(provider)
+    return "owner" if spec and spec.native_form and (local or spec.remote_native_form) else "terminal"
+
+
 def pane_metadata(pane: dict) -> dict:
     """Annotate a pane with its provider and what TmuxWeb can do with it.
 
@@ -1748,6 +1769,7 @@ def pane_metadata(pane: dict) -> dict:
         "transcript": bool(provider),
         "terminal": True,
         "relay": bool(provider),
+        "native_form": native_form_access(provider, pane.get("host_id") in (None, "localhost")),
         # any pane can be shared; ones without a transcript fall back to screen text
         "share": True,
     }
@@ -3469,6 +3491,7 @@ def create_app(
         with pane_state_lock:
             fresh_states = pane_state_cache["states"] if time.time() - pane_state_cache["at"] < 45 else []
         turns = {s["id"]: s for s in fresh_states if s.get("status_source") == "session"}
+        can_read_form = "input" in grants["scopes"] and fed_policy.allows("input")
         for host_id, host_name, panes in groups:
             for pane in panes:
                 raw = pane.get("pane_id") or pane.get("id") or ""
@@ -3484,7 +3507,9 @@ def create_app(
                     "index": pane.get("index"), "title": pane.get("title"),
                     "command": pane.get("command"), "path": pane.get("path"),
                     "active": pane.get("active"), "provider": pane_provider(pane),
-                    "capabilities": {"cursor_menu": bool(pane.get("pane_pid"))},
+                    "capabilities": {"cursor_menu": bool(pane.get("pane_pid")),
+                        "native_form": native_form_access(pane_provider(pane), host_id == "localhost")
+                        if can_read_form else "view"},
                 })
                 if script_report(pane.get("script_signal"), pane.get("pane_pid")):
                     found[-1].update(script_signal=pane["script_signal"], turn_owner=str(pane["pane_pid"]))
@@ -5061,6 +5086,18 @@ def create_app(
             except HTTPException as exc:
                 raise McpToolError(str(exc.detail)) from exc
             return {"target": target, "reply": result.get("reply", ""), "pane": result.get("pane"), "call": result.get("call")}
+        if name == "request_file_review":
+            try:
+                return await create_file_review(FileReviewRequest(**arguments))
+            except (HTTPException, ValueError) as exc:
+                raise McpToolError(str(exc)) from exc
+        if name == "relay_tasks":
+            pane = str(arguments.get("pane") or "").strip()
+            if not pane:
+                raise McpToolError("pane is required")
+            if not arguments.get("stage"):
+                return {"items": await asyncio.to_thread(calls_store.tasks, resolve_pane_ref(pane))}
+            return await update_relay_task(str(arguments.get("id") or ""), TaskUpdate(**arguments))
         if name == "send_agent":
             target = str(arguments.get("target") or "").strip()
             text = str(arguments.get("text") or "").strip()
@@ -5068,7 +5105,7 @@ def create_app(
                 raise McpToolError("target and text are required")
             try:
                 result = await perform_relay_message(RelayMessageRequest(
-                    target=target, text=text[:20000], submit=bool(arguments.get("submit", True)),
+                    target=target, text=text[:20000], delegate=arguments.get("delegate") is True, submit=bool(arguments.get("submit", True)),
                     caller=str(arguments.get("caller") or "")), retry=False)
             except HTTPException as exc:
                 raise McpToolError(str(exc.detail)) from exc
@@ -6376,16 +6413,10 @@ def create_app(
                                           {"Content-Type": "application/json"})
         pane = pane_or_404(pane_id, prefer_agent=True)
         pid = str(pane.get("pane_pid") or "")
-        if pane_provider(pane) == "codex" and transport is tmux and pid.isdigit():
-            def snapshot():
-                live = transport.validate_pane(actual)
-                if str(live.get("pane_pid")) != pid or pane_provider(live) != "codex":
-                    return "", "", ""
-                return transport.capture(actual, 80, pane=live, visible_only=True), live.get("title", ""), live.get("path", "")
-            return asyncio.run(codex_forms.on_host(Path.home(), actual, pid, snapshot, submission))
-        if pane_provider(pane) != "hermes" or not pid.isdigit():
+        adapter = providers.get(pane_provider(pane))
+        if not pid.isdigit() or not adapter or not adapter.native_form:
             return {"status": "closed"}
-        return hermes_forms.on_host(actual, pid, submission, None if transport is tmux else transport)
+        return adapter.native_form(transport, tmux, actual, pid, pane_provider, submission)
 
     async def native_form_for(pane_id, submission=None):
         pane_id = resolve_pane_ref(pane_id)
@@ -6812,12 +6843,18 @@ def create_app(
     async def pane_git_diff(request: Request, pane_id: str, base: str = "", path: str = ""):
         require_auth(request)
         _host, cwd = await git_target(pane_id)
+        if base.startswith("-") or len(base) > 256:
+            raise HTTPException(422, "无效的 Git 引用")
         result = await run_git(pane_id, git_tools.build_diff(cwd, base, path=path), timeout=45)
+        if result.get("exit"):
+            raise HTTPException(400, "无法读取当前 diff")
         text = result.get("stdout") or ""
-        stat, _, patch = text.partition("--PATCH--")
+        stat, _, patch = text.partition("--PATCH--\n")
+        truncated = bool(result.get("truncated")) or len(patch.encode()) > 200_000
         return {"pane": pane_id, "base": base,
                 "stat": stat.replace("--STAT--", "", 1).strip(),
-                "patch": patch, "truncated": bool(result.get("truncated"))}
+                "patch": patch, "truncated": truncated,
+                "revision": "" if truncated else hashlib.sha256(json.dumps([cwd, base, path, patch]).encode()).hexdigest()}
 
     @app.post("/api/panes/{pane_id}/git/worktree")
     async def create_git_worktree(request: Request, pane_id: str, payload: GitWorktreeRequest):
@@ -8538,7 +8575,7 @@ def create_app(
     async def needs_you_inbox_count(request: Request):
         """铃铛上的数字 = 还开着的（真的在等），不是"没点过的历史"。"""
         require_auth(request)
-        open_count = await asyncio.to_thread(inbox_store.open_count)
+        open_count = await asyncio.to_thread(lambda: inbox_store.open_count() + calls_store.review_count())
         unread = await asyncio.to_thread(inbox_store.unread_count)
         return {"count": open_count, "open": open_count, "unread": unread}
 
@@ -8553,7 +8590,7 @@ def create_app(
         require_auth(request)
         marked = await asyncio.to_thread(inbox_store.mark_all_read)
         return {"acknowledged_count": marked,
-                "count": await asyncio.to_thread(inbox_store.open_count)}
+                "count": await asyncio.to_thread(lambda: inbox_store.open_count() + calls_store.review_count())}
 
     @app.patch("/api/needs-you/inbox/{item_id}")
     async def needs_you_inbox_read(request: Request, item_id: int):
@@ -8563,11 +8600,70 @@ def create_app(
             raise HTTPException(status_code=404, detail="inbox item not found")
         return item
 
+    async def create_file_review(payload):
+        target = resolve_pane_ref(payload.target)
+        if not re.fullmatch(r"%[0-9]+", target):
+            raise HTTPException(400, "请连接文件所属节点的 TmuxWeb，选择其本机 pane")
+        await asyncio.to_thread(pane_or_404, target)
+        if not payload.path.strip() or any(ord(ch)<32 for ch in payload.path + payload.requester):
+            raise HTTPException(422, "无效的路径或申请来源")
+        return await asyncio.to_thread(calls_store.file_review, target, payload.requester, payload.operation, payload.path)
+
+    @app.post("/api/relay/file-reviews")
+    async def request_file_review(request: Request, payload: FileReviewRequest):
+        require_auth(request)
+        return await create_file_review(payload)
+
+    @app.post("/api/relay/file-reviews/{ident}/{stage}")
+    async def decide_file_review(request: Request, ident: str, stage: str):
+        token = request.cookies.get(COOKIE_NAME, "")
+        if not token or not hmac.compare_digest(token, expected_token()):
+            raise HTTPException(403, "需要文件所属节点的浏览器登录")
+        origin = request.headers.get("origin")
+        if origin and urllib.parse.urlsplit(origin).netloc != request.headers.get("host"):
+            raise HTTPException(403, "需要同源浏览器")
+        if request.headers.get("content-type", "").split(";")[0] != "application/json":
+            raise HTTPException(415, "需要 JSON")
+        try:
+            return await asyncio.to_thread(calls_store.decide_file_review, ident, stage)
+        except KeyError as exc:
+            raise HTTPException(404, "没有此申请") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/relay/tasks")
+    async def relay_tasks(request: Request, pane: str = ""):
+        require_auth(request)
+        if not pane:
+            return {"items": await asyncio.to_thread(calls_store.pending_tasks)}
+        return {"items": await asyncio.to_thread(calls_store.tasks, resolve_pane_ref(pane))}
+
+    @app.get("/api/relay/results")
+    async def relay_results(request: Request, after: int | None = Query(default=None, ge=0, le=2**63-1)):
+        require_auth(request)
+        return await asyncio.to_thread(calls_store.results, after)
+
+    async def update_relay_task(call_id, payload):
+        try:
+            return await asyncio.to_thread(calls_store.update_task, call_id, resolve_pane_ref(payload.pane),
+                                           payload.stage, payload.result.strip())
+        except KeyError as exc:
+            raise HTTPException(404, "该接收方没有此任务") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/relay/tasks/{call_id}")
+    async def relay_task_update(request: Request, call_id: str, payload: TaskUpdate):
+        require_auth(request)
+        return await update_relay_task(call_id, payload)
+
     async def perform_relay_message(payload: RelayMessageRequest, *, retry=True):
         transport, actual, pane, host = await asyncio.to_thread(relay_target, payload.target)
         target = pane["id"]
         parent = resolve_pane_ref(payload.caller) if payload.caller else ""
-        call = calls_store.start(parent, target, payload.text, "message", timeout=320)
+        if payload.delegate and (not parent or parent == target or not payload.submit or len(payload.text) > 20000):
+            raise HTTPException(422, "委派需要发送方、不同的接收方和可提交的任务")
+        call = calls_store.start(parent, target, payload.text, "message", timeout=320, delegate=payload.delegate)
         resend_manager.cancel(target, "superseded")
         try:
             sent = await asyncio.to_thread(transport.send, actual, payload.text, payload.submit)
@@ -8759,7 +8855,8 @@ def create_app(
             result["messages"].append(clean)
         if side == "received":
             original = messages[start - 1]
-            result["anchor"] = dict(original, relay_receipt={"id": call.id, "parent": call.parent, "child": call.child})
+            result["anchor"] = dict(original, relay_receipt={"id": call.id, "parent": call.parent, "child": call.child,
+                **({"task_stage": call.task_stage, "task_result": call.task_result[:280]} if call.task_stage else {})})
         result["more"] = begin + len(page) < len(messages)
         return result
 

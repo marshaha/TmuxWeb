@@ -377,6 +377,35 @@ class WriteScopeTests(unittest.TestCase):
                                   json={"label": "t", "scopes": scopes}).json()
         return {"Authorization": f"Bearer {issued['token']}"}
 
+    def test_native_form_adapter_uses_the_owning_pane_and_peer_scope(self):
+        from unittest.mock import patch
+        for harness in ("codex", "hermes"):
+            backend = FakeTmux()
+            backend.panes[0].update(provider=harness, command=harness, pane_pid="721")
+            store, grants = memory_stores()
+            with TestClient(federation_app(backend, store, grants)) as client:
+                client.post("/login", data={"password":"unit-test-admin-password"})
+                client.post("/api/fed/policy", json={"input":True})
+                def token(scopes, panes):
+                    return {"Authorization":"Bearer "+grants.issue("peer",scopes,panes,600)["token"]}
+                read = token(["view"], ["%4"])
+                write = token(["view","input"], ["%4"])
+                other = token(["view","input"], ["%5"])
+                route = "/api/fed/panes/%254/native-form"
+                action = {"revision":"a"*64, "answers":{"choice":{"indices":[0]}}}
+                with patch(harness+"_forms.on_host", return_value={"status":"open"}) as owner:
+                    self.assertEqual(client.get(route, headers=other).status_code, 403)
+                    self.assertEqual(client.post(route,headers=read,json=action).status_code,403)
+                    owner.assert_not_called()
+                    self.assertEqual(client.get(route,headers=read).status_code,403)
+                    self.assertEqual(client.get(route,headers=write).json()["status"],"open")
+                    owner.return_value = {"status":"resolved"}
+                    self.assertEqual(client.post(route,headers=write,json=action).json()["status"],"resolved")
+                    self.assertEqual(owner.call_count,2)
+                    self.assertIn("%4",owner.call_args.args)
+                    self.assertIn("721",owner.call_args.args)
+                self.assertFalse(backend.keys or backend.sent)
+
     def test_sending_text_needs_the_input_scope(self):
         view_only = self.headers(["view"])
         refused = self.client.post(f"/api/fed/panes/{self.pane}/input",

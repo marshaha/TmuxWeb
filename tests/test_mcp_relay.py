@@ -431,7 +431,7 @@ class ProtocolTests(unittest.TestCase):
                          "version":Path(mcp_relay.__file__).with_name("VERSION").read_text().strip()})
         listing = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
-        self.assertEqual(set(tools), {"list_projects", "create_project", "join_project", "leave_project", "remove_project_member", "list_agents", "ask_agent", "send_agent", "run_command",
+        self.assertEqual(set(tools), {"request_file_review", "relay_tasks", "list_projects", "create_project", "join_project", "leave_project", "remove_project_member", "list_agents", "ask_agent", "send_agent", "run_command",
                                        "create_session", "kill_session", "send_file", "read_agent",
                                        "publish_home_card", "list_home", "remove_home_card",
                                        "list_remote_hosts", "add_remote_host", "remove_remote_host"})

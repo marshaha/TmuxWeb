@@ -408,3 +408,22 @@ color:var(--muted);font-size:11px;cursor:pointer;line-height:1}
 
 .ag-result{padding:2px 9px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:12px}
 .ag-peer{display:inline-block;margin:0 9px 5px;padding:4px 0;color:var(--accent);font-size:12px}
+
+.collab-form{display:grid;gap:.5rem;min-width:0;overflow-wrap:anywhere}
+.collab-form[hidden],.collab-form [hidden]{display:none}
+.collab-form label{display:grid;gap:.2rem;min-width:0}
+.collab-form :is(select,textarea){box-sizing:border-box;width:100%;min-width:0;max-width:100%;font:inherit}
+.collab-form button,.inbox-filters button{max-width:100%;white-space:normal;overflow-wrap:anywhere;font:inherit}
+.collab-form button{justify-self:start}
+.collab-form ol:empty{display:none}
+.collab-form ol{padding-inline-start:1.4rem;margin:0}
+.inbox-filters{display:flex;flex-wrap:wrap;gap:.4rem;padding:.4rem .8rem}
+.inbox-filters [aria-pressed=true]{font-weight:700;color:var(--accent)}
+.task-row{display:grid;gap:.25rem;min-width:0;padding:.5rem 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.task-row p{margin:0;white-space:pre-wrap}
+
+#inbox-pending-section:has(.task-row) #inbox-empty{display:none}
+.collab-form input{box-sizing:border-box;min-width:0;width:100%;font:inherit}
+
+#review-excerpt button{display:block;width:100%;text-align:start;font:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+#review-excerpt button[aria-pressed=true]{color:var(--accent);font-weight:700}

@@ -82,6 +82,53 @@ class AgentCallStoreTests(unittest.TestCase):
         self.assertEqual([(r["relation"], r["peer"], r["question"]) for r in rows],
                          [("parent", "%2", "reverse"), ("child", "%2", "next")])
 
+    def test_two_reporters_cannot_publish_conflicting_results(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        call = self.store.start("%1","%2","review","message",delegate=True)
+        self.store.progress(call.id, "submitted")
+        self.store.finish(call.id)
+        self.store.update_task(call.id,call.child,"working")
+        other = agent_calls.AgentCallStore(self.store.path)
+        self.addCleanup(other.close)
+        barrier = Barrier(2)
+        def publish(store, stage):
+            barrier.wait(timeout=4)
+            try:
+                store.update_task(call.id,call.child,stage,stage)
+                return True
+            except ValueError:
+                return False
+        with ThreadPoolExecutor(2) as workers:
+            outcomes = [workers.submit(publish,store,stage) for store,stage in
+                        ((self.store,"delivered"),(other,"failed"))]
+            self.assertCountEqual([future.result() for future in outcomes],[True,False])
+        self.assertEqual(len(other.results()["items"]),1)
+
+    def test_task_receipt_and_result_have_independent_lifecycles(self):
+        call = self.store.start("%1", "remote~%2", "review", "message", delegate=True)
+        self.store.progress(call.id, "submitted")
+        self.store.finish(call.id)
+        turns = {"session_id": "fixture", "messages": [{"role": "user", "text": "review",
+                 "id": "msg", "timestamp": call.created + 0.5}]}
+        linked = self.store.match_receipts(call.child, turns)
+        self.assertEqual(linked["msg"]["task_stage"], "assigned")
+        self.assertEqual(self.store.results()["items"], [])
+        with self.assertRaises(KeyError):
+            self.store.update_task(call.id, "%2", "working")
+        self.store.update_task(call.id, call.child, "working")
+        other = agent_calls.AgentCallStore(self.store.path)
+        self.addCleanup(other.close)
+        for store in (other, self.store):
+            store.update_task(call.id, call.child, "delivered", "report.md")
+        with self.assertRaises(ValueError):
+            other.update_task(call.id, call.child, "failed", "changed")
+        feed = self.store.results()
+        self.assertEqual([c["task_result"] for c in feed["items"]], ["report.md"])
+        self.assertEqual(other.results(feed["cursor"])["items"], [])
+        self.assertEqual(other.pending_tasks(), [])
+        self.assertEqual(other.match_receipts(call.child, turns, True)["msg"]["task_result"], "report.md")
+
     def test_the_tree_nests_and_cuts_cycles(self):
         a = self.store.start("%1", "%2", "A 问 B")
         self.store.finish(a.id, reply="B 答", status="ok")
@@ -123,6 +170,23 @@ class AgentCallApiTests(unittest.TestCase):
         )
         self.client = TestClient(self.app)
         self.login_response = self.client.post("/login", data={"password": "pw"})
+
+    def test_file_review_needs_destination_browser_and_does_not_touch_pane(self):
+        info = {"target":"%4", "requester":"remote#5", "operation":"read", "path":"some/file.txt"}
+        created = self.client.post("/api/relay/file-reviews", json=info)
+        self.assertEqual(created.status_code, 200, created.text)
+        ident = created.json()["id"]
+        decide = "/api/relay/file-reviews/" + ident
+        self.assertEqual(TestClient(self.app).post(decide+"/acknowledged", json={}).status_code, 403)
+        self.assertEqual(self.client.post(decide+"/acknowledged", json={}, headers={"Origin":"https://other.test"}).status_code, 403)
+        pending = self.client.get("/api/relay/tasks").json()["items"]
+        self.assertIn(ident, [row["id"] for row in pending])
+        for unused in range(2):
+            self.assertEqual(self.client.post(decide+"/declined", json={}).json()["task_stage"], "declined")
+        self.assertEqual(self.client.post(decide+"/acknowledged", json={}).status_code, 409)
+        result = self.client.get("/api/relay/results").json()
+        self.assertEqual([row["id"] for row in result["items"]], [ident])
+        self.assertFalse(self.tmux.sent or self.tmux.keys)
 
     def test_an_ask_records_a_parent_child_edge(self):
         """真正的 relay ask 走完要留下一条 ok 记录，别人问的也算。"""

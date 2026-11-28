@@ -60,3 +60,7 @@ Codex 命令审批在「查看交互」中显示待执行命令、仅批准一�
 需要支持共享 gateway 与 terminal breadcrumb 的 Hermes CLI。Linux 主机用当前前台 Hermes 进程、TTY、进程启动时间和该终端的 Hermes 会话记录确认归属。有 hook 时还会核对其 session 和问题。服务只连接正在运行的本机 gateway。终端画面只能提示服务复查。旧版 Hermes、身份不匹配、密码、持久授权和文件编辑审批均可通过实时终端处理。
 
 同一 pane、请求版本与答案重试可取回同一回执。主机端 SQLite 只保存答案摘要和结果，跨进程共享；不同答案无法覆盖先提交的决定。连接中断而结果尚未核实时会提示查看终端。
+
+### 接入新的原生表单
+
+每个 harness 在 `providers/<name>.py` 中实现可选的 `native_form`。读取返回由实际请求生成的 revision 和问题。提交时适配器重新校验 pane 归属、请求身份和选项，并处理重复提交。支持托管主机时显式声明 `REMOTE_NATIVE_FORM`。浏览器在 `harness-interactions.js` 选择读取适配器，`native-form.js` 统一管理选项草稿和确认。联邦请求由所属节点校验输入权限。侧栏中的 `capabilities.native_form` 区分 owner、terminal 和只读的 view。

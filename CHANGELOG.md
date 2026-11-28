@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.24.0
+
+- Register Codex and Hermes native form adapters independently. Verified requests retain their existing local and federated submission paths.
+- Track delegated relay work through execution and delivery, with an incremental results feed and links back to the originating chat.
+- Collect Git diff comments by hunk or line, verify the displayed patch revision, and submit the batch to a selected chat.
+- Surface metadata-only file read/write requests on the destination server. Its signed-in browser user can decline or take the request for manual processing.
+- Split the activity drawer into pending items and results on desktop and mobile.
+
 ## 0.23.4
 
 - Show the WebSocket transport as WS in host management and sidebar search. Installation prompts identify the remote program as the WS client.

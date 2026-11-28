@@ -49,3 +49,12 @@ def hermes_resolve_session_file(home, cwd, title, screen=None, hint=None):
     """No session *file* for Hermes: sessions live in state.db, so the
     file-based decision point cannot resolve one. Returns None."""
     return None
+
+
+REMOTE_NATIVE_FORM = True
+
+
+def native_form(transport, local, actual, pid, provider_for, submission):
+    """Hermes verifies the live gateway owner locally or through the host transport."""
+    import hermes_forms
+    return hermes_forms.on_host(actual, pid, submission, None if transport is local else transport)

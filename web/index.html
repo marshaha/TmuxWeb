@@ -490,13 +490,21 @@
 <!-- 等你回答收件箱（借鉴清单第 7 项）：亮灯历史，打开即标已读 -->
 <div class="inbox-drawer" id="inbox-drawer" hidden role="dialog" aria-label="等你回答收件箱">
   <div class="inbox-head"><b>等你回答</b><button class="prompt-x" id="inbox-close" type="button" title="关闭" aria-label="关闭"><svg class="ico"><use href="#i-close"/></svg></button></div>
+  <div class="inbox-filters" aria-label="动态分类"><button type="button" data-inbox-tab="pending" aria-pressed="true">需我处理</button><button type="button" data-inbox-tab="results" aria-pressed="false">有新结果</button></div>
   <div class="inbox-list">
-    <h3 id="inbox-pending-title" hidden>待处理</h3><div id="inbox-list"></div>
+    <section id="inbox-pending-section"><h3 id="inbox-pending-title" hidden>待处理</h3><div id="inbox-list"></div>
     <button class="prompt-btn" id="inbox-more" type="button" hidden>更多待处理</button>
-    <div id="inbox-activity"></div>
+    <div class="inbox-empty" id="inbox-empty" hidden>暂无待处理事项</div>
+    <div class="collab-form"><div id="inbox-tasks"></div>
+      <button type="button" id="new-task">委派任务</button>
+      <form id="delegate-task" class="collab-form" hidden><label>接收 Chat<select id="task-target" required></select></label>
+      <label>任务<textarea required maxlength="20000" rows="2" id="task-text"></textarea></label><button id="task-create">提交委派</button></form>
+      <form id="task-report" class="collab-form" hidden><label>执行结果或产物位置<textarea required maxlength="16000" rows="2" id="task-result-text"></textarea></label>
+      <button value="delivered">交付结果</button><button value="failed">报告失败</button></form></div></section>
+    <section id="inbox-result-section" hidden><div id="inbox-results" class="collab-form"></div><div id="inbox-activity"></div><p id="relay-no-results" hidden>暂无新结果</p></section>
+    <span role="status" id="task-status"></span>
   </div>
   <div class="inbox-state" id="inbox-state" hidden></div>
-  <div class="inbox-empty" id="inbox-empty" hidden>暂无待处理、完成未读或工作中的会话</div>
   <div class="inbox-foot"><span class="prompt-state" id="inbox-status"></span></div>
 </div>
 <div class="inbox-backdrop" id="inbox-backdrop" hidden></div>
@@ -615,7 +623,17 @@
       </section>
       <section class="gp-section" id="gp-diff-wrap" hidden>
         <h3>diff <span class="gp-sub" id="gp-diff-base"></span></h3>
-        <pre class="gp-diff" id="gp-diff"></pre></section>
+        <pre class="gp-diff" id="gp-diff"></pre>
+        <section id="gp-review" class="collab-form" hidden aria-label="Diff 批注">
+          <label>批注位置<select id="review-hunk"></select></label>
+          <div id="review-pages" hidden><button type="button" id="review-prev">上一组</button><button type="button" id="review-next">下一组</button></div>
+          <label>行号（留空批注整段）<input id="review-line" type="number" min="0" step="1" inputmode="numeric" placeholder="段内序号"></label>
+          <div class="gp-diff" id="review-excerpt" aria-label="选择一行批注"></div>
+          <label>审查意见<textarea id="review-note" rows="2" maxlength="1200"></textarea></label>
+          <button type="button" id="review-add">添加批注</button><ol id="review-list"></ol>
+          <label>接收 Chat<select id="review-target"></select></label>
+          <button type="button" id="review-send">发送这批意见</button><span role="status" id="review-status"></span>
+        </section></section>
     </div>
   </div>
 </div>

@@ -6,7 +6,7 @@
   const title = box.querySelector('h3'), note = box.querySelector('[role=status]');
   const send = form.querySelector('button');
   let pane = '', current = null, notice = '', epoch = 0, reading = false, busy = false;
-  let provider = 'Hermes';
+  let provider = 'Hermes', access = '';
   let completed = '', draft = {}, lastRead = 0;
   function draftKey() { return 'tw.form.' + pane; }
   function remember() {
@@ -138,19 +138,28 @@
       }
     }
   };
-  async function sync(id, signal, poll = false, probe = false) {
-    const first = id !== pane;
+  async function sync(id, signal, poll = false, probe = false, name = 'Hermes', mode = 'owner') {
+    const first = id !== pane || mode !== access || name !== provider && !current;
+    access = mode;
     const key = signal?.revision || '';
     if (first) {
       ++epoch;
-      provider = ['codex_followup','codex_tool_permission','codex_screen_notice'].includes(signal?.source) ? 'Codex' : 'Hermes';
+      provider = name;
       pane = id; notice = key; current = null; completed = ''; reading = false; busy = false;
       box.hidden = true;
       markOpen('');
       poll = true;
     }
+    if (mode === 'terminal' || mode === 'view') {
+      if (signal) status(mode === 'view' ? '此联邦连接只读，请在所属节点作答' : '此连接仅支持终端作答');
+      else box.hidden = true;
+      return;
+    }
     const newNotice = key !== notice;
-    if (newNotice && key) completed = '';
+    if (newNotice && key) {
+      completed = '';
+      if (reading && !busy) { ++epoch; reading = false; poll = true; }
+    }
     notice = key;
     if (!id || !poll || busy || document.hidden || reading) return;
     const interval = current || signal || probe ? 3000 : 8000;
@@ -161,7 +170,7 @@
     try {
       const result = await call('GET');
       if (version !== epoch || busy) return;
-      if (result.status === 'open' && result.form) {
+      if (result.status === 'open' && result.form?.revision && result.form?.questions?.length && !result.form.read_only) {
         if (completed !== result.form.revision && current?.revision !== result.form.revision) render(result.form);
       } else if (!completed) {
         const wasOpen = !!current;

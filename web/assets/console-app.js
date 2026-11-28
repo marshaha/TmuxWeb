@@ -427,25 +427,21 @@ import {marked} from '/assets/marked.esm.js?v=1';
 
   async function loadFavorites(){try{const d=await api('/api/home/favorites');state.favorites=new Set(d.favorites||[]);syncStars();if(window.TmuxRecents)TmuxRecents.setFavorites([...state.favorites]);}catch{}}
   async function toggleFavorite(id){const on=state.favorites.has(id);try{if(on){await api(`/api/home/favorites/${encodeURIComponent(id)}`,{method:'DELETE'});state.favorites.delete(id);}else{await api('/api/home/favorites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pane:id})});state.favorites.add(id);}syncStars();if(window.TmuxRecents)TmuxRecents.setFavorites([...state.favorites]);}catch(e){showError(e.message);}}
-  function nativeHermesNotice(signal){
-    return signal?.source==='hermes_clarify' || signal?.kind==='notice' &&
-      signal.options?.some(o=>['需要回答问题','等待操作审批'].includes(o.label));
-  }
+  const harnessForms = window.TmuxHarnessInteractions;
   function syncNativeForm(poll=false){
     const pane=state.mode==='chat' && state.panes.find(p=>p.id===state.selected);
     const signal=pane && state.needsInput?.get(pane.id);
-    const native=nativeHermesNotice(signal);
-    const isHermes=pane && (pane.provider==='hermes' || pane.command==='hermes' || native || state.transcriptProvider==='hermes');
-    const probe=isHermes && state.nativeProbe?.has(pane.id);
-    const followup=tailLoop?.pane===state.selected && tailLoop.followup || (['codex_followup','codex_tool_permission','codex_screen_notice'].includes(signal?.source) && signal);
-    if(followup)state.codexFormPane=state.selected;
-    const openCodex=state.codexFormPane===state.selected && !!$('native-form').dataset.open;
-    window.TmuxNativeForm?.sync(isHermes || followup || openCodex ? (pane?.id || state.selected) : '',
-      native ? signal : followup || null, poll, probe);
+    const followup=tailLoop?.pane===pane?.id && tailLoop?.followup;
+    if(pane && (followup || harnessForms.codex.notice(signal)))state.codexFormPane=pane.id;
+    const context={pane,signal,followup,transcript:state.transcriptProvider,
+      openCodex:!!pane && state.codexFormPane===pane.id && !!$('native-form').dataset.open};
+    const adapter=harnessForms.select(context);
+    window.TmuxNativeForm?.sync(adapter ? pane.id : '', adapter?.read(context), poll,
+      adapter===harnessForms.hermes && state.nativeProbe?.has(pane.id),adapter?.name,pane?.capabilities?.native_form);
   }
   function currentInteraction(){
     const status=state.needsInput?.get(state.selected);
-    if(nativeHermesNotice(status)){
+    if(harnessForms.hermes.notice(status)){
       const pane=state.panes.find(p=>p.id===state.selected);
       if(pane?.provider==='hermes' || pane?.command==='hermes')return null;
     }
@@ -483,7 +479,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
       ? `<div class="receipt-body">${plain?htmlEscape(body):userBubbleHtml({...message,text:body})}</div>`
       : `<p>${esc(body)}</p>`;
     return `<article class="relay-receipt" data-call-id="${esc(call.id||'')}"><div class="receipt-route"><span>${esc(from)}</span> → <span>${esc(to)}</span></div>
-      ${content}<footer><span>${esc(status)}</span><a data-relay-chat href="${href}" aria-label="${esc(incoming?from:to)} ${action}">${action}</a></footer></article>`;
+      ${content}${call.task_stage?'<p>'+esc(({assigned:'已委派',working:'执行中',delivered:'已交付',failed:'执行失败'})[call.task_stage]||'任务')+' '+esc(call.task_result||'')+'</p>':''}<footer><span>${esc(status)}</span><a data-relay-chat href="${href}" aria-label="${esc(incoming?from:to)} ${action}">${action}</a></footer></article>`;
   }
   let relayView=null;
   function relayLocation(params){
@@ -1023,18 +1019,25 @@ import {marked} from '/assets/marked.esm.js?v=1';
       loadGitPanel();
     }catch(error){toast(error.message||'worktree 创建失败',4000);}
   }
+  const diffReview = window.TmuxDiffReview.mount({api, pane:()=>state.selected, targets:()=>state.panes, label:relayPaneLabel});
+  let diffRequest = 0;
   async function gpDiff(base, path){
+    const pane = state.selected, request = ++diffRequest;
     const wrap=$('gp-diff-wrap');wrap.hidden=false;
+    diffReview.hide();
     $('gp-diff-base').textContent=[base||'(工作区 vs HEAD)',path].filter(Boolean).join(' · ');
     $('gp-diff').textContent='加载中…';
+    const params = new URLSearchParams();
+    if(base) params.set('base',base);
+    if(path) params.set('path',path);
+    const url = gitUrl('/diff'+(params.size?'?'+params:''));
     try{
-      const params=[];if(base)params.push(`base=${encodeURIComponent(base)}`);
-      if(path)params.push(`path=${encodeURIComponent(path)}`);
-      const data=await api(gitUrl(`/diff${params.length?'?'+params.join('&'):''}`));
-      const body=String(data.patch||'').trim();
-      $('gp-diff').textContent=[data.stat,body].filter(Boolean).join('\n\n')
+      const data=await api(url);
+      if(request!==diffRequest || pane!==state.selected || wrap.hidden)return;
+      $('gp-diff').textContent=[data.stat,String(data.patch||'').trim()].filter(Boolean).join('\n\n')
         ||'没有已跟踪文件的差异（未跟踪文件不在 git diff 里，用文件面板看）';
-    }catch(error){$('gp-diff').textContent=error.message||'取不到 diff';}
+      diffReview.show(pane,url,path,data);
+    }catch(error){if(request===diffRequest && pane===state.selected)$('gp-diff').textContent=error.message||'取不到 diff';}
   }
   async function gpRestore(ref){
     if(!confirm(`回滚到检查点 ${String(ref).split('/').pop()}？\n检查点之后新增的未跟踪文件不会被删除。`))return;
@@ -1107,8 +1110,9 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function setupGitPanel(){
     const panel=$('git-panel');if(!panel)return;
     const open=$('git-open');if(open)open.addEventListener('click',openGitPanel);
-    $('gp-close').addEventListener('click',()=>{panel.hidden=true;});
-    panel.addEventListener('click',event=>{if(event.target===panel)panel.hidden=true;});
+    function closePanel(){ ++diffRequest; diffReview.hide(); panel.hidden=true; }
+    $('gp-close').addEventListener('click',closePanel);
+    panel.addEventListener('click',event=>{if(event.target===panel)closePanel();});
     $('gp-checkpoint').addEventListener('click',gpCheckpoint);
     $('gp-worktree').addEventListener('click',gpWorktree);
     $('gp-changes').addEventListener('click',event=>{
@@ -2349,7 +2353,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
       const message=formal[index],id=String(message.id);
       const receipt=receipts.get(id)||'';
       const senderCall=message===relayView?.sender?relayView.call:null;
-      const revision=[message.role,message.timestamp,message.text,receipt,senderCall?.received_at,senderCall?.status,message.relay_receipt?.id,
+      const revision=[message.role,message.timestamp,message.text,receipt,senderCall?.received_at,senderCall?.status,message.relay_receipt?.id, message.relay_receipt?.task_stage, message.relay_receipt?.task_result, senderCall?.task_stage, senderCall?.task_result,
         message.relay_receipt && relayPaneLabel(message.relay_receipt.parent),
         message.relay_receipt && relayPaneLabel(message.relay_receipt.child)];
       append(id,revision,()=>transcriptBubble(message,false,receipt,senderCall),()=>transcriptBubble(message,true,receipt,senderCall));
@@ -3786,7 +3790,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
   }});
   if(window.TmuxChatSearch)TmuxChatSearch.mount();
   // 等你回答收件箱（借鉴清单第 7 项）：亮灯历史 + 未读数，点记录跳 pane。
-  if(window.TmuxNeedsYouInbox)TmuxNeedsYouInbox.start({onJump:pane=>selectPane(pane)});
+  if(window.TmuxNeedsYouInbox)TmuxNeedsYouInbox.start({onJump:pane=>selectPane(pane), api, pane:()=>state.selected, targets:()=>state.panes, label:relayPaneLabel});
   // 从主页按铃铛过来：?inbox=1 直接把收件箱抽屉打开，参数从地址里抹掉
   (function openInboxFromQuery(){
     let wanted=false;

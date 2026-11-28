@@ -207,11 +207,13 @@ class RelayTools:
         caller = arguments.get("caller") or self.caller_pane()
         if caller:
             body["caller"] = caller
+        if arguments.get("delegate") is True:
+            body["delegate"] = True
         result = request("/api/relay/message", body)
         # The server reports whether the paste actually left the prompt box;
         # an old server without the field is treated as submitted, as before.
         submitted = bool(result.get("submitted", True))
-        return {"target": target, "sent": submitted, "submitted": submitted,
+        return {**({"call": result["call"]} if result.get("call") else {}), "target": target, "sent": submitted, "submitted": submitted,
                 "pane": result.get("pane"), "retrying": bool(result.get("retrying", False)),
                 "status": result.get("status", "sent" if submitted else "pasted_not_submitted")}
 
@@ -562,6 +564,20 @@ class RelayTools:
             target = project_target(name, arguments)
             change = "add" if name == "join_project" else "remove"
             return request(pane_path(target, "/projects"), {change: [project]}, method="PATCH")
+        if name == "request_file_review":
+            return request("/api/relay/file-reviews", {k: arguments.get(k) for k in ("target","requester","operation","path")})
+        if name == "relay_tasks":
+            from urllib.parse import urlencode
+            pane = str(arguments.get("pane") or self.caller_pane() or "")
+            if not pane:
+                raise ValueError("pane is required")
+            if not arguments.get("stage"):
+                return request("/api/relay/tasks?" + urlencode({"pane": pane}))
+            task_id = str(arguments.get("id") or "")
+            if len(task_id) != 12 or any(c not in "0123456789abcdef" for c in task_id):
+                raise ValueError("invalid task id")
+            return request("/api/relay/tasks/" + task_id, {"pane":pane, "stage":arguments["stage"],
+                                                          "result":arguments.get("result", "")})
         handlers = {
             "list_agents": self.list_agents,
             "ask_agent": self.ask_agent,
@@ -632,6 +648,20 @@ def tool_schemas(*, require_project_caller=False) -> list[dict]:
             },
         },
         {
+            "name": "request_file_review",
+            "description": "Ask the destination server's user to review a file read/write request. Metadata only. Acknowledgement requests manual handling and grants no file access. Poll relay_tasks for the result.",
+            "inputSchema": {"type":"object","properties":{"target":target,"requester":{"type":"string","maxLength":80},
+                "operation":{"enum":["read","write"]},"path":{"type":"string","maxLength":1024}},
+                "required":["target","requester","operation","path"],"additionalProperties":False},
+        },
+        {
+            "name": "relay_tasks",
+            "description": "List delegated tasks for a pane, or explicitly report work on a received task. A final report requires a result.",
+            "inputSchema": {"type":"object", "properties":{
+                "pane":target, "id":{"type":"string"}, "stage":{"enum":["working","delivered","failed"]},
+                "result":{"type":"string","maxLength":16000}}, "required":["pane"], "additionalProperties":False},
+        },
+        {
             "name": "send_agent",
             "description": "Type a message into another agent's pane without waiting for an answer.",
             "inputSchema": {
@@ -642,6 +672,7 @@ def tool_schemas(*, require_project_caller=False) -> list[dict]:
                     "caller": {"type": "string", "maxLength": 64,
                                "description": "Your host-scoped pane or handle for the delivery receipt."},
                     "submit": {"type": "boolean", "default": True},
+                    "delegate": {"type": "boolean", "description": "Track this assignment through explicit delivery. Requires caller and submit."},
                 },
                 "required": ["target", "text"],
                 "additionalProperties": False,

@@ -113,3 +113,20 @@ def codex_resolve_session_file(home, cwd, title, screen=None, hint=None):
         if first.get("type") == "session_meta" and payload.get("cwd") == cwd:
             return path
     return None
+
+
+def native_form(transport, local, actual, pid, provider_for, submission):
+    """Codex uses a local owner socket. A federation peer runs this on its own host."""
+    import asyncio
+    from pathlib import Path
+    import codex_forms
+    if transport is not local:
+        return {"status": "unavailable"}
+
+    def snapshot():
+        pane = transport.validate_pane(actual)
+        if str(pane.get("pane_pid")) != pid or provider_for(pane) != NAME:
+            return "", "", ""
+        return transport.capture(actual, 80, pane=pane, visible_only=True), pane.get("title", ""), pane.get("path", "")
+
+    return asyncio.run(codex_forms.on_host(Path.home(), actual, pid, snapshot, submission))

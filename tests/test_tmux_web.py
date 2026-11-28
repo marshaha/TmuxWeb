@@ -1962,7 +1962,7 @@ class TmuxWebTests(unittest.TestCase):
         pane = self.client.get("/api/panes").json()["panes"][0]
         self.assertEqual(pane["provider"], "codex")
         self.assertEqual(pane["capabilities"], {"transcript": True, "terminal": True,
-                                                "relay": True, "share": True})
+                                                "relay": True, "share": True, "native_form":"owner"})
         # a plain shell has no transcript but is still shareable (screen mode)
         # 列表会把 provider 写进 pane 字典（真实后端每次都返回新字典，这里是假后端在复用，
         # 所以要把它一起清掉，否则测的还是上一轮的判定）
@@ -3274,7 +3274,7 @@ class TmuxWebTests(unittest.TestCase):
         listing = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()
         self.assertEqual({tool["name"] for tool in listing["result"]["tools"]},
                          {"list_projects", "create_project", "join_project", "leave_project", "remove_project_member",
-                          "list_agents", "ask_agent", "send_agent", "run_command",
+                          "list_agents", "ask_agent", "send_agent", "request_file_review", "relay_tasks", "run_command",
                           "create_session", "kill_session", "send_file", "read_agent",
                           "publish_home_card", "list_home", "remove_home_card",
                           "list_remote_hosts", "add_remote_host", "remove_remote_host"})
@@ -3308,7 +3308,7 @@ class TmuxWebTests(unittest.TestCase):
             # the rest of the API keeps its token/cookie check
             still_protected = client.get("/api/hosts")
         self.assertEqual(open_mcp.status_code, 200)
-        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 19)
+        self.assertEqual(len(open_mcp.json()["result"]["tools"]), 21)
         self.assertEqual(still_protected.status_code, 401)
 
     def test_mcp_endpoint_requires_the_api_token(self):
@@ -4503,7 +4503,7 @@ class TmuxWebTests(unittest.TestCase):
         listing = self.client.post("/mcp", json={
             "jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()
         names = [tool["name"] for tool in listing["result"]["tools"]]
-        self.assertEqual(len(names), 19)
+        self.assertEqual(len(names), 21)
         for name in names:
             call = self.client.post("/mcp", json={
                 "jsonrpc": "2.0", "id": 2, "method": "tools/call",

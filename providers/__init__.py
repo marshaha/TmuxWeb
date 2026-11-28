@@ -50,6 +50,9 @@ class ProviderSpec:
     resolve_session_file: object = field(repr=False)
     outstanding: object = field(repr=False)
 
+    remote_native_form: bool = False
+    native_form: object = field(default=None, repr=False)
+
     def resume_argv(self, session_id: str) -> list:
         """Restart/resume flags for a session id (interface only; the
         restart feature itself lives in PR #23, not here)."""
@@ -60,6 +63,8 @@ class ProviderSpec:
 def _spec(module) -> ProviderSpec:
     return ProviderSpec(
         name=module.NAME,
+        remote_native_form=getattr(module, "REMOTE_NATIVE_FORM", False),
+        native_form=getattr(module, "native_form", None),
         label=module.LABEL,
         bins=module.BINS,
         command_prefixes=module.COMMAND_PREFIXES,

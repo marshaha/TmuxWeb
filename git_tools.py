@@ -92,8 +92,9 @@ def build_diff(cwd: str, base: str = "", limit: int = 200_000, path: str = "") -
         f"cd {quote(cwd)} || exit 1; "
         "root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 2; "
         f"cd \"$root\" || exit 2; "
-        f"echo '--STAT--'; git -c core.quotepath=false diff --stat{inside}{only} 2>/dev/null | tail -20; "
-        f"echo '--PATCH--'; git -c core.quotepath=false diff{inside}{only} 2>/dev/null | head -c {int(limit)}"
+        f"stat=$(git -c core.quotepath=false diff --no-ext-diff --no-textconv --stat --stat-count=20{inside}{only}) || exit 3; "
+        "printf '%s\\n' '--STAT--' \"$stat\"; "
+        f"echo '--PATCH--'; git -c core.quotepath=false diff --no-ext-diff --no-textconv{inside}{only} | head -c {int(limit)+1}"
     )
 
 

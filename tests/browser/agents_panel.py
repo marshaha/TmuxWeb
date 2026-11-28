@@ -76,14 +76,16 @@ def main():
                 def click(selector):
                     getattr(page.locator(selector).first, activate)()
                 page.evaluate("window.TmuxNeedsYouInbox.open()")
-                expect(page.locator("#inbox-drawer h3:visible")).to_have_text(["待处理","完成未读","工作中"])
+                expect(page.locator("#inbox-drawer h3:visible")).to_have_text(["待处理"])
+                click('[data-inbox-tab="results"]')
+                expect(page.locator("#inbox-drawer h3:visible")).to_have_text(["完成未读","工作中"])
                 expect(page.locator("#inbox-activity")).to_contain_text("读结果")
                 assert page.locator("#inbox-drawer button:visible").evaluate_all(
                     "xs => xs.every(x => x.scrollWidth <= x.clientWidth + 1)")
                 with page.expect_response(lambda r: r.url.endswith("/completions/7/read")):
                     click('#inbox-activity [data-pane="%8"]')
                 page.evaluate("window.TmuxNeedsYouInbox.open()")
-                expect(page.locator("#inbox-drawer h3:visible")).to_have_text(["待处理","工作中"])
+                expect(page.locator("#inbox-drawer h3:visible")).to_have_text(["工作中"])
                 assert read == ["POST"]
                 click("#inbox-close")
                 click("#agents-button")

@@ -786,7 +786,9 @@ Header:  Authorization: Bearer <TMUX_WEB_API_TOKEN>
 | `join_project` / `leave_project` | 将调用会话加入或退出指定的 `project`，保留其他项目。HTTP MCP 和连接远端 URL 的 stdio 需提供 `caller`，如 `#125` |
 | `remove_project_member` | 从 `project` 移出指定 `target`（会话编号或带主机的 pane ID） |
 | `ask_agent` | 向某个 pane 提问并等待回答（busy 快速失败、可 `force`、timeout 5–600s） |
-| `send_agent` | 只输入文字，不等回答（`submit=false` 就只打字不回车） |
+| `send_agent` | 发送消息。`submit=false` 只打字不回车。`delegate=true` 且指定 `caller` 时返回任务 ID，接收方可独立报告执行进度。 |
+| `relay_tasks` | 按 pane 列任务。接收方提交 `id`、`stage=working` 开始执行，随后用 `delivered` 或 `failed` 和 `result` 交付。 |
+| `request_file_review` | 在文件所属节点提交 `target`、`requester`、`operation=read/write` 和 `path`，返回审阅 ID。用户在该节点收件箱接手或拒绝。 |
 | `send_file` | 把本机文件送到对方 pane 目录的 `upload_files/`，并把绝对路径告诉它 |
 | `create_session` | 在任意主机开 tmux 会话：`name` + 可选 `host`/`path`/`agent`/`agent_args`，目录不存在会建，返回 `#N` 编号 |
 | `kill_session` | `pane=#125` 只关那个 pane（会话还有别的 pane 就活着）；`session=名字` 才关整个会话 |
