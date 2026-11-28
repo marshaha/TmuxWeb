@@ -479,8 +479,19 @@ import {marked} from '/assets/marked.esm.js?v=1';
       else if(call.status==='ok'&&call.source!=='message')label='已回复';
       else if(recent&&live?.needs_input&&['submitted','working','blocked'].includes(call.progress))label='目标会话等待人工处理';
       else if(call.source==='message'&&call.progress==='submitted'&&recent&&live?.status==='busy')label='已提交 · 目标会话运行中';
-      const who=target?paneLabel(target):call.child;
-      return `<div><span>${esc(call.question||'')}</span><small>${esc(label)} · <a href="/?pane=${encodeURIComponent(call.child)}">${esc(who)} 打开目标 Chat</a></small></div>`;
+      const parentId=call.parent||state.selected;
+      const parent=state.panes.find(p=>p.id===parentId);
+      const from=parent?.number?paneLabel(parent):parentId;
+      const to=target?.number?paneLabel(target):call.child;
+      let question=call.question||'';
+      // Some senders already include the route. Remove only the matching leading label.
+      const prefix=question.match(/^\s*\[\s*([^\]\s]+)\s*→\s*([^\]\s]+)\s*\]\s*/u);
+      if(prefix && prefix[1]===from && prefix[2]===to)question=question.slice(prefix[0].length);
+      return `<article class="relay-receipt">
+        <div class="receipt-route"><span>${esc(from)}</span> → <span>${esc(to)}</span></div>
+        <p>${esc(question)}</p>
+        <footer><span>${esc(label)}</span><a href="/?pane=${encodeURIComponent(call.child)}" aria-label="${esc(to)} 打开目标 Chat">打开目标 Chat</a></footer>
+      </article>`;
     }).join('');
     box.hidden=!html;
     if(box.dataset.sig!==html){box.dataset.sig=html;box.innerHTML=html;}

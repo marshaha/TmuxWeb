@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.20.1
+
+- Distinguish outgoing relay receipts in Chat with a green dashed frame, a color-coded sender and destination, and delivery status at the lower left.
+
 ## 0.20.0
 
 - Double-click the chat title in the console to name that conversation. The name lives in a tmux pane option (`@tmuxweb_name`), so it neither fights the pane title the running program keeps rewriting nor the window name the sidebar shares; an empty name restores the default.

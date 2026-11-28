@@ -157,7 +157,16 @@
   #native-form [role=status]:empty{display:none}
   #native-form .native-terminal{margin-top:6px}
   @media(max-width:600px){#native-form label,#native-form button{min-height:44px}}
-  #relay-receipts{font-size:13px;overflow-wrap:anywhere}#relay-receipts>div{padding:6px 10px;border-inline-start:2px solid var(--line);margin:5px 0}#relay-receipts small{display:block;color:var(--muted)}
+  #relay-receipts{min-width:0;font-size:13px;overflow-wrap:anywhere}
+  .relay-receipt{margin:6px 0;padding:9px 12px;border:1px dashed var(--green);border-radius:10px;background:var(--card)}
+  .receipt-route{color:var(--muted);font-weight:650;font-variant-numeric:tabular-nums}
+  .receipt-route span:first-child{color:#24588a}
+  .receipt-route span:last-child{color:#28633e}
+  :is([data-theme="night"],[data-theme="claude-code"]) .receipt-route span:first-child{color:#94c6f6}
+  :is([data-theme="night"],[data-theme="claude-code"]) .receipt-route span:last-child{color:#92d6aa}
+  .relay-receipt p{margin:5px 0 8px;white-space:pre-wrap;line-height:1.5}
+  .relay-receipt footer{display:flex;align-items:baseline;flex-wrap:wrap;gap:3px 12px;color:var(--muted);font-size:12px}
+  .relay-receipt footer a{margin-inline-start:auto;color:inherit;text-decoration:underline;text-underline-offset:2px}
   .project-tools{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:5px 10px}
   .project-tools button,.project-jump{font:inherit;font-size:12px;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:5px 8px;max-width:100%;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
   .project-tools[hidden]{display:none}

@@ -39,7 +39,8 @@ def main():
                         data={'observed_at':time.time(),'panes':[{'id':remote['id'],'status':'idle','needs_input':True,
                               'prompt':{'source':'script_status','kind':'notice','title':'脚本请求人工处理','read_only':True,
                                         'options':[],'revision':'test'}}],
-                              'outbound':[{'child':remote['id'],'status':'running','progress':'blocked','question':'检查超时原因','created':1}]}
+                              'outbound':[{'parent':base['id'],'child':remote['id'],'status':'running','progress':'blocked',
+                                           'question':'[#4 → #125] 检查超时原因 <RTL> '+('abcdefgh'*24),'created':1}]}
                     elif path=='/api/pane-projects':
                         if r.request.method == 'POST':
                             names.append(r.request.post_data_json['project'])
@@ -79,6 +80,19 @@ def main():
                 page.goto('http://tmuxweb.test/?pane=%254',wait_until='domcontentloaded')
                 expect(page.locator('#relay-receipts')).to_contain_text('等待人工处理')
                 expect(page.locator('#relay-receipts a')).to_have_attribute('href','/?pane=robo~%254')
+                receipt=page.locator('#relay-receipts article')
+                expect(receipt.locator('.receipt-route')).to_have_text('#4 → #125')
+                expect(receipt.locator('p')).to_have_text('检查超时原因 <RTL> '+('abcdefgh'*24))
+                assert receipt.evaluate("""card=>{
+                    const rect=el=>el.getBoundingClientRect();
+                    const body=card.querySelector('p'),status=card.querySelector('footer span');
+                    const route=card.querySelector('.receipt-route');
+                    return getComputedStyle(card).borderTopStyle==='dashed'
+                        && getComputedStyle(route.firstElementChild).color!==getComputedStyle(route.lastElementChild).color
+                        && rect(status).top>=rect(body).bottom-1 && Math.abs(rect(status).left-rect(body).left)<2
+                        && rect(card).left>=0 && rect(card).right<=innerWidth+1
+                        && [card,...card.querySelectorAll('p,footer,a')].every(el=>el.scrollWidth<=el.clientWidth+1);
+                }"""), width
                 page.locator('#menu').click()
                 page.get_by_role('button',name='主机',exact=True).click()
                 expect(page.get_by_role('button',name='新建项目')).to_be_hidden()
