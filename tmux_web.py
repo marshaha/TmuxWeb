@@ -5868,7 +5868,7 @@ def create_app(
 
     @app.get("/api/panes/{pane_id}/transcript")
     async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0,
-                         sig: str = "", since: str = "", wait: float = 0):
+                         sig: str = "", since: str = "", wait: float = 0, sent_relay: str = ""):
         """Structured messages; ``sig`` lets an unchanged poll return a stub.
 
         The console polls this while a turn runs.  Sending 300 messages of JSON
@@ -5998,6 +5998,14 @@ def create_app(
                         return stub
                 # anchor not in the current window (rotation, or older than the
                 # limit): fall through to the full list below
+            # The sender receipt is local to this console, including for federated panes.
+            data.pop("relay_sender", None)
+            if sent_relay and re.fullmatch(r"[0-9a-f]{12}", sent_relay):
+                call = await asyncio.to_thread(calls_store.get, sent_relay)
+                if call and call.source == "message" and call.parent == pane["id"]:
+                    slot = agent_calls.context_start(call, "sent", data)
+                    if slot is not None:
+                        data["relay_sender"] = {"call": call.as_dict(full=True), "index": slot}
             data["signature"] = signature
             if resend_state is not None:
                 data["resend"] = resend_state
@@ -8674,10 +8682,10 @@ def create_app(
         return call.as_dict(full=True)
 
     @app.get("/api/panes/{pane_id}/relay-context/{call_id}")
-    async def relay_context(request: Request, pane_id: str, call_id: str, side: str, offset: int = 0):
+    async def relay_context(request: Request, pane_id: str, call_id: str, side: str, offset: int = 0, size: int = 499):
         require_auth(request)
         call = await asyncio.to_thread(calls_store.get, call_id)
-        if side not in ("sent", "received") or offset < 0:
+        if side not in ("sent", "received") or offset < 0 or not 1 <= size <= 499:
             raise HTTPException(422, "无效的消息定位参数")
         if not call or call.source != "message" or pane_id != (call.parent if side == "sent" else call.child):
             raise HTTPException(404, "此会话没有这条中继消息")
@@ -8700,7 +8708,8 @@ def create_app(
             if (start is not None or (not data.get("has_more") and len(messages) < limit)
                     or (side == "received" and call.received_at and call.receipt_session != data.get("session_id"))):
                 break
-        result = {"call": call.as_dict(full=True), "messages": [], "offset": offset, "more": False}
+        result = {"call": call.as_dict(full=True), "messages": [], "offset": offset, "more": False,
+                  "session_id": data.get("session_id")}
         if start is None:
             if not call.received_at and side == "received":
                 result["notice"] = "尚未确认接收，可稍后刷新。"
@@ -8711,7 +8720,7 @@ def create_app(
             return result
         # Keep the anchor plus its following page within the Chat DOM budget.
         begin = start + offset
-        page = messages[begin:begin + 499]
+        page = messages[begin:begin + size]
         routes = await asyncio.to_thread(calls_store.match_receipts, pane_id, dict(data, messages=page), known_only=True)
         for m in page:
             clean = {k: v for k, v in m.items() if k != "relay_receipt"}

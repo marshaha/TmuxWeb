@@ -21,6 +21,12 @@ def main():
             workers=[dict(base,id=f'%{n}',number=n,title=f'分页测试会话 {n}') for n in range(300,345)]
             for width in (1440,1180,1024,900,834,768,390):
                 delivered = False
+                historical = False
+                unplaced = False
+                latest = 80
+                context_reads = []
+                def reply(i):
+                    return {'id':f'reply-{i}','role':'assistant','text':f'后续消息 {i}','timestamp':i+3}
                 shared = '多主机测试'
                 extra = '移动端回归-' + 'abcdefghijkl' * 3
                 failed_removals=[]
@@ -47,8 +53,13 @@ def main():
                     elif path.endswith('/relay-context/'+call['id']):
                         params=parse_qs(u.query)
                         offset=int(params['offset'][0])
-                        data={'call':call,'messages':[{'id':f'reply-{i}','role':'assistant','text':f'后续消息 {i}'}
-                              for i in range(offset,min(offset+499,530))],'more':offset==0}
+                        size=int(params['size'][0])
+                        context_reads.append((params['side'][0],offset))
+                        count=800 if historical and params['side']==['received'] else latest
+                        data={'call':call,'messages':[reply(i) for i in range(offset,min(offset+size,count))],
+                              'session_id':'active','previous_id':'q','more':offset+size<count}
+                        if unplaced and params['side']==['sent']:
+                            data.update(notice='已定位发送回执。当前可读记录未覆盖发送时间。',messages=[],more=False)
                         if params['side']==['received']:
                             data['anchor']={'id':'exact-q','role':'user','text':call['question'],'relay_receipt':call}
                     elif path=='/api/pane-projects':
@@ -67,10 +78,18 @@ def main():
                         groups[pane] = sorted((set(groups.get(pane, [])) | set(changes.get('add', []))) - set(changes.get('remove', [])))
                         data={'pane':pane,'projects':groups[pane]}
                     elif path.endswith('/transcript'):
-                        data={'provider':'codex','messages':[{'id':'q','role':'user','text':'测试'}]}
-                        if remote['id'] in path:
-                            data['messages'][0].update(text='[#4 → #125] 检查超时原因 <RTL> '+('abcdefgh'*24),
-                                relay_receipt={'id':'receipt','parent':base['id'],'child':remote['id']})
+                        incoming=remote['id'] in path
+                        count=800 if incoming and historical else latest
+                        rows=[{'id':'q','role':'user','timestamp':1,'text':'测试'}]
+                        if incoming:
+                            rows.append({'id':'exact-q','role':'user','timestamp':2,'text':call['question'],
+                                         'relay_receipt':call})
+                        rows.extend(reply(i) for i in range(count))
+                        limit=int(parse_qs(u.query).get('limit',['300'])[0])
+                        data={'provider':'codex','session_id':'active','mtime':count,'messages':rows[-limit:],
+                              'has_more':len(rows)>limit}
+                        if not incoming and not unplaced and 'sent_relay' in parse_qs(u.query):
+                            data['relay_sender']={'call':call,'index':1}
                     elif path in ('/', '/home') or path.startswith('/assets/'):
                         response=client.get(path)
                         return r.fulfill(status=response.status_code,body=response.content,content_type=response.headers['content-type'])
@@ -106,6 +125,7 @@ def main():
                         && rect(card).left>=0 && rect(card).right<=innerWidth+1
                         && [card,...card.querySelectorAll('p,footer,a')].every(el=>el.scrollWidth<=el.clientWidth+1);
                 }"""), width
+                page.evaluate('window.originalChatDocument=true')
                 receipt.get_by_role('link').click()
                 inbound=page.locator('#transcript-messages .incoming-relay')
                 expect(inbound.locator('.receipt-route')).to_have_text('#4 → #125')
@@ -121,12 +141,14 @@ def main():
                 anchor=page.locator('[data-id="exact-q"]')
                 expect(anchor).to_be_in_viewport()
                 expect(anchor).to_be_focused()
-                expect(page.locator('#transcript-messages > article')).to_have_count(500)
-                assert page.evaluate("document.getElementsByTagName('*').length<=12000"), width
-                assert page.locator('#relay-context-bar').evaluate('''el=>[el,...el.querySelectorAll('button,a')].every(item=>item.scrollWidth<=item.clientWidth+1)''')
-                page.locator('#relay-next').click()
-                expect(page.locator('[data-id="reply-499"]')).to_be_in_viewport()
-                page.locator('#relay-prev').click()
+                assert page.evaluate('window.originalChatDocument===true'), width
+                expect(page.locator('.composer')).to_be_visible()
+                expect(page.locator('#relay-context-bar')).to_have_count(0)
+                expect(page.locator('[data-id="q"]')).to_have_count(1)
+                assert context_reads==[], (width,context_reads)
+                latest+=1
+                page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+                expect(page.locator('[data-id="reply-80"]')).to_have_count(1)
                 expect(anchor).to_be_in_viewport()
                 delivered=True
                 back.click()
@@ -137,12 +159,34 @@ def main():
                 page.locator('[data-id="reply-40"]').scroll_into_view_if_needed()
                 page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
                 expect(page.locator('[data-id="reply-40"]')).to_be_in_viewport()
-                page.locator('#relay-refresh').click()
-                expect(page.locator('#relay-context-status')).to_have_text('已定位发送回执')
-                expect(page.locator('[data-id="reply-40"]')).to_be_in_viewport()
-                page.locator('#relay-live').click()
-                expect(page.locator('#relay-context-bar')).to_be_hidden()
-                expect(page.locator('#transcript-messages [data-id="q"]')).to_be_visible()
+                expect(page.locator('.composer')).to_be_visible()
+                assert page.evaluate('window.originalChatDocument===true')
+                assert sent.evaluate("el=>el.previousElementSibling.dataset.id==='q' && el.nextElementSibling.dataset.id==='reply-0'")
+                assert len(page.context.pages)==1
+                historical=True
+                sent.locator('a').click()
+                expect(anchor).to_be_in_viewport()
+                page.locator('[data-id="reply-249"]').scroll_into_view_if_needed()
+                expect(page.locator('[data-id="reply-499"]')).to_have_count(1)
+                page.locator('[data-id="reply-499"]').scroll_into_view_if_needed()
+                expect(page.locator('[data-id="reply-799"]')).to_have_count(1)
+                expect(page.locator('.composer')).to_be_visible()
+                assert ('received',250) in context_reads
+                assert page.locator('#transcript-messages > article').count()<=500
+                assert page.evaluate("document.getElementsByTagName('*').length<=12000"), width
+                page.go_back()
+                expect(sent).to_be_in_viewport()
+                assert page.evaluate('window.originalChatDocument===true')
+                if width==390:
+                    historical=False
+                    unplaced=True
+                    sent.locator('a').click()
+                    expect(anchor).to_be_in_viewport()
+                    back.click()
+                    fallback=page.locator('#relay-receipts [data-call-id="abc123def456"]')
+                    expect(fallback).to_be_focused()
+                    expect(fallback).to_be_in_viewport()
+                    expect(page.locator('.composer')).to_be_visible()
                 page.locator('#menu').click()
                 page.get_by_role('button',name='主机',exact=True).click()
                 expect(page.get_by_role('button',name='新建项目')).to_be_hidden()

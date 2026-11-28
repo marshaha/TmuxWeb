@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.22.1
+
+- Follow relay links inside the live Chat timeline. The composer, live terminal, and incoming messages stay available while reading from the matched turn. Older turns load inline as you scroll.
+
 ## 0.22.0
 
 - Open either side of a relay message at its verified incoming turn or exact outgoing receipt. Read subsequent Chat messages in bounded pages on local and federated panes.

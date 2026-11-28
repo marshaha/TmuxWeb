@@ -482,63 +482,145 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const content=incoming
       ? `<div class="receipt-body">${plain?htmlEscape(body):userBubbleHtml({...message,text:body})}</div>`
       : `<p>${esc(body)}</p>`;
-    return `<article class="relay-receipt"><div class="receipt-route"><span>${esc(from)}</span> → <span>${esc(to)}</span></div>
+    return `<article class="relay-receipt" data-call-id="${esc(call.id||'')}"><div class="receipt-route"><span>${esc(from)}</span> → <span>${esc(to)}</span></div>
       ${content}<footer><span>${esc(status)}</span><a data-relay-chat href="${href}" aria-label="${esc(incoming?from:to)} ${action}">${action}</a></footer></article>`;
   }
   let relayView=null;
+  function relayLocation(params){
+    const id=params.get('relay'),side=params.get('side'),pane=params.get('pane');
+    return pane && /^[a-f0-9]{12}$/.test(id||'') && ['sent','received'].includes(side)
+      ? {id,side,pane,pending:true,offset:0} : null;
+  }
   function leaveRelayView(){
     relayView=null;
-    document.body.classList.remove('relay-reading');
-    $('relay-context-bar').hidden=true;
     replaceConsoleQuery(params=>{params.delete('relay');params.delete('side');});
   }
-  async function readRelayPage(offset=0,keepPosition=false){
+  document.addEventListener('click',event=>{
+    const link=event.target.closest?.('a[data-relay-chat]');
+    if(!link || event.defaultPrevented || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)return;
+    const target=relayLocation(new URL(link.href).searchParams);
+    if(!target || !state.panes.some(p=>p.id===target.pane))return;
+    event.preventDefault();
+    history.pushState({relayNavigation:true},'',link.href);
+    relayView=target;
+    selectPane(target.pane);
+  });
+  window.addEventListener('popstate',()=>{
+    if(!relayView && !history.state?.relayNavigation)return;
+    const params=new URLSearchParams(location.search),pane=params.get('pane');
+    relayView=relayLocation(params);
+    if(!pane)return;
+    if(state.panes.some(item=>item.id===pane))selectPane(pane);
+    else{state.wantedPane=pane;loadPanes();}
+  });
+  function sameTurn(a,b){
+    return !!a && !!b && String(a.id)===String(b.id) && a.role===b.role && a.timestamp===b.timestamp && a.text===b.text;
+  }
+  function setRelaySender(view,call,previous,following){
+    view.call=call;
+    view.sender={id:'relay:'+call.id,role:'relay',timestamp:call.created,text:call.question};
+    view.previous=previous;
+    view.following=following;
+  }
+  function senderSlot(view,live){
+    if(!view?.sender)return -1;
+    const previous=view.previous?live.findIndex(m=>sameTurn(m,view.previous)):-1;
+    return previous>=0?previous+1:live.findIndex(m=>sameTurn(m,view.following));
+  }
+  function relayTimeline(live){
     const view=relayView;
-    if(!view || state.selected!==view.pane)return;
-    const revision=++view.revision;
-    const status=$('relay-context-status');
-    status.textContent='正在定位中继消息…';
-    const buttons=[$('relay-prev'),$('relay-next'),$('relay-refresh')];
-    for(const button of buttons)button.disabled=true;
+    if(view?.history)return view.history;
+    const slot=senderSlot(view,live);
+    if(slot<0)return live;
+    const rows=[...live.slice(0,slot),view.sender,...live.slice(slot)];
+    return slot===0?rows.slice(0,TRANSCRIPT_PAGE_MAX):rows;
+  }
+  function locateRelay(){
+    const view=relayView;
+    if(!view?.pending || view.pane!==state.selected)return;
+    const message=view.sender || (view.history||state.transcriptMessages).find(m=>m.relay_receipt?.id===view.id);
+    const target=message && state.renderedMessages.get(String(message.id))?.node;
+    if(target)focusRelay(view,target);
+  }
+  function focusRelay(view,target){
+    view.pending=false;
+    state.stick=false;
+    target.classList.add('relay-location');
+    target.tabIndex=-1;
+    target.focus({preventScroll:true});
+    target.scrollIntoView({block:'start',behavior:'instant'});
+  }
+  async function readRelayHistory(view){
+    if(view.loading || view.failed)return;
+    view.loading=true;
     try{
-      const data=await api('/api/panes/'+encodeURIComponent(view.pane)+'/relay-context/'
-        +encodeURIComponent(view.id)+'?side='+view.side+'&offset='+offset);
-      if(view!==relayView || revision!==view.revision || state.selected!==view.pane)return;
-      const incoming=view.side==='received', call=data.call;
-      const sender={id:'relay:'+call.id,role:'relay',text:call.question,timestamp:call.created};
-      const anchor=incoming?data.anchor:sender;
-      view.sender=incoming?null:sender;
-      view.call=call;
-      const position=keepPosition?firstVisibleMessage():null;
-      const messages=offset===0&&anchor?[anchor,...data.messages]:data.messages;
-      $('transcript').classList.add('active');
-      renderTranscriptNow(messages);
-      view.offset=offset;
-      $('relay-prev').hidden=!offset;
-      $('relay-next').hidden=!data.more;
-      status.textContent=data.notice||(offset?'后续对话 · 第 '+(1+offset/499)+' 页':incoming?'已定位接收原文':'已定位发送回执');
-      const target=$('transcript-messages').firstElementChild;
-      if(target){
-        target.classList.add('relay-location');
-        if(position && state.renderedMessages.has(position.id))restoreAnchor(position);
-        else{
-          target.tabIndex=-1;
-          target.focus({preventScroll:true});
-          target.scrollIntoView({block:'start',behavior:'instant'});
+      const result=await api('/api/panes/'+encodeURIComponent(view.pane)+'/relay-context/'
+        +encodeURIComponent(view.id)+'?side='+view.side+'&offset='+view.offset+'&size=250');
+      if(view!==relayView || state.selected!==view.pane || state.mode!=='chat')return;
+      if(result.notice || result.session_id!==state.transcriptSession){
+        if(result.notice && view.side==='sent' && result.call?.id===view.id && result.call.parent===view.pane){
+          view.outbound=result.call;
+          const box=$('relay-receipts');
+          let receipt=box.querySelector('[data-call-id="'+view.id+'"]');
+          if(!receipt){
+            box.insertAdjacentHTML('afterbegin',relayCard(result.call,{text:result.call.question},result.notice));
+            box.hidden=false;
+            receipt=box.firstElementChild;
+          }
+          focusRelay(view,receipt);
         }
+        toast(result.notice||'会话记录已切换，无法定位原消息。',5000);
+        view.failed=true;
+        return;
       }
+      const rows=result.messages||[],previous=view.history;
+      if(!previous && !view.pending)return;
+      if(previous && $('transcript-messages').getBoundingClientRect().bottom>
+          scroll.getBoundingClientRect().bottom+scroll.clientHeight)return;
+      if(!previous && view.side==='sent')setRelaySender(view,result.call,null,rows[0]);
+      const live=state.transcriptMessages,position=previous && firstVisibleMessage();
+      if(previous){
+        // Retain the visible end of the preceding batch as the next one arrives.
+        const index=previous.findIndex(m=>String(m.id)===position?.id);
+        const keep=Math.max(0,index-10,previous.length+rows.length-TRANSCRIPT_PAGE_MAX);
+        view.history=previous.slice(keep).concat(rows);
+      }else if(senderSlot(view,live)<0){
+        const anchor=view.sender||result.anchor;
+        if(!anchor){view.failed=true;toast('当前记录中未找到原消息。',5000);return;}
+        view.history=[anchor,...rows];
+      }
+      view.more=result.more;
+      view.offset+=rows.length;
+      renderTranscriptNow();
+      if(position)restoreAnchor(position);
     }catch(error){
-      if(view===relayView && revision===view.revision)status.textContent='定位失败 · '+error.message;
-    }finally{
-      if(view===relayView && revision===view.revision)for(const button of buttons)button.disabled=false;
+      if(view===relayView){view.failed=true;toast('消息定位失败 · '+error.message,5000);}
+    }finally{view.loading=false;}
+  }
+  function advanceRelayHistory(){
+    const view=relayView,historyRows=view?.history;
+    if(!historyRows || view.loading || view.failed || $('transcript-messages').getBoundingClientRect().bottom>
+        scroll.getBoundingClientRect().bottom+scroll.clientHeight)return;
+    const position=firstVisibleMessage();
+    const visible=historyRows.find(m=>String(m.id)===position?.id);
+    if(!visible)return;
+    if(state.transcriptMessages.some(m=>sameTurn(m,visible))){
+      view.history=null;
+      renderTranscriptNow();
+      restoreAnchor(position);
+    }else if(view.more){
+      readRelayHistory(view);
     }
   }
-  $('relay-prev').onclick=()=>readRelayPage(Math.max(0,relayView.offset-499));
-  $('relay-next').onclick=()=>readRelayPage(relayView.offset+499);
-  $('relay-refresh').onclick=()=>readRelayPage(relayView.offset,true);
   function showOutbound(calls, panes, observedAt){
     const box=$('relay-receipts');
-    const html=calls.map(call=>{
+    if(relayView?.outbound && !calls.some(call=>call.id===relayView.id))calls=[...calls,relayView.outbound];
+    const current=relayView?.sender && calls.find(call=>call.id===relayView.id);
+    if(current && (current.received_at!==relayView.call.received_at || current.status!==relayView.call.status)){
+      relayView.call={...relayView.call,received_at:current.received_at,status:current.status};
+      renderTranscriptNow();
+    }
+    const html=calls.filter(call=>!relayView?.sender || call.id!==relayView.id || !state.renderedMessages?.has(relayView.sender.id)).map(call=>{
       const live=panes.find(p=>p.id===call.child);
       const recent=observedAt>=call.created&&Date.now()/1000-observedAt<90;
       const phase=({submitted:'已提交 · 尚未确认接收',pasted:'已粘贴',unsubmitted:'已粘贴 · 回车未确认',
@@ -1863,7 +1945,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function savePaneUi(id){if(!id)return;const entry=cachedTranscript(id);if(entry){entry.scrollTop=scroll.scrollTop;entry.stick=state.stick;}state.drafts.set(id,input.value);}
   function restorePaneUi(id){const entry=cachedTranscript(id);if(!entry)return;
     requestAnimationFrame(()=>{const top=entry.scrollTop==null?scroll.scrollHeight:entry.scrollTop;
-      scroll.scrollTop=top;state.stick=entry.stick!==false;});}
+      if(state.selected===id && !relayView){scroll.scrollTop=top;state.stick=entry.stick!==false;}});}
   function paintCachedTranscript(id){const entry=cachedTranscript(id);if(!entry||!entry.messages||!entry.messages.length)return false;
     term.textContent='';$('transcript').classList.add('active');$('message-shell').hidden=true;
     clientTrace(null,`cache:${entry.messages.length}`,id);
@@ -1946,7 +2028,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     if(relayView && id!==relayView.pane && (remember || id))leaveRelayView();
     if(remember){state.wantedPane=null;rememberPane(id);}
     if(state.selected!==id){closeInputComplete();window.TmuxChatSearch?.close();}closeChatReply();if(state.selected!==id)collapsedTailPane=null;if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
-    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;showOutbound([],[],0);state.stateAt=0;refreshPaneStates();state.transcriptProvider='';syncNativeForm();if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;$('transcript').classList.remove('active');syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript-messages').innerHTML='';state.renderedMessages=new Map();$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
+    setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;showOutbound([],[],0);state.stateAt=0;refreshPaneStates();state.transcriptProvider='';syncNativeForm();if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSession=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;$('transcript').classList.remove('active');syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript-messages').innerHTML='';state.renderedMessages=new Map();$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
       const sb=$('chat-search-button');if(sb)sb.disabled=true;if(window.TmuxChatSearch)TmuxChatSearch.close();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const rc=window.TmuxRecents;const customName=rc?(rc.customLabel?rc.customLabel(id):rc.nameFor(id)):'';const shownTitle=p.custom_name||customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';paintPaneHeader(p);$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);$('agents-button').disabled=false;if(window.TmuxAgents)TmuxAgents.refresh();
     const searchBtn=$('chat-search-button');if(searchBtn)searchBtn.disabled=false;syncLiveButton();syncFavButton();
     queueState.items=[];renderQueueStrip();
@@ -1954,10 +2036,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
     if(state.mode==='terminal'){connectTerminal(id);}
     else if(relayView?.pane===id){
       state.stick=false;
-      document.body.classList.add('relay-reading');
-      $('relay-context-bar').hidden=false;
-      $('relay-live').href='/?pane='+encodeURIComponent(id)+'&mode=chat';
-      readRelayPage();
+      state.transcriptLimit=TRANSCRIPT_PAGE_MAX;
+      connectTranscript(id,true);
     }
     else if(paintCachedTranscript(id)){clientTrace(null,'sel:cached',id);refreshTranscript(id);}  // instant paint, then revalidate
     else {connectTranscript(id,true);}
@@ -2154,7 +2234,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   // `done` branch. The scroll-to-bottom runs inside the same frame, right
   // after the DOM write — never ahead of it.
   function applyTranscriptUpdate(paneId,messages,scrollToBottom,done){
-    const after=scrollToBottom?()=>{scroll.scrollTop=scroll.scrollHeight;}:null;
+    const after=scrollToBottom?()=>{if(state.stick!==false)scroll.scrollTop=scroll.scrollHeight;}:null;
     if(done){renderTranscriptNow(messages);if(after)after();return;}
     scheduleTranscriptRender(paneId,messages,after);}
   // A streaming agent appends one message at a time. Rebuilding every bubble (and
@@ -2163,11 +2243,12 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function renderTranscript(messages=state.transcriptMessages){hideLoadCard();
     messages=messages.slice(-TRANSCRIPT_PAGE_MAX);
     state.transcriptMessages=messages;
+    reconcilePending(messages);
+    messages=relayTimeline(messages);
     state.messageText=new Map(messages.map(message=>[String(message.id),String(message.text||'')]));
-    if(!relayView)reconcilePending(messages);
     const host=$('transcript-messages'),before=state.renderedMessages||new Map(),next=new Map();
     const pending=new Map();
-    const local=relayView?[]:[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
+    const local=[...state.pendingMessages].filter(([,message])=>message.pane===state.selected)
       .sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0));
     const pendingTail=local.slice(-TRANSCRIPT_PAGE_MAX);
     const formal=messages.slice(Math.max(0,messages.length+pendingTail.length-TRANSCRIPT_PAGE_MAX));
@@ -2233,6 +2314,11 @@ import {marked} from '/assets/marked.esm.js?v=1';
     state.renderedMessages=next;
     host.classList.add('active');$('message-shell').hidden=true;
     if(changed){enhancePathsLazy(host,true);if(PERF_MODE)watchVisibility(host);clientTrace(messages,'update');}
+    if(relayView?.sender && state.renderedMessages.has(relayView.sender.id)){
+      const box=$('relay-receipts'),duplicate=box.querySelector('[data-call-id="'+relayView.id+'"]');
+      if(duplicate){duplicate.remove();delete box.dataset.sig;box.hidden=!box.childElementCount;}
+    }
+    locateRelay();
   }
   const CODE_LANG_RE=/language-([\w+#-]+)/;
   async function copyText(text,button){const value=String(text==null?'':text);let ok=false;
@@ -2296,7 +2382,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function toggleBlockSource(wrap,button){const source=wrap.querySelector('.block-source');const target=wrap.querySelector('.block-rendered');
     if(!source||!target)return;const showSource=source.hidden;source.hidden=!showSource;target.hidden=showSource;
     button.textContent=showSource?'渲染':'源码';button.setAttribute('aria-pressed',String(showSource));}
-  function addOptimisticMessage(text){const localId=`pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,baselineIds=new Set(state.transcriptMessages.map(message=>String(message.id)));state.pendingMessages.set(localId,{pane:state.selected,text,submit:true,status:'sending',baselineIds,createdAt:Date.now()});
+  function addOptimisticMessage(text){if(relayView?.pending||relayView?.history)leaveRelayView();const localId=`pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,baselineIds=new Set(state.transcriptMessages.map(message=>String(message.id)));state.pendingMessages.set(localId,{pane:state.selected,text,submit:true,status:'sending',baselineIds,createdAt:Date.now()});
     state.waiting=true;state.waitingSince=Date.now()/1000;syncProgress();renderTranscriptNow();requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;state.stick=true;});return localId;}
   function setOptimisticStatus(localId,status){const pending=state.pendingMessages.get(localId);if(!pending)return;pending.status=status;renderTranscriptNow();requestAnimationFrame(()=>scroll.scrollTop=scroll.scrollHeight);}
   // 轮询间隔：跑任务时靠 1.5s 的 tail 给实时感，transcript 2s 看一次结果就够了；
@@ -2307,7 +2393,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const idleFor=state.lastTranscriptChange?Date.now()-state.lastTranscriptChange:1e9;
     return idleFor<30000?1500:idleFor<300000?3000:idleFor<600000?5000:10000;
   }
-  async function refreshTranscript(id,{force=false,refresh=false}={}){if(relayView||state.selected!==id||state.mode!=='chat')return;
+  async function refreshTranscript(id,{force=false,refresh=false}={}){if(state.selected!==id||state.mode!=='chat')return;
     const fullFirst=!!state.needsFullTranscript;state.needsFullTranscript=false;
     const limit=state.transcriptLimit;
     // 缓存只画了最后 40 条，全量补齐后内容会变长：读者原本就在最底部，补完也得还在底部
@@ -2331,6 +2417,11 @@ import {marked} from '/assets/marked.esm.js?v=1';
       nextDelay=d.long_poll?0:transcriptPollDelay();
       if(d.unchanged){state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;syncProgress();
         return;}
+      if(d.session_id && state.transcriptSession && d.session_id!==state.transcriptSession && relayView){
+        leaveRelayView();
+        toast('会话记录已切换。');
+      }
+      if(d.session_id)state.transcriptSession=d.session_id;
       const signature=d.signature||transcriptSignature(d),changed=force||signature!==state.transcriptSig;
       state.hasMore=!!d.has_more;syncEarlierBar();
       if(d.model){modelState.current=d.model;$('model-current').textContent=modelLabel();}
@@ -2452,7 +2543,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   function syncLiveTail(){
     const id=state.selected;
     const box=$('live-tail'),pre=$('live-tail-text'),toggle=$('live-tail-toggle');
-    const available=id&&!relayView&&state.mode==='chat'&&!state.livePaused&&$('transcript').classList.contains('active');
+    const available=id&&state.mode==='chat'&&!state.livePaused&&$('transcript').classList.contains('active');
     if(!available){stopLiveTail();return;}
     const revision=$('native-form').dataset.open;
     const expanded=collapsedTailPane!==id && (!revision || expandedForm===revision);
@@ -2606,21 +2697,31 @@ import {marked} from '/assets/marked.esm.js?v=1';
     },delay);
   }
 
-  async function connectTranscript(id,allowFallback=false){if(!cachedTranscript(id))showLoadCard(id);$('message-shell').hidden=true;$('transcript').classList.add('active');$('status-dot').className='status-dot live';$('status-text').textContent='读取 transcript…';
-    try{const d=await apiProgress(`/api/panes/${encodeURIComponent(id)}/transcript?limit=300`,updateLoadCard);if(state.selected!==id||state.mode!=='chat')return;
+  async function connectTranscript(id,allowFallback=false){const view=relayView;
+    const senderParam=view?.side==='sent'?'&sent_relay='+encodeURIComponent(view.id):'';
+    if(!cachedTranscript(id))showLoadCard(id);$('message-shell').hidden=true;$('transcript').classList.add('active');$('status-dot').className='status-dot live';$('status-text').textContent='读取 transcript…';
+    try{const d=await apiProgress(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit||TRANSCRIPT_PAGE}${senderParam}`,updateLoadCard);if(view!==relayView||state.selected!==id||state.mode!=='chat')return;
       syncQuestionNotice(id,d);
       state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;
       state.hasMore=!!d.has_more;syncEarlierBar();
       if(!d.messages||!d.messages.length){
+        state.transcriptSession=d.session_id;
+        if(view?.side==='sent' && view.pending)readRelayHistory(view);
         if(isAgentPane(id)){showError('');showTranscriptNotice(id,'这个 agent 会话还没有可读的消息，等它开始工作后会自动刷新。');retryTranscript(id);return;}
         $('transcript').classList.remove('active');if(allowFallback){showError('');connect(id);}else showError('该会话还没有消息');return;}
       showError('');state.transcriptMtime=d.mtime;state.transcriptSig=d.signature||transcriptSignature(d);rememberTranscript(id,d);
       if(d.model){modelState.current=d.model;$('model-current').textContent=modelLabel();}
       if(d.provider&&/^(codex|claude|hermes|kimi)$/.test(d.provider))$('model-pick-wrap').hidden=false;
       state.transcriptProvider=d.provider||'';
+      state.transcriptSession=d.session_id;
+      const placement=d.relay_sender;
+      if(view?.side==='sent' && placement?.call?.id===view.id && placement.call.parent===id){
+        setRelaySender(view,placement.call,d.messages[placement.index-1],d.messages[placement.index]);
+      }
       renderTranscriptNow(d.messages);syncProgress();
+      if(view?.pending)readRelayHistory(view);
       const entry=cachedTranscript(id);const top=entry&&entry.scrollTop!=null?entry.scrollTop:scroll.scrollHeight;
-      requestAnimationFrame(()=>{scroll.scrollTop=top;state.stick=(entry&&entry.stick===false)?false:true;});
+      if(!view)requestAnimationFrame(()=>{if(!relayView && state.selected===id){scroll.scrollTop=top;state.stick=entry?.stick!==false;}});
       state.transcriptTimer=setTimeout(()=>refreshTranscript(id),1000);
     }catch(e){
       if(state.selected!==id||state.mode!=='chat')return;
@@ -3520,9 +3621,9 @@ import {marked} from '/assets/marked.esm.js?v=1';
   document.addEventListener('click',event=>{if(!completeOpen)return;const box=$('input-complete');if(box&&!box.contains(event.target)&&event.target!==input)closeInputComplete();});
   {const box=$('input-complete');
   if(box){box.addEventListener('mousedown',event=>{const item=event.target.closest('[data-complete-index]');if(!item)return;event.preventDefault();acceptInputComplete(completeItems[Number(item.dataset.completeIndex)]);});
-  box.addEventListener('mousemove',event=>{const item=event.target.closest('[data-complete-index]');if(!item)return;const next=Number(item.dataset.completeIndex);box.dataset.navigated='1';if(next!==completeIndex){completeIndex=next;paintCompleteSelection();}});}}scroll.addEventListener('wheel',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.addEventListener('touchmove',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.onscroll=()=>{state.stick=atBottom();
+  box.addEventListener('mousemove',event=>{const item=event.target.closest('[data-complete-index]');if(!item)return;const next=Number(item.dataset.completeIndex);box.dataset.navigated='1';if(next!==completeIndex){completeIndex=next;paintCompleteSelection();}});}}scroll.addEventListener('wheel',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.addEventListener('touchmove',()=>{state.stick=false;$('jump').style.display='block';},{passive:true});scroll.onscroll=()=>{advanceRelayHistory();state.stick=!relayView?.history&&atBottom();
     if(scroll.scrollTop<32&&state.hasMore&&!state.loadingEarlier&&state.transcriptLimit<TRANSCRIPT_PAGE_MAX)loadEarlier();
-    $('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupGitPanel();setupQueueStrip();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
+    $('jump').style.display=state.stick?'none':'block';};$('jump').onclick=()=>{if(relayView?.pending||relayView?.history){leaveRelayView();renderTranscriptNow();}state.stick=true;scroll.scrollTop=scroll.scrollHeight;$('jump').style.display='none';};window.addEventListener('resize',()=>{handleVisualViewportChange();if(!isMobile()){$('sidebar').classList.remove('open');$('drawer-backdrop').classList.remove('show');document.querySelector('.app').classList.remove('mobile-composing');}fitCapture();scheduleTerminalFit();});if(window.visualViewport){visualViewport.addEventListener('resize',handleVisualViewportChange);visualViewport.addEventListener('scroll',handleVisualViewportChange);}useEditableCapture();setupTerminalControls();setupTerminalInput();setupFiles();setupGitPanel();setupQueueStrip();setupPanePreview();// 侧栏每次进控制台都从会话列表开始：文件面板是"我要看文件"这个动作的结果，不是一个
 // 会跨页面加载记住的偏好。以前这里会读 localStorage，于是你上次开着文件面板，之后每次
 // 进 chat（主页卡片、多窗口、直接链接）侧栏都先弹文件管理，看起来像是随机的。
 try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(localStorage.getItem('tmux-sidebar-collapsed')==='1'&&!isMobile())document.querySelector('.app').classList.add('sidebar-collapsed');
@@ -3538,10 +3639,7 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
       }
       return;
     }
-    const relay=initialParams.get('relay'),side=initialParams.get('side'),pane=initialParams.get('pane');
-    if(pane && /^[a-f0-9]{12}$/.test(relay||'') && ['sent','received'].includes(side)){
-      relayView={id:relay,side,pane,offset:0,revision:0};
-    }
+    relayView=relayLocation(initialParams);
     const requestedMode=relayView?'chat':initialParams.get('mode');
     const initialMode=['chat','terminal'].includes(requestedMode)?requestedMode:localStorage.getItem('tmux-web-mode');
     if(initialMode==='terminal')setMode('terminal');

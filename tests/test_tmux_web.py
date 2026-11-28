@@ -3018,6 +3018,13 @@ class TmuxWebTests(unittest.TestCase):
         second = self.client.get(path, params={"side":"received","offset":499}).json()
         self.assertFalse(second["more"])
         self.assertEqual(second["messages"][0]["id"], "499")
+        small = self.client.get(path, params={"side":"received", "size":37, "offset":40}).json()
+        self.assertEqual((small["session_id"], small["messages"][0]["id"], len(small["messages"])),
+                         (session, "40", 37))
+        request = {"sent_relay":call_id, "limit":800}
+        placement = self.client.get("/api/panes/%255/transcript", params=request).json()["relay_sender"]
+        self.assertEqual((placement["call"]["id"], placement["index"]), (call_id, 1))
+        self.assertNotIn("relay_sender", self.client.get("/api/panes/%254/transcript", params=request).json())
         sent = self.client.get(path.replace("254","255",1), params={"side":"sent"}).json()
         self.assertEqual((sent["call"]["id"], sent["messages"][0]["id"]), (call_id, "exact"))
         # A repeated body and timestamp cannot stand in for the saved harness ID.

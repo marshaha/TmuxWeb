@@ -157,12 +157,6 @@
   #native-form [role=status]:empty{display:none}
   #native-form .native-terminal{margin-top:6px}
   @media(max-width:600px){#native-form label,#native-form button{min-height:44px}}
-  .relay-reading .conversation{display:flex;flex-direction:column}
-  .relay-reading #scroll{position:relative;flex:1;min-height:0}
-  #relay-context-bar:not([hidden]){display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;padding:5px 12px;font-size:13px}
-  #relay-context-bar [role="status"]{flex:1 1 9em;min-width:0;overflow-wrap:anywhere}
-  #relay-context-bar a{color:inherit}
-  .relay-reading :is(.composer,#agent-progress,#chat-activity,#native-form,#cursor-chat,#relay-receipts,#jump){display:none!important}
   .relay-location{scroll-initial-target:nearest;scroll-margin-block:6px}
   .relay-location .relay-receipt,.relay-location.relay-receipt{outline:2px solid var(--green);outline-offset:-2px}
   #relay-receipts{min-width:0;font-size:13px;overflow-wrap:anywhere}
@@ -263,13 +257,7 @@
       <button class="cs-btn" id="cs-prev" type="button" title="上一个（Shift+Enter）" aria-label="上一个">↑</button>
       <button class="cs-btn" id="cs-next" type="button" title="下一个（Enter）" aria-label="下一个">↓</button>
       <button class="cs-btn cs-close" id="cs-close" type="button" title="关闭（Esc）" aria-label="关闭搜索">×</button>
-    </div><nav id="relay-context-bar" aria-label="中继消息上下文" hidden>
-      <span role="status" id="relay-context-status"></span>
-      <button class="earlier-btn" id="relay-prev" type="button" hidden>上一页</button>
-      <button class="earlier-btn" id="relay-next" type="button" hidden>下一页</button>
-      <button class="earlier-btn" id="relay-refresh" type="button">刷新</button>
-      <a id="relay-live">返回实时 Chat</a>
-    </nav><div class="scroll" id="scroll"><div class="empty" id="empty"><div><strong>选择一个 tmux 会话</strong>实时查看内容，并在下方继续输入</div></div><div class="earlier-bar" id="earlier-bar" hidden><button class="earlier-btn" id="load-earlier" type="button">加载更早的消息</button></div><div class="transcript" id="transcript"><div id="transcript-messages"></div><article class="chat-message assistant" id="native-form" hidden aria-labelledby="native-form-title"><div class="assistant-body"><h3 id="native-form-title"></h3><form hidden aria-labelledby="native-form-title"><div class="native-fields"></div><button type="submit">提交全部答案</button></form><p role="status"></p><button id="native-open-terminal" class="native-terminal" type="button" aria-controls="live-tail-surface live-keys-nav">展开实时终端</button></div></article></div><aside id="relay-receipts" aria-label="发出的中继消息" hidden></aside><div class="message-shell" id="message-shell" hidden><div class="agent-label"><span class="agent-mark" id="agent-mark">T</span><span id="agent-name">tmux</span></div><div class="terminal-frame"><pre class="capture-output" id="terminal"></pre></div></div><article class="chat-message assistant" id="cursor-chat" hidden aria-labelledby="cursor-chat-question">
+    </div><div class="scroll" id="scroll"><div class="empty" id="empty"><div><strong>选择一个 tmux 会话</strong>实时查看内容，并在下方继续输入</div></div><div class="earlier-bar" id="earlier-bar" hidden><button class="earlier-btn" id="load-earlier" type="button">加载更早的消息</button></div><div class="transcript" id="transcript"><div id="transcript-messages"></div><article class="chat-message assistant" id="native-form" hidden aria-labelledby="native-form-title"><div class="assistant-body"><h3 id="native-form-title"></h3><form hidden aria-labelledby="native-form-title"><div class="native-fields"></div><button type="submit">提交全部答案</button></form><p role="status"></p><button id="native-open-terminal" class="native-terminal" type="button" aria-controls="live-tail-surface live-keys-nav">展开实时终端</button></div></article></div><aside id="relay-receipts" aria-label="发出的中继消息" hidden></aside><div class="message-shell" id="message-shell" hidden><div class="agent-label"><span class="agent-mark" id="agent-mark">T</span><span id="agent-name">tmux</span></div><div class="terminal-frame"><pre class="capture-output" id="terminal"></pre></div></div><article class="chat-message assistant" id="cursor-chat" hidden aria-labelledby="cursor-chat-question">
 <div class="assistant-body"><h3 id="cursor-chat-question"></h3><ol aria-label="终端选项"></ol><small>根据终端画面识别 · 仅供查看</small></div>
 </article><div id="chat-activity"><section id="live-tail" class="live-tail" aria-label="终端片段" hidden><div id="live-tail-head"><button id="live-tail-toggle" type="button" aria-expanded="true" aria-controls="live-tail-surface">实时终端</button></div><div id="live-tail-surface"><pre id="live-tail-text" aria-label="实时终端输出" aria-description="桌面键盘可操作终端，Shift 加 Escape 退出"></pre><button type="button" id="live-keyboard-toggle" aria-controls="live-keys-nav" aria-expanded="false" aria-label="终端按键" title="终端按键"><svg class="ico" aria-hidden="true"><use href="#i-keyboard"/></svg></button><fieldset id="live-keys-nav" aria-label="实时终端按键" hidden disabled>
 <button type="button" id="codex-followup-key" data-key="S-Left" aria-label="打开 Codex 待答题" hidden>Shift+←</button>
