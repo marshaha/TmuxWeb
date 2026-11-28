@@ -1020,7 +1020,7 @@ def parse_tmux_panes(raw: str, host_id: str, separator: str = FIELD_SEPARATOR) -
     panes = []
     for line in raw.splitlines():
         fields = line.split(separator)
-        if len(fields) not in (12, 13, 14, 15):
+        if len(fields) not in (12, 13, 14, 15, 16):
             continue
         pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields[:12]
         activity = fields[12] if len(fields) > 12 else ""
@@ -1034,7 +1034,8 @@ def parse_tmux_panes(raw: str, host_id: str, separator: str = FIELD_SEPARATOR) -
             "active": active == "1", "width": int(width), "height": int(height),
             "activity": int(activity) if str(activity).isdigit() else 0,
             **({"pane_pid": pane_pid} if pane_pid else {}),
-            **({"script_signal": fields[14]} if len(fields) == 15 and script_report(fields[14], pane_pid) else {}),
+            **({"script_signal": fields[14]} if len(fields) in (15, 16) and script_report(fields[14], pane_pid) else {}),
+            **({"custom_name": fields[15].strip()} if len(fields) == 16 and fields[15].strip() else {}),
         })
     return panes
 
@@ -1860,7 +1861,7 @@ class SSHRunner:
             "#{pane_id}", "#{session_name}:#{window_index}.#{pane_index}", "#{session_name}",
             "#{window_index}", "#{window_name}", "#{pane_index}", "#{pane_current_command}",
             "#{pane_title}", "#{pane_current_path}", "#{pane_active}", "#{pane_width}", "#{pane_height}",
-            "#{window_activity}", "#{pane_pid}", "#{@tmuxweb_status}",
+            "#{window_activity}", "#{pane_pid}", "#{@tmuxweb_status}", "#{@tmuxweb_name}",
         ])
         # 一次 SSH 同时取 pane 列表和进程表：进程表用来认出「被 shell 包着启动」的
         # agent（tmux 报的前台命令是 zsh，实际里面跑着 codex）。
@@ -1882,6 +1883,22 @@ class SSHRunner:
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.decode(errors="replace").strip() or "remote tmux failed")
         return self._parse_list_output(completed.stdout.decode(errors="replace"))
+
+    def set_pane_name(self, pane_id: str, name: str) -> dict:
+        """Name this pane (tmux user option ``@tmuxweb_name``); empty clears it."""
+        clean = (name or "").strip()
+        if len(clean) > 80:
+            raise ValueError("名字太长（最多 80 字）")
+        if clean:
+            command = "${TMUX_BIN:-tmux} set-option -p -t %s @tmuxweb_name %s" % (
+                shlex.quote(pane_id), shlex.quote(clean))
+        else:
+            command = "${TMUX_BIN:-tmux} set-option -pu -t %s @tmuxweb_name" % shlex.quote(pane_id)
+        completed = self.run(command, timeout=8, resolve_tmux=False)
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(errors="replace").strip()
+            raise RuntimeError(detail or "tmux set-option failed")
+        return {"pane": pane_id, "name": clean}
 
     def ping(self, timeout: float = 3) -> None:
         """Cheapest liveness check: a TCP connect to the ssh port.

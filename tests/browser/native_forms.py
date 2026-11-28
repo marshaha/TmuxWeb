@@ -26,6 +26,9 @@ def main():
                 path = urlsplit(r.request.url).path
                 if r.request.method == "POST" and path.endswith(("/key", "/input")):
                     key_requests.append(path)
+                if path == slug.replace("/native-form", "/name") and r.request.method == "POST":
+                    response = client.post(path, json=r.request.post_data_json)
+                    return r.fulfill(status=response.status_code, json=response.json())
                 if path == "/" or path.startswith("/assets/") or path == slug:
                     response = (client.post(path, json=r.request.post_data_json) if r.request.method=="POST"
                                 else client.get(path))
@@ -67,6 +70,15 @@ def main():
                         expect(card).to_be_hidden()
                         owner.open = pending
                     expect(card.get_by_role("heading",name="Hermes 等你回答")).to_be_in_viewport(timeout=22000)
+                    heading = page.locator("#selected-title")
+                    for name in ("本轮回归", ""):
+                        heading.dblclick()
+                        dialog = page.locator("#file-dialog")
+                        expect(dialog).to_be_visible()
+                        dialog.locator("#fd-input").fill(name)
+                        dialog.locator("#fd-ok").click()
+                        expect(heading).to_have_text(name or pane["title"])
+                        assert fixture.tmux.named_panes[-1] == (pane_id, name)
                     expect(page.locator("#live-tail-surface")).to_be_hidden()
                     open_terminal = card.get_by_role("button", name="展开实时终端")
                     keys = page.locator("#live-keys-nav")

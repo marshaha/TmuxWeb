@@ -385,7 +385,7 @@ class HomeBoardTests(unittest.TestCase):
         self.assertIn("nameFor,", script)
         page = self.console_surface("/?pane=%2528")
         self.assertIn("TmuxRecents.nameFor(id)", page)
-        self.assertIn("const shownTitle=customName||p.title||p.target;", page)
+        self.assertIn("const shownTitle=p.custom_name||customName||p.title||p.target;", page)
 
     def test_renaming_a_pin_needs_it_to_be_pinned(self):
         store = __import__("home_store").HomeStore(":memory:")

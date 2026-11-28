@@ -116,6 +116,13 @@
     return (entry.label || '').trim() || (entry.title || '').trim();
   }
 
+  // 用户自己起的名字（收藏标签）。自动生成的标题不算：它一旦被当成"人起的名字"，
+  // 就会盖住 tmux 窗口名，改窗口名时标题看起来毫无反应。
+  function customLabel(id) {
+    const entry = entryFor(id);
+    return entry && entry.label ? String(entry.label).trim() : '';
+  }
+
   function labelFor(id) {
     const found = paneById(id);
     if (!found) return null;
@@ -578,6 +585,7 @@
   window.TmuxRecents = {
     mount,
     nameFor,
+    customLabel,
     refresh: load,
     touch: noteVisit,
     setFavorites(list) {

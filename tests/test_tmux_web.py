@@ -110,6 +110,18 @@ class FakeTmux(TmuxBackend):
         self.renamed_windows.append((pane_id, name))
         return {"pane": pane_id, "window": name}
 
+    def set_pane_name(self, pane_id, name):
+        self.named_panes = getattr(self, "named_panes", [])
+        self.named_panes.append((pane_id, name))
+        for pane in self.panes:
+            if pane["id"] == pane_id:
+                if name:
+                    pane["custom_name"] = name
+                else:
+                    pane.pop("custom_name", None)
+                return {"pane": pane_id, "name": name}
+        raise TmuxError("no such pane: %s" % pane_id)
+
     def kill_session(self, name):
         try:
             name = normalize_session_name(name)
@@ -310,6 +322,9 @@ class FakeSSHRunner:
 
     def rename_window(self, pane_id, name):
         FakeSSHRunner.renamed_window = (pane_id, name)
+    def set_pane_name(self, pane_id, name):
+        FakeSSHRunner.named_pane = (pane_id, name)
+        return {"pane": pane_id, "name": name}
         return {"pane": pane_id, "window": name}
 
     def kill_session(self, name):
@@ -2011,6 +2026,58 @@ class TmuxWebTests(unittest.TestCase):
         self.assertEqual(tmux_web.openlist_d_link("https://h/a/x.mp4?token=1"),
                          "https://h/d/a/x.mp4?token=1")
 
+    def isolated_console(self, **kwargs):
+        """A client with every SQLite store in memory: the live service holds home.db."""
+        tmux = kwargs.pop("tmux", None) or self.tmux
+        client = TestClient(create_app(
+            tmux, password="unit-test-admin-password", session_secret="test-secret",
+            terminal_factory=self.terminals, share_db=":memory:", queue_db=":memory:",
+            home_db=":memory:", remote_store=self.remote_store,
+            remote_runner_factory=FakeSSHRunner, **kwargs,
+        ))
+        client.post("/login", data={"password": "unit-test-admin-password"}, follow_redirects=False)
+        return client
+
+    def test_double_clicking_the_chat_title_names_the_pane(self):
+        """The chat name in the topbar is editable: dblclick opens the rename dialog."""
+        client = self.isolated_console()
+        page = client.get("/").text
+        self.assertIn('id="selected-title"', page)
+        app = client.get("/assets/console-app.js").text
+        self.assertIn("wireChatNameRename();", app)
+        self.assertIn("title.addEventListener('dblclick'", app)
+        self.assertIn("/name`", app)
+        self.assertIn("pane.custom_name", app)
+        css = client.get("/assets/console.css").text
+        self.assertIn("#selected-title.renameable", css)
+
+    def test_a_pane_name_is_stored_separately_from_the_title_and_window(self):
+        """Naming a pane must not fight the program's pane_title or the window name."""
+        client = self.isolated_console()
+        named = client.post("/api/panes/%4/name", json={"name": "发布验收"})
+        self.assertEqual(named.status_code, 200)
+        self.assertEqual(named.json()["name"], "发布验收")
+        self.assertEqual(self.tmux.named_panes[-1], ("%4", "发布验收"))
+
+        panes = client.get("/api/panes").json()["panes"]
+        target = next(pane for pane in panes if pane["id"] == "%4")
+        self.assertEqual(target["custom_name"], "发布验收")
+        # the window name and the auto title are untouched
+        self.assertEqual(target["title"], "Review | repo")
+        self.assertEqual(target["window_name"], "editor")
+
+        # an empty name restores the default (the option is unset)
+        cleared = client.post("/api/panes/%4/name", json={"name": "   "})
+        self.assertEqual(cleared.json()["name"], "")
+        panes = client.get("/api/panes").json()["panes"]
+        target = next(pane for pane in panes if pane["id"] == "%4")
+        self.assertNotIn("custom_name", target)
+
+    def test_a_too_long_pane_name_is_refused(self):
+        client = self.isolated_console()
+        response = client.post("/api/panes/%4/name", json={"name": "x" * 81})
+        self.assertEqual(response.status_code, 422)
+
     def test_the_queue_strip_is_wired_into_the_composer(self):
         """忙的时候消息排到服务端队列，输入框上方的条带能看能撤能改成"打断并立刻发"。"""
         self.login()
@@ -2795,7 +2862,7 @@ class TmuxWebTests(unittest.TestCase):
 
         # 控制台的浏览器/PWA 标题
         # 标题优先用「最近 / 收藏」里的名字（钉子区的 #6），没有才用 pane 标题
-        self.assertIn("const shownTitle=customName||p.title||p.target;", page)
+        self.assertIn("const shownTitle=p.custom_name||customName||p.title||p.target;", page)
         self.assertIn("document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`", page)
 
         # 多窗口：只有一个窗口或最大化时窗口标题带 #N，删空回到「多窗口」

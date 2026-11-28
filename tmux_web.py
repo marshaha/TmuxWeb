@@ -75,6 +75,11 @@ from remote_hosts import (AUTH_TYPES, FIELD_SEPARATOR, cursor_frame_args, prompt
 LOGGER = logging.getLogger("tmux_web")
 
 PANE_RE = re.compile(r"^%[0-9]+$")
+
+# 用户给这段对话起的名字（tmux pane option）。pane_title 会被里面的程序改写，
+# 窗口名和侧栏共用，所以单独存一份。
+PANE_NAME_OPTION = "@tmuxweb_name"
+MAX_PANE_NAME = 80
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
 # Only SGR styling is meaningful in a read-only fragment. Strip other controls,
@@ -615,6 +620,22 @@ class TmuxBackend:
             raise
         return {"pane": pane_id, "window": clean, "session": pane.get("session") or ""}
 
+    def set_pane_name(self, pane_id: str, name: str) -> dict:
+        """给这段对话起个名字，存在 tmux 的 pane option ``@tmuxweb_name`` 里。
+
+        pane_title 由里面的程序不停改写（bash 会填主机名、agent 会填任务摘要），
+        窗口名又和侧栏共用，所以"这段对话叫什么"单独存一份；空名字即恢复默认。
+        """
+        self.validate_pane(pane_id)
+        clean = (name or "").strip()
+        if len(clean) > MAX_PANE_NAME:
+            raise TmuxError(f"名字太长（最多 {MAX_PANE_NAME} 字）")
+        if clean:
+            self._run("set-option", "-p", "-t", pane_id, PANE_NAME_OPTION, clean)
+        else:
+            self._run("set-option", "-pu", "-t", pane_id, PANE_NAME_OPTION)
+        return {"pane": pane_id, "name": clean}
+
     def kill_pane(self, pane_id: str) -> dict:
         """Close one pane; the session survives if it has other panes."""
         pane = self.validate_pane(pane_id)
@@ -654,13 +675,13 @@ class TmuxBackend:
             "#{session_name}", "#{window_index}", "#{window_name}", "#{pane_index}",
             "#{pane_current_command}", "#{pane_title}", "#{pane_current_path}",
             "#{pane_active}", "#{pane_width}", "#{pane_height}", "#{window_activity}",
-            "#{pane_pid}", "#{@tmuxweb_status}",
+            "#{pane_pid}", "#{@tmuxweb_status}", "#{@tmuxweb_name}",
         ])
         raw = self._run("list-panes", "-a", "-F", format_string)
         panes = []
         for line in raw.splitlines():
             fields = line.split(FIELD_SEPARATOR)
-            if len(fields) not in (12, 13, 14, 15):
+            if len(fields) not in (12, 13, 14, 15, 16):
                 continue
             pane_id, target, session, window, window_name, index, command, title, path, active, width, height = fields[:12]
             activity = fields[12] if len(fields) > 12 else ""
@@ -681,8 +702,12 @@ class TmuxBackend:
                 "width": int(width),
                 "height": int(height),
             }
-            if len(fields) == 15 and script_report(fields[14], pane_pid):
+            if len(fields) in (15, 16) and script_report(fields[14], pane_pid):
                 pane["script_signal"] = fields[14]
+            if len(fields) == 16 and fields[15].strip():
+                # 用户给这段对话起的名字：pane_title 会被程序不停覆盖，窗口名和
+                # 侧栏共用，所以单独放一个 pane option
+                pane["custom_name"] = fields[15].strip()
             if pane_pid:
                 # lets transcript() skip its own display-message lookup;
                 # older output without the field keeps the old dict shape
@@ -1513,6 +1538,11 @@ class SessionRenameRequest(BaseModel):
 class WindowRenameRequest(BaseModel):
     """给窗口改名（"pane 的名字"就是它所在的窗口名）。"""
     name: str
+
+
+class PaneNameRequest(BaseModel):
+    """给这段对话起名字（tmux pane option，空名字恢复默认）。"""
+    name: str = ""
 
 
 class SessionCreateRequest(BaseModel):
@@ -5960,6 +5990,30 @@ def create_app(
             raise
         except (TmuxError, RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/panes/{pane_id}/name")
+    async def set_pane_name(request: Request, pane_id: str, payload: PaneNameRequest):
+        """改这段对话显示的名字。
+
+        和 ``/rename``（tmux 窗口名，侧栏共用）分开：``pane_title`` 会被里面的
+        程序不断改写，所以要给"对话叫什么"单独一份存储 —— tmux 的 pane option。
+        """
+        require_auth(request)
+        transport, actual = pane_transport(pane_id)
+        setter = getattr(transport, "set_pane_name", None)
+        if setter is None:
+            raise HTTPException(status_code=501, detail="这台主机不支持单独命名 pane")
+        # validate here, not only in the tmux client: every transport (ssh, agent)
+        # has to agree on what a legal name is
+        clean = (payload.name or "").strip()
+        if len(clean) > MAX_PANE_NAME:
+            raise HTTPException(status_code=422, detail=f"名字太长（最多 {MAX_PANE_NAME} 字）")
+        try:
+            named = await asyncio.to_thread(setter, actual, clean)
+        except (TmuxError, RuntimeError, OSError, ValueError, federation.FederationError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        name = (named.get("name") if isinstance(named, dict) else "") or clean
+        return {"pane": actual, "name": name, "custom_name": name}
 
     @app.post("/api/panes/{pane_id}/rename")
     async def rename_pane_window(request: Request, pane_id: str, payload: WindowRenameRequest):

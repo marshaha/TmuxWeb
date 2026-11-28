@@ -292,6 +292,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
   /** hosts 刷新后把已选中 pane 的顶栏对齐真数据（缓存先画过头时不会一直停在旧值）。 */
   function repaintSelectedHeader(){
     if(!state.selected){return;}
+    // 顶栏标题也要跟着真数据走：缓存先画时还没有 custom_name（用户起的名字）
+    if(typeof paintChatTitle==='function')paintChatTitle();
     const live=state.panes.find(p=>p.id===state.selected);
     if(!live){return;}
     paintPaneHeader(live);
@@ -300,7 +302,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     if(num&&live.number){num.hidden=false;num.textContent=paneLabel(live);}
   }
   async function loadPanes(force){if(projectView)loadProjects();try{const d=await api('/api/hosts'+(force?'?refresh=1':''));state.hosts=d.hosts||[];
-      if(window.TmuxPaneCache&&d.hosts)TmuxPaneCache.saveHosts(d.hosts);if(window.TmuxRecents)TmuxRecents.setHosts(state.hosts);state.panes=state.hosts.flatMap(host=>(host.panes||[]).map(p=>({...p,host_id:p.host_id||host.id})));const valid=new Set();for(const host of state.hosts){valid.add(host.id);for(const p of host.panes||[]){valid.add(`${host.id}/${p.session}`);valid.add(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}state.treeOpen=new Set([...state.treeOpen].filter(key=>valid.has(key)||key.startsWith('project:')));localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));$('pane-count').textContent=`${state.hosts.length} hosts · ${state.panes.length} panes`;renderHostList();applyWantedPane();loadFavorites();refreshPaneStates();if(state.selected&&!state.panes.some(p=>p.id===state.selected)){
+      if(window.TmuxPaneCache&&d.hosts)TmuxPaneCache.saveHosts(d.hosts);if(window.TmuxRecents)TmuxRecents.setHosts(state.hosts);state.panes=state.hosts.flatMap(host=>(host.panes||[]).map(p=>({...p,host_id:p.host_id||host.id})));const valid=new Set();for(const host of state.hosts){valid.add(host.id);for(const p of host.panes||[]){valid.add(`${host.id}/${p.session}`);valid.add(`${host.id}/${p.session}/${p.window}:${p.window_name||''}`);}}state.treeOpen=new Set([...state.treeOpen].filter(key=>valid.has(key)||key.startsWith('project:')));localStorage.setItem('tmux-tree-open',JSON.stringify([...state.treeOpen]));$('pane-count').textContent=`${state.hosts.length} hosts · ${state.panes.length} panes`;renderHostList();applyWantedPane();loadFavorites();refreshPaneStates();if(state.selected)repaintSelectedHeader();if(state.selected&&!state.panes.some(p=>p.id===state.selected)){
         // A partial hosts response can temporarily omit a remote pane.
         state.wantedPane=state.selected;
         selectPane(null, {remember:false});
@@ -365,6 +367,62 @@ import {marked} from '/assets/marked.esm.js?v=1';
       toast(`窗口已改名为 ${done.window}`);
       await loadPanes();
     }catch(error){toast(`改名失败：${error.message}`,4200);}
+  }
+
+  // 顶栏上这个名字：有收藏标签时显示标签，否则是 tmux 窗口名。双击改名时两处都写，
+  // 保证改完标题立刻跟着变（收藏标签优先，不同步的话会出现"改了没反应"）。
+  function paintChatTitle(){
+    const id=state.selected;
+    if(!id)return;
+    const pane=state.panes.find(item=>item.id===id)||{};
+    const rc=window.TmuxRecents;
+    const custom=rc?(rc.customLabel?rc.customLabel(id):rc.nameFor(id)):'';
+    const shown=(pane.custom_name||custom||pane.title||pane.target||'');
+    if(shown)$('selected-title').textContent=shown;
+    document.title=pane.number?`${paneLabel(pane)} · ${shown} · Tmux Chat`:(shown?`${shown} · Tmux Chat`:'Tmux Chat');
+  }
+
+  async function renameChatName(){
+    const id=state.selected;
+    if(!id)return;
+    const pane=state.panes.find(item=>item.id===id)||{};
+    const rc=window.TmuxRecents;
+    const custom=rc?(rc.customLabel?rc.customLabel(id):rc.nameFor(id)):'';
+    const current=pane.custom_name||custom||pane.title||pane.window_name||'';
+    const answer=await fileDialog({title:'改对话名字',
+      message:'留空可恢复默认对话名',
+      input:true,value:current,confirmLabel:'改名'});
+    if(!answer.ok)return;
+    const name=answer.value;
+    try{
+      await api(`/api/panes/${encodeURIComponent(id)}/name`,{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+      // 收藏标签也一起改，否则主页/侧栏还是旧名字
+      try{
+        await api(`/api/home/recent/pin/${encodeURIComponent(id)}`,{method:'PATCH',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify({label:name})});
+      }catch{}
+      if(window.TmuxRecents&&TmuxRecents.refresh)await TmuxRecents.refresh();
+      const changed=state.panes.find(item=>item.id===id);
+      if(changed)changed.custom_name=name;
+      paintChatTitle();
+      renderHostList();
+      toast(name?`已改名为 ${name}`:'已恢复默认对话名');
+    }catch(error){toast(`改名失败：${error.message}`,4200);}
+  }
+
+  // 双击顶栏标题 = 改这段对话（chat）的名字
+  function wireChatNameRename(){
+    const title=$('selected-title');
+    if(!title||title.dataset.renameWired)return;
+    title.dataset.renameWired='1';
+    title.classList.add('renameable');
+    title.title='双击改名字';
+    title.addEventListener('dblclick',event=>{
+      event.preventDefault();
+      if(!state.selected)return;
+      renameChatName();
+    });
   }
 
   async function loadFavorites(){try{const d=await api('/api/home/favorites');state.favorites=new Set(d.favorites||[]);syncStars();if(window.TmuxRecents)TmuxRecents.setFavorites([...state.favorites]);}catch{}}
@@ -1818,7 +1876,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     if(remember){state.wantedPane=null;rememberPane(id);}
     if(state.selected!==id){closeInputComplete();window.TmuxChatSearch?.close();}closeChatReply();if(state.selected!==id)collapsedTailPane=null;if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
     setTimeout(syncAttachments,0);if(window.TmuxRecents){TmuxRecents.touch(id);TmuxRecents.markActive(id);}closeConnections();state.questionNotice=null;state.questionPane=null;state.selected=id;showOutbound([],[],0);state.stateAt=0;refreshPaneStates();state.transcriptProvider='';syncNativeForm();if(window.TmuxPrompt)TmuxPrompt.refresh();state.transcriptMtime=null;state.transcriptSig=null;state.transcriptMessages=[];state.transcriptLimit=TRANSCRIPT_PAGE;state.hasMore=false;state.loadingEarlier=false;state.waiting=false;state.waitingSince=null;$('transcript').classList.remove('active');syncProgress();if(state.filesPane&&state.filesPane!==id){state.filesPane=null;state.filesData=null;state.filesPath=null;$('file-list').innerHTML='';showPath('');state.filesPicked.clear();syncFileSelection();$('file-host').textContent='';$('file-host').hidden=true;setFileStatus('');}renderList();term.textContent='';$('transcript-messages').innerHTML='';state.renderedMessages=new Map();$('message-shell').hidden=!id;$('empty').style.display=id?'none':'grid';input.disabled=!id;send.disabled=!id;if($('inspect-interaction'))$('inspect-interaction').disabled=!id;input.value=id?(state.drafts.get(id)||''):'';$('status-dot').className='status-dot';$('status-text').textContent=id?'连接中…':'未连接';if(!id){$('selected-title').textContent='选择一个会话';document.title='Tmux Chat';$('selected-number').hidden=true;$('selected-sub').textContent='从左侧选择 tmux pane';syncFavButton();const ab=$('agents-button');if(ab)ab.disabled=true;if(window.TmuxAgents)TmuxAgents.close();
-      const sb=$('chat-search-button');if(sb)sb.disabled=true;if(window.TmuxChatSearch)TmuxChatSearch.close();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const customName=(window.TmuxRecents&&TmuxRecents.nameFor)?TmuxRecents.nameFor(id):'';const shownTitle=customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';paintPaneHeader(p);$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);$('agents-button').disabled=false;if(window.TmuxAgents)TmuxAgents.refresh();
+      const sb=$('chat-search-button');if(sb)sb.disabled=true;if(window.TmuxChatSearch)TmuxChatSearch.close();return;}const p=state.panes.find(x=>x.id===id);const num=$('selected-number');if(num){num.hidden=!p.number;num.textContent=p.number?paneLabel(p):'';num.title=p.number?`窗口编号 ${paneLabel(p)}（relay 里可以直接写这个）`:'';}const rc=window.TmuxRecents;const customName=rc?(rc.customLabel?rc.customLabel(id):rc.nameFor(id)):'';const shownTitle=p.custom_name||customName||p.title||p.target;$('selected-title').textContent=shownTitle;document.title=p.number?`${paneLabel(p)} · ${shownTitle} · Tmux Chat`:'Tmux Chat';paintPaneHeader(p);$('agent-name').textContent=p.command;$('agent-mark').textContent=(p.command||'T')[0].toUpperCase();$('share-button').disabled=!(p.capabilities&&p.capabilities.share);$('agents-button').disabled=false;if(window.TmuxAgents)TmuxAgents.refresh();
     const searchBtn=$('chat-search-button');if(searchBtn)searchBtn.disabled=false;syncLiveButton();syncFavButton();
     queueState.items=[];renderQueueStrip();
     clientTrace(null,'sel:cleared',id);
@@ -3344,6 +3402,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   $('pane-search').addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();clearPaneSearch();}});
   $('grid-add').onclick=()=>{if(!state.selected){showError('先选择一个 pane');return;}location='/grid?add='+encodeURIComponent(state.selected);};$('session-form').onsubmit=e=>{e.preventDefault();submitSessionForm();};$('session-cancel').onclick=()=>$('session-dialog').close();$('session-agent').onchange=()=>{const on=!!$('session-agent').value;$('session-args-field').hidden=!on;syncAgentHint();if(on)$('session-args').focus();};
   mountComposerFiles();
+  wireChatNameRename();
   $('live-toggle').onclick=()=>{state.livePaused?resumeLive():pauseLive();};
   // 「暂停实时刷新」是实验性功能：默认藏起来，设置里打开才显示
   function applyPauseButton(on){
@@ -3409,7 +3468,9 @@ try{localStorage.removeItem('tmux-files-mode');}catch{}syncVisualViewport();if(l
         if (!id) return;
         const p = state.panes.find(x => x.id === id);
         if (!p) return;
-        const shown = (TmuxRecents.nameFor ? TmuxRecents.nameFor(id) : '') || p.title || p.target;
+        // custom_name 是用户给这段对话起的名字，优先级最高；自动生成的收藏标题不能压过它
+        const shown = p.custom_name || (TmuxRecents.customLabel ? TmuxRecents.customLabel(id) : '')
+          || (TmuxRecents.nameFor ? TmuxRecents.nameFor(id) : '') || p.title || p.target;
         $('selected-title').textContent = shown;
         document.title = p.number ? `${paneLabel(p)} · ${shown} · Tmux Chat` : 'Tmux Chat';
       },
