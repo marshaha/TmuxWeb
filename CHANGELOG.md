@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.23.1
+
+- Reuse the fresh sidebar pane listing for remote Skill discovery. When a first slash-menu request encounters a busy node, retry once while the menu is still open.
+
 ## 0.23.0
 
 - Sync a private MCPHub Skill group to opted-in host agents. Chat discovers verified local copies, and the hosts page shows the installed revision and synchronization status.

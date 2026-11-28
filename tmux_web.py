@@ -4712,7 +4712,7 @@ def create_app(
             if known:
                 row["stale"] = True
         else:
-            row.update(status="online", panes=panes, listing_state="fresh")
+            row.update(status="online", panes=panes, listing_state="fresh", panes_observed_at=time.time())
         return row
 
     def host_probe(public: dict, previous: dict) -> asyncio.Task:
@@ -6095,7 +6095,16 @@ def create_app(
         transport, actual = pane_transport(pane_ref, prefer_agent=True)
         if isinstance(transport, federation.FedTransport):
             return transport, actual, "", ""
-        pane = pane_or_404(pane_ref, prefer_agent=True)
+        pane = None
+        if transport is not tmux:
+            host_id, _ = split_pane_ref(pane_ref)
+            for row in (hosts_snapshot["value"] or {}).get("hosts", []):
+                if (row["id"] == host_id and row.get("listing_state") == "fresh"
+                        and time.time() - row.get("panes_observed_at", 0) < 30):
+                    pane = next((p for p in row["panes"] if p.get("pane_id") == actual), None)
+                    break
+        if pane is None:
+            pane = pane_or_404(pane_ref, prefer_agent=True)
         provider = pane_provider(pane) if transport is tmux else (
             pane.get("provider") or transcript_reader.provider_for_command(pane.get("command")))
         return transport, actual, provider, pane.get("path") or ""

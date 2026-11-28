@@ -33,9 +33,14 @@ def main():
                 page = browser.new_page(viewport={"width": width, "height": 700},
                                         has_touch=width == 390, service_workers="block")
                 sends = []
+                first_skill_request = True
 
                 def route(r):
+                    nonlocal first_skill_request
                     path = urlsplit(r.request.url).path
+                    if first_skill_request and path.endswith("/skills"):
+                        first_skill_request = False
+                        return r.fulfill(status=503,json={"detail":"node busy"})
                     if path == "/api/hosts":
                         return r.fulfill(json={"hosts": [{"id": "localhost", "panes": panes}]})
                     if path == "/" or path.startswith("/assets/") or path.endswith("/skills"):

@@ -1906,6 +1906,18 @@ class TmuxWebTests(unittest.TestCase):
             self.client.get(f"/api/panes/{host_id}~%259/skills")
             self.assertEqual(run.call_count, 1)
 
+    def test_remote_skill_catalog_reuses_fresh_host_listing(self):
+        from unittest import mock
+        self.login()
+        host = self.remote_store.add_host(name="remote", credential="", hostname="test", username="tester",
+                                          port=22, auth_type="agent", fingerprint="test-fingerprint")
+        self.assertEqual(self.client.get("/api/hosts?refresh=1").status_code, 200)
+        with mock.patch.object(FakeSSHRunner, "list_panes", side_effect=AssertionError("duplicate listing")), \
+                mock.patch.object(FakeSSHRunner, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, stdout=b'["managed"]')):
+            result = self.client.get(f"/api/panes/{host['id']}~%259/skills")
+        self.assertEqual(result.json(), {"provider":"claude", "skills":["managed"]})
+
     def test_version_endpoint_requires_auth(self):
         self.assertEqual(self.client.get("/api/version").status_code, 401)
 

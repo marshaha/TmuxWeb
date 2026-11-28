@@ -3387,6 +3387,16 @@ import {marked} from '/assets/marked.esm.js?v=1';
     catalog.items=data.skills.map(name=>({kind:'skill',label:name,text:prefix+name+' ',sub:'Skill · '+prefix+name}));
     catalog.hint=catalog.items.length?'':'未发现已安装的技能';
   }
+  async function readSkillSuggestions(pane,catalog){
+    const url='/api/panes/'+encodeURIComponent(pane.id)+'/skills';
+    try{return await api(url);}catch(error){
+      if(error.status!==503 || catalog.data)throw error;
+      await new Promise(resolve=>setTimeout(resolve,900));
+      if(state.completionSkills!==catalog || state.selected!==pane.id ||
+         completeMatch?.kind!=='command' || document.activeElement!==input)throw error;
+      return api(url);
+    }
+  }
   function skillSuggestions(query,atStart){
     const pane=state.panes.find(p=>p.id===state.selected);
     if(!pane || !isAgentPane(pane.id))return {items:[],hint:''};
@@ -3401,7 +3411,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     if(Date.now()>=catalog.expires){
       catalog.expires=Infinity;
       const oldHint=catalog.hint, oldData=catalog.data;
-      api('/api/panes/'+encodeURIComponent(pane.id)+'/skills').then(result=>{
+      readSkillSuggestions(pane,catalog).then(result=>{
         if(state.completionSkills!==catalog)return;
         const data=installedSkills(result);
         if(!data)throw new Error('无效的技能目录');
