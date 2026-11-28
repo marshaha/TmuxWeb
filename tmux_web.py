@@ -5639,6 +5639,8 @@ def create_app(
             status = agent_status_provider(host["id"]) if agent_status_provider else {}
             item["agent_online"] = bool(status.get("agent_online", False))
             item["agent_last_seen"] = status.get("agent_last_seen")
+            if status.get("skill_sync"):
+                item["skill_sync"] = status["skill_sync"]
             item["last_transport"] = status.get("last_transport")
             item["last_transport_at"] = status.get("last_transport_at")
             chain = remote_hosts.jump_chain(host, limit=jump_max_depth)

@@ -46,6 +46,7 @@ import asyncio
 import base64
 import concurrent.futures
 import logging
+import re
 import shlex
 import subprocess
 import threading
@@ -189,6 +190,23 @@ class AgentRegistry:
             record["last_transport"] = kind
             record["last_transport_at"] = time.time()
 
+    def note_skill_sync(self, host_id, payload):
+        with self._lock:
+            record = self._records.setdefault(host_id, {})
+            if not isinstance(payload, dict) or type(payload.get("ok")) is not bool:
+                record.pop("skill_sync", None)
+                return
+            status = {"ok": payload["ok"]}
+            version, count = payload.get("version"), payload.get("count")
+            if isinstance(version, str) and re.fullmatch("[0-9a-f]{64}", version):
+                status["version"] = version
+            if type(count) is int and 0 <= count <= 128:
+                status["count"] = count
+            checked = payload.get("checked_at")
+            if type(checked) is int and 0 <= checked < 2**40:
+                status["checked_at"] = checked
+            record["skill_sync"] = status
+
     def status(self, host_id: str) -> dict:
         """``{agent_online, agent_last_seen, last_transport, last_transport_at,
         agent_version, agent_seq_gap}``.
@@ -209,6 +227,7 @@ class AgentRegistry:
             "last_transport_at": record.get("last_transport_at"),
             "agent_version": record.get("agent_version"),
             "agent_seq_gap": record.get("agent_seq_gap"),
+            **({"skill_sync": record["skill_sync"]} if record.get("skill_sync") else {}),
         }
 
     # -- sequencing (protocol 1.2.0) --------------------------------------

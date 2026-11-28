@@ -30,7 +30,14 @@
   function transportOf(h){return h&&h.transport==='agent'?'agent':'ssh';}
   function transportLabel(h){return transportOf(h)==='agent'?'Agent':'SSH';}
   function formatTime(ts){const d=new Date(Number(ts)*1000);const p=n=>String(n).padStart(2,'0');return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
-  function agentStatusText(h){if(h&&h.agent_online)return '●在线';if(h&&h.agent_last_seen)return '○离线 · 最后见到 '+formatTime(h.agent_last_seen);return '○离线 · 未连接过';}
+  function agentStatusText(h){
+    const sync=h?.skill_sync;
+    if(sync){
+      const revision=sync.version?' · '+sync.version.slice(0,8):'';
+      const installed=Number.isInteger(sync.count)?' · '+sync.count+' 个 Skill'+revision:'';
+      return (h.agent_online?'●在线':'○离线')+installed+(sync.ok?'':' · 同步失败');
+    }
+    if(h&&h.agent_online)return '●在线';if(h&&h.agent_last_seen)return '○离线 · 最后见到 '+formatTime(h.agent_last_seen);return '○离线 · 未连接过';}
   function lastTransportText(h){if(!h||!h.last_transport)return '';return h.last_transport==='agent'?'上次走 Agent':'上次走 SSH';}
   function agentInstallLabel(h){return h&&h.agent_online?'重新安装':'安装 agent';}
   function manualInstallCommand(server,programUrl,token){return 'curl -fsSL '+programUrl+' -o ~/.tmuxweb-agent/agent.py && python3 ~/.tmuxweb-agent/agent.py install --server '+server+' --token '+token;}

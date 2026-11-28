@@ -107,6 +107,11 @@ import argparse
 import base64
 import binascii
 import hashlib
+import fcntl
+import ipaddress
+import tempfile
+import unicodedata
+import urllib.request
 import json
 import os
 import queue
@@ -125,7 +130,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 AGENT_NAME = "tmuxweb-agent"
 HEARTBEAT_INTERVAL = 30.0
 DEFAULT_EXEC_TIMEOUT = 15.0
@@ -2707,6 +2712,242 @@ class _MessagePool:
                 log(f"message worker failed: {exc!r}")
 
 
+# Group-scoped Skills over MCP. The daemon remains a single-file install.
+SKILL_PROTOCOL = "2026-07-28"
+SKILL_EXTENSION = "io.modelcontextprotocol/skills"
+SKILL_MAX_BYTES = 16 * 1024 * 1024
+SKILL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_skill_status = {}
+
+
+class _NoHubRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class SkillHub:
+    def __init__(self, config):
+        self.url = config["url"]
+        self.allow_empty = config.get("allow_empty") is True
+        url = urlparse(self.url)
+        if url.scheme not in ("http", "https") or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise ValueError("invalid Skill Hub URL")
+        if url.scheme == "http" and url.hostname != "localhost":
+            ip = ipaddress.ip_address(url.hostname)
+            private = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7")
+            if not ip.is_loopback and not any(ip in ipaddress.ip_network(net) for net in private):
+                raise ValueError("HTTP requires a private network IP")
+        token_path = Path(config["token_file"]).expanduser()
+        if token_path.stat().st_mode & 0o077:
+            raise ValueError("Skill Hub token file must be private")
+        self.token = token_path.read_text().strip()
+        if not self.token or any(c.isspace() for c in self.token):
+            raise ValueError("invalid Skill Hub credential")
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoHubRedirect())
+
+    def rpc(self, method, **params):
+        headers = {"Authorization": "Bearer " + self.token, "MCP-Protocol-Version": SKILL_PROTOCOL,
+                   "Mcp-Method": method, "Accept": "application/json, text/event-stream",
+                   "Content-Type": "application/json"}
+        if method == "resources/read":
+            headers["Mcp-Name"] = params["uri"]
+        params["_meta"] = {"io.modelcontextprotocol/protocolVersion": SKILL_PROTOCOL,
+                           "io.modelcontextprotocol/clientCapabilities": {"extensions": {SKILL_EXTENSION: {}}}}
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+        req = urllib.request.Request(self.url, data=body, headers=headers)
+        with self.opener.open(req, timeout=20) as response:
+            limit = 2 * SKILL_MAX_BYTES
+            raw = response.read(limit + 1)
+            if len(raw) > limit:
+                raise ValueError("oversize Skill Hub response")
+            if response.headers.get_content_type() == "text/event-stream":
+                raw = next((line[5:].strip() for line in raw.splitlines() if line.startswith(b"data:") and
+                            json.loads(line[5:]).get("id") == 1), b"")
+        message = json.loads(raw)
+        if message.get("id") != 1 or not isinstance(message.get("result"), dict):
+            raise ValueError("Skill Hub rejected " + method)
+        return message["result"]
+
+    def catalog(self):
+        discovery = self.rpc("server/discover")
+        if SKILL_EXTENSION not in discovery.get("capabilities", {}).get("extensions", {}):
+            raise ValueError("Skill Hub does not advertise Skills")
+        catalog, seen, cursor = {}, set(), None
+        while True:
+            page = self.rpc("skills/list", **({"cursor": cursor} if cursor else {}))
+            if page.get("resultType") != "complete":
+                raise ValueError("incomplete Skill catalog")
+            for entry in page["skills"]:
+                name = entry["frontmatter"]["name"]
+                if not SKILL_NAME.fullmatch(name) or len(name) > 64 or name in catalog or len(catalog) >= 128:
+                    raise ValueError("invalid or duplicate Skill name")
+                uri = entry["uri"]
+                if not uri.startswith("skill://") or not uri.endswith("/SKILL.md"):
+                    raise ValueError("invalid Skill URI")
+                prefix = uri[:-len("SKILL.md")]
+                files = {}
+                spellings = {}
+                for item in entry["resources"]:
+                    path = item["uri"]
+                    if not path.startswith(prefix):
+                        raise ValueError("resource outside Skill")
+                    relative = urllib.parse.unquote(path[len(prefix):], errors="strict")
+                    if len(relative.encode()) > 1024 or len(relative.split("/")) > 32:
+                        raise ValueError("oversize Skill resource path")
+                    if (not relative or any(part in ("", ".", "..") or part.startswith(".") for part in relative.split("/"))
+                            or "\\" in relative or ":" in relative or any(ord(c) < 32 or ord(c) == 127 for c in relative)):
+                        raise ValueError("invalid Skill resource path")
+                    parts = relative.split("/")
+                    for index in range(len(parts)):
+                        component = "/".join(parts[:index + 1])
+                        normalized = unicodedata.normalize("NFC", component).casefold()
+                        kind = (component, index == len(parts) - 1)
+                        if spellings.setdefault(normalized, kind) != kind:
+                            raise ValueError("ambiguous Skill resource path")
+                    size, digest = item["size"], item["digest"]
+                    if (relative in files or len(files) >= 512 or not isinstance(size, int) or size < 0 or
+                            not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)):
+                        raise ValueError("invalid Skill manifest")
+                    files[relative] = (path, size, digest[7:])
+                if "SKILL.md" not in files or sum(f[1] for f in files.values()) > SKILL_MAX_BYTES:
+                    raise ValueError("incomplete or oversize Skill")
+                catalog[name] = files
+            cursor = page.get("nextCursor")
+            if not cursor:
+                break
+            if cursor in seen or len(seen) >= 128:
+                raise ValueError("invalid Skill pagination")
+            seen.add(cursor)
+        if not catalog and not self.allow_empty:
+            raise ValueError("empty or inaccessible Skill group")
+        return catalog
+
+    def read_file(self, uri):
+        items = self.rpc("resources/read", uri=uri)["contents"]
+        if len(items) != 1 or items[0].get("uri") != uri:
+            raise ValueError("mismatched Skill resource")
+        item = items[0]
+        return item["text"].encode("utf-8") if "text" in item else base64.b64decode(item["blob"], validate=True)
+
+
+def install_skill_catalog(hub, root, destinations):
+    """Switch a verified snapshot atomically. Directory links never replace personal skills."""
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (root / "sync.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        catalog = hub.catalog()
+        manifest = [(name, path, size, digest) for name, files in sorted(catalog.items())
+                    for path, (_, size, digest) in sorted(files.items())]
+        if len(manifest) > 4096 or sum(f[2] for f in manifest) > 64 * 1024 * 1024:
+            raise ValueError("Skill group exceeds node budget")
+        revision = hashlib.sha256(json.dumps(manifest, separators=(",", ":")).encode()).hexdigest()
+        versions = root / "releases"
+        versions.mkdir(exist_ok=True)
+        release, current = versions / revision, root / "current"
+        if current.exists() and not current.is_symlink():
+            raise ValueError("current Skill path belongs to another installation")
+        previous = current.resolve() if current.is_symlink() else None
+        if previous and (previous.parent != versions or not re.fullmatch("[0-9a-f]{64}", previous.name)):
+            raise ValueError("invalid managed Skill pointer")
+        if release.is_symlink():
+            raise ValueError("invalid managed Skill release")
+        if release.is_dir():
+            expected = {name + "/" + path for name, path, _, _ in manifest}
+            actual = set()
+            for item in release.rglob("*"):
+                if item.is_symlink() or not (item.is_dir() or item.is_file()):
+                    raise ValueError("unexpected Skill snapshot entry")
+                if item.is_file():
+                    actual.add(item.relative_to(release).as_posix())
+            if expected != actual:
+                raise ValueError("local Skill snapshot differs from manifest")
+        for dest in destinations:
+            dest.mkdir(parents=True, exist_ok=True)
+            for name in catalog:
+                link = dest / name
+                if os.path.lexists(link) and not (link.is_symlink() and os.readlink(link) == str(current / name)):
+                    raise ValueError("existing personal Skill: " + name)
+        with tempfile.TemporaryDirectory(dir=root) as tmp:
+            stage = Path(tmp) / "snapshot"
+            stage.mkdir()
+            for name, path, size, digest in manifest:
+                cached = (release if release.is_dir() else previous)
+                existing = cached / name / path if cached else None
+                data = None
+                if (existing and existing.is_file() and existing.resolve() == existing
+                        and existing.stat().st_size == size):
+                    data = existing.read_bytes()
+                if data is None or hashlib.sha256(data).hexdigest() != digest:
+                    if release.exists():
+                        raise ValueError("local Skill snapshot failed verification")
+                    data = hub.read_file(catalog[name][path][0])
+                    if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+                        raise ValueError("Skill digest mismatch")
+                if not release.exists():
+                    output = stage / name / path
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    output.write_bytes(data)
+            if not release.exists():
+                stage.rename(release)
+            for dest in destinations:
+                for name in catalog:
+                    link = dest / name
+                    if not link.is_symlink():
+                        link.symlink_to(current / name)
+            if previous != release:
+                pointer = Path(tmp) / "current"
+                pointer.symlink_to(release)
+                pointer.replace(current)
+        for dest in destinations:
+            for link in dest.iterdir():
+                if link.name not in catalog and link.is_symlink() and os.readlink(link) == str(current / link.name):
+                    link.unlink()
+        for old in versions.iterdir():
+            if previous != release and old not in (release, previous) and re.fullmatch("[0-9a-f]{64}", old.name) and not old.is_symlink():
+                shutil.rmtree(old)
+        return {"version": revision, "count": len(catalog), "checked_at": int(time.time()), "ok": True}
+
+
+def sync_hub_skills():
+    global _skill_status
+    config_file = default_config_path().with_name("skill-hub.json")
+    if not config_file.exists():
+        _skill_status = {}
+        return {}
+    try:
+        config = json.loads(config_file.read_text())
+        home = Path.home()
+        profile = lambda env, default: Path(os.environ.get(env) or home / default) / "skills"
+        folders = {"codex": home / ".agents/skills", "kimi": home / ".agents/skills",
+                   "claude": profile("CLAUDE_CONFIG_DIR", ".claude"), "hermes": profile("HERMES_HOME", ".hermes")}
+        providers = config["providers"]
+        if not isinstance(providers, list) or not providers or any(p not in folders for p in providers):
+            raise ValueError("invalid Skill providers")
+        _skill_status = install_skill_catalog(SkillHub(config), home / ".local/share/tmuxweb/skills",
+                                             {folders[p] for p in providers})
+    except Exception as exc:
+        # Never include URL, response bodies or credentials in a heartbeat.
+        active = Path.home() / ".local/share/tmuxweb/skills/current"
+        saved = {}
+        try:
+            if active.is_symlink():
+                target = active.resolve()
+                if target.parent == active.parent / "releases" and re.fullmatch("[a-f0-9]{64}", target.name):
+                    saved = {"version": target.name, "count": sum(p.is_dir() for p in target.iterdir())}
+        except OSError:
+            pass
+        _skill_status = dict(saved, ok=False, checked_at=int(time.time()), error=type(exc).__name__)
+        log("Skill Hub sync failed: " + type(exc).__name__)
+    return _skill_status
+
+
+def skill_sync_loop(stop_event):
+    while not stop_event.is_set():
+        sync_hub_skills()
+        if stop_event.wait(600):
+            break
+
+
 def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
                       stop_event: threading.Event | None,
                       watcher: HostWatcher | None = None,
@@ -2728,6 +2969,8 @@ def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
              "cursor": sequencer.cursor,
              "agent": {"version": VERSION, "hostname": socket.gethostname(),
                        "tmux": resolver.path}}
+    if _skill_status:
+        hello["skill_sync"] = _skill_status
     conn.send_text(json.dumps(hello))
 
     inbox: queue.Queue = queue.Queue()
@@ -2855,7 +3098,8 @@ def _serve_connection(conn: WSConnection, token: str, resolver: TmuxResolver,
                 elif not pool.submit((item, None)):
                     log("dropping message: connection closing")
             if time.monotonic() - last_heartbeat >= HEARTBEAT_INTERVAL:
-                conn.send_text(json.dumps({"type": "heartbeat", "at": int(time.time())}))
+                conn.send_text(json.dumps({"type": "heartbeat", "at": int(time.time()),
+                                           **({"skill_sync": _skill_status} if _skill_status else {})}))
                 last_heartbeat = time.monotonic()
     finally:
         pool.shutdown()
@@ -2895,6 +3139,8 @@ def run_daemon(server: str, token: str, *, tmux: str | None = None,
     # dropped WebSocket, and it stops only when the daemon stops.
     watcher = HostWatcher(resolver)
     watcher.start()
+    if default_config_path().with_name("skill-hub.json").exists():
+        threading.Thread(target=skill_sync_loop, args=(stop_event,), daemon=True, name="skill-hub").start()
     # The sequencer likewise lives for the life of the daemon, across
     # reconnects: the cursor it reports in hello is what lets the
     # server tell a clean resume from a lost batch.
@@ -3359,6 +3605,7 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--tmux", default=None)
     install.add_argument("--config", default=None)
 
+    sub.add_parser("sync-skills", help="sync the configured MCPHub Skill group once")
     status = sub.add_parser("status", help="show whether the agent is running")
     status.add_argument("--config", default=None)
 
@@ -3392,6 +3639,10 @@ def _load_daemon_config(args: argparse.Namespace) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "sync-skills":
+        result = sync_hub_skills()
+        print(json.dumps(result))
+        return 0 if result.get("ok") else 1
     if args.command == "install":
         return cmd_install(args)
     if args.command == "status":

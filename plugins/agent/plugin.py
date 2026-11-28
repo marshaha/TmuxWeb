@@ -323,6 +323,7 @@ class AgentPlugin(Plugin):
             # compare it with what this server sent, and record a gap
             # when batches went unanswered (see note_hello).
             registry.note_hello(host_id, version, hello.get("cursor"))
+            registry.note_skill_sync(host_id, hello.get("skill_sync"))
             try:
                 store.touch_agent_last_seen(host_id, now)
             except (KeyError, AttributeError, OSError, ValueError):
@@ -342,6 +343,7 @@ class AgentPlugin(Plugin):
                     if not isinstance(message, dict):
                         continue
                     if message.get("type") == "heartbeat":
+                        registry.note_skill_sync(host_id, message.get("skill_sync"))
                         try:
                             store.touch_agent_last_seen(host_id, time.time())
                         except (KeyError, AttributeError, OSError, ValueError):
