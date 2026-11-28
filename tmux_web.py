@@ -1712,6 +1712,27 @@ def local_process_table(ttl: float = 10.0) -> dict:
     return dict(table)
 
 
+def remote_skill_names(transport, provider, cwd):
+    """Read the same metadata over pinned SSH if the agent is busy."""
+    command = "python3 -I - " + shlex.quote(provider) + " " + shlex.quote(cwd)
+    source = Path(agent_skills.__file__).read_bytes()
+
+    def read(runner, timeout):
+        result = runner.run(command, input_bytes=source, timeout=timeout, resolve_tmux=False)
+        if result.returncode:
+            raise RuntimeError("remote skill discovery failed")
+        return json.loads(result.stdout)
+
+    try:
+        return read(transport, 6)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        if (not isinstance(transport, SSHRunner) or transport.used_transports != {"agent"}
+                or not transport.host_key_pinned()):
+            raise
+        LOGGER.info("Trying pinned SSH for Skill discovery on host %s", transport.host.get("id"))
+        return read(SSHRunner(transport.host), 8)
+
+
 def pane_metadata(pane: dict) -> dict:
     """Annotate a pane with its provider and what TmuxWeb can do with it.
 
@@ -6113,12 +6134,7 @@ def create_app(
         if transport is tmux:
             names = agent_skills.catalog(provider, cwd)
         else:
-            command = "python3 -I - " + shlex.quote(provider) + " " + shlex.quote(cwd)
-            result = transport.run(command, input_bytes=Path(agent_skills.__file__).read_bytes(),
-                                   timeout=6, resolve_tmux=False)
-            if result.returncode:
-                raise RuntimeError("remote skill discovery failed")
-            names = json.loads(result.stdout)
+            names = remote_skill_names(transport, provider, cwd)
         return {"provider": provider, "skills": names}
 
     async def skills_for(pane_ref):
@@ -6148,7 +6164,7 @@ def create_app(
                 if len(skill_cache) > 256:
                     skill_cache.popitem(last=False)
                 return data
-            except (RuntimeError, OSError, ValueError, federation.FederationError) as exc:
+            except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired, federation.FederationError) as exc:
                 raise HTTPException(503, "无法读取此主机的技能目录") from exc
             finally:
                 skill_reads.pop(key, None)

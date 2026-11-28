@@ -1918,6 +1918,24 @@ class TmuxWebTests(unittest.TestCase):
             result = self.client.get(f"/api/panes/{host['id']}~%259/skills")
         self.assertEqual(result.json(), {"provider":"claude", "skills":["managed"]})
 
+    def test_skill_read_falls_back_only_after_agent_failure_with_a_pinned_host(self):
+        from unittest import mock
+        runner = tmux_web.SSHRunner({"id": "node", "host_key": "fixture", "hostname": "unreachable"})
+        with mock.patch.object(runner, "run", side_effect=RuntimeError("busy")), \
+                mock.patch.object(tmux_web.SSHRunner, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, stdout=b'["managed"]')) as ssh:
+            for used, pinned in [({"agent", "ssh"}, True), ({"agent"}, False), ({"agent"}, True)]:
+                runner.used_transports = used
+                with mock.patch.object(runner, "host_key_pinned", return_value=pinned):
+                    if used == {"agent"} and pinned:
+                        self.assertEqual(tmux_web.remote_skill_names(runner, "codex", "/work"), ["managed"])
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "busy"):
+                            tmux_web.remote_skill_names(runner, "codex", "/work")
+            ssh.assert_called_once()
+            self.assertFalse(ssh.call_args.kwargs["resolve_tmux"])
+            self.assertIn(b"def catalog(", ssh.call_args.kwargs["input_bytes"])
+
     def test_version_endpoint_requires_auth(self):
         self.assertEqual(self.client.get("/api/version").status_code, 401)
 

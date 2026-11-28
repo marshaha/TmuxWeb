@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.23.2
+
+- Read remote Skill metadata over the same host’s pinned SSH connection when the agent cannot finish a scan.
+
 ## 0.23.1
 
 - Reuse the fresh sidebar pane listing for remote Skill discovery. When a first slash-menu request encounters a busy node, retry once while the menu is still open.
