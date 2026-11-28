@@ -427,7 +427,8 @@ class ProtocolTests(unittest.TestCase):
     def test_initialize_and_tools_list(self):
         init = self.server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         self.assertEqual(init["result"]["protocolVersion"], mcp_relay.PROTOCOL_VERSION)
-        self.assertEqual(init["result"]["serverInfo"]["name"], "tmuxweb-relay")
+        self.assertEqual(init["result"]["serverInfo"], {"name":"tmuxweb-relay",
+                         "version":Path(mcp_relay.__file__).with_name("VERSION").read_text().strip()})
         listing = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
         self.assertEqual(set(tools), {"list_projects", "create_project", "join_project", "leave_project", "remove_project_member", "list_agents", "ask_agent", "send_agent", "run_command",

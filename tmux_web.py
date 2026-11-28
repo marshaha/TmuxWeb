@@ -5221,7 +5221,7 @@ def create_app(
         if method == "initialize":
             return reply({"protocolVersion": MCP_PROTOCOL_VERSION,
                           "capabilities": {"tools": {"listChanged": False}},
-                          "serverInfo": {"name": "tmuxweb-relay", "version": "1.0.0"}})
+                          "serverInfo": {"name": "tmuxweb-relay", "version": RELEASE_VERSION}})
         if method == "ping":
             return reply({})
         if method == "tools/list":
@@ -5868,7 +5868,7 @@ def create_app(
 
     @app.get("/api/panes/{pane_id}/transcript")
     async def transcript(request: Request, pane_id: str, limit: int = 200, refresh: int = 0,
-                         sig: str = "", since: str = "", wait: float = 0, sent_relay: str = ""):
+                         sig: str = "", since: str = "", wait: float = 0, sent_relay: str = "", cached_session: str = ""):
         """Structured messages; ``sig`` lets an unchanged poll return a stub.
 
         The console polls this while a turn runs.  Sending 300 messages of JSON
@@ -5896,7 +5896,7 @@ def create_app(
         resend_state = resend_manager.status(pane_id)
         is_local = pane.get("host_id") in (None, "localhost")
         wait_seconds = 0.0 if refresh else clamp_long_poll_wait(wait)
-        if not refresh and is_local:
+        if not refresh and is_local and not cached_session:
             hit = transcript_sig_cache.get(pane_id)
             if hit:
                 try:
@@ -5923,6 +5923,8 @@ def create_app(
                                                   resend=resend_state)
         try:
             data = await read_pane_transcript(pane_id, pane, limit, bool(refresh))
+            if cached_session and cached_session != data.get("session_id"):
+                sig = since = ""
             messages = data.get("messages") or []
             routes = await asyncio.to_thread(calls_store.match_receipts, pane["id"], data)
             # Only this console's call ledger can supply a return link in its own namespace.

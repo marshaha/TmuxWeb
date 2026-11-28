@@ -909,6 +909,10 @@ Each agent configures `http://<host>:3300/mcp` once; adding another MCP server (
 service) happens in the hub and no client changes — `/mcp/<server>` exposes a single server with unprefixed tool
 names for drop-in use.
 
+Register the gateway in each harness user profile. To audit a connection, call `initialize` and `tools/list` on the endpoint that profile uses. The direct relay reports the TmuxWeb release from v0.22.2 onward. The gateway reports its own version. TmuxWeb advertises `listChanged: false`, so an open client may need to list tools again or reconnect. Each host agent has its own installation and version, available at `/api/hosts/{id}/agent-status`.
+
+Remote Skills require an administrator to import and publish them and a client that supports the extension. Local `SKILL.md` directories have their own deployment. [MCPHub Skills over MCP](https://github.com/samanhappy/mcphub/blob/main/docs/features/skills.mdx)
+
 **Probe directly, never through a proxy**: on a host with an HTTP proxy configured, the proxy happily
 answers 200/502 for *other* networks and hides the address that is really reachable (measured on ctyun:
 direct to the tailnet `100.123.123.3` works, direct to the LAN does not — and the proxy is exactly the

@@ -591,6 +591,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
       }
       view.more=result.more;
       view.offset+=rows.length;
+      if(!previous)rememberRelayAnchor(view);
       renderTranscriptNow();
       if(position)restoreAnchor(position);
     }catch(error){
@@ -1936,21 +1937,69 @@ import {marked} from '/assets/marked.esm.js?v=1';
   }
   function rememberTranscript(id,d){if(!id||!d||!Array.isArray(d.messages))return;const previous=cachedTranscript(id)||{};
     const panePid=state.panes.find(p=>p.id===id)?.pane_pid||'';
-    state.transcripts.set(id,{...previous,messages:d.messages,provider:d.provider||previous.provider||'',
+    const session=d.session_id||'';
+    const relay=previous.session===session && previous.panePid===panePid?previous.relay:null;
+    state.transcripts.set(id,{...previous,session,relay,limit:state.transcriptLimit,model:d.model||'',hasMore:!!d.has_more,
+      messages:d.messages,provider:d.provider||previous.provider||'',
       mode:d.mode||'transcript',panePid,mtime:d.mtime,sig:d.signature||transcriptSignature(d),at:Date.now()});
     if(window.TmuxPaneCache)TmuxPaneCache.saveTranscript(id,{messages:d.messages,panePid,provider:d.provider||'',mtime:d.mtime,sig:d.signature||transcriptSignature(d)});
     // keep the working set small: eight panes is more than a human switches between
     if(state.transcripts.size>8){const stale=[...state.transcripts.entries()].filter(([key])=>key!==id&&key!==state.selected)
       .sort((a,b)=>a[1].at-b[1].at);for(const [key] of stale.slice(0,state.transcripts.size-8))state.transcripts.delete(key);}}
+  function rememberRelayAnchor(view){
+    const entry=state.transcripts.get(view.pane);
+    if(!entry?.session || (!view.call && !view.history))return;
+    entry.relay={id:view.id,side:view.side,at:Date.now(),call:view.call,previous:view.previous,
+      following:view.following,history:view.history,more:view.more,offset:view.offset};
+  }
+  function recentTranscript(id){
+    const entry=state.transcripts.get(id);
+    const pid=state.panes.find(p=>p.id===id)?.pane_pid||'';
+    return entry?.session && entry.sig && entry.panePid===pid && Date.now()-entry.at<=60000?entry:null;
+  }
+  function paintCachedRelay(view){
+    const entry=recentTranscript(view.pane);
+    if(!entry)return null;
+    const incoming=view.side==='received' && entry.messages.some(m=>m.relay_receipt?.id===view.id);
+    if(!incoming){
+      const saved=entry.relay;
+      if(!saved || saved.id!==view.id || saved.side!==view.side || Date.now()-saved.at>60000)return null;
+      if(saved.call)setRelaySender(view,saved.call,saved.previous,saved.following);
+      if(senderSlot(view,entry.messages)<0){
+        if(!saved.history)return null;
+        Object.assign(view,{history:saved.history,more:saved.more,offset:saved.offset});
+      }
+    }
+    state.transcriptLimit=entry.limit;
+    state.transcriptSession=entry.session;
+    state.transcriptSig=entry.sig;
+    state.transcriptMtime=entry.mtime;
+    state.transcriptProvider=entry.provider;
+    state.hasMore=entry.hasMore;
+    if(entry.model){modelState.current=entry.model;$('model-current').textContent=modelLabel();}
+    $('transcript').classList.add('active');
+    renderTranscriptNow(entry.messages);
+    syncEarlierBar();
+    syncProgress();
+    return entry;
+  }
   function savePaneUi(id){if(!id)return;const entry=cachedTranscript(id);if(entry){entry.scrollTop=scroll.scrollTop;entry.stick=state.stick;}state.drafts.set(id,input.value);}
   function restorePaneUi(id){const entry=cachedTranscript(id);if(!entry)return;
     requestAnimationFrame(()=>{const top=entry.scrollTop==null?scroll.scrollHeight:entry.scrollTop;
       if(state.selected===id && !relayView){scroll.scrollTop=top;state.stick=entry.stick!==false;}});}
   function paintCachedTranscript(id){const entry=cachedTranscript(id);if(!entry||!entry.messages||!entry.messages.length)return false;
+    const pid=state.panes.find(p=>p.id===id)?.pane_pid;
+    if(pid && entry.panePid && entry.panePid!==pid)return false;
     term.textContent='';$('transcript').classList.add('active');$('message-shell').hidden=true;
     clientTrace(null,`cache:${entry.messages.length}`,id);
     state.transcriptMtime=entry.mtime;state.transcriptSig=entry.sig;state.transcriptProvider=entry.provider||'';renderTranscriptNow(entry.messages);
-    state.needsFullTranscript=true;
+    const recent=recentTranscript(id);
+    if(recent){
+      state.transcriptLimit=recent.limit;
+      state.transcriptSession=recent.session;
+      state.hasMore=recent.hasMore;
+      syncEarlierBar();
+    }else state.needsFullTranscript=true;
     $('status-dot').className='status-dot live';$('status-text').textContent=`${entry.provider||'缓存'} · 更新中…`;
     restorePaneUi(id);return true;}
   // ---- 下载线路：浏览器 → 本机这一跳（TS / 局域网 / CF）；点子节点 pane 时也切换它的线路
@@ -2024,7 +2073,10 @@ import {marked} from '/assets/marked.esm.js?v=1';
     const inspect=$('inspect-interaction');
     (inspect.hidden ? ($('live-tail').hidden ? $('chat-mode') : $('live-tail-toggle')) : inspect).focus();
   };
+  let paneSelection=0;
   function selectPane(id,{remember=true}={}){
+    paneSelection++;
+    state.needsFullTranscript=false;
     if(relayView && id!==relayView.pane && (remember || id))leaveRelayView();
     if(remember){state.wantedPane=null;rememberPane(id);}
     if(state.selected!==id){closeInputComplete();window.TmuxChatSearch?.close();}closeChatReply();if(state.selected!==id)collapsedTailPane=null;if(state.selected&&state.selected!==id){savePaneUi(state.selected);clearAttachments();}syncAttachments();
@@ -2037,9 +2089,12 @@ import {marked} from '/assets/marked.esm.js?v=1';
     else if(relayView?.pane===id){
       state.stick=false;
       state.transcriptLimit=TRANSCRIPT_PAGE_MAX;
-      connectTranscript(id,true);
+      connectTranscript(id,true,paintCachedRelay(relayView));
     }
-    else if(paintCachedTranscript(id)){clientTrace(null,'sel:cached',id);refreshTranscript(id);}  // instant paint, then revalidate
+    else if(paintCachedTranscript(id)){clientTrace(null,'sel:cached',id);
+      const cached=recentTranscript(id);
+      if(cached)connectTranscript(id,true,cached);
+      else refreshTranscript(id);}  // instant paint, then revalidate
     else {connectTranscript(id,true);}
     clientTrace(null,'sel:connected',id);
     resetPaneModels(id);
@@ -2394,6 +2449,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     return idleFor<30000?1500:idleFor<300000?3000:idleFor<600000?5000:10000;
   }
   async function refreshTranscript(id,{force=false,refresh=false}={}){if(state.selected!==id||state.mode!=='chat')return;
+    const selection=paneSelection;
     const fullFirst=!!state.needsFullTranscript;state.needsFullTranscript=false;
     const limit=state.transcriptLimit;
     // 缓存只画了最后 40 条，全量补齐后内容会变长：读者原本就在最底部，补完也得还在底部
@@ -2405,7 +2461,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     try{const sig=!fullFirst&&state.transcriptSig?`&sig=${encodeURIComponent(state.transcriptSig)}`:'';
       const since=sinceId?`&since=${encodeURIComponent(sinceId)}`:'';
       const wait=longPoll?'&wait=20':'';
-      const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${limit}${refresh?'&refresh=1':''}${sig}${since}${wait}`);if(state.selected!==id||state.mode!=='chat'||state.transcriptLimit!==limit)return;
+      const d=await api(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${limit}${refresh?'&refresh=1':''}${sig}${since}${wait}`);if(selection!==paneSelection||state.selected!==id||state.mode!=='chat'||state.transcriptLimit!==limit)return;
       // 后台重试的状态也走这条轮询：必须在 unchanged 早退之前同步，否则
       // transcript 不动时气泡永远收不到终态。
       if(!d.error && (d.messages?.length || (d.unchanged && state.transcriptMessages.length)))window.TmuxNeedsYouInbox?.viewed(id);
@@ -2438,11 +2494,11 @@ import {marked} from '/assets/marked.esm.js?v=1';
         if(changed){state.lastTranscriptChange=Date.now();state.transcriptSig=signature;state.transcriptMtime=d.mtime;applyTranscriptUpdate(id,d.messages,follow||first,!d.waiting);syncProgress();}
         else {syncProgress();}
       }
-    }catch(e){state.transcriptFailures=(state.transcriptFailures||0)+1;
+    }catch(e){if(selection!==paneSelection)return;state.transcriptFailures=(state.transcriptFailures||0)+1;
       if(state.transcriptFailures>=2&&state.selected===id&&state.mode==='chat')showError(e.message);
       nextDelay=500;}
     finally{
-      scheduleTranscriptPoll(id,nextDelay==null?transcriptPollDelay():nextDelay);}}
+      if(selection===paneSelection)scheduleTranscriptPoll(id,nextDelay==null?transcriptPollDelay():nextDelay);}}
   const tailNav=$('live-keys-nav'), keyboardToggle=$('live-keyboard-toggle');
   function expandTailKeys(open){
     keyboardToggle.setAttribute('aria-expanded',String(open));
@@ -2697,12 +2753,30 @@ import {marked} from '/assets/marked.esm.js?v=1';
     },delay);
   }
 
-  async function connectTranscript(id,allowFallback=false){const view=relayView;
+  async function connectTranscript(id,allowFallback=false,cached=null){const view=relayView,selection=paneSelection;
     const senderParam=view?.side==='sent'?'&sent_relay='+encodeURIComponent(view.id):'';
+    const validate=cached?'&sig='+encodeURIComponent(cached.sig)+'&cached_session='+encodeURIComponent(cached.session):'';
     if(!cachedTranscript(id))showLoadCard(id);$('message-shell').hidden=true;$('transcript').classList.add('active');$('status-dot').className='status-dot live';$('status-text').textContent='读取 transcript…';
-    try{const d=await apiProgress(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit||TRANSCRIPT_PAGE}${senderParam}`,updateLoadCard);if(view!==relayView||state.selected!==id||state.mode!=='chat')return;
+    try{const d=await apiProgress(`/api/panes/${encodeURIComponent(id)}/transcript?limit=${state.transcriptLimit||TRANSCRIPT_PAGE}${senderParam}${validate}`,updateLoadCard);if(selection!==paneSelection||view!==relayView||state.selected!==id||state.mode!=='chat')return;
       syncQuestionNotice(id,d);
       state.waiting=!!d.waiting;state.waitingSince=d.waiting_since||null;
+      if(cached && d.unchanged){
+        cached.at=Date.now();
+        syncProgress();
+        scheduleTranscriptPoll(id,transcriptPollDelay());
+        return;
+      }
+      let position=null;
+      if(cached && view){
+        // A changed ledger or session must establish the anchor against fresh rows.
+        const target=document.activeElement,viewport=scroll.getBoundingClientRect();
+        const rect=target?.classList.contains('relay-location') && target.getBoundingClientRect();
+        const atAnchor=rect && rect.bottom>viewport.top && rect.top<viewport.bottom;
+        if(!atAnchor && d.session_id===cached.session)position=firstVisibleMessage();
+        cached.relay=null;
+        Object.assign(view,{history:null,sender:null,call:null,previous:null,following:null,offset:0,pending:atAnchor});
+        if(d.session_id!==cached.session)view.pending=true;
+      }
       state.hasMore=!!d.has_more;syncEarlierBar();
       if(!d.messages||!d.messages.length){
         state.transcriptSession=d.session_id;
@@ -2717,14 +2791,17 @@ import {marked} from '/assets/marked.esm.js?v=1';
       const placement=d.relay_sender;
       if(view?.side==='sent' && placement?.call?.id===view.id && placement.call.parent===id){
         setRelaySender(view,placement.call,d.messages[placement.index-1],d.messages[placement.index]);
+        rememberRelayAnchor(view);
       }
       renderTranscriptNow(d.messages);syncProgress();
+      if(position)restoreAnchor(position);
       if(view?.pending)readRelayHistory(view);
       const entry=cachedTranscript(id);const top=entry&&entry.scrollTop!=null?entry.scrollTop:scroll.scrollHeight;
-      if(!view)requestAnimationFrame(()=>{if(!relayView && state.selected===id){scroll.scrollTop=top;state.stick=entry?.stick!==false;}});
+      if(!view && !cached)requestAnimationFrame(()=>{if(!relayView && state.selected===id){scroll.scrollTop=top;state.stick=entry?.stick!==false;}});
       state.transcriptTimer=setTimeout(()=>refreshTranscript(id),1000);
     }catch(e){
-      if(state.selected!==id||state.mode!=='chat')return;
+      if(selection!==paneSelection||view!==relayView||state.selected!==id||state.mode!=='chat')return;
+      if(cached){showError('更新失败，正在重试');retryTranscript(id,3000);return;}
       if(isAgentPane(id)){showError('');showTranscriptNotice(id,`读取 transcript 失败：${e.message}。会自动重试。`);retryTranscript(id,5000);return;}
       $('transcript').classList.remove('active');if(allowFallback){showError('');connect(id);}else showError(e.message);
     }finally{if(state.selected===id)syncLiveTail();}}

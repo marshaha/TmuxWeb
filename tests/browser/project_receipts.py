@@ -25,6 +25,8 @@ def main():
                 unplaced = False
                 latest = 80
                 context_reads = []
+                held_validations = []
+                delay_validation = False
                 def reply(i):
                     return {'id':f'reply-{i}','role':'assistant','text':f'后续消息 {i}','timestamp':i+3}
                 shared = '多主机测试'
@@ -90,6 +92,13 @@ def main():
                               'has_more':len(rows)>limit}
                         if not incoming and not unplaced and 'sent_relay' in parse_qs(u.query):
                             data['relay_sender']={'call':call,'index':1}
+                        params=parse_qs(u.query)
+                        data['signature']=f"{count}|{len(data['messages'])}|{unplaced}"
+                        if params.get('cached_session')==['active'] and params.get('sig')==[data['signature']]:
+                            data={'unchanged':True,'signature':data['signature'],'waiting':False}
+                            if delay_validation:
+                                held_validations.append((r,data))
+                                return
                     elif path in ('/', '/home') or path.startswith('/assets/'):
                         response=client.get(path)
                         return r.fulfill(status=response.status_code,body=response.content,content_type=response.headers['content-type'])
@@ -163,6 +172,16 @@ def main():
                 assert page.evaluate('window.originalChatDocument===true')
                 assert sent.evaluate("el=>el.previousElementSibling.dataset.id==='q' && el.nextElementSibling.dataset.id==='reply-0'")
                 assert len(page.context.pages)==1
+                delay_validation=True
+                for link,target in [(sent.locator('a'),anchor),(back,sent)]:
+                    link.click()
+                    expect(target).to_be_focused()
+                    expect(target).to_be_in_viewport()
+                    assert held_validations, 'cache must paint before conditional validation returns'
+                    pending,stub=held_validations.pop()
+                    pending.fulfill(json=stub)
+                    expect(page.locator('.composer')).to_be_visible()
+                delay_validation=False
                 historical=True
                 sent.locator('a').click()
                 expect(anchor).to_be_in_viewport()

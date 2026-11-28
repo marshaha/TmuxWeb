@@ -3021,6 +3021,12 @@ class TmuxWebTests(unittest.TestCase):
         small = self.client.get(path, params={"side":"received", "size":37, "offset":40}).json()
         self.assertEqual((small["session_id"], small["messages"][0]["id"], len(small["messages"])),
                          (session, "40", 37))
+        live_path = "/api/panes/%255/transcript"
+        latest = self.client.get(live_path).json()
+        validation = {"sig":latest["signature"], "cached_session":session}
+        self.assertTrue(self.client.get(live_path, params=validation).json()["unchanged"])
+        validation["cached_session"] = "rotated-session"
+        self.assertIn("messages", self.client.get(live_path, params=validation).json())
         request = {"sent_relay":call_id, "limit":800}
         placement = self.client.get("/api/panes/%255/transcript", params=request).json()["relay_sender"]
         self.assertEqual((placement["call"]["id"], placement["index"]), (call_id, 1))
@@ -3233,7 +3239,7 @@ class TmuxWebTests(unittest.TestCase):
         init = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         self.assertEqual(init.status_code, 200)
         self.assertEqual(init.json()["result"]["protocolVersion"], "2025-06-18")
-        self.assertEqual(init.json()["result"]["serverInfo"]["name"], "tmuxweb-relay")
+        self.assertEqual(init.json()["result"]["serverInfo"], {"name":"tmuxweb-relay", "version":tmux_web.RELEASE_VERSION})
 
         listing = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()
         self.assertEqual({tool["name"] for tool in listing["result"]["tools"]},

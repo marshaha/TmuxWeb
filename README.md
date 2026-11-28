@@ -883,6 +883,10 @@ printf 'y\ny\n' | hermes mcp add tmuxweb --url http://host:8787/mcp --auth heade
 `http://<本机>:3300/mcp`，以后新增别的 MCP（fetch、数据库、别的内部服务）在 hub 里加一条即可，
 客户端不用改；只想给某个服务器单独开路由时用 `/mcp/<server>`（工具名保持原样）。
 
+各节点的 harness 要先在对应用户配置中注册网关。排查版本时，对实际连接的端点调用 `initialize` 和 `tools/list`：直连 `/mcp` 从 v0.22.2 起报告 TmuxWeb 发布版本，聚合端点报告 MCPHub 自身版本。TmuxWeb 当前声明 `listChanged: false`，已打开的客户端可能需要重新列出工具或重连。host agent 独立安装、单独更新，可在 `/api/hosts/{id}/agent-status` 查看版本。
+
+如需远程发布 Skill，管理员需显式导入并启用 Skill，客户端也要支持相应扩展。本地 `SKILL.md` 目录仍需单独部署。[MCPHub Skills over MCP](https://github.com/samanhappy/mcphub/blob/main/docs/features/skills.mdx)
+
 **探测一律测直连**：有 HTTP 代理的机器上，代理会把别的网段答成 200/502，把真正可达的地址
 掩盖掉（实测 ctyun：直连 tailnet `100.123.123.3` 通、直连局域网不通，而代理恰好反过来）。
 所以 `relay-endpoint.sh` / `install_relay_mcp.sh` 的探测都带 `--noproxy '*'`，按 tailnet →

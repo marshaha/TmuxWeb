@@ -55,6 +55,10 @@ SEND_CHUNK_RETRIES = 3
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "tmuxweb-relay"
+try:
+    SERVER_VERSION = Path(__file__).with_name("VERSION").read_text(encoding="ascii").strip()
+except OSError:
+    SERVER_VERSION = "unknown"  # standalone script outside a numbered release
 DEFAULT_ASK_TIMEOUT = 240
 
 
@@ -866,7 +870,7 @@ class MCPServer:
                 result = {
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": SERVER_NAME, "version": "1.0.0"},
+                    "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 }
             elif method == "ping":
                 result = {}

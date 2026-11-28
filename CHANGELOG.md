@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.22.2
+
+- Reuse verified relay locations and recent live Chat transcripts on return visits, then validate the session and transcript signature in the background.
+- Report the installed TmuxWeb release in the HTTP and stdio MCP handshake.
+
 ## 0.22.1
 
 - Follow relay links inside the live Chat timeline. The composer, live terminal, and incoming messages stay available while reading from the matched turn. Older turns load inline as you scroll.
