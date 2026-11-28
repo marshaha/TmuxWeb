@@ -5924,8 +5924,25 @@ def create_app(
         try:
             data = await read_pane_transcript(pane_id, pane, limit, bool(refresh))
             messages = data.get("messages") or []
+            routes = await asyncio.to_thread(calls_store.match_receipts, pane["id"], data)
+            # Only this console's call ledger can supply a return link in its own namespace.
+            if routes or any("relay_receipt" in m for m in messages):
+                annotated = []
+                for m in messages:
+                    if "relay_receipt" in m:
+                        m = {k: v for k, v in m.items() if k != "relay_receipt"}
+                    route = routes.get(str(m.get("id")))
+                    if route and m.get("role") == "user":
+                        m = dict(m, relay_receipt=route)
+                    annotated.append(m)
+                data = dict(data, messages=annotated)
             signature = "%s|%s|%s" % (data.get("mtime"), len(messages),
                                      messages[-1].get("id") if messages else "")
+            route_tag = ""
+            if routes:
+                route_tag = "relay-" + hashlib.sha256(
+                    json.dumps(routes, sort_keys=True).encode()).hexdigest()[:16] + ";"
+                signature = route_tag + signature
             last_role, last_user_ts = waiting_facts(messages)
             source_path = data.get("path")
             if source_path and is_local:
@@ -5952,7 +5969,8 @@ def create_app(
                 if held:
                     stub["long_poll"] = True
                 return stub
-            if since and not refresh:
+            same_routes = sig.startswith(route_tag) if route_tag else not sig.startswith("relay-")
+            if since and not refresh and same_routes:
                 anchor = since.rsplit("|", 1)[-1] if "|" in since else since
                 ids = [str(item.get("id")) for item in messages]
                 if anchor in ids:
@@ -6520,6 +6538,38 @@ def create_app(
             return None
     calls_store = agent_calls.AgentCallStore(
         calls_db or os.environ.get("TMUX_WEB_CALLS_DB") or str(BASE_DIR / "agent_calls.db"))
+
+    async def check_recipient(child, limit):
+        try:
+            pane = await asyncio.to_thread(pane_or_404, child)
+            data = await read_pane_transcript(child, pane, limit, False)
+            if await asyncio.to_thread(calls_store.match_receipts, child, data):
+                transcript_sig_cache.pop(child, None)
+        except (HTTPException, TmuxError, RuntimeError, OSError, ValueError, federation.FederationError):
+            LOGGER.debug("Unable to check relay receipt for %s", child, exc_info=True)
+
+    async def receipt_worker():
+        # Group concurrent sends to the same pane. Old undelivered calls back off,
+        # while a new send to that pane makes it eligible again immediately.
+        checked = {}
+        while True:
+            try:
+                pending = await asyncio.to_thread(calls_store.pending_recipients)
+                now = time.time()
+                checked = {child: at for child, at in checked.items() if child in pending}
+                due = []
+                for child, created in pending.items():
+                    last = checked.get(child, 0)
+                    interval = 10 if now-created < 180 else 300
+                    if last < created or now-last >= interval:
+                        due.append((last, child, 64 if now-created < 180 else 300))
+                batch = sorted(due)[:3]
+                for _, child, _ in batch:
+                    checked[child] = now
+                await asyncio.gather(*(check_recipient(child, limit) for _, child, limit in batch))
+            except Exception:
+                LOGGER.exception("Unable to reconcile pending relay receipts")
+            await asyncio.sleep(5)
     queue_store = message_queue.QueueStore(queue_db or os.environ.get("TMUX_WEB_QUEUE_DB", "")
                                            or str(BASE_DIR / "message_queue.db"))
 
@@ -8835,8 +8885,13 @@ def create_app(
         except Exception:                              # noqa: BLE001
             LOGGER.exception("queue: reset_inflight failed")
         app.state.queue_worker = asyncio.create_task(queue_worker_loop())
+        app.state.receipt_worker = asyncio.create_task(receipt_worker())
 
     async def stop_queue_worker():
+        receipt_task = getattr(app.state, "receipt_worker", None)
+        if receipt_task is not None:
+            receipt_task.cancel()
+            await asyncio.gather(receipt_task, return_exceptions=True)
         task = getattr(app.state, "queue_worker", None)
         if task is None:
             return

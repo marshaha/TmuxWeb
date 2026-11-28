@@ -1,7 +1,9 @@
 """子 agent 调用图：父子边、状态、环形剪枝，以及 relay ask 真的会落一条记录。"""
 import sys
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -29,6 +31,32 @@ class AgentCallStoreTests(unittest.TestCase):
         self.assertEqual(done.reply, "三点")
         self.assertGreaterEqual(done.duration, 0)
         self.assertEqual(self.store.open_calls(), [])
+
+    def test_only_a_unique_new_user_turn_confirms_delivery(self):
+        text = "[#1 → #2] " + "long message " * 40
+        call = self.store.start("%1", "%2", text, "message")
+        self.store.progress(call.id, "submitted")
+        message = {"id": "m", "timestamp": call.created+1, "role": "user", "text": text}
+        def check(msg, child="%2"):
+            return self.store.match_receipts(child, {"session_id":"s", "messages":[msg]})
+        for changes in ({"role":"assistant"}, {"text":text[:280]}, {"timestamp":call.created-5},
+                        {"timestamp":None}, {"text":text+" extra"}):
+            self.assertEqual(check(dict(message, **changes)), {})
+        self.assertEqual(check(message, "%3"), {})
+        self.assertEqual(self.store.get(call.id).received_at, 0)
+        self.assertEqual(check(message)["m"]["id"], call.id)
+        self.assertEqual(check(dict(message, text="reused ordinal")), {})
+        reader = agent_calls.AgentCallStore(self.store.path)
+        self.addCleanup(reader.close)
+        self.assertEqual(reader.outbound("%1")[0]["received_at"], message["timestamp"])
+        self.assertEqual(reader.pending_recipients(), {})
+        second = self.store.start("%3", "%2", text, "message")
+        self.store.progress(second.id, "submitted")
+        self.assertEqual(check(message)["m"]["id"], call.id)
+        self.assertEqual(self.store.get(second.id).received_at, 0)
+        third = self.store.start("%4", "%2", text, "message")
+        self.store.progress(third.id, "submitted")
+        self.assertEqual(check(dict(message, id="ambiguous", timestamp=third.created+1)), {})
 
     def test_only_terminal_statuses_can_finish_a_call(self):
         call = self.store.start("%1", "%2", "hi")
@@ -118,6 +146,23 @@ class AgentCallApiTests(unittest.TestCase):
 
         tree = self.client.get("/api/agents/tree", params={"pane": "%99"}).json()
         self.assertEqual(tree["children"][0]["child"], "%4")
+
+    def test_worker_confirms_message_before_receiver_opens_chat(self):
+        text = "[#99 → #4] review"
+        sent = self.client.post("/api/relay/message", json={"target":"%4","caller":"%99","text":text}).json()
+        stamp = time.time()
+        data = {"session_id":"s","mtime":1,"messages":[{"id":"turn","text":text,"role":"user","timestamp":stamp}]}
+        with patch.object(self.tmux, "transcript", return_value=data), self.client:
+            deadline = time.monotonic()+12
+            while time.monotonic()<deadline:
+                item = self.client.get("/api/agents/calls/"+sent["call"]).json()
+                if item.get("received_at"):
+                    break
+                time.sleep(.1)
+            self.assertEqual(item.get("received_at"), stamp)
+            received = self.client.get("/api/panes/%254/transcript").json()["messages"][0]
+            self.assertEqual(received["relay_receipt"], {"id":sent["call"], "child":"%4", "parent":"%99"})
+            self.assertEqual(self.tmux.sent, [("%4",text,True)])
 
     def test_a_failed_ask_is_recorded_as_an_error_not_dropped(self):
         response = self.client.post("/api/relay/ask", json={

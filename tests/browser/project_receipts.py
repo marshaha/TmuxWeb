@@ -20,6 +20,7 @@ def main():
             remote=dict(base,id='robo~%4',host_id='robo',number=125,session='build',window_name='review',pane_id='%4')
             workers=[dict(base,id=f'%{n}',number=n,title=f'分页测试会话 {n}') for n in range(300,345)]
             for width in (1440,1180,1024,900,834,768,390):
+                delivered = False
                 shared = '多主机测试'
                 extra = '移动端回归-' + 'abcdefghijkl' * 3
                 failed_removals=[]
@@ -40,6 +41,7 @@ def main():
                               'prompt':{'source':'script_status','kind':'notice','title':'脚本请求人工处理','read_only':True,
                                         'options':[],'revision':'test'}}],
                               'outbound':[{'parent':base['id'],'child':remote['id'],'status':'running','progress':'blocked',
+                                           'received_at': time.time() if delivered else 0,
                                            'question':'[#4 → #125] 检查超时原因 <RTL> '+('abcdefgh'*24),'created':1}]}
                     elif path=='/api/pane-projects':
                         if r.request.method == 'POST':
@@ -58,6 +60,9 @@ def main():
                         data={'pane':pane,'projects':groups[pane]}
                     elif path.endswith('/transcript'):
                         data={'provider':'codex','messages':[{'id':'q','role':'user','text':'测试'}]}
+                        if remote['id'] in path:
+                            data['messages'][0].update(text='[#4 → #125] 检查超时原因 <RTL> '+('abcdefgh'*24),
+                                relay_receipt={'id':'receipt','parent':base['id'],'child':remote['id']})
                     elif path in ('/', '/home') or path.startswith('/assets/'):
                         response=client.get(path)
                         return r.fulfill(status=response.status_code,body=response.content,content_type=response.headers['content-type'])
@@ -93,6 +98,21 @@ def main():
                         && rect(card).left>=0 && rect(card).right<=innerWidth+1
                         && [card,...card.querySelectorAll('p,footer,a')].every(el=>el.scrollWidth<=el.clientWidth+1);
                 }"""), width
+                receipt.get_by_role('link').click()
+                inbound=page.locator('#transcript-messages .incoming-relay')
+                expect(inbound.locator('.receipt-route')).to_have_text('#4 → #125')
+                expect(inbound.locator('.receipt-body')).to_have_text('检查超时原因 <RTL> '+('abcdefgh'*24))
+                back=inbound.get_by_role('link',name='#4 返回发送方 Chat')
+                expect(back).to_have_attribute('href','/?pane=%254')
+                assert inbound.evaluate("""el=>{
+                    const card=el.querySelector('article'),link=el.querySelector('footer a');
+                    const r=link.getBoundingClientRect(),b=card.getBoundingClientRect();
+                    return b.left>=0 && b.right<=innerWidth+1 && r.right<=b.right && b.right-r.right<18
+                      && b.bottom-r.bottom<18 && card.scrollWidth<=card.clientWidth+1;
+                }"""), width
+                delivered=True
+                back.click()
+                expect(receipt.locator('footer span')).to_have_text('目标会话已接收')
                 page.locator('#menu').click()
                 page.get_by_role('button',name='主机',exact=True).click()
                 expect(page.get_by_role('button',name='新建项目')).to_be_hidden()

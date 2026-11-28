@@ -465,10 +465,26 @@ import {marked} from '/assets/marked.esm.js?v=1';
     }:null;
     window.TmuxPrompt?.showStatus(currentInteraction());
   }
+  function relayPaneLabel(id){
+    const pane=state.panes.find(item=>item.id===id);
+    return pane?.number?paneLabel(pane):id;
+  }
+  function relayCard(call, message, status, incoming=false, plain=false){
+    const from=relayPaneLabel(call.parent||state.selected),to=relayPaneLabel(call.child);
+    let body=message.text||'';
+    const prefix=body.match(/^\s*\[\s*([^\]\s]+)\s*→\s*([^\]\s]+)\s*\]\s*/u);
+    if(prefix && prefix[1]===from && prefix[2]===to)body=body.slice(prefix[0].length);
+    const peer=incoming?call.parent:call.child;
+    const action=incoming?'返回发送方 Chat':'打开目标 Chat';
+    const content=incoming
+      ? `<div class="receipt-body">${plain?htmlEscape(body):userBubbleHtml({...message,text:body})}</div>`
+      : `<p>${esc(body)}</p>`;
+    return `<article class="relay-receipt"><div class="receipt-route"><span>${esc(from)}</span> → <span>${esc(to)}</span></div>
+      ${content}<footer><span>${esc(status)}</span><a data-relay-chat href="/?pane=${encodeURIComponent(peer)}" aria-label="${esc(incoming?from:to)} ${action}">${action}</a></footer></article>`;
+  }
   function showOutbound(calls, panes, observedAt){
     const box=$('relay-receipts');
     const html=calls.map(call=>{
-      const target=state.panes.find(p=>p.id===call.child);
       const live=panes.find(p=>p.id===call.child);
       const recent=observedAt>=call.created&&Date.now()/1000-observedAt<90;
       const phase=({submitted:'已提交 · 尚未确认接收',pasted:'已粘贴',unsubmitted:'已粘贴 · 回车未确认',
@@ -479,19 +495,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
       else if(call.status==='ok'&&call.source!=='message')label='已回复';
       else if(recent&&live?.needs_input&&['submitted','working','blocked'].includes(call.progress))label='目标会话等待人工处理';
       else if(call.source==='message'&&call.progress==='submitted'&&recent&&live?.status==='busy')label='已提交 · 目标会话运行中';
-      const parentId=call.parent||state.selected;
-      const parent=state.panes.find(p=>p.id===parentId);
-      const from=parent?.number?paneLabel(parent):parentId;
-      const to=target?.number?paneLabel(target):call.child;
-      let question=call.question||'';
-      // Some senders already include the route. Remove only the matching leading label.
-      const prefix=question.match(/^\s*\[\s*([^\]\s]+)\s*→\s*([^\]\s]+)\s*\]\s*/u);
-      if(prefix && prefix[1]===from && prefix[2]===to)question=question.slice(prefix[0].length);
-      return `<article class="relay-receipt">
-        <div class="receipt-route"><span>${esc(from)}</span> → <span>${esc(to)}</span></div>
-        <p>${esc(question)}</p>
-        <footer><span>${esc(label)}</span><a href="/?pane=${encodeURIComponent(call.child)}" aria-label="${esc(to)} 打开目标 Chat">打开目标 Chat</a></footer>
-      </article>`;
+      if(call.received_at)label='目标会话已接收';
+      return relayCard(call,{text:call.question},label);
     }).join('');
     box.hidden=!html;
     if(box.dataset.sig!==html){box.dataset.sig=html;box.innerHTML=html;}
@@ -1587,7 +1592,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   // 附件预览、票据、静态资源都是应用自己的地址，别当成"本地文件"去 rewrite
   const APP_URL_RE=/^\/(api|t|assets)\//;
   function rewriteLocalLinks(root,baseCwd){if(!root)return;
-    root.querySelectorAll('a[href]').forEach(link=>{if(link.dataset.upload==='1')return;
+    root.querySelectorAll('a[href]').forEach(link=>{if(link.dataset.upload==='1'||link.hasAttribute('data-relay-chat'))return;
       const href=link.getAttribute('href')||'';if(APP_URL_RE.test(href))return;
       const next=fileLinkHref(href,baseCwd);if(next===href)return;
       link.setAttribute('href',next);link.setAttribute('target','_blank');link.setAttribute('rel','noopener noreferrer');
@@ -2045,6 +2050,10 @@ import {marked} from '/assets/marked.esm.js?v=1';
     }
     const clock=clockTime(message.timestamp);
     const copy=`<div class="msg-actions">${clock?`<span class="msg-time">${esc(clock)}</span>`:''}${msgResendButton(message)}<button class="msg-copy" type="button" data-msg-copy="${esc(message.id)}" title="复制整条消息（含代码/表格源码）"><svg class="ico"><use href="#i-copy"/></svg><span class="btn-label">复制全部</span></button></div>`;
+    if(message.role==='user' && message.relay_receipt){
+      const card=relayCard(message.relay_receipt,message,'已接收',true,plain);
+      return `<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap incoming-relay">${card}${copy}</div></article>`;
+    }
     const text=plain?`<pre class="plain-message">${htmlEscape(String(message.text||''))}</pre>`:null;
     return message.role==='user'
       ? `<article class="chat-message user" data-id="${esc(message.id)}"><div class="chat-user-wrap"><div class="chat-bubble">${text??userBubbleHtml(message)}</div>${receipt?`<span class="message-delivery sent">${receipt}</span>`:''}${copy}</div></article>`
@@ -2137,7 +2146,9 @@ import {marked} from '/assets/marked.esm.js?v=1';
       if(index===formal.length)break;
       const message=formal[index],id=String(message.id);
       const receipt=receipts.get(id)||'';
-      const revision=[message.role,message.timestamp,message.text,receipt];
+      const revision=[message.role,message.timestamp,message.text,receipt,message.relay_receipt?.id,
+        message.relay_receipt && relayPaneLabel(message.relay_receipt.parent),
+        message.relay_receipt && relayPaneLabel(message.relay_receipt.child)];
       append(id,revision,()=>transcriptBubble(message,false,receipt),()=>transcriptBubble(message,true,receipt));
     }
     for(const [id,item] of before){

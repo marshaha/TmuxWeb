@@ -18,15 +18,56 @@ two agents decide to consult each other.
 """
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 import threading
 import time
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 
 STATUSES = ("running", "ok", "timeout", "error")
 MAX_TEXT = 20_000
+RECEIPT_WINDOW = 600
+
+
+def message_time(value):
+    try:
+        seconds = float(value)
+        if seconds > 1e12:
+            seconds /= 1000
+    except (ValueError, TypeError, OverflowError):
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                return None
+            seconds = stamp.timestamp()
+        except (ValueError, OverflowError, OSError):
+            return None
+    return seconds if math.isfinite(seconds) and seconds > 0 else None
+
+
+def receipt_updates(rows, turns):
+    """A call and a recorded user turn must each have exactly one candidate."""
+    by_text = defaultdict(list)
+    for row in rows:
+        by_text[row["question"].strip().replace("\r\n", "\n")].append(row)
+    candidates = defaultdict(list)
+    for mid, (text, ts) in turns.items():
+        matches = []
+        for row in by_text.get(text, ()):
+            # Some harnesses record only whole seconds.
+            earliest = int(row["created"]) if ts.is_integer() else row["created"]
+            if earliest <= ts <= row["created"] + RECEIPT_WINDOW:
+                matches.append(row)
+        for row in matches:
+            candidates[row["id"]].append((mid, ts, len(matches)))
+    for call_id, matches in candidates.items():
+        mid, ts, count = matches[0]
+        if len(matches) == 1 and count == 1:
+            yield mid, ts, call_id
 
 
 @dataclass
@@ -43,6 +84,7 @@ class Call:
     error: str
     progress: str = ""
     deadline: float = 0
+    received_at: float = 0
 
     @property
     def duration(self) -> float:
@@ -61,6 +103,8 @@ class Call:
             data["reply"] = self.reply
         else:
             data["reply_preview"] = self.reply[:280]
+        if self.received_at:
+            data["received_at"] = self.received_at
         return data
 
 
@@ -93,6 +137,14 @@ class AgentCallStore:
                 self._connection.execute("ALTER TABLE calls ADD COLUMN progress TEXT NOT NULL DEFAULT ''")
             if "deadline" not in columns:
                 self._connection.execute("ALTER TABLE calls ADD COLUMN deadline REAL NOT NULL DEFAULT 0")
+            if "received_at" not in columns:
+                self._connection.execute("ALTER TABLE calls ADD COLUMN received_at REAL NOT NULL DEFAULT 0")
+                self._connection.execute("ALTER TABLE calls ADD COLUMN receipt_session TEXT")
+                self._connection.execute("ALTER TABLE calls ADD COLUMN receipt_message TEXT")
+            self._connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS calls_receipt ON "
+                                     "calls(child, receipt_session, receipt_message) WHERE received_at>0")
+            self._connection.execute("CREATE INDEX IF NOT EXISTS calls_unreceived ON calls(created, child) "
+                                     "WHERE source='message' AND parent!='' AND received_at=0 AND progress='submitted'")
             self._connection.execute("CREATE INDEX IF NOT EXISTS calls_parent ON calls (parent, created)")
             self._connection.execute("CREATE INDEX IF NOT EXISTS calls_child ON calls (child, created)")
             self._connection.commit()
@@ -122,6 +174,67 @@ class AgentCallStore:
                 "SELECT * FROM calls WHERE parent=? AND created>=? ORDER BY created DESC LIMIT ?",
                 (parent, time.time()-86400, limit)).fetchall()
         return [self._call(row).as_dict() for row in rows]
+
+    def pending_recipients(self):
+        with self._lock:
+            return dict(self._connection.execute(
+                "SELECT child, MAX(created) FROM calls WHERE source='message' AND parent!='' "
+                "AND progress='submitted' AND received_at=0 AND created>=? GROUP BY child",
+                (time.time()-86400,)))
+
+    def match_receipts(self, child, transcript):
+        """Correlate whole user turns, then return verified routes for this transcript page."""
+        session = transcript.get("session_id")
+        if not session:
+            return {}
+        with self._lock:
+            if not self._connection.execute(
+                    "SELECT 1 FROM calls WHERE child=? AND source='message' AND parent!='' LIMIT 1",
+                    (child,)).fetchone():
+                return {}
+        turns = {}
+        for message in transcript.get("messages") or ():
+            if message.get("role") != "user" or message.get("id") is None:
+                continue
+            ts = message_time(message.get("timestamp"))
+            if ts is not None:
+                text = str(message.get("text") or "").strip().replace("\r\n", "\n")
+                turns[str(message["id"])] = (text, ts)
+        if not turns:
+            return {}
+        slots = ",".join("?" for _ in turns)
+        lookup = ("SELECT receipt_message, question, received_at, parent, child, id FROM calls "
+                  f"WHERE child=? AND receipt_session=? AND received_at>0 AND receipt_message IN ({slots})")
+        keys = (child, session, *turns)
+
+        def linked():
+            result = {}
+            for row in self._connection.execute(lookup, keys):
+                mid = row["receipt_message"]
+                # Some legacy adapters generate IDs from a row's position in the page.
+                if turns[mid] == (row["question"].strip().replace("\r\n", "\n"), row["received_at"]):
+                    result[mid] = {"parent": row["parent"], "child": row["child"], "id": row["id"]}
+            return result
+
+        with self._lock, self._connection:
+            existing = linked()
+            fresh = {mid: turn for mid, turn in turns.items() if mid not in existing}
+            if not fresh:
+                return existing
+            times = [ts for _, ts in fresh.values()]
+            rows = self._connection.execute(
+                "SELECT id, question, created FROM calls WHERE child=? AND source='message' AND parent!='' "
+                "AND progress='submitted' AND received_at=0 AND created BETWEEN ? AND ? LIMIT 513",
+                (child, min(times)-RECEIPT_WINDOW, max(times)+1)).fetchall()
+            if not rows or len(rows) > 512:
+                return existing
+            changes = [(session, mid, ts, call_id) for mid, ts, call_id in receipt_updates(rows, fresh)]
+            if not changes:
+                return existing
+            self._connection.executemany(
+                "UPDATE OR IGNORE calls SET receipt_session=?, receipt_message=?, received_at=? "
+                "WHERE id=? AND received_at=0", changes)
+            return linked()
 
     def finish(self, call_id: str, reply: str = "", status: str = "ok",
                error: str = "") -> Call | None:
@@ -210,4 +323,4 @@ class AgentCallStore:
         return Call(id=row["id"], parent=row["parent"], child=row["child"],
                     question=row["question"], reply=row["reply"], status=("timeout" if row["status"] == "running" and 0 < row["deadline"] < time.time()-15 else row["status"]),
                     source=row["source"], created=row["created"], finished=row["finished"],
-                    error=row["error"], progress=row["progress"], deadline=row["deadline"])
+                    error=row["error"], progress=row["progress"], deadline=row["deadline"], received_at=row["received_at"])

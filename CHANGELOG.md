@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.21.0
+
+- Confirm relay messages against user turns in the recipient transcript and persist the receipt. The sender can see delivery even if nobody opens the recipient Chat.
+- Render matched incoming messages in their original Chat position with the relay route and a link back to the sender.
+
 ## 0.20.1
 
 - Distinguish outgoing relay receipts in Chat with a green dashed frame, a color-coded sender and destination, and delivery status at the lower left.
