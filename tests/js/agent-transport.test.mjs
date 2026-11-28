@@ -44,10 +44,10 @@ test('transportOf treats a missing or unknown transport as SSH', () => {
   assert.equal(transportOf({ transport: 'pigeon' }), 'ssh');
 });
 
-test('transportLabel shows SSH / Agent', () => {
+test('transportLabel shows SSH / 节点连接器', () => {
   assert.equal(transportLabel({}), 'SSH');
   assert.equal(transportLabel({ transport: 'ssh' }), 'SSH');
-  assert.equal(transportLabel({ transport: 'agent' }), 'Agent');
+  assert.equal(transportLabel({ transport: 'agent' }), '节点连接器');
 });
 
 test('formatTime renders a unix timestamp as local HH:MM:SS', () => {
@@ -68,7 +68,7 @@ test('agentStatusText shows online, offline with last-seen time, or never connec
 });
 
 test('lastTransportText shows which transport the last operation used, or nothing', () => {
-  assert.equal(lastTransportText({ last_transport: 'agent' }), '上次走 Agent');
+  assert.equal(lastTransportText({ last_transport: 'agent' }), '上次使用节点连接器');
   assert.equal(lastTransportText({ last_transport: 'ssh' }), '上次走 SSH');
   assert.equal(lastTransportText({ last_transport: null }), '');
   assert.equal(lastTransportText({}), '');
@@ -76,8 +76,8 @@ test('lastTransportText shows which transport the last operation used, or nothin
 
 test('agentInstallLabel shows 重新安装 only while the agent is online', () => {
   assert.equal(agentInstallLabel({ agent_online: true }), '重新安装');
-  assert.equal(agentInstallLabel({ agent_online: false }), '安装 agent');
-  assert.equal(agentInstallLabel({}), '安装 agent');
+  assert.equal(agentInstallLabel({ agent_online: false }), '安装节点连接器');
+  assert.equal(agentInstallLabel({}), '安装节点连接器');
 });
 
 test('manualInstallCommand splices the tailnet server, program URL and token into the exact command', () => {
@@ -154,7 +154,7 @@ test('install and manual install hit the agreed agent endpoints with no token lo
   assert.doesNotMatch(hostsPage, /console\.log/, 'the page must never log (a token must never reach the console)');
 });
 
-test('clicking 安装 agent / 手动安装 hands the host id from data-install-agent / data-manual-install to the installer', async () => {
+test('clicking 安装节点连接器 / 手动安装 hands the host id from data-install-agent / data-manual-install to the installer', async () => {
   // The rendered install buttons carry data-install-agent / data-manual-install
   // and NO data-id (only the transport/move buttons have data-id). The list
   // click handler must read the id from the button's own attribute: reading
@@ -207,10 +207,10 @@ test('clicking 安装 agent / 手动安装 hands the host id from data-install-a
 });
 
 test('add form and edit dialog both carry a transport select', () => {
-  assert.ok(hostsPage.includes('<select id="transport"><option value="ssh">SSH</option><option value="agent">Agent</option></select>'), 'add form transport select defaults to SSH');
+  assert.ok(hostsPage.includes('<select id="transport"><option value="ssh">SSH</option><option value="agent">节点连接器</option></select>'), 'add form transport select defaults to SSH');
   assert.ok(hostsPage.includes('id="transport-hint"'), 'add form must hint that agent install happens after save');
-  assert.ok(hostsPage.includes('保存后需在列表里安装 agent，对端程序才会回拨'), 'add form hint text');
-  assert.ok(hostsPage.includes('<select id="edit-transport"><option value="ssh">SSH</option><option value="agent">Agent</option></select>'), 'edit dialog transport select');
+  assert.ok(hostsPage.includes('保存主机后，在列表中安装节点连接器。它会从远端连接到 TmuxWeb'), 'add form hint text');
+  assert.ok(hostsPage.includes('<select id="edit-transport"><option value="ssh">SSH</option><option value="agent">节点连接器</option></select>'), 'edit dialog transport select');
   const saveAt = hostsPage.indexOf('async function saveEdit()');
   assert.notEqual(saveAt, -1, 'missing saveEdit');
   const saveBody = hostsPage.slice(saveAt, hostsPage.indexOf("$('edit-cancel')", saveAt));

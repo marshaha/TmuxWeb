@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.23.3
+
+- Label the host connection program 节点连接器 in host management and sidebar search progress.
+
 ## 0.23.2
 
 - Read remote Skill metadata over the same host’s pinned SSH connection when the agent cannot finish a scan.
