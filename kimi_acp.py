@@ -6,83 +6,11 @@ import os
 from pathlib import Path
 import re
 import secrets
-import socket
-import stat
-import struct
-import subprocess
 import sys
 import threading
 
 
-MAX_FRAME = 4 * 1024 * 1024
-MAX_FORM = 48 * 1024
-
-
-def endpoint(pid):
-    if not re.fullmatch(r"[1-9][0-9]{0,9}", str(pid)):
-        raise ValueError("invalid pane PID")
-    return Path.home() / ".local/state/tmuxweb/kimi-acp" / (str(pid) + ".sock")
-
-
-def available(pid):
-    try:
-        target = os.readlink(endpoint(pid))
-        owner = re.fullmatch(r"owner-([1-9][0-9]*)[.]sock", target)
-        return bool(owner and is_owner_process(pid, int(owner[1])))
-    except (ValueError,OSError,IndexError):
-        return False
-
-
-def peer(sock):
-    pid, uid, _ = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-    if uid != os.getuid():
-        raise ValueError("different user")
-    return pid
-
-
-def foreground_owner(pane_pid, owner):
-    def process(pid):
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-    pane, process_info = process(pane_pid), process(owner)
-    # session, controlling tty and foreground process group of this exact pane.
-    return (pane[4] != "0" and pane[3:5] == process_info[3:5]
-            and pane[5] == process_info[2] and int(pane[5]) > 0)
-
-
-def is_owner_process(pane_pid, owner):
-    argv = Path(f"/proc/{owner}/cmdline").read_bytes().split(b"\0")
-    return os.fsencode(Path(__file__).resolve()) in argv and foreground_owner(pane_pid,owner)
-
-
-def query(pid, pane, action=None):
-    sending = isinstance(action,dict) and "prompt" in action
-    absent = {"status":"absent" if sending else "closed"}
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(2)
-            try:
-                sock.connect(str(endpoint(pid)))
-            except (ConnectionRefusedError, FileNotFoundError):
-                return absent
-            owner_pid = peer(sock)
-            if not is_owner_process(pid, owner_pid):
-                return absent
-            sock.sendall(encode({"pane": pane, "action": action}))
-            with sock.makefile("rb") as stream:
-                reply = json.loads(stream.readline(MAX_FORM * 2))
-            return reply if isinstance(reply, dict) else {"status":"unavailable"}
-    except (OSError, ValueError, IndexError):
-        return {"status":"unavailable" if sending else "closed"}
-
-
-def encode(value):
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
-
-
-def string(value, limit=8192):
-    if not isinstance(value, str) or not value.strip() or len(value) > limit:
-        raise ValueError("missing or oversized text")
-    return value
+from chat_ipc import MAX_FORM, MAX_FRAME, available, encode, foreground_owner, listener_paths, peer, query, string
 
 
 def present(method, params):
@@ -201,22 +129,7 @@ class Owner:
 
 
 async def run(binary):
-    pane = os.environ.get("TMUX_PANE","")
-    if not re.fullmatch(r"%[0-9]+", pane):
-        raise ValueError("需要在 tmux pane 中启动 Kimi Chat")
-    pid = subprocess.check_output(["tmux","display-message","-p","-t",pane,"#{pane_pid}"],text=True).strip()
-    path = endpoint(pid)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    meta = path.parent.lstat()
-    if not stat.S_ISDIR(meta.st_mode) or meta.st_uid != os.getuid() or meta.st_mode & 0o077:
-        raise ValueError("Kimi ACP socket 目录需要归当前用户所有，权限为 0700")
-    if not foreground_owner(pid, os.getpid()):
-        raise ValueError("启动进程与 pane 前台不匹配")
-    if available(pid):
-        raise ValueError("此 pane 已有 Kimi ACP 会话")
-    path.unlink(missing_ok=True)
-    listener = path.with_name(f"owner-{os.getpid()}.sock")
-    listener.unlink(missing_ok=True)
+    pane, pid, path, listener = listener_paths("kimi")
     child = await asyncio.create_subprocess_exec(binary,"acp",stdin=asyncio.subprocess.PIPE,
                                                  stdout=asyncio.subprocess.PIPE,limit=MAX_FRAME,
                                                  env=dict(os.environ,KIMI_CODE_NO_AUTO_UPDATE="1"))

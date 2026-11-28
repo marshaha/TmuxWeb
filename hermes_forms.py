@@ -4,6 +4,8 @@ This file also runs as a standalone helper in Hermes' own Python environment.
 The current foreground Hermes process and its terminal breadcrumb establish session
 identity. A native hook can corroborate it. Capture and history never supply answers.
 """
+from collections import OrderedDict
+import threading
 import asyncio
 import hashlib
 import json
@@ -60,13 +62,10 @@ def binding(pane, pid, home):
         rows = db.execute("SELECT session,request,title,detail FROM waits WHERE pane=? AND pid=? "
                           "AND provider='hermes' AND title!='' AND at>? LIMIT 2",
                           (pane, pid, time.time() - 3600)).fetchall()
-    if rows:
-        if len(rows) != 1 or rows[0][2] not in ("需要回答问题", "等待操作审批"):
-            return None
-        if native and rows[0][0] and native[0] != rows[0][0]:
-            return None
-        if all(rows[0][:2]):
-            return (native[0], native[1] + ":" + rows[0][1], *rows[0][2:])
+    if any(row[0] and row[0] != native[0] for row in rows):
+        return None
+    # Only the foreground CLI and the gateway own identity. Sibling hook
+    # notifications may arrive or clear while another request stays open.
     return native
 
 
@@ -81,7 +80,11 @@ def project(snapshot, notice, pane, pid):
     if len(requests) + len(prompts) != 1:
         return None
     generation = snapshot.get("execution_generation")
-    if requests and title in ("需要回答问题", "live"):
+    wire_approval = bool(requests and requests[0].get("method") == "approval")
+    if requests and (not isinstance(requests[0].get("params"), dict)
+                     or requests[0]["params"].get("session_id", session) != session):
+        return None
+    if requests and not wire_approval and title in ("需要回答问题", "live"):
         item = requests[0]
         if item.get("method") != "clarify":
             return None
@@ -107,14 +110,19 @@ def project(snapshot, notice, pane, pid):
         if params.get("answers"):
             return None
         rid, kind = item.get("id"), "clarify"
-    elif prompts and title in ("等待操作审批", "live"):
-        item = prompts[0]
-        if (item.get("kind") != "approval" or type(generation) is not int or
-                item.get("execution_generation") != generation or "edit" in item or
+    elif (prompts or wire_approval) and title in ("等待操作审批", "live"):
+        item = requests[0]["params"] if wire_approval else prompts[0]
+        if wire_approval:
+            if not short(item.get("request_id"), 160):
+                return None
+        elif (item.get("kind") != "approval" or type(generation) is not int
+              or item.get("execution_generation") != generation):
+            return None
+        if ("edit" in item or
                 not short(item.get("command"), 4096) or
                 not {"once", "deny"}.issubset(item.get("choices") or [])):
             return None
-        rid, kind = item.get("prompt_id"), "approval"
+        rid, kind = (requests[0]["id"] if wire_approval else item.get("prompt_id")), "approval"
         fields = [{"id": "decision", "title": item["command"], "choices": ["仅允许这一次", "拒绝"],
                    "multi": False, "other": False}]
         if item.get("description"):
@@ -125,9 +133,10 @@ def project(snapshot, notice, pane, pid):
         return None
     if not short(rid, 160):
         return None
-    identity = [pane, pid, session, event, rid, generation, kind, fields]
+    identity = [pane, pid, session, event, snapshot.get("replay_epoch"), rid, generation, kind, fields,
+                item.get("request_id") if wire_approval else None]
     revision = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    return {"revision": revision, "kind": kind, "questions": fields}, rid
+    return {"revision": revision, "kind": kind, "questions": fields, "wire_approval": wire_approval}, rid
 
 
 def decode_answers(fields, answers):
@@ -188,30 +197,80 @@ class Receipts:
         return None
 
 
-async def exchange(client, notice, pane, pid, submission, still_current, receipts=None):
+def project_queue(snapshot, notice, pane, pid):
+    requests = snapshot.get("open_requests", [])
+    prompts = snapshot.get("prompts", [])
+    result = []
+    seen = set()
+    for source, items, id_key in (("open_requests", requests, "id"), ("prompts", prompts, "prompt_id")):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            rid = item.get(id_key)
+            if not short(rid, 160):
+                continue
+            if (source, rid) in seen:
+                return []
+            seen.add((source, rid))
+            current = project({"execution_generation": snapshot.get("execution_generation"),
+                               "replay_epoch": snapshot.get("replay_epoch") or snapshot.get("epoch"), source: [item]},
+                              notice, pane, pid)
+            if current:
+                form, _ = current
+                form["request_id"] = rid
+                result.append(current)
+    return result
+
+
+async def event_page(client, session, cursor):
+    previous = cursor.get("epoch")
+    def page_args(seq):
+        if cursor.get("canonical"):
+            return {"last_sequence": seq, **({"replay_epoch": previous} if previous and seq else {})}
+        return {"last_seen": seq}
+    page = await client.rpc("session.events.since", session_id=session, **page_args(cursor.get("seq", 0)))
+    epoch = page.get("replay_epoch") or page.get("epoch")
+    if previous and previous != epoch:
+        page = await client.rpc("session.events.since", session_id=session, **page_args(0))
+        epoch = page.get("replay_epoch") or page.get("epoch")
+    seq = page.get("last_sequence", page.get("latest_seq"))
+    if type(seq) is int and seq >= 0 and short(epoch, 160):
+        cursor.update(seq=seq, epoch=epoch, canonical="last_sequence" in page)
+    return page
+
+
+async def exchange(client, notice, pane, pid, submission, still_current, receipts=None, cursor=None):
     session = notice[0]
     # A read of the *live* stream fails for an unknown session. Never resume a
     # historical session merely because an old hook row survived its process.
-    live = await client.rpc("session.events.since", session_id=session, last_sequence=0)
+    cursor = {} if cursor is None else cursor
+    live = await event_page(client, session, cursor)
     pending = live.get("open_requests", [])
-    if pending and (len(pending) != 1 or pending[0].get("method") != "clarify"):
+    if "latest_seq" in live and "last_sequence" not in live:
+        # This gateway includes every actionable request in the event result.
+        # Its session.resume attaches a transport, so reads must avoid it.
+        snapshot = live
+    else:
+        if not pending:
+            if notice[2] == "需要回答问题":
+                return {"status": "closed"}
+            active = await client.rpc("session.active_list", current_session_id=session)
+            if not any(row.get("id") == session and row.get("status") == "waiting"
+                       for row in active.get("sessions", [])):
+                return {"status": "closed"}
+        snapshot = await client.rpc("session.resume", session_id=session, omit_messages=True)
+    if snapshot.get("session_id", session) != session:
         return {"status": "closed"}
-    if not pending:
-        if notice[2] == "需要回答问题":
-            return {"status": "closed"}
-        active = await client.rpc("session.active_list", current_session_id=session)
-        if not any(row.get("id") == session and row.get("status") == "waiting"
-                   for row in active.get("sessions", [])):
-            return {"status": "closed"}
-    snapshot = await client.rpc("session.resume", session_id=session, omit_messages=True)
-    current = project(snapshot, notice, pane, pid)
-    if current is None or not still_current():
+    queue = project_queue(snapshot, notice, pane, pid)
+    if not queue or not still_current():
         return {"status": "closed"}
-    form, rid = current
     if submission is None:
-        return {"status": "open", "form": form}
-    if form["revision"] != submission.get("revision"):
+        forms = [form for form, _ in queue]
+        return {"status": "open", "form": forms[0], "forms": forms}
+    match = next((pair for pair in queue if pair[0]["revision"] == submission.get("revision")), None)
+    if not match:
         return {"status": "closed"}
+    form, rid = match
     try:
         answers = decode_answers(form["questions"], submission.get("answers"))
     except ValueError:
@@ -220,28 +279,33 @@ async def exchange(client, notice, pane, pid, submission, still_current, receipt
         existing = receipts.access("claim")
         if existing:
             return existing
-    result = await respond(client, session, snapshot, form, rid, submission, answers)
+    result = await respond(client, session, snapshot, form, rid, submission, answers, cursor)
     if receipts:
         receipts.access("finish", result["status"])
     return result
 
 
-async def respond(client, session, snapshot, form, rid, submission, answers):
+async def respond(client, session, snapshot, form, rid, submission, answers, cursor):
     if form["kind"] == "approval":
         choice = "once" if submission["answers"]["decision"]["indices"] == [0] else "deny"
-        result = await client.rpc("approval.respond", session_id=session, prompt_id=rid,
-                                  execution_generation=snapshot["execution_generation"], choice=choice)
-        return {"status": "resolved" if result.get("status") == "resolved" else "closed"}
+        if not form["wire_approval"]:
+            result = await client.rpc("approval.respond", session_id=session, prompt_id=rid,
+                                      execution_generation=snapshot["execution_generation"], choice=choice)
+            return {"status": "resolved" if result.get("status") == "resolved" else "closed"}
+        payload = {"choice": choice}
+    else:
+        payload = {"outcome": "submitted", "answers": answers}
     # Hermes resolves the entire request under its own lock. A late response
     # from a second browser or the native TUI is discarded by the owner.
-    frame = {"jsonrpc": "2.0", "id": rid, "result": {"outcome": "submitted", "answers": answers}}
+    epoch = cursor.get("epoch")
+    frame = {"jsonrpc": "2.0", "id": rid, "result": payload}
     await client.websocket.send(json.dumps(frame))
     for delay in (0, .08, .2):
         if delay:
             await asyncio.sleep(delay)
-        after = await client.rpc("session.events.since", session_id=session,
-                                 replay_epoch=snapshot.get("replay_epoch"),
-                                 last_sequence=snapshot.get("last_sequence", 0))
+        after = await event_page(client, session, cursor)
+        if cursor.get("epoch") != epoch:
+            return {"status": "unconfirmed"}
         for entry in after.get("events", []):
             entry = entry.get("params", entry)
             data = entry.get("payload") or {}
@@ -275,14 +339,28 @@ async def local(args):
     if not attachable(owner) or not owner.endpoint:
         return {"status": "unavailable"}
     async with connect_gateway(endpoint=owner.endpoint) as client:
-        return await exchange(client, notice, pane, pid, args.get("submission"), lambda: read() == notice, receipts)
+        cursor = args.get("cursor") or {}
+        if cursor.get("binding") != list(notice[:2]):
+            cursor = {"binding": list(notice[:2])}
+        result = await exchange(client, notice, pane, pid, args.get("submission"),
+                                lambda: read() == notice, receipts, cursor)
+        return dict(result, cursor=cursor)
+
+
+# A watermark is only a replay optimisation. The live snapshot still
+# supplies the full set of outstanding requests on every read.
+_cursors = OrderedDict()
+_cursor_lock = threading.Lock()
 
 
 def on_host(pane, pid, submission, runner=None):
     import shlex
     import subprocess
 
-    body = json.dumps({"pane": pane, "pid": pid, "submission": submission}).encode()
+    key = (str(getattr(runner, "host", {}).get("id", "")), pane, pid)
+    with _cursor_lock:
+        cursor = _cursors.get(key)
+    body = json.dumps({"pane": pane, "pid": pid, "submission": submission, "cursor": cursor}).encode()
     if runner is None and submission is None and not binding(pane, pid, Path.home()):
         return {"status": "closed"}
     program = Path(__file__).read_text()
@@ -308,7 +386,15 @@ os.execv(args[0], args)
         proc = subprocess.run([sys.executable, *args[1:]], input=body, capture_output=True, timeout=9)
     else:
         proc = runner.run(shlex.join(args), input_bytes=body, timeout=9, resolve_tmux=False)
-    return json.loads(proc.stdout) if proc.returncode == 0 else {"status": "unavailable"}
+    result = json.loads(proc.stdout) if proc.returncode == 0 else {"status": "unavailable"}
+    cursor = result.pop("cursor", None)
+    if cursor and "seq" in cursor:
+        with _cursor_lock:
+            _cursors[key] = cursor
+            _cursors.move_to_end(key)
+            if len(_cursors) > 256:
+                _cursors.popitem(last=False)
+    return result
 
 
 if __name__ == "__main__":

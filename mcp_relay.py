@@ -270,6 +270,8 @@ class RelayTools:
             payload["agent"] = agent
             payload["agent_args"] = str(arguments.get("agent_args") or "")
             payload["keep_open"] = bool(arguments.get("keep_open", True))
+            if arguments.get("structured_chat") is True:
+                payload["structured_chat"] = True
             if arguments.get("kimi_chat") is True:
                 payload["kimi_chat"] = True
         result = request("/api/sessions", payload, timeout=120)
@@ -718,6 +720,7 @@ def tool_schemas(*, require_project_caller=False) -> list[dict]:
                     "agent": {"type": "string", "description": "start this agent instead of a shell"},
                     "agent_args": {"type": "string", "description": "extra arguments for the agent"},
                     "create_dir": {"type": "boolean", "default": True},
+                    "structured_chat": {"type":"boolean", "description":"Start a local Linux Claude Code or Kimi session with live Chat callbacks."},
                     "kimi_chat": {"type":"boolean", "description":"Start a new local Linux Kimi Chat over ACP; leave agent_args empty."},
                     "keep_open": {"type": "boolean", "default": True,
                                   "description": "keep the pane alive if the agent exits immediately"},

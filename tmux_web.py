@@ -30,6 +30,8 @@ import sqlite3
 from auth_store import PasswordStore
 import federation
 import git_tools
+import chat_ipc
+import claude_chat
 import kimi_acp
 import agent_calls
 import event_log
@@ -779,6 +781,18 @@ class TmuxBackend:
         # produces transcripts here and on SSH remote hosts.
         if pane is None:
             pane = self.validate_pane(pane_id)
+        managed_claude = chat_ipc.available(pane.get("pane_pid"), "claude")
+        if managed_claude:
+            binding = chat_ipc.query(pane.get("pane_pid"), pane_id, {"binding": True}, provider="claude")
+            session = binding.get("session", "")
+            if not re.fullmatch(r"[0-9a-f-]{36}", session):
+                raise TmuxError("Claude Code 会话正在连接")
+            matches = list((Path.home()/".claude/projects").glob("*/" + session + ".jsonl"))
+            if len(matches) != 1:
+                return {"provider": "claude", "session_id": session, "messages": [], "pane": pane_id, "has_more": False}
+            path = matches[0]
+            data = transcript_reader.parse_claude(transcript_reader.reverse_lines(path), limit, session, path.stat().st_mtime)
+            return dict(data, pane=pane_id, path=str(path))
         managed_kimi = kimi_acp.available(pane.get("pane_pid"))
         provider = "kimi" if managed_kimi else pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
         if provider is None:
@@ -1102,6 +1116,11 @@ class TmuxBackend:
         """
         if pane is None:
             pane = self.validate_pane(pane_id)
+        if submit and chat_ipc.available(pane.get("pane_pid"), "claude"):
+            result = chat_ipc.query(pane["pane_pid"], pane_id, {"prompt": text}, provider="claude")
+            if result.get("status") == "submitted":
+                return True
+            raise TmuxError("Claude Code 正在处理当前回合" if result.get("status") == "busy" else "Claude Code 尚未确认接收")
         if submit and kimi_acp.available(pane.get("pane_pid")):
             result = kimi_acp.query(pane["pane_pid"], pane_id, {"prompt":text})
             if result.get("status") == "submitted":
@@ -1570,6 +1589,7 @@ class SessionCreateRequest(BaseModel):
     agent: str = Field(default="", max_length=32)
     agent_args: str = Field(default="", max_length=512)
     kimi_chat: bool = False
+    structured_chat: bool = False
     create_dir: bool = True
     # Keep the pane alive (and say why) when the agent exits immediately.
     keep_open: bool = True
@@ -1766,6 +1786,8 @@ def remote_skill_names(transport, provider, cwd):
 
 
 def native_form_access(provider, local, pid=""):
+    if provider == "claude" and (not local or not chat_ipc.available(pid, "claude")):
+        return "terminal"
     if provider == "kimi" and (not local or not kimi_acp.available(pid)):
         return "terminal"
     spec = providers.get(provider)
@@ -1782,6 +1804,8 @@ def pane_metadata(pane: dict) -> dict:
                 or transcript_reader.provider_for_pane(pane, local_process_table()
                                                        if pane.get("host_id") in (None, "localhost") else None)
                 or pane.get("provider") or transcript_reader.provider_for_command(pane.get("command")))
+    if pane.get("host_id") in (None, "localhost") and chat_ipc.available(pane.get("pane_pid"), "claude"):
+        provider = "claude"
     pane["provider"] = provider
     pane["capabilities"] = {
         "transcript": bool(provider),
@@ -2353,6 +2377,8 @@ def create_app(
 
     def pane_provider(pane: dict) -> str:
         """Same resolution the pane listing uses (process tree first, then command)."""
+        if pane.get("host_id") in (None, "localhost") and chat_ipc.available(pane.get("pane_pid"), "claude"):
+            return "claude"
         return (pane.get("provider")
                 or transcript_reader.provider_for_pane(
                     pane, local_process_table() if pane.get("host_id") in (None, "localhost") else None)
@@ -5154,6 +5180,7 @@ def create_app(
                     agent_args=str(arguments.get("agent_args") or ""),
                     create_dir=bool(arguments.get("create_dir", True)),
                     keep_open=bool(arguments.get("keep_open", True)),
+                    structured_chat=arguments.get("structured_chat") is True,
                     kimi_chat=arguments.get("kimi_chat") is True,
                 )
             except ValidationError as exc:
@@ -5362,7 +5389,9 @@ def create_app(
     async def list_host_agents(request: Request, host_id: str, refresh: bool = False):
         require_auth(request)
         agents = await agents_for(host_id, refresh=refresh)
-        return {"host": host_id, "agents": agents, "kimi_chat": host_id == "localhost" and sys.platform.startswith("linux")}
+        local_chat = host_id == "localhost" and sys.platform.startswith("linux")
+        return {"host": host_id, "agents": agents, "kimi_chat": local_chat,
+                "structured_chat": ["claude", "kimi"] if local_chat else []}
 
     async def create_session_impl(payload: SessionCreateRequest) -> dict:
         """Create a detached tmux session on the local host or a remote one.
@@ -5384,9 +5413,11 @@ def create_app(
                 raise HTTPException(status_code=404, detail="remote host not found") from exc
             transport, host_id = runner_for(host), payload.host
         command = None
-        if payload.kimi_chat and (payload.agent != "kimi" or transport is not tmux or payload.agent_args.strip()
+        managed = payload.structured_chat or payload.kimi_chat
+        if managed and (payload.agent not in ("claude", "kimi") or payload.kimi_chat and payload.agent != "kimi"
+                                  or transport is not tmux or payload.agent_args.strip()
                                   or not sys.platform.startswith("linux")):
-            raise HTTPException(422, "Kimi 结构化 Chat 需要在所属 Linux 节点新建本机会话，启动参数留空")
+            raise HTTPException(422, "结构化 Chat 需要在所属 Linux 节点新建本机会话，启动参数留空")
         if (payload.agent or "").strip():
             if fed_node(host_id):
                 raise HTTPException(status_code=422,
@@ -5401,8 +5432,9 @@ def create_app(
                 # 绝对路径：tmux pane 的 PATH 不一定和 ssh 探测时看到的一样
                 command = agent_catalog.command_for(payload.agent, payload.agent_args,
                                                     binary=installed[wanted].get("path", ""))
-                if payload.kimi_chat:
-                    command = [sys.executable, str(Path(kimi_acp.__file__).resolve()), command[0]]
+                if managed:
+                    launcher = claude_chat if wanted == "claude" else kimi_acp
+                    command = [sys.executable, str(Path(launcher.__file__).resolve()), command[0]]
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
@@ -8593,13 +8625,48 @@ def create_app(
         alive.update(await asyncio.to_thread(recent_screen_panes))
         for item in page["items"]:
             item["pane_alive"] = item["pane_id"] in alive
+        if open_only:
+            # Only inspect signalled panes from this page. Simultaneous Chat and
+            # drawer reads use the same single-flight owner snapshot.
+            known = {s["id"]: s for s in states if s.get("provider") in ("hermes", "claude", "codex")}
+            candidates = list(dict.fromkeys(row["pane_id"] for row in page["items"]
+                                            if row["pane_id"] in known and row["pane_alive"]))[:6]
+            if candidates:
+                batch = asyncio.gather(*(native_form_for(key) for key in candidates), return_exceptions=True)
+                # A slow node must not hold the entire drawer open. The shared
+                # fetch completes in the background and the next read reuses it.
+                _, pending = await asyncio.wait([batch], timeout=.45)
+                if pending:
+                    page["refresh_requests"] = True
+            now = time.monotonic()
+            for row in page["items"]:
+                cached = form_cache.get(row["pane_id"])
+                if row["pane_alive"] and cached and cached[0] > now:
+                    row["requests"] = [{"revision": f["revision"], "request_id": f["request_id"],
+                                        "title": f["questions"][0]["title"]}
+                                       for f in cached[1].get("forms", []) if f.get("request_id")]
+            # A structured callback can precede the status sweep or have no
+            # corresponding hook. Include fresh locally owned sessions too.
+            if before is None:
+                shown = {row["pane_id"] for row in page["items"]}
+                for key, (expires, result) in form_cache.items():
+                    if expires <= now or key in shown or not key.startswith("%") or not result.get("forms"):
+                        continue
+                    for f in result["forms"]:
+                        if f.get("request_id"):
+                            page["items"].append({"id": 0, "pane_id": key, "pane_alive": True,
+                                                  "title": f["questions"][0]["title"], "revision": f["revision"],
+                                                  "request_id": f["request_id"], "created_at": time.time()})
         return page
 
     @app.get("/api/needs-you/inbox/count")
     async def needs_you_inbox_count(request: Request):
         """铃铛上的数字 = 还开着的（真的在等），不是"没点过的历史"。"""
         require_auth(request)
-        open_count = await asyncio.to_thread(lambda: inbox_store.open_count() + calls_store.review_count())
+        now = time.monotonic()
+        live = {key: len(result["forms"]) for key, (expires, result) in form_cache.items()
+                if expires > now and key.startswith("%") and result.get("forms")}
+        open_count = await asyncio.to_thread(lambda: inbox_store.open_count(live) + calls_store.review_count())
         unread = await asyncio.to_thread(inbox_store.unread_count)
         return {"count": open_count, "open": open_count, "unread": unread}
 

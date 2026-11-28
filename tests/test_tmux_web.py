@@ -3401,6 +3401,20 @@ class TmuxWebTests(unittest.TestCase):
                                                            "agent_args":"--continue","kimi_chat":True})
             self.assertEqual(refused.status_code,422)
 
+    def test_structured_claude_session_launches_the_callback_owner(self):
+        self.login()
+        installed = [{"name":"claude","label":"Claude Code","path":"/fixture/claude"}]
+        with mock.patch.object(tmux_web.agent_catalog, "probe_local", return_value=installed):
+            for mode in (False, True):
+                response = self.client.post("/api/sessions", json={"name":"claude-" + str(mode).lower(),
+                                            "agent":"claude", "structured_chat":mode})
+                self.assertEqual(response.status_code, 201, response.text)
+                cmd = self.tmux.created_commands[-1][1]
+                self.assertEqual(cmd[-1], "/fixture/claude")
+                self.assertEqual(any(arg.endswith("claude_chat.py") for arg in cmd), mode)
+            self.assertEqual(self.client.post("/api/sessions", json={"name":"bad","agent":"claude",
+                             "structured_chat":True,"agent_args":"--resume"}).status_code, 422)
+
     def test_keep_open_can_be_turned_off(self):
         self.login()
         installed = [{"name": "codex", "label": "Codex", "path": "/usr/bin/codex"}]

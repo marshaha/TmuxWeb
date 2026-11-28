@@ -266,12 +266,16 @@ class NeedsYouInbox:
                 "SELECT COUNT(*) FROM inbox WHERE read_at IS NULL").fetchone()
         return int(row[0])
 
-    def open_count(self) -> int:
+    def open_count(self, live_requests=None) -> int:
         """还开着的（真的在等）—— 铃铛上的数字应该是这个。
 
         以前用的是"未读"，于是历史里没点过的行会一直把铃铛点亮，哪怕菜单早就没了。
         """
         with self._lock:
+            if live_requests:
+                counts = dict(self._conn.execute("SELECT pane_id, COUNT(*) FROM inbox WHERE resolved_at IS NULL GROUP BY pane_id"))
+                counts.update(live_requests)
+                return sum(counts.values())
             row = self._conn.execute(
                 "SELECT COUNT(*) FROM inbox WHERE resolved_at IS NULL").fetchone()
         return int(row[0])

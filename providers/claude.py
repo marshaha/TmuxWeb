@@ -134,3 +134,10 @@ def claude_resolve_session_file(home, cwd, title, screen=None, hint=None):
         except OSError:
             return None
     return None
+
+
+def native_form(transport, local, actual, pid, provider_for, submission):
+    import chat_ipc
+    if transport is not local:
+        return {"status": "unavailable"}
+    return chat_ipc.query(pid, actual, submission, provider="claude")

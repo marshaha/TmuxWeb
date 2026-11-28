@@ -3,7 +3,8 @@
   const codex = {
     name: 'Codex',
     notice: signal => ['codex_followup','codex_tool_permission','codex_screen_notice'].includes(signal?.source),
-    available: ({signal,followup,openCodex}) => codex.notice(signal) || followup || openCodex,
+    available: ({pane,signal,followup,openCodex}) => codex.notice(signal) || followup || openCodex ||
+      pane.provider === 'codex' && pane.capabilities?.native_form === 'owner',
     read: ({signal,followup}) => followup || (codex.notice(signal) ? signal : null)
   };
   const hermes = {
@@ -23,6 +24,8 @@
     hermes, codex,
     select(context) {
       if (!context.pane) return null;
+      if (context.pane.provider === 'claude' && (context.pane.capabilities?.native_form === 'owner' || context.signal))
+        return {name:'Claude Code', read:({signal}) => signal || null};
       if (context.pane.provider === 'kimi') return kimi.available(context) ? kimi : null;
       return [codex,hermes].find(adapter => adapter.available(context));
     }

@@ -120,8 +120,12 @@ def record(path, pane, pid, provider, notice, now):
             PRIMARY KEY(pane,pid,provider,session,request))""")
         db.execute("DELETE FROM waits WHERE at < ?", (now - 3600,))
         args = (pane, pid, provider, session)
-        if operation == "snapshot":
-            db.execute("DELETE FROM waits WHERE pane=? AND pid=? AND provider=?", args[:3])
+        if operation in ("snapshot", "managed-snapshot"):
+            if operation == "managed-snapshot":
+                db.execute("DELETE FROM waits WHERE pane=? AND pid=? AND provider=? AND session=? "
+                           "AND request LIKE 'chat:%'", args)
+            else:
+                db.execute("DELETE FROM waits WHERE pane=? AND pid=? AND provider=?", args[:3])
             db.executemany("INSERT OR REPLACE INTO waits VALUES(?,?,?,?,?,?,?,?)",
                            [(*args, key, label, "", now) for key, label in detail])
         else:

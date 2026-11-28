@@ -75,6 +75,7 @@
       : (item.resolved_at ? '<span class="inbox-resolved">已解决</span>' : '');
     return '<button type="button" class="' + classes.join(' ') + '"'
       + ' data-id="' + esc(item.id) + '" data-pane="' + esc(item.pane_id) + '"'
+      + ' data-revision="' + esc(item.revision || '') + '"'
       + ' data-alive="' + (item.pane_alive ? '1' : '0') + '">'
       + '<span class="inbox-dot" aria-hidden="true"></span>'
       + '<span class="inbox-main"><span class="inbox-title">' + esc(item.title || '等你回答') + '</span>'
@@ -207,7 +208,7 @@
     finally { marking.delete(id); }
   }
 
-  let reloadPending = false;
+  let reloadPending = false, formRetry = 0;
   function noticeChanged() {
     refreshCount();
     if (!opened) return;
@@ -229,10 +230,22 @@
     try {
       const query = '?limit=' + PAGE + (before ? '&before=' + encodeURIComponent(before) : '');
       const data = await api('/api/needs-you/inbox' + query);
+      clearTimeout(formRetry);
+      if (!before && opened && data.refresh_requests) {
+        formRetry = setTimeout(() => { if (opened && !document.hidden) loadPage(null); }, 1500);
+      }
       if (!before) { box.innerHTML = ''; pendingPanes.clear(); }
       for (const item of data.items || []) pendingPanes.add(item.pane_id);
       const empty = document.getElementById('inbox-empty');
-      const html = (data.items || []).map(itemHtml).join('');
+      const seen = new Set();
+      const html = (data.items || []).flatMap(item => {
+        if (!item.requests?.length) return [itemHtml(item)];
+        return item.requests.flatMap(request => {
+          if (seen.has(request.revision)) return [];
+          seen.add(request.revision);
+          return [itemHtml({...item,...request,summary:''})];
+        });
+      }).join('');
       if (!before && !(data.items || []).length) {
         if (empty) empty.hidden = false;
       } else if (empty) {
@@ -292,6 +305,7 @@
   }
 
   function close() {
+    clearTimeout(formRetry);
     const node = drawer();
     if (node) node.hidden = true;
     const shade = backdrop();
@@ -315,7 +329,7 @@
       return;
     }
     close();
-    if (onJump) { onJump(pane); viewed(pane); }
+    if (onJump) { window.TmuxNativeForm?.focusRequest(pane, row.getAttribute('data-revision')); onJump(pane); viewed(pane); }
   }
 
   function start(options) {

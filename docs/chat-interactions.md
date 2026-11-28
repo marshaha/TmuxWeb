@@ -71,3 +71,15 @@ Codex 命令审批在「查看交互」中显示待执行命令、仅批准一�
 在运行 Kimi 的 Linux 节点打开「新建 tmux 会话」，选择 Kimi，再将「Kimi 界面」设为「结构化 Chat（ACP）」。需要已登录并支持 `kimi acp` 的 CLI，启动参数留空。既有 TUI 会话继续沿用终端。联邦端可以通过已有的输入授权操作所属节点上的 ACP 会话。
 
 `kimi_acp.py` 持有子进程的 stdio。页面仅提交当前请求的 revision 和选项索引，所属进程将其映射成 Kimi 给出的 optionId 或问题值。新 Chat 和联邦端复用同一个请求。退出该 ACP 主进程会结束本次实时连接，已保存的会话记录仍在 Kimi 的存储中。
+
+### 同时处理多个请求（v0.26.0）
+
+Chat 的请求选择器和「等你回答」使用同一份实时队列。选择请求、勾选选项后，点击提交才会回传。另一设备已处理的请求会关闭。联邦连接需要所属节点授予该 pane 的输入权限。
+
+- **Codex** 将 pane 的审批 hook 与 App Server 当前 thread、turn 和待处理请求匹配。命令卡支持本次允许和拒绝。文件卡先列全部路径（包括移动目标），随后展示补丁。审批上下文、请求身份或完整补丁无法核对时，请打开实时终端。
+- **Claude Code** 在所属 Linux 节点新建会话时，选择 Claude Code 和「结构化 Chat」。MCP 的 `create_session` 可传 `agent="claude", structured_chat=true`。该进程通过 CLI 的双向 stdio 接收权限回调，支持工具审批、带选项的提问和附带计划正文的退出计划模式请求。回调包含子 agent ID 时，卡片会显示来源。现有终端会话继续用原入口。
+- **Hermes** 由前台 CLI 和所属网关核对待办。本地和 SSH 读取均按会话及网关 epoch 保存事件游标。回放位置只用于省去已读事件，每次都从网关核对未完成的请求。
+
+使用本机回环模型和独立 HOME，可以用 `python3 tests/codex_cli_smoke.py /absolute/path/to/codex` 验证两个实际的 App Server 审批请求。测试观察器提供 pane 绑定，Codex 产生待审批命令和两文件补丁，并接收拒绝决定。
+
+开发回归可在隔离副本运行 `python3 tests/claude_cli_smoke.py /absolute/path/to/claude`。它使用独立 tmux socket、临时 HOME 和本机回环模型服务，验证真实 Claude Code 进程收到多选回答。

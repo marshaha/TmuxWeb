@@ -1483,7 +1483,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     $('session-kimi-mode').hidden=true;$('session-kimi-chat').value='terminal';
     select.innerHTML='<option value="">无（普通 shell）</option>';$('session-args-field').hidden=true;$('session-args').value='';
     try{const data=await api(`/api/hosts/${encodeURIComponent(hostId)}/agents`);
-      select.dataset.kimiChat=String(data.kimi_chat===true);
+      select.dataset.structuredChat=(data.structured_chat || (data.kimi_chat ? ['kimi'] : [])).join(' ');
       for(const agent of data.agents||[]){const option=document.createElement('option');option.value=agent.name;
         option.textContent=agent.label||agent.name;option.dataset.path=agent.path||'';select.appendChild(option);}
       syncAgentHint();
@@ -1493,10 +1493,10 @@ import {marked} from '/assets/marked.esm.js?v=1';
     }catch(error){select.dataset.count='0';}}
   function syncAgentHint(){const select=$('session-agent');const option=select.options[select.selectedIndex];
     const path=(option&&option.dataset.path)||'';const hint=$('session-agent-hint');
-    const localKimi=select.value==='kimi' && select.dataset.kimiChat==='true' && (state.sessionHost||'localhost')==='localhost';
-    $('session-kimi-mode').hidden=!localKimi;
-    $('session-args-field').hidden=!select.value || localKimi && $('session-kimi-chat').value==='acp';
-    if(!localKimi)$('session-kimi-chat').value='terminal';
+    const managedChat=!!select.value && (select.dataset.structuredChat || '').split(' ').includes(select.value) && (state.sessionHost||'localhost')==='localhost';
+    $('session-kimi-mode').hidden=!managedChat;
+    $('session-args-field').hidden=!select.value || managedChat && $('session-kimi-chat').value==='acp';
+    if(!managedChat)$('session-kimi-chat').value='terminal';
     hint.textContent=path?`将运行：${option.textContent} · ${path}`:'';hint.hidden=!path;}
   function openSessionDialog(hostId,path){const host=state.hosts.find(item=>item.id===hostId);
     $('session-host-label').textContent=`主机：${host?host.name:hostId}`;$('session-name').value='';$('session-path').value=path||'';
@@ -1509,7 +1509,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     try{const result=await api('/api/sessions',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({host:hostId,name,path:$('session-path').value.trim(),
         agent:$('session-agent').value||'',agent_args:$('session-args-field').hidden?'':$('session-args').value.trim(),
-        kimi_chat:!$('session-kimi-mode').hidden && $('session-kimi-chat').value==='acp'})});
+        structured_chat:!$('session-kimi-mode').hidden && $('session-kimi-chat').value==='acp'})});
       state.treeOpen.add(hostId);if(result.session&&result.session.session)state.treeOpen.add(`${hostId}/${result.session.session}`);
       $('session-dialog').close();await loadPanes();
       const fresh=(result.panes&&result.panes[0])||null;if(fresh)selectPane(fresh.id);

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.0
+
+- Match Codex command and file approvals to the pane hook and the outstanding request. File cards show affected paths and the patch.
+- Offer structured Claude Code sessions with pane-owned permission callbacks, multi-select questions, plan review and cancellation.
+- Show simultaneous requests in Chat and the inbox. Hermes polls the gateway with an incremental replay cursor and shares fresh snapshots between readers.
+
 ## 0.25.0
 
 - New local Linux Kimi sessions can use structured Chat over ACP. The owning process maps live permission and multi-question requests to explicit Chat submissions. Federation uses the owning node's existing input grant.

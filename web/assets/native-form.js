@@ -8,9 +8,40 @@
   let pane = '', current = null, notice = '', epoch = 0, reading = false, busy = false;
   let provider = 'Hermes', access = '';
   let completed = '', draft = {}, lastRead = 0;
+  const chooser = document.getElementById('native-request');
+  let queue = [], target = null;
   function draftKey() { return 'tw.form.' + pane; }
+  function savedDrafts() {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(draftKey())) || {};
+      return saved.revision ? {[saved.revision]:saved.draft} : saved;
+    } catch { return {}; }
+  }
+  function storeDraft(revision, value) {
+    const saved = savedDrafts();
+    delete saved[revision];
+    if (value) saved[revision] = value;
+    try {
+      const recent = Object.entries(saved).slice(-16);
+      if (recent.length) sessionStorage.setItem(draftKey(), JSON.stringify(Object.fromEntries(recent)));
+      else sessionStorage.removeItem(draftKey());
+    } catch {}
+  }
+  function choose(next) {
+    target = null;
+    if (next && next.revision !== current?.revision) render(next);
+  }
+  chooser.onchange = () => choose(queue.find(item => item.revision === chooser.value));
+  function setQueue(next, selected) {
+    const changed = next.length !== queue.length || next.some((entry,i) => entry.revision !== queue[i].revision);
+    queue = next;
+    if (changed) chooser.replaceChildren(...next.map((entry,i) =>
+      new Option((i+1) + '/' + next.length + ' · ' + entry.questions[0].title, entry.revision)));
+    chooser.hidden = next.length < 2;
+    chooser.value = selected;
+  }
   function remember() {
-    try { sessionStorage.setItem(draftKey(), JSON.stringify({revision:current.revision, draft})); } catch {}
+    storeDraft(current.revision, draft);
   }
   function markOpen(revision) {
     if ((box.dataset.open || '') === revision) return;
@@ -19,6 +50,7 @@
     box.dispatchEvent(new Event('native-form-change'));
   }
   function status(message) {
+    chooser.hidden = true;
     form.hidden = true;
     title.textContent = provider + ' 交互';
     note.textContent = message;
@@ -29,10 +61,7 @@
     completed = '';
     current = next;
     provider = next.provider || 'Hermes';
-    try {
-      const saved = JSON.parse(sessionStorage.getItem(draftKey()));
-      draft = saved?.revision === next.revision ? saved.draft || {} : {};
-    } catch { draft = {}; }
+    draft = savedDrafts()[next.revision] || {};
     fields.replaceChildren();
     title.textContent = next.kind === 'approval' ? provider + ' 请求审批' : provider + ' 等你回答';
     for (const [position, question] of next.questions.entries()) {
@@ -116,6 +145,7 @@
     const version = ++epoch, revision = current.revision, approval = current.kind === 'approval';
     reading = false;
     busy = true;
+    chooser.disabled = true;
     send.disabled = true;
     for (const group of fields.children) group.disabled = true;
     try {
@@ -124,7 +154,7 @@
       if (result.status === 'resolved' || result.status === 'closed') {
         completed = revision;
         current = null;
-        try { sessionStorage.removeItem(draftKey()); } catch {}
+        storeDraft(revision, null);
         status(result.status === 'resolved' ? (approval ? '审批已结束' : provider === 'Codex' ? '回答已发送到本轮 Codex 对话' : '已回答') : '本题已结束或已由其他设备处理');
       } else {
         note.textContent = result.status === 'invalid' ? '请检查各题的选择' : '还未确认结果，请查看实时终端';
@@ -133,6 +163,11 @@
     finally {
       if (version === epoch) {
         busy = false;
+        chooser.disabled = false;
+        if (queue.length > 1 && completed === revision) {
+          lastRead = 0;
+          void sync(pane, null, true, true, provider, access);
+        }
         send.disabled = false;
         for (const group of fields.children) group.disabled = false;
       }
@@ -145,6 +180,7 @@
     if (first) {
       ++epoch;
       provider = name;
+      queue = []; chooser.hidden = true; chooser.disabled = false;
       pane = id; notice = key; current = null; completed = ''; reading = false; busy = false;
       box.hidden = true;
       markOpen('');
@@ -171,7 +207,19 @@
       const result = await call('GET');
       if (version !== epoch || busy) return;
       if (result.status === 'open' && result.form?.revision && result.form?.questions?.length && !result.form.read_only) {
-        if (completed !== result.form.revision && current?.revision !== result.form.revision) render(result.form);
+        const forms = result.forms?.length ? result.forms : [result.form];
+        const requested = target?.pane === id && target.revision;
+        const next = forms.find(item => item.revision === (requested || current?.revision));
+        if (requested && !next) {
+          current = null;
+          target = null;
+          status('这条请求已结束');
+          return;
+        }
+        const selected = next || forms[0];
+        setQueue(forms, selected.revision);
+        if (completed !== selected.revision && current?.revision !== selected.revision) render(selected);
+        if (requested) target = null;
       } else if (!completed) {
         const wasOpen = !!current;
         current = null;
@@ -185,5 +233,13 @@
         current = null; }
     } finally { if (version === epoch) reading = false; }
   }
-  window.TmuxNativeForm = {sync};
+  window.TmuxNativeForm = {sync, focusRequest(id, revision) {
+    target = revision ? {pane:id, revision} : null;
+    if (pane === id && revision && !busy) {
+      ++epoch;
+      reading = false;
+      lastRead = 0;
+      void sync(id, null, true, true, provider, access);
+    }
+  }};
 })();
