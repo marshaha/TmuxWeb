@@ -14,8 +14,17 @@
       transcript === 'hermes' || hermes.notice(signal),
     read: ({signal}) => hermes.notice(signal) ? signal : null
   };
+  const kimi = {
+    name: 'Kimi',
+    available: ({pane,signal}) => pane.capabilities?.native_form === 'owner' || pane.capabilities?.native_form === 'view' && signal,
+    read: ({signal}) => signal || null
+  };
   window.TmuxHarnessInteractions = {
     hermes, codex,
-    select(context) { return context.pane && [codex,hermes].find(adapter => adapter.available(context)); }
+    select(context) {
+      if (!context.pane) return null;
+      if (context.pane.provider === 'kimi') return kimi.available(context) ? kimi : null;
+      return [codex,hermes].find(adapter => adapter.available(context));
+    }
   };
 })();

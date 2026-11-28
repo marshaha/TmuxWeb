@@ -604,15 +604,20 @@ def read_codex(home, cwd, title, limit, hint=None):
     return data
 
 
-def _kimi_session_path(home, cwd, title):
-    sessions_root = Path(home) / ".kimi-code" / "sessions"
+def _kimi_session_path(home, cwd, title, hint=None, kimi_home=None):
+    sessions_root = (Path(kimi_home) if kimi_home else Path(home)/".kimi-code") / "sessions"
     candidates = []
-    for state_path in sessions_root.glob("wd_*/session_*/state.json"):
+    if hint and not re.fullmatch(r"[0-9A-Za-z_-]{1,160}", hint):
+        raise TranscriptError("invalid Kimi session id")
+    layout = "wd_*/session_*/state.json" if not hint else "wd_*/" + (hint if hint.startswith("session_") else "session_"+hint) + "/state.json"
+    for state_path in sessions_root.glob(layout):
         try:
             state = json.loads(state_path.read_text(errors="replace"))
         except (OSError, ValueError):
             continue
         if state.get("archived") or state.get("cwd") != cwd:
+            continue
+        if hint and hint not in (state.get("id"), state_path.parent.name):
             continue
         wire_path = state_path.parent / "agents" / "main" / "wire.jsonl"
         if not wire_path.is_file():
@@ -767,8 +772,8 @@ def parse_kimi(lines, limit, session_id="", mtime=0):
             "mtime": mtime, "has_more": has_more}
 
 
-def read_kimi(home, cwd, title, limit):
-    state, path = _kimi_session_path(home, cwd, title)
+def read_kimi(home, cwd, title, limit, hint=None, kimi_home=None):
+    state, path = _kimi_session_path(home, cwd, title, hint, kimi_home)
     session_id = str(state.get("id") or path.parents[1].name)
     data = parse_kimi(reverse_lines(path), limit, session_id, _mtime(path))
     data["path"] = str(path)
@@ -914,7 +919,7 @@ register(Adapter(
 register(Adapter(
     "kimi", read_kimi, parse_kimi,
     command_prefixes=("kimi",), argv_names=("kimi",),
-    remote_reversed=True, takes_hint=False, takes_screen=False,
+    remote_reversed=True, takes_hint=True, takes_screen=False,
     note="~/.kimi/sessions/**/wire.jsonl，解析器吃 newest-first"))
 register(Adapter(
     "hermes", read_hermes, parse_hermes_session,
@@ -931,7 +936,7 @@ PROVIDERS = tuple(adapter.name for adapter in adapters())
 AGENT_NAMES = agent_names()
 
 
-def read_transcript(provider, cwd, title, limit=200, home=None, hint=None, screen=None):
+def read_transcript(provider, cwd, title, limit=200, home=None, hint=None, screen=None, kimi_home=None):
     """Read a provider transcript for one pane.
 
     Everything provider-specific comes from the adapter: which function reads,
@@ -943,6 +948,8 @@ def read_transcript(provider, cwd, title, limit=200, home=None, hint=None, scree
         raise TranscriptError("structured transcript is not supported for this pane")
     home = Path(home) if home is not None else Path.home()
     kwargs = {}
+    if provider == "kimi" and kimi_home:
+        kwargs["kimi_home"] = kimi_home
     if adapter.takes_hint:
         kwargs["hint"] = hint
     if adapter.takes_screen:

@@ -96,3 +96,11 @@ def kimi_resolve_session_file(home, cwd, title, screen=None, hint=None):
     pool = preferred or candidates
     pool.sort(key=lambda item: item[2], reverse=True)
     return pool[0][1]
+
+
+def native_form(transport, local, actual, pid, provider_for, submission):
+    """Only the process holding the ACP request can resolve it."""
+    import kimi_acp
+    if transport is not local:
+        return {"status":"unavailable"}
+    return kimi_acp.query(pid, actual, submission)

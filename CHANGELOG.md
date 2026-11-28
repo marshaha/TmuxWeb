@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.25.0
+
+- New local Linux Kimi sessions can use structured Chat over ACP. The owning process maps live permission and multi-question requests to explicit Chat submissions. Federation uses the owning node's existing input grant.
+
 ## 0.24.0
 
 - Register Codex and Hermes native form adapters independently. Verified requests retain their existing local and federated submission paths.

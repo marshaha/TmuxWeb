@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | Codex | PermissionRequest 工具审批；rollout 中 request_user_input 及其异步变体的问题和选项进入聊天历史 | 同步提问收到匹配结果或回合结束后清除；异步提问只进历史。审批完成到 Stop 之间可能仍显示审批通知 |
 | Claude Code | PermissionRequest、AskUserQuestion 的题干和选项、MCP Elicitation；会话中的 AskUserQuestion 也进入历史 | 匹配的工具结果、ElicitationResult、Stop 或 SessionEnd |
-| Kimi Code | PermissionRequest 工具审批。模型选择和其他 TUI 菜单可用「查看交互」 | PermissionResult、Stop、Interrupt、StopFailure 或 SessionEnd |
+| Kimi Code | 本机新建会话选「结构化 Chat（ACP）」后，工具审批、单选和多选题在 Chat 内提交。普通 TUI 用 PermissionRequest hook 显示通知 | ACP 请求按会话与请求 ID 结束；TUI 通知随 PermissionResult 等结束事件清除 |
 | Hermes | human-input hook 的 clarify、approval、sudo。澄清显示题干，sudo 只显示需要到终端输入密码 | human-input resolved 中相同的 request_id |
 | Gemini CLI | Notification 的 ToolPermission 提醒 | AfterAgent 或 SessionEnd；工具获准后到回合结束之间可能仍显示提醒 |
 | OpenCode | TUI 插件读取当前路由的 permission 和 form 列表，显示每项审批或填表提醒 | 项目从原生列表移除、切换会话，或插件心跳过期 |
@@ -64,3 +64,10 @@ Codex 命令审批在「查看交互」中显示待执行命令、仅批准一�
 ### 接入新的原生表单
 
 每个 harness 在 `providers/<name>.py` 中实现可选的 `native_form`。读取返回由实际请求生成的 revision 和问题。提交时适配器重新校验 pane 归属、请求身份和选项，并处理重复提交。支持托管主机时显式声明 `REMOTE_NATIVE_FORM`。浏览器在 `harness-interactions.js` 选择读取适配器，`native-form.js` 统一管理选项草稿和确认。联邦请求由所属节点校验输入权限。侧栏中的 `capabilities.native_form` 区分 owner、terminal 和只读的 view。
+
+
+### Kimi 结构化 Chat
+
+在运行 Kimi 的 Linux 节点打开「新建 tmux 会话」，选择 Kimi，再将「Kimi 界面」设为「结构化 Chat（ACP）」。需要已登录并支持 `kimi acp` 的 CLI，启动参数留空。既有 TUI 会话继续沿用终端。联邦端可以通过已有的输入授权操作所属节点上的 ACP 会话。
+
+`kimi_acp.py` 持有子进程的 stdio。页面仅提交当前请求的 revision 和选项索引，所属进程将其映射成 Kimi 给出的 optionId 或问题值。新 Chat 和联邦端复用同一个请求。退出该 ACP 主进程会结束本次实时连接，已保存的会话记录仍在 Kimi 的存储中。

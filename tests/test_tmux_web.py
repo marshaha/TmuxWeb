@@ -3387,6 +3387,20 @@ class TmuxWebTests(unittest.TestCase):
         self.assertIn('exec "${SHELL:-bash}"', shell)
         self.assertIn("已退出", shell)
 
+    def test_kimi_chat_launch_preserves_the_terminal_default(self):
+        self.login()
+        installed = [{"name":"kimi","label":"Kimi","path":"/fixture/kimi"}]
+        with mock.patch.object(tmux_web.agent_catalog,"probe_local",return_value=installed):
+            for name, mode in (("plain",False),("structured",True)):
+                response=self.client.post("/api/sessions",json={"name":name,"agent":"kimi","kimi_chat":mode})
+                self.assertEqual(response.status_code,201,response.text)
+                cmd=self.tmux.created_commands[-1][1]
+                self.assertEqual(cmd[-1],"/fixture/kimi")
+                self.assertEqual(any(part.endswith("kimi_acp.py") for part in cmd),mode)
+            refused=self.client.post("/api/sessions",json={"name":"bad","agent":"kimi",
+                                                           "agent_args":"--continue","kimi_chat":True})
+            self.assertEqual(refused.status_code,422)
+
     def test_keep_open_can_be_turned_off(self):
         self.login()
         installed = [{"name": "codex", "label": "Codex", "path": "/usr/bin/codex"}]

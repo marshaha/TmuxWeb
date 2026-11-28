@@ -379,7 +379,7 @@ class WriteScopeTests(unittest.TestCase):
 
     def test_native_form_adapter_uses_the_owning_pane_and_peer_scope(self):
         from unittest.mock import patch
-        for harness in ("codex", "hermes"):
+        for harness in ("codex", "hermes", "kimi"):
             backend = FakeTmux()
             backend.panes[0].update(provider=harness, command=harness, pane_pid="721")
             store, grants = memory_stores()
@@ -393,7 +393,8 @@ class WriteScopeTests(unittest.TestCase):
                 other = token(["view","input"], ["%5"])
                 route = "/api/fed/panes/%254/native-form"
                 action = {"revision":"a"*64, "answers":{"choice":{"indices":[0]}}}
-                with patch(harness+"_forms.on_host", return_value={"status":"open"}) as owner:
+                with patch("kimi_acp.query" if harness == "kimi" else harness+"_forms.on_host",
+                           return_value={"status":"open"}) as owner:
                     self.assertEqual(client.get(route, headers=other).status_code, 403)
                     self.assertEqual(client.post(route,headers=read,json=action).status_code,403)
                     owner.assert_not_called()

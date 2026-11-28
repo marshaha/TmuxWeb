@@ -30,6 +30,7 @@ import sqlite3
 from auth_store import PasswordStore
 import federation
 import git_tools
+import kimi_acp
 import agent_calls
 import event_log
 import approvals
@@ -778,7 +779,8 @@ class TmuxBackend:
         # produces transcripts here and on SSH remote hosts.
         if pane is None:
             pane = self.validate_pane(pane_id)
-        provider = pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
+        managed_kimi = kimi_acp.available(pane.get("pane_pid"))
+        provider = "kimi" if managed_kimi else pane.get("provider") or transcript_reader.provider_for_command(pane.get("command"))
         if provider is None:
             raise TmuxError("structured transcript is not supported for this pane")
         # A resumed CLI session tells us exactly which transcript to read; the
@@ -793,11 +795,18 @@ class TmuxBackend:
                 pid = self.pane_pid(pane_id)
             except (TmuxError, RuntimeError, OSError, ValueError):
                 pid = ""
-        hint = transcript_reader.resume_session_hint(pid) if pid else None
+        if managed_kimi:
+            binding = kimi_acp.query(pid,pane_id,{"binding":True})
+            hint = binding.get("session")
+            if not hint:
+                raise TmuxError("Kimi ACP 会话正在连接")
+        else:
+            hint = transcript_reader.resume_session_hint(pid) if pid and provider != "kimi" else None
         try:
             data = transcript_reader.read_transcript(
                 provider, pane.get("path", ""), pane.get("title", ""), limit,
                 home=Path.home(), hint=hint, screen=lambda: self.capture(pane_id, 80, pane=pane),
+                **({"kimi_home":binding["home"]} if managed_kimi else {}),
             )
         except transcript_reader.TranscriptError as exc:
             raise TmuxError(str(exc)) from exc
@@ -1093,6 +1102,12 @@ class TmuxBackend:
         """
         if pane is None:
             pane = self.validate_pane(pane_id)
+        if submit and kimi_acp.available(pane.get("pane_pid")):
+            result = kimi_acp.query(pane["pane_pid"], pane_id, {"prompt":text})
+            if result.get("status") == "submitted":
+                return True
+            if result.get("status") != "absent":
+                raise TmuxError(result.get("detail") or "Kimi ACP 尚未确认接收，请核对当前回合")
         buffer_name = f"tmux-web-{secrets.token_hex(8)}"
         submitted = True
         presses = 0
@@ -1554,6 +1569,7 @@ class SessionCreateRequest(BaseModel):
     # Optional: start the session already running a coding agent.
     agent: str = Field(default="", max_length=32)
     agent_args: str = Field(default="", max_length=512)
+    kimi_chat: bool = False
     create_dir: bool = True
     # Keep the pane alive (and say why) when the agent exits immediately.
     keep_open: bool = True
@@ -1749,7 +1765,9 @@ def remote_skill_names(transport, provider, cwd):
         return read(SSHRunner(transport.host), 8)
 
 
-def native_form_access(provider, local):
+def native_form_access(provider, local, pid=""):
+    if provider == "kimi" and (not local or not kimi_acp.available(pid)):
+        return "terminal"
     spec = providers.get(provider)
     return "owner" if spec and spec.native_form and (local or spec.remote_native_form) else "terminal"
 
@@ -1769,7 +1787,7 @@ def pane_metadata(pane: dict) -> dict:
         "transcript": bool(provider),
         "terminal": True,
         "relay": bool(provider),
-        "native_form": native_form_access(provider, pane.get("host_id") in (None, "localhost")),
+        "native_form": native_form_access(provider, pane.get("host_id") in (None, "localhost"), pane.get("pane_pid")),
         # any pane can be shared; ones without a transcript fall back to screen text
         "share": True,
     }
@@ -3508,7 +3526,7 @@ def create_app(
                     "command": pane.get("command"), "path": pane.get("path"),
                     "active": pane.get("active"), "provider": pane_provider(pane),
                     "capabilities": {"cursor_menu": bool(pane.get("pane_pid")),
-                        "native_form": native_form_access(pane_provider(pane), host_id == "localhost")
+                        "native_form": native_form_access(pane_provider(pane), host_id == "localhost", pane.get("pane_pid"))
                         if can_read_form else "view"},
                 })
                 if script_report(pane.get("script_signal"), pane.get("pane_pid")):
@@ -5136,6 +5154,7 @@ def create_app(
                     agent_args=str(arguments.get("agent_args") or ""),
                     create_dir=bool(arguments.get("create_dir", True)),
                     keep_open=bool(arguments.get("keep_open", True)),
+                    kimi_chat=arguments.get("kimi_chat") is True,
                 )
             except ValidationError as exc:
                 raise mcp_validation_error(exc) from exc
@@ -5343,7 +5362,7 @@ def create_app(
     async def list_host_agents(request: Request, host_id: str, refresh: bool = False):
         require_auth(request)
         agents = await agents_for(host_id, refresh=refresh)
-        return {"host": host_id, "agents": agents}
+        return {"host": host_id, "agents": agents, "kimi_chat": host_id == "localhost" and sys.platform.startswith("linux")}
 
     async def create_session_impl(payload: SessionCreateRequest) -> dict:
         """Create a detached tmux session on the local host or a remote one.
@@ -5365,6 +5384,9 @@ def create_app(
                 raise HTTPException(status_code=404, detail="remote host not found") from exc
             transport, host_id = runner_for(host), payload.host
         command = None
+        if payload.kimi_chat and (payload.agent != "kimi" or transport is not tmux or payload.agent_args.strip()
+                                  or not sys.platform.startswith("linux")):
+            raise HTTPException(422, "Kimi 结构化 Chat 需要在所属 Linux 节点新建本机会话，启动参数留空")
         if (payload.agent or "").strip():
             if fed_node(host_id):
                 raise HTTPException(status_code=422,
@@ -5379,6 +5401,8 @@ def create_app(
                 # 绝对路径：tmux pane 的 PATH 不一定和 ssh 探测时看到的一样
                 command = agent_catalog.command_for(payload.agent, payload.agent_args,
                                                     binary=installed[wanted].get("path", ""))
+                if payload.kimi_chat:
+                    command = [sys.executable, str(Path(kimi_acp.__file__).resolve()), command[0]]
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:

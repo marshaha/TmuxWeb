@@ -1480,8 +1480,10 @@ import {marked} from '/assets/marked.esm.js?v=1';
     else connectTranscript(state.selected,true);}
   function closeConnections(keepTerminal){cancelScheduledTranscriptRender();stopLiveTail();state.termPending='';state.viewportFitTimers.forEach(clearTimeout);state.viewportFitTimers=[];if(state.ws){state.ws.close();state.ws=null;}if(state.termWs){state.termWs.close();state.termWs=null;}if(state.transcriptTimer){clearTimeout(state.transcriptTimer);state.transcriptTimer=null;}if(state.resizeObserver){state.resizeObserver.disconnect();state.resizeObserver=null;}if(!keepTerminal&&state.xterm){state.xterm.dispose();state.xterm=null;state.fit=null;$('terminal-host').innerHTML='';}}
   async function loadSessionAgents(hostId){const select=$('session-agent');
+    $('session-kimi-mode').hidden=true;$('session-kimi-chat').value='terminal';
     select.innerHTML='<option value="">无（普通 shell）</option>';$('session-args-field').hidden=true;$('session-args').value='';
     try{const data=await api(`/api/hosts/${encodeURIComponent(hostId)}/agents`);
+      select.dataset.kimiChat=String(data.kimi_chat===true);
       for(const agent of data.agents||[]){const option=document.createElement('option');option.value=agent.name;
         option.textContent=agent.label||agent.name;option.dataset.path=agent.path||'';select.appendChild(option);}
       syncAgentHint();
@@ -1491,6 +1493,10 @@ import {marked} from '/assets/marked.esm.js?v=1';
     }catch(error){select.dataset.count='0';}}
   function syncAgentHint(){const select=$('session-agent');const option=select.options[select.selectedIndex];
     const path=(option&&option.dataset.path)||'';const hint=$('session-agent-hint');
+    const localKimi=select.value==='kimi' && select.dataset.kimiChat==='true' && (state.sessionHost||'localhost')==='localhost';
+    $('session-kimi-mode').hidden=!localKimi;
+    $('session-args-field').hidden=!select.value || localKimi && $('session-kimi-chat').value==='acp';
+    if(!localKimi)$('session-kimi-chat').value='terminal';
     hint.textContent=path?`将运行：${option.textContent} · ${path}`:'';hint.hidden=!path;}
   function openSessionDialog(hostId,path){const host=state.hosts.find(item=>item.id===hostId);
     $('session-host-label').textContent=`主机：${host?host.name:hostId}`;$('session-name').value='';$('session-path').value=path||'';
@@ -1502,7 +1508,8 @@ import {marked} from '/assets/marked.esm.js?v=1';
     $('session-create').disabled=true;$('session-status').textContent='正在创建会话…';
     try{const result=await api('/api/sessions',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({host:hostId,name,path:$('session-path').value.trim(),
-        agent:$('session-agent').value||'',agent_args:$('session-args').value.trim()})});
+        agent:$('session-agent').value||'',agent_args:$('session-args-field').hidden?'':$('session-args').value.trim(),
+        kimi_chat:!$('session-kimi-mode').hidden && $('session-kimi-chat').value==='acp'})});
       state.treeOpen.add(hostId);if(result.session&&result.session.session)state.treeOpen.add(`${hostId}/${result.session.session}`);
       $('session-dialog').close();await loadPanes();
       const fresh=(result.panes&&result.panes[0])||null;if(fresh)selectPane(fresh.id);
@@ -3681,7 +3688,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
   $('pane-search').addEventListener('input',event=>{if(!event.isComposing)updatePaneSearch(event.target.value);});
   $('pane-search').addEventListener('compositionend',event=>updatePaneSearch(event.target.value));
   $('pane-search').addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();clearPaneSearch();}});
-  $('grid-add').onclick=()=>{if(!state.selected){showError('先选择一个 pane');return;}location='/grid?add='+encodeURIComponent(state.selected);};$('session-form').onsubmit=e=>{e.preventDefault();submitSessionForm();};$('session-cancel').onclick=()=>$('session-dialog').close();$('session-agent').onchange=()=>{const on=!!$('session-agent').value;$('session-args-field').hidden=!on;syncAgentHint();if(on)$('session-args').focus();};
+  $('grid-add').onclick=()=>{if(!state.selected){showError('先选择一个 pane');return;}location='/grid?add='+encodeURIComponent(state.selected);};$('session-form').onsubmit=e=>{e.preventDefault();submitSessionForm();};$('session-cancel').onclick=()=>$('session-dialog').close();$('session-kimi-chat').onchange=syncAgentHint;$('session-agent').onchange=()=>{const on=!!$('session-agent').value;$('session-args-field').hidden=!on;syncAgentHint();if(on)$('session-args').focus();};
   mountComposerFiles();
   wireChatNameRename();
   $('live-toggle').onclick=()=>{state.livePaused?resumeLive():pauseLive();};
