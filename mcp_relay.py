@@ -62,6 +62,30 @@ def pane_path(target: str, suffix: str = "") -> str:
     return f"/api/panes/{urllib.parse.quote(str(target), safe='')}{suffix}"
 
 
+def file_notice(path: str, size: int, note: str) -> str:
+    message = f"[file] {path} ({size} bytes)"
+    return f"{message} — {note}" if note else message
+
+
+def upload_progress(receipt: dict, offset: int, count: int, total: int) -> int:
+    """Only a final receipt with the expected byte count confirms delivery."""
+    if isinstance(receipt, dict):
+        if (receipt.get("status") == "uploaded" and receipt.get("size") == total
+                and receipt.get("path") and offset + count == total):
+            return total
+        next_offset = receipt.get("offset")
+        if (receipt.get("status") == "partial" and type(next_offset) is int
+                and offset < next_offset == offset + count < total):
+            return next_offset
+    raise RelayError("upload returned an incomplete or inconsistent receipt")
+
+
+def resume_offset(value: int | None, total: int, conflicts: int) -> int:
+    if type(value) is not int or not 0 <= value < total or conflicts > SEND_CHUNK_RETRIES:
+        raise RelayError("upload could not reconcile the receiver's offset")
+    return value
+
+
 PROJECT_TOOLS = {
     "list_projects": "List project names (including empty projects) and their pane memberships.",
     "create_project": "Create an empty project. Existing names are reused.",
@@ -362,6 +386,7 @@ class RelayTools:
             query = urllib.parse.urlencode({"name": name, **({"dir": directory} if directory else {})})
             result = request_raw(pane_path(target, f"/files/upload?{query}"), b"",
                                  timeout=SEND_CHUNK_TIMEOUT)
+            upload_progress(result, 0, 0, 0)
         elif data is not None:
             result = self._send_file_chunked(target, name, directory,
                                              io.BytesIO(data), size, tag, name)
@@ -370,13 +395,12 @@ class RelayTools:
                 result = self._send_file_chunked(target, name, directory,
                                                  handle, size, tag, source)
         note = str(arguments.get("note") or "").strip()
-        message = note or f'user uploaded file "{name}" ({size} bytes)'
         sent = False
         if arguments.get("notify", True):
             try:
-                self.send_agent({"target": target, "text": f"[file] {result.get('path') or name} "
-                                                          f"({size} bytes) — {message}"})
-                sent = True
+                delivery = self.send_agent({"target": target,
+                                            "text": file_notice(result.get("path") or name, size, note)})
+                sent = delivery["submitted"]
             except RelayError:
                 sent = False
         return {"target": target, "path": result.get("path"), "size": result.get("size", size),
@@ -394,11 +418,13 @@ class RelayTools:
         offset = 0
         chunk_size = SEND_CHUNK
         attempts = 0
+        conflicts = 0
         result: dict = {}
         while offset < size:
             handle.seek(offset)
-            data = handle.read(chunk_size)
-            if not data:
+            count = min(chunk_size, size - offset)
+            data = handle.read(count)
+            if len(data) != count:
                 raise RelayError("file shrank while uploading: %s" % source_label)
             query = urllib.parse.urlencode({
                 "name": name, **({"dir": directory} if directory else {}),
@@ -410,7 +436,8 @@ class RelayTools:
             except RelayError as exc:
                 if exc.status == 409 and exc.offset is not None:
                     # 对面已经有的字节和我们的预期不一致：从它那里接着传
-                    offset = int(exc.offset)
+                    conflicts += 1
+                    offset = resume_offset(exc.offset, size, conflicts)
                     attempts = 0
                     continue
                 if exc.status == 0:
@@ -431,12 +458,7 @@ class RelayTools:
                 time.sleep(0.5 * attempts)
                 continue
             attempts = 0
-            if isinstance(result, dict) and result.get("status") == "uploaded":
-                offset = size
-            elif isinstance(result, dict) and result.get("offset") is not None:
-                offset = int(result["offset"])
-            else:
-                offset += len(data)
+            offset = upload_progress(result, offset, len(data), size)
         return result
 
     def read_agent(self, arguments: dict) -> dict:

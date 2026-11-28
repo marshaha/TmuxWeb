@@ -85,9 +85,9 @@ class ReplyExtractionTests(unittest.TestCase):
         ])
         self.assertEqual(relay.extract_reply(text, self.TOKEN), "second")
 
-    def test_unquoted_remainder_is_used_when_json_is_broken(self):
+    def test_streaming_reply_requires_the_closing_quote(self):
         text = relay.marker(self.TOKEN) + ' "unterminated reply\n'
-        self.assertEqual(relay.extract_reply(text, self.TOKEN), "unterminated reply")
+        self.assertIsNone(relay.extract_reply(text, self.TOKEN))
 
     def test_markdown_fence_around_marker_is_tolerated(self):
         text = relay.marker(self.TOKEN) + ' `"fenced"`'

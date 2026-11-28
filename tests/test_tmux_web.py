@@ -4278,6 +4278,7 @@ class TmuxWebTests(unittest.TestCase):
             self.assertFalse(list(Path(directory).glob("**/*.part")))
             self.assertIn("[file]", self.tmux.sent[-1][1])
             self.assertIn("notes.bin", self.tmux.sent[-1][1])
+            self.assertEqual(self.tmux.sent[-1][1].count("notes.bin"), 1)
 
     def test_mcp_send_file_writes_an_empty_file(self):
         """空文件走单次上传，不经过分块。"""
@@ -4286,11 +4287,13 @@ class TmuxWebTests(unittest.TestCase):
         self.login()
         with tempfile.TemporaryDirectory() as directory:
             self.tmux.panes[0]["path"] = directory
-            payload, is_error = self.mcp_call(
-                "send_file", {"target": "%4", "name": "empty.txt",
-                              "content": base64.b64encode(b"").decode()})
+            with patch.object(self.tmux, "send", return_value=False):
+                payload, is_error = self.mcp_call(
+                    "send_file", {"target": "%4", "name": "empty.txt",
+                                  "content": base64.b64encode(b"").decode()})
             self.assertFalse(is_error, payload)
             self.assertEqual(payload["size"], 0)
+            self.assertFalse(payload["notified"])
             self.assertEqual((Path(directory) / "upload_files" / "empty.txt").read_bytes(), b"")
 
     def test_scoped_mcp_file_grant(self):

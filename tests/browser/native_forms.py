@@ -82,6 +82,10 @@ def main():
                     initial=card.get_by_label("openai",exact=True)
                     initial.tap() if width==390 else initial.click()
                     option.tap() if width==390 else option.click()
+                    card.get_by_role("button",name="提交全部答案").click()
+                    expect(card.get_by_role("status")).to_have_text("请回答第 2 题")
+                    expect(card.locator("fieldset").nth(1).locator("input").first).to_be_focused()
+                    assert not owner.answers and not key_requests
                     page.reload(wait_until="domcontentloaded")
                     expect(option).to_be_checked()
                     model=card.get_by_label("默认模型",exact=True)

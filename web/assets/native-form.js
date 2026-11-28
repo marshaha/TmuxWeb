@@ -62,6 +62,8 @@
         const label = document.createElement('label'), input = document.createElement('input');
         input.type = question.multi ? 'checkbox' : 'radio';
         input.name = 'native-question-' + position;
+        input.id = 'native-choice-' + position + '-' + i;
+        label.htmlFor = input.id;
         input.checked = i < question.choices.length ? (saved.indices || []).includes(i) : typeof saved.other === 'string';
         input.addEventListener('change', () => { read(); remember(); });
         label.append(input, document.createTextNode(text));
@@ -103,14 +105,19 @@
   form.onsubmit = async event => {
     event.preventDefault();
     if (event.submitter !== send || busy || !current) return;
-    if (current.questions.some(q => !draft[q.id]?.indices.length && !draft[q.id]?.other?.trim())) {
-      note.textContent = '请完成每道题再提交';
+    const missing = current.questions.findIndex(q => !draft[q.id]?.indices.length && !draft[q.id]?.other?.trim());
+    if (missing >= 0) {
+      note.textContent = '请回答第 ' + (missing + 1) + ' 题';
+      const group = fields.children[missing];
+      const control = group.querySelector('textarea:not([hidden])') || group.querySelector('input');
+      control?.focus();
       return;
     }
     const version = ++epoch, revision = current.revision, approval = current.kind === 'approval';
     reading = false;
     busy = true;
     send.disabled = true;
+    for (const group of fields.children) group.disabled = true;
     try {
       const result = await call('POST', {revision, answers:draft});
       if (version !== epoch) return;
@@ -123,7 +130,13 @@
         note.textContent = result.status === 'invalid' ? '请检查各题的选择' : '还未确认结果，请查看实时终端';
       }
     } catch { if (version === epoch) note.textContent = '连接中断，提交结果待核对'; }
-    finally { if (version === epoch) { busy = false; send.disabled = false; } }
+    finally {
+      if (version === epoch) {
+        busy = false;
+        send.disabled = false;
+        for (const group of fields.children) group.disabled = false;
+      }
+    }
   };
   async function sync(id, signal, poll = false, probe = false) {
     const first = id !== pane;

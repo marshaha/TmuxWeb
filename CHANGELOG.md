@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.1
+
+- Ask for one relay answer and wait for complete JSON before returning it. Fast replies use a short initial screen capture.
+- Bound file resume conflicts, verify upload receipts and report whether the target's file notification was submitted. Default notifications include the path and size once.
+- In structured Chat forms, submitting an incomplete answer focuses the first missing question. Choices stay fixed while the submitted answers are in flight.
+
 ## 0.19.0
 
 - Issue revocable native MCP credentials limited to silent file delivery to a pinned pane and working directory. Existing filenames are preserved.

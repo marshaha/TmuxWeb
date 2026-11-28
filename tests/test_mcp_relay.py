@@ -166,7 +166,31 @@ class ToolTests(unittest.TestCase):
         self.assertTrue(result["notified"])
         # 目标 agent 得知道文件在哪
         message = [call for call in recorder.calls if call[0] == "/api/relay/message"][0][1]
-        self.assertIn("/srv/work/upload_files/plan.md", message["text"])
+        self.assertEqual(message["text"], "[file] /srv/work/upload_files/plan.md (5 bytes)")
+
+    def test_upload_rejects_incomplete_receipts_without_notifying(self):
+        args = {"target": "%7", "name": "report", "content": "eA=="}
+        for receipt in ({"status": "partial", "offset": 1}, {}, {"status": "uploaded", "size": 0}):
+            with self.subTest(receipt=receipt), patch.object(mcp_relay, "request", Recorder()), \
+                    patch.object(mcp_relay, "request_raw", return_value=receipt), \
+                    patch.object(mcp_relay.RelayTools, "send_agent") as send:
+                with self.assertRaisesRegex(RelayError, "receipt"):
+                    mcp_relay.RelayTools().send_file(args)
+                send.assert_not_called()
+
+    def test_upload_bounds_offset_conflicts_and_reports_unsubmitted_notice(self):
+        args = {"target": "%7", "name": "report", "content": "eA==", "note": "review"}
+        recorder = Recorder({"/api/relay/message": {"submitted": False}})
+        with patch.object(mcp_relay, "request", recorder), \
+                patch.object(mcp_relay, "request_raw", side_effect=RelayError("conflict", status=409, offset=0)) as put:
+            with self.assertRaisesRegex(RelayError, "offset"):
+                mcp_relay.RelayTools().send_file(args)
+            self.assertEqual(put.call_count, mcp_relay.SEND_CHUNK_RETRIES + 1)
+        receipt = {"status": "uploaded", "size": 1, "path": "/upload_files/report"}
+        with patch.object(mcp_relay, "request", recorder), patch.object(mcp_relay, "request_raw", return_value=receipt):
+            result = mcp_relay.RelayTools().send_file(args)
+        self.assertFalse(result["notified"])
+        self.assertEqual(recorder.calls[-1][1]["text"], "[file] /upload_files/report (1 bytes) — review")
 
     def test_send_file_chunks_a_large_file_and_resumes_on_409(self):
         """2.5MB 文件按 1MB 切块；第二块丢了（409 + 服务端已有字节数）就从对面

@@ -4838,21 +4838,27 @@ def create_app(
         """
         offset = 0
         size = len(data)
+        conflicts = 0
         result: dict = {}
         while offset < size:
+            chunk = data[offset:offset + mcp_relay.SEND_CHUNK]
             out = await upload_response(target, file_name, directory, offset, size, tag,
-                                        data[offset:offset + 1024 * 1024])
+                                        chunk)
             if isinstance(out, JSONResponse):
                 if out.status_code != 409:
                     raise HTTPException(status_code=out.status_code,
                                         detail="upload failed with status %s" % out.status_code)
-                offset = int(json.loads(out.body).get("offset") or 0)
+                conflicts += 1
+                try:
+                    offset = mcp_relay.resume_offset(json.loads(out.body).get("offset"), size, conflicts)
+                except mcp_relay.RelayError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
                 continue
             result = out
-            if out.get("status") == "partial":
-                offset = int(out.get("offset") or 0)
-                continue
-            break
+            try:
+                offset = mcp_relay.upload_progress(out, offset, len(chunk), size)
+            except mcp_relay.RelayError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
         return result
 
     async def perform_mcp_tool(name: str, arguments: dict) -> dict:
@@ -5121,16 +5127,13 @@ def create_app(
             except HTTPException as exc:
                 raise mcp_http_error(exc) from exc
             note = str(arguments.get("note") or "").strip()
-            message = note or f'user uploaded file "{file_name}" ({len(data)} bytes)'
             sent = False
             if arguments.get("notify", True):
                 try:
                     transport, pane_id = await asyncio.to_thread(pane_transport, target)
-                    await asyncio.to_thread(
-                        transport.send, pane_id,
-                        f"[file] {result.get('path') or file_name} "
-                        f"({len(data)} bytes) — {message}", True)
-                    sent = True
+                    message = mcp_relay.file_notice(result.get("path") or file_name, len(data), note)
+                    submitted = await asyncio.to_thread(transport.send, pane_id, message, True)
+                    sent = submitted is not False
                 except (TmuxError, RuntimeError, OSError, ValueError):
                     sent = False
             return {"target": target, "path": result.get("path"),

@@ -89,14 +89,12 @@ def marker(token: str) -> str:
 
 
 def build_prompt(question: str, token: str, source: str = "") -> str:
-    origin = f" 来自 {source} 的 TmuxWeb 中继请求" if source else " TmuxWeb 中继请求"
+    origin = f" · {source}" if source else ""
     return (
-        f"[TMUXWEB_RELAY{origin}] 请直接回答下面的问题，不要调用任何消息或邮箱工具：\n"
+        f"[TMUXWEB_RELAY{origin}]\n"
         f"{question}\n\n"
-        "回答完成后，在同一次回复的最后单独写一行：先写标记\n"
+        "直接在本会话回一行：以下标记后紧跟完整答案（JSON 字符串，换行用 \\n）。\n"
         f"{marker(token)}\n"
-        "再在同一行紧跟你的完整回答，把回答写成一个 JSON 字符串（一对英文双引号，内部引号与换行要转义）。"
-        "标记和 JSON 必须写在同一行，不要使用 Markdown 代码块。"
     )
 
 
@@ -104,7 +102,7 @@ def extract_reply(text: str, token: str, ignore: set[str] | None = None) -> str 
     """Return the last valid marked reply in a pane capture, if any.
 
     The injected prompt also mentions the marker, so instruction lines are
-    skipped, only JSON values (or a quoted remainder) are accepted, and the
+    skipped, only complete JSON values are accepted, and the
     newest match wins.
     """
     prefix = marker(token)
@@ -123,7 +121,7 @@ def extract_reply(text: str, token: str, ignore: set[str] | None = None) -> str 
         try:
             parsed, _ = decoder.raw_decode(candidate)
         except json.JSONDecodeError:
-            parsed = None
+            continue
         if isinstance(parsed, str):
             value = parsed
         elif isinstance(parsed, dict):
@@ -131,8 +129,6 @@ def extract_reply(text: str, token: str, ignore: set[str] | None = None) -> str 
                 if isinstance(parsed.get(key), str):
                     value = parsed[key]
                     break
-        elif parsed is None and candidate[:1] in {'"', "'"}:
-            value = candidate.strip('"\'')
         if value:
             found = value
     return found
@@ -168,7 +164,7 @@ def ask(transport, pane_id: str, question: str, *, source: str = "", provider: s
         raise RelayError(f"{pane_id}: pasted but Enter submission was not confirmed")
     phase = "submitted"
     report(phase)
-    next_deep = started
+    next_deep = started + 8
     delay = poll_interval
     began = False
     deadline = started + timeout
