@@ -3541,7 +3541,7 @@ import {marked} from '/assets/marked.esm.js?v=1';
     }
     return candidates.sort((a,b)=>b.number-a.number);
   }
-  const searchRoutes={server_cache:'服务端缓存',local:'本机',agent:'节点连接器',federation:'联邦',ssh:'SSH 回退',shared:'复用读取',online:'在线'};
+  const searchRoutes={server_cache:'服务端缓存',local:'本机',agent:'WS',federation:'联邦',ssh:'SSH 回退',shared:'复用读取',online:'在线'};
   function paintSearchProgress(run){
     const el=$('pane-search-progress');el.hidden=!run;
     if(!run)return;

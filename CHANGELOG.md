@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.23.4
+
+- Show the WebSocket transport as WS in host management and sidebar search. Installation prompts identify the remote program as the WS client.
+
 ## 0.23.3
 
 - Label the host connection program 节点连接器 in host management and sidebar search progress.

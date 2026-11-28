@@ -162,17 +162,17 @@ def main():
                   };
                 }""")
                 field.fill("pathfixture")
-                expect(progress).to_contain_text("正在查询 节点连接器 · Local")
+                expect(progress).to_contain_text("正在查询 WS · Local")
                 page.wait_for_function("parseFloat(document.querySelector('#pane-search-progress').textContent.match(/([0-9.]+) 秒/)[1])>=1")
                 assert page.evaluate("window.testRoutes")==["agent"]
                 page.evaluate("window.releaseSearch()")
                 expect(progress).to_contain_text("搜索完成")
                 expect(progress).to_contain_text("SSH 回退 22")
-                expect(progress).to_contain_text("节点连接器 1")
+                expect(progress).to_contain_text("WS 1")
                 assert page.evaluate("window.testRoutes")==["agent","ssh","ssh","ssh"]
                 # Ignore a stale response even if the upstream finishes after cancellation.
                 field.fill("pathfixture ")
-                expect(progress).to_contain_text("正在查询 节点连接器")
+                expect(progress).to_contain_text("正在查询 WS")
                 field.fill("#369 mcphub")
                 expect(count).to_have_text("命中 1 个")
                 page.evaluate("window.releaseSearch()")
